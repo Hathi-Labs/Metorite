@@ -62,6 +62,8 @@ const PUBLIC_PAGES = new Set([
   "/icon-maskable-512.png",
   "/favicon-needs.png",
   "/favicon-reply.png",
+  "/favicon-needs.svg",
+  "/favicon-reply.svg",
   // WS-66 PN-1: the service worker of web push. A browser fetches the script
   // again with no cookie to check for an update, and a redirect to /signin is
   // not a script, so the update fails. It is a fixed file with no member data

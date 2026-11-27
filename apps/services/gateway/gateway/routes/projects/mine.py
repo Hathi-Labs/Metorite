@@ -29,19 +29,24 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_common.db import current_tenant
 from fastapi import Depends, HTTPException
+from gateway.routes.projects import today_rule
 from gateway.routes.projects.core import (
+    AGENT_TASK_SOURCE,
     CLOSING_CATEGORIES,
     Visibility,
     _tenant_session,
     mine_binds,
     mine_clause,
     node_kind,
+    reader_day_start,
     resolve_visibility,
     router,
     task_visibility_clause,
     triage_exclusion_clause,
 )
+from gateway.routes.projects.due_day import not_overdue_sql, overdue_sql
 from gateway.routes.projects.filters import build_task_filters
 from sqlalchemy import text
 
@@ -53,7 +58,11 @@ SCOPE_MINE = "mine"
 DUE_SOON_DAYS = 7
 
 #: The disposition blocks of the Overview, in the order of the chips.
-DISPOSITION_KEYS: tuple[str, ...] = ("inbox", "today", "next", "waiting", "someday", "done")
+DISPOSITION_KEYS: tuple[str, ...] = (
+    "inbox", "today", "next", "waiting", "someday", "done", "new",
+)
+# "new" (D170, INB-1, 2026-11-03): work assigned to me that I have not planned. It is
+# a marker, a count and a chip filter on My tasks.
 
 
 def check_scope(scope: str | None) -> bool:
@@ -81,6 +90,40 @@ async def mine_scope(db: Any, vis: Visibility) -> tuple[str, dict[str, Any]]:
     return mine_clause("t"), await mine_binds(db, vis.email)
 
 
+#: The two facts of a ready agent task that live on the task row. Aliases
+#: ``t`` and ``s`` are the task and its status.
+_HAS_DESCRIPTION_SQL = "(t.description IS NOT NULL AND btrim(t.description) <> '')"
+_HAS_TYPE_SQL = "(t.type_id IS NOT NULL)"
+
+#: Who gave me the task (D170.2). My assignee row was written by the task's
+#: creator, so an agent's own hand-off is ready, and a person's hand-off, or
+#: a legacy row with no ``assigned_by``, still shows New. Binds ``:who``.
+_MY_ASSIGNMENT_BY_CREATOR_SQL = (
+    "EXISTS (SELECT 1 FROM pm_task_assignees ra WHERE ra.task_id = t.id"
+    " AND lower(ra.assignee) = :who"
+    " AND lower(ra.assigned_by) = lower(t.created_by))"
+)
+
+#: What :func:`is_ready_agent_task` reads from a row, as select items.
+AGENT_FACTS_SQL = (
+    f"t.source AS t_source, {_HAS_DESCRIPTION_SQL} AS has_description,"
+    f" {_HAS_TYPE_SQL} AS has_type,"
+    f" {_MY_ASSIGNMENT_BY_CREATOR_SQL} AS assigned_by_creator"
+)
+
+#: The SQL twin of :func:`is_ready_agent_task` (D170 amendment, PJP-14). ONE
+#: spelling: ``personal.UNTRIAGED_CLAUSE`` composes it, and a test holds the
+#: Python and SQL answers equal. Aliases ``t`` and ``s``.
+READY_AGENT_SQL = (
+    f"(COALESCE(t.source = '{AGENT_TASK_SOURCE}', false)"
+    f" AND {_HAS_DESCRIPTION_SQL} AND {_HAS_TYPE_SQL}"
+    f" AND {_MY_ASSIGNMENT_BY_CREATOR_SQL}"
+    " AND s.category <> 'triage'"
+    " AND EXISTS (SELECT 1 FROM pm_task_assignees ra WHERE ra.task_id = t.id)"
+    " AND NOT EXISTS (SELECT 1 FROM pm_projects rpj"
+    " WHERE rpj.id = t.project_id AND rpj.personal_owner IS NOT NULL))"
+)
+
 #: The caller's overlay and the facts the derived disposition reads, for the
 #: rows of one page. LEFT, so a task with no overlay row still answers. The
 #: tenant is on the read beside RLS (R5), as on ``MY_TASKS_FROM``.
@@ -90,7 +133,11 @@ _OVERLAY_SQL = (
     "       EXISTS (SELECT 1 FROM pm_task_assignees a"
     "                WHERE a.task_id = t.id AND lower(a.assignee) = :who) AS is_mine,"
     "       EXISTS (SELECT 1 FROM pm_task_assignees a2"
-    "                WHERE a2.task_id = t.id) AS has_assignee"
+    "                WHERE a2.task_id = t.id) AS has_assignee,"
+    "       NOT EXISTS (SELECT 1 FROM pm_projects pj"
+    "                    WHERE pj.id = t.project_id"
+    "                      AND pj.personal_owner IS NOT NULL) AS on_board,"
+    f"       {AGENT_FACTS_SQL}"
     "  FROM pm_tasks t"
     "  JOIN pm_task_statuses s ON s.id = t.status_id"
     "  LEFT JOIN pm_task_personal p"
@@ -122,7 +169,7 @@ async def attach_my_overlay(
         row.update({
             "disposition": None, "is_triaged": False, "is_mine": False,
             "context": None, "energy": None, "defer_until": None,
-            "status_category": None,
+            "status_category": None, "is_new": False,
         })
     ids = [str(r["id"]) for r in rows if r.get("id")]
     if not ids:
@@ -137,19 +184,27 @@ async def attach_my_overlay(
         if hit is None:
             continue
         defer = getattr(hit, "defer_until", None)
+        effective = effective_disposition(
+            hit.disposition,
+            status_category=hit.status_category,
+            is_mine=bool(hit.is_mine),
+            has_assignee=bool(hit.has_assignee),
+        )
         row.update({
-            "disposition": effective_disposition(
-                hit.disposition,
-                status_category=hit.status_category,
-                is_mine=bool(hit.is_mine),
-                has_assignee=bool(hit.has_assignee),
-            ),
+            "disposition": effective,
             "is_triaged": hit.disposition is not None,
             "is_mine": bool(hit.is_mine),
             "context": hit.context,
             "energy": hit.energy,
             "defer_until": defer.isoformat() if defer is not None else None,
             "status_category": hit.status_category,
+            # D170: "New" is "no disposition of mine yet" on a company board.
+            # A disposition write clears it, so it needs no write of its own.
+            "is_new": new_work(
+                hit.disposition, on_board=bool(getattr(hit, "on_board", True)),
+                is_mine=bool(hit.is_mine), effective=effective,
+                ready_agent=_ready_from_row(hit),
+            ),
         })
     return rows
 
@@ -185,10 +240,12 @@ def _summary_sql(where: str) -> str:
         "       NOT EXISTS (SELECT 1 FROM pm_projects pj"
         "                    WHERE pj.id = t.project_id"
         "                      AND pj.personal_owner IS NOT NULL)  AS on_board,"
-        "       (t.due_at IS NOT NULL AND t.due_at < now()"
+        f"       {AGENT_FACTS_SQL},"
+        f"       (t.due_at IS NOT NULL AND {overdue_sql()}"
         "        AND s.category <> ALL(CAST(:closed AS text[])))  AS is_overdue,"
-        "       (t.due_at IS NOT NULL AND t.due_at >= now()"
-        "        AND t.due_at < now() + make_interval(days => :soon_days)"
+        f"       (t.due_at IS NOT NULL AND {not_overdue_sql()}"
+        "        AND t.due_at < CAST(:day_start AS timestamptz)"
+        "                       + make_interval(days => :soon_days)"
         "        AND s.category <> ALL(CAST(:closed AS text[])))  AS is_due_soon"
         "  FROM pm_tasks t"
         "  JOIN pm_task_statuses s ON s.id = t.status_id"
@@ -241,6 +298,12 @@ def in_today(
 
     Open, NEXT and mine, not deferred past today, started, and dated on or
     before today. An overdue task is in Today. The archive is out already.
+
+    WS-MDC CC-2: this is the ``due`` arm of the one Today predicate, in
+    Python. ``today_rule.due_arm_sql`` is the same arm in SQL, and
+    ``tests/fixtures/today_rule_cases.json`` holds the two to one answer.
+    With ``TODAY_RULE_ORGS`` on, the Today count calls the whole predicate
+    (``today_rule.today_ids``), and this function counts only with it off.
     """
     if completed_at is not None or effective != "NEXT" or not is_mine:
         return False
@@ -254,34 +317,77 @@ def in_today(
     return bool((start is not None and start <= today) or (due is not None and due <= today))
 
 
-def _untriaged_board(row: Any, effective: str) -> bool:
-    """A board row I never triaged: ``personal.UNTRIAGED_CLAUSE`` on a summary row.
+def is_ready_agent_task(
+    *, on_board: bool, source: Any, has_assignee: bool, has_description: bool,
+    has_type: bool, status_category: Any, assigned_by_creator: bool,
+) -> bool:
+    """An agent-made task that is set up in full (D170 amendment, PJP-14).
+
+    On a company board, ``source`` is ``mcp``, at least one assignee, a
+    description, a type, and a status that is not in the ``triage`` stage.
+    My assignment was made by the task's creator, so a person's hand-off
+    still shows New.
+    A date or an estimate is not required. The SQL twin is
+    :data:`READY_AGENT_SQL`, and a test holds the two to one answer. The
+    rule reads the row and writes nothing, so an edit that breaks a
+    condition makes the task New again.
+    """
+    return bool(
+        on_board and source == AGENT_TASK_SOURCE and has_assignee and has_description
+        and has_type and status_category != "triage" and assigned_by_creator
+    )
+
+
+def _ready_from_row(row: Any) -> bool:
+    """:func:`is_ready_agent_task` on a row that carries ``AGENT_FACTS_SQL``."""
+    return is_ready_agent_task(
+        on_board=bool(getattr(row, "on_board", True)),
+        source=getattr(row, "t_source", None),
+        has_assignee=bool(getattr(row, "has_assignee", False)),
+        has_description=bool(getattr(row, "has_description", False)),
+        has_type=bool(getattr(row, "has_type", False)),
+        assigned_by_creator=bool(getattr(row, "assigned_by_creator", False)),
+        status_category=getattr(row, "status_category", None)
+        or getattr(row, "category", None),
+    )
+
+
+def new_work(
+    stated: Any, *, on_board: bool, is_mine: bool, effective: str,
+    ready_agent: bool = False,
+) -> bool:
+    """"New" on My tasks: ``personal.UNTRIAGED_CLAUSE`` on one row (D170).
 
     No stated disposition of mine, a company board (not a personal project),
-    and open (``/my/inbox?untriaged=true`` drops DONE and TRASH). It is the
-    set the client holds as ``fromProjectIds``.
+    assigned to me, and open (``/my/inbox?untriaged=true`` drops DONE and
+    TRASH). Any disposition write clears it. A ready agent task is never
+    New (:func:`is_ready_agent_task`). It keeps its derived disposition.
     """
     return (
-        row.p_disposition is None
-        and bool(getattr(row, "on_board", True))
-        and effective not in ("DONE", "TRASH")
+        stated is None and on_board and is_mine
+        and effective not in ("DONE", "TRASH") and not ready_agent
     )
 
 
 def fold_dispositions(
     rows: list[Any], *, at: datetime, today: date, zone: str,
+    today_count: int | None = None,
 ) -> dict[str, int]:
     """The chip counts, with the rules of ``taskStore.viewCounts`` and ``inboxCount``.
 
     ``inbox`` is what the "My task inbox" badge counts (``inbox.ts``
-    ``inboxCount``): the INBOX rows that do not wait for their date, PLUS the
-    untriaged board rows (:func:`_untriaged_board`), which a colleague
-    assigned to me and which I have not triaged. Their derived disposition is
-    NEXT (or SOMEDAY), so ``next`` and ``someday`` count them too, as
-    ``viewCounts`` does: the two client counters are independent. ``next`` is
+    ``inboxCount``): the INBOX rows that do not wait for their date, only.
+    Changed 2026-11-03 by D170 (INB-1): the inbox holds only what I captured,
+    so an assigned, untriaged board row is no longer in ``inbox``. It counts
+    in ``new`` (:func:`new_work`) and in its own chip by its derived
+    disposition. ``next`` is
     NEXT and assigned to me. ``waiting``, ``someday`` and ``done`` are the
     effective disposition. ``today`` is :func:`in_today`. TRASH is in no chip.
     The disposition is ``effective_disposition``, the one rule (D77).
+
+    ``today_count`` (WS-MDC CC-2) is the size of the set of the one Today
+    predicate (``today_rule``), read with ``TODAY_RULE_ORGS`` on. It replaces
+    the count of the old rule. ``None`` keeps the old rule, :func:`in_today`.
     """
     from gateway.routes.projects.personal import effective_disposition, not_yet
 
@@ -302,18 +408,20 @@ def fold_dispositions(
             counts["someday"] += 1
         elif effective == "DONE":
             counts["done"] += 1
-        if (
-            effective != "INBOX"
-            and _untriaged_board(row, effective)
-            and not not_yet(row.p_defer_until, row.start_date, at, today)
+        if new_work(
+            row.p_disposition, on_board=bool(getattr(row, "on_board", True)),
+            is_mine=mine, effective=effective,
+            ready_agent=_ready_from_row(row),
         ):
-            counts["inbox"] += 1
-        if in_today(
+            counts["new"] += 1
+        if today_count is None and in_today(
             effective=effective, is_mine=mine, completed_at=row.completed_at,
             defer_until=row.p_defer_until, start_date=row.start_date,
             due_at=row.due_at, today=today, zone=zone,
         ):
             counts["today"] += 1
+    if today_count is not None:
+        counts["today"] = int(today_count)
     return counts
 
 
@@ -376,9 +484,23 @@ async def my_summary(user: UserContext = Depends(get_current_user)) -> dict[str,
     count a page. Archived projects are out. No row names a project the
     member cannot see. The member is the session's, and the route takes no
     parameter.
+
+    WS-MDC CC-2: with ``TODAY_RULE_ORGS`` on for the session's org, the Today
+    count is the set of the one predicate (``today_rule.today_ids``), and the
+    answer adds ``today_rule: true`` and ``today_ids``. With the flag off, the
+    answer is as before.
+
+    ⚠️ The set is not a subset of mine. A mark, a block or the One Thing on a
+    visible task of another member is part of my day. So the chip lists the
+    rows of the mine list that the ids name, and adds each row of the set
+    that the list does not hold, from ``GET /projects/my/today?with_tasks=true``
+    (``myTasks.ts`` ``todayChipRows``). The count, the rows and the set are
+    one set.
     """
     from gateway.routes.projects.personal import local_date, stored_zone, zone_name
 
+    rule_on = today_rule.today_rule_allowed(current_tenant())
+    ids: list[str] = []
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         where, params = mine_where(vis)
@@ -388,6 +510,7 @@ async def my_summary(user: UserContext = Depends(get_current_user)) -> dict[str,
             **await mine_binds(db, vis.email),
             "closed": sorted(CLOSING_CATEGORIES),
             "soon_days": DUE_SOON_DAYS,
+            "day_start": await reader_day_start(db, vis.email),
         }
         rows = list((await db.execute(text(_summary_sql(where)), params)).fetchall())
         node_ids = sorted({
@@ -401,6 +524,8 @@ async def my_summary(user: UserContext = Depends(get_current_user)) -> dict[str,
             nodes = {str(n.id): n for n in found}
         clock = (await db.execute(text("SELECT now()"))).scalar() or datetime.now(UTC)
         zone = zone_name(await stored_zone(db, vis.email))
+        if rule_on:
+            ids = await today_rule.today_ids(db, vis, today_rule.window_of(zone, clock))
 
     today = local_date(zone, clock)
     return {
@@ -409,12 +534,20 @@ async def my_summary(user: UserContext = Depends(get_current_user)) -> dict[str,
         "level": "mine",
         **fold_mine_summary(rows, nodes),
         "due_soon_days": DUE_SOON_DAYS,
-        "by_disposition": fold_dispositions(rows, at=clock, today=today, zone=zone),
+        "by_disposition": fold_dispositions(
+            rows, at=clock, today=today, zone=zone,
+            today_count=len(ids) if rule_on else None,
+        ),
         "today": today.isoformat(),
         # The zone the Today count used (`stored_zone`, else UTC). The client
         # reads Today in this zone too, so a chip and its count agree when the
         # browser sits in another zone (WS-64 OP-11 fix round, item 8).
         "time_zone": zone,
+        # WS-MDC CC-2: the ids of the set. The chip lists each of them, the
+        # rows of the mine list and the rows of the Today read that the list
+        # does not hold. Absent with the flag off, so that answer does not
+        # change.
+        **({"today_rule": True, "today_ids": ids} if rule_on else {}),
     }
 
 

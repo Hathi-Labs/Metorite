@@ -257,13 +257,16 @@ async def test_the_card_names_a_project_resolved_by_name(monkeypatch) -> None:
     assert posted[0]["json"]["project_id"] == WEB
 
 
-async def test_a_uuid_project_keeps_the_card_of_before(monkeypatch) -> None:
+async def test_a_uuid_project_is_named_on_the_card_too(monkeypatch) -> None:
+    """RX-1: the client hides a line that holds only an id, so a card with a UUID
+    told the member no destination. The name now shows for each way to name it."""
     fake_gateway(monkeypatch, _gateway())
     cards = approve(monkeypatch)
     _door(monkeypatch, _choice("In progress"))
     _wire(monkeypatch, _fast_ok)
     await W.create_task(project_id=PID, title="Order filament")
-    assert "project: " not in cards[0]["context"]
+    assert "project: «Ops»" in cards[0]["context"]
+    assert "project_id: " not in cards[0]["context"]
 
 
 # ── 2. A twin before a create ────────────────────────────────────────────────

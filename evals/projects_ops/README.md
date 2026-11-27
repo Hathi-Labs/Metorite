@@ -121,6 +121,9 @@ credits, so it is an owner gate, as WS43-G6 is (§11.3).
 1. Make the local gateway serve `/v1` through the Router. The steps are in
    "The stack that serves the Router" of `maf_coding_engine.md`, WS-43a.
 2. Set `LITELLM_BASE_URL` and `LITELLM_MASTER_KEY` to the local gateway.
+   Set `GATEWAY_INTERNAL_TOKEN` to the token of the local gateway too, and
+   never to the LLM key. Since WS-24b, the gateway refuses the LLM key on its
+   internal routes (2026-11-07, WS-24c).
 3. Run the sweep, in both covers:
 
    ```bash

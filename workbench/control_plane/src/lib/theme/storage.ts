@@ -92,6 +92,14 @@ export const APPEARANCE_SCOPE_KEY = "cc-appearance-scope";
 export const APPEARANCE_LAST_SCOPE_PREFIX = "cc-appearance-last:";
 
 /**
+ * The prefix of the unsent mark of one scope (PKG-20). The key is
+ * `cc-appearance-unsent:<email>|<orgId>`. The value is the time, in epoch ms,
+ * of the last member change that the server did not take yet.
+ * `syncAppearance.ts` writes it. A sign-out clears it (`scope.ts`).
+ */
+export const APPEARANCE_UNSENT_PREFIX = "cc-appearance-unsent:";
+
+/**
  * Set once the bare keys of a browser from before the scopes have moved into
  * the first scope. A sign-out removes the pointer, and this marker stops a
  * second adoption that would give the next account the bare `theme`.
@@ -236,8 +244,6 @@ export const themeStorage = {
     // removing the accent cannot leave orphaned ink behind.
     tabWrite(STORAGE_KEYS.accentInk, c ? accentInk(c) || null : null);
   },
-  getLook: () => read(inTab(STORAGE_KEYS.look)),
-  setLook: (l: string | null) => tabWrite(STORAGE_KEYS.look, l),
   getOrgDensity: () => read(inTab(STORAGE_KEYS.orgDensity)) as Density | null,
   setOrgDensity: (d: Density) => tabWrite(STORAGE_KEYS.orgDensity, d),
   /** The colour mode of this tab's scope, or the bare key with no scope. */

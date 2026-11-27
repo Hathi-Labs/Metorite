@@ -125,9 +125,15 @@ export default function FieldStudioFieldDialog({
   onRetire,
   readOptions,
   onLateError,
+  startDraft = null,
+  onDraft,
 }: {
   /** null: the dialog is closed. */
   form: FieldForm | null;
+  /** The draft to open on, when a retire confirm sent the member back (CRM-U17a). */
+  startDraft?: FieldDraft | null;
+  /** The draft changed. The studio keeps it for that return. */
+  onDraft?: (draft: FieldDraft) => void;
   sections: readonly FieldSection[];
   onClose: () => void;
   /**
@@ -163,6 +169,8 @@ export default function FieldStudioFieldDialog({
           readOptions={readOptions}
           onLateError={onLateError}
           onBusy={setBusy}
+          startDraft={startDraft}
+          onDraft={onDraft}
         />
       ) : null}
     </Modal>
@@ -179,8 +187,12 @@ export function FieldFormBody({
   readOptions,
   onLateError,
   onBusy,
+  startDraft = null,
+  onDraft,
 }: {
   form: FieldForm;
+  startDraft?: FieldDraft | null;
+  onDraft?: (draft: FieldDraft) => void;
   sections: readonly FieldSection[];
   onClose: () => void;
   onSave: (form: FieldForm, body: Record<string, unknown>) => Promise<void>;
@@ -191,9 +203,10 @@ export function FieldFormBody({
   onBusy?: (busy: boolean) => void;
 }) {
   const def = form.mode === "edit" ? form.def : null;
-  const [draft, setDraft] = useState<FieldDraft>(() =>
-    def ? draftOf(def) : newDraft(form.mode === "create" ? form.section : null),
+  const [draft, setDraft] = useState<FieldDraft>(
+    () => startDraft ?? (def ? draftOf(def) : newDraft(form.mode === "create" ? form.section : null)),
   );
+  useEffect(() => onDraft?.(draft), [draft, onDraft]);
   const [problems, setProblems] = useState<DraftProblems>({});
   const [saving, setSavingState] = useState(false);
   const setSaving = (busy: boolean) => {

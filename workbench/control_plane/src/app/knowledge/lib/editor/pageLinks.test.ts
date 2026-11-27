@@ -125,3 +125,20 @@ describe("linkChoices (the link popover)", () => {
     expect(linkChoices("refund", pages, { exclude: "a" })).toEqual([]);
   });
 });
+
+describe("loadPageChoices and the KB-2s stand-in space", () => {
+  it("never reads the pages of the stand-in My notes", async () => {
+    const calls: string[] = [];
+    await loadPageChoices(
+      [
+        { id: "s1", name: "Ops", archived_at: null },
+        { id: "my-notes-pending", name: "My notes", archived_at: null },
+      ],
+      async (id) => {
+        calls.push(id);
+        return [];
+      },
+    );
+    expect(calls).toEqual(["s1"]);
+  });
+});

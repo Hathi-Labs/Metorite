@@ -64,7 +64,8 @@ def bounds(offset: Any, limit: Any, *, default: int,
 def page_line(total: int | None, offset: int, shown: int, *,
               more: bool | None = None, cursor: str = "",
               noun: str = "items", param: str = "offset",
-              page_size: int = 0, base: int = 0, tool: str = "") -> str:
+              page_size: int = 0, base: int = 0, tool: str = "",
+              reach: int = 0) -> str:
     """The one line that says what a page left out, or "" when it left nothing.
 
     ``total`` is the full count, or None when the backend does not give one.
@@ -74,7 +75,9 @@ def page_line(total: int | None, offset: int, shown: int, *,
     whose argument is a page number passes ``page_size``, and the hint then
     names ``page=N``. ``base`` is 1 for an argument that counts from 1, such
     as a line number, so the hint names the next one. ``tool`` names another
-    tool that reads the rest, in place of "Call again".
+    tool that reads the rest, in place of "Call again". ``reach`` is the
+    largest offset that the backend takes, or 0 for no limit. When the next
+    page would start past it, the hint says to narrow the filter instead.
     """
 
     def _next(end: int) -> str:
@@ -97,6 +100,8 @@ def page_line(total: int | None, offset: int, shown: int, *,
         if end >= total:
             return (f"Showing {offset + 1}-{end} of {total}. This is the last page."
                     if offset > 0 and shown else "")
+        if reach and end > reach:
+            return f"Showing {offset + 1}-{end} of {total}. {_past(reach, param, base)}"
         nxt = _next(end)
         return f"Showing {offset + 1}-{end} of {total}. {call} {nxt} for the rest."
     if not (more or cursor):
@@ -104,9 +109,16 @@ def page_line(total: int | None, offset: int, shown: int, *,
             return f"Nothing at {param}={offset + base}. This is past the end."
         return (f"Showing {offset + 1}-{end}. This is the last page."
                 if offset > 0 else "")
+    if reach and end > reach:
+        return f"Showing {offset + 1}-{end}. More {noun} exist. {_past(reach, param, base)}"
     nxt = _next(end)
     return (f"Showing {offset + 1}-{end}. More {noun} exist. "
             f"{call} {nxt} for the rest.")
+
+
+def _past(reach: int, param: str, base: int) -> str:
+    """The hint when the next page starts past the largest offset."""
+    return f"A page starts at {param}={reach + base} or before. Narrow the filter to see the rest."
 
 
 def paged(items: Sequence[Any], offset: Any = 0, limit: Any = 0, *,

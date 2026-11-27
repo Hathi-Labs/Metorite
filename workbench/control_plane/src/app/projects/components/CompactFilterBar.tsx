@@ -25,7 +25,7 @@ import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 
 import { activeChips, foldedAgentText } from "../lib/compactChrome";
-import { AGENT_STRIP, type AgentFocus, type AgentSummary } from "../lib/agentRuns";
+import { AGENT_STRIP, type AgentFocus, type AgentSummary, type HoldFocus } from "../lib/agentRuns";
 import type { ViewMode } from "../lib/commands";
 import { EMPTY_FILTERS, labelWith } from "../lib/grouping";
 import { FilterBar, type Props as FilterBarProps } from "./FilterBar";
@@ -44,10 +44,18 @@ export type CompactFilterBarProps = FilterBarProps & {
   agentSummary: AgentSummary | null;
   agentFocus: AgentFocus | null;
   onAgentFocus: (next: AgentFocus | null) => void;
+  /** SW-5: "Held by an agent" and "Free". Absent while the agent-run routes are off. */
+  holdFocus?: HoldFocus | null;
+  onHoldFocus?: (next: HoldFocus | null) => void;
   /** WS-64 OP-11 fix round: doors beside the View sheet's tabs (`ViewSheet`). */
   sheetLenses?: readonly SheetLens[];
   /** False hides the View sheet's Saved views block. Default true. */
   savedViews?: boolean;
+  /**
+   * MOB-1: draw the View button alone. An Overview acts on no filter, but a
+   * phone reaches its tabs only through this button (`chromeKind`).
+   */
+  viewOnly?: boolean;
 };
 
 export function CompactFilterBar(props: CompactFilterBarProps) {
@@ -62,6 +70,9 @@ export function CompactFilterBar(props: CompactFilterBarProps) {
     archivedCount,
     waitingOnMe = false,
     onWaitingOnMe,
+    epic = "",
+    epics = [],
+    onEpic,
     agentWork = false,
     onAgentWork,
     resultCount,
@@ -69,6 +80,9 @@ export function CompactFilterBar(props: CompactFilterBarProps) {
     agentSummary,
     agentFocus,
     onAgentFocus,
+    holdFocus = null,
+    onHoldFocus,
+    viewOnly = false,
   } = props;
 
   const [draft, setDraft] = useState(filters.q);
@@ -84,6 +98,8 @@ export function CompactFilterBar(props: CompactFilterBarProps) {
     filters,
     waitingOnMe,
     agentWork,
+    epic: epic ? { id: epic, label: epics.find((o) => o.value === epic)?.label ?? "Epic" } : undefined,
+    holdFocus,
     me,
     labelOf: labelWith(personLabels),
   });
@@ -92,11 +108,15 @@ export function CompactFilterBar(props: CompactFilterBarProps) {
     onFilters({ ...EMPTY_FILTERS, q: filters.q });
     onWaitingOnMe?.(false);
     onAgentWork?.(false);
+    onEpic?.("");
+    onHoldFocus?.(null);
   };
 
   return (
     <div className="@container border-b border-border px-3 py-2" data-compact-chrome="">
-      <div className="flex items-center gap-2" data-tool-row="">
+      <div className={`flex items-center gap-2${viewOnly ? " justify-end" : ""}`} data-tool-row="">
+        {viewOnly ? null : (
+          <>
         {/* The search keeps a usable width in a narrow pane (768 px with
             the rail open), so the field never folds to a bare icon. */}
         <div className={phone ? "min-w-0 flex-1" : "min-w-[9rem] max-w-64 flex-1"}>
@@ -119,13 +139,20 @@ export function CompactFilterBar(props: CompactFilterBarProps) {
           archivedCount={archivedCount}
           waitingOnMe={waitingOnMe}
           onWaitingOnMe={onWaitingOnMe}
+          epic={epic}
+          epics={epics}
+          onEpic={onEpic}
           agentWork={agentWork}
           onAgentWork={onAgentWork}
+          holdFocus={holdFocus}
+          onHoldFocus={onHoldFocus}
           resultCount={resultCount}
           activeCount={chips.length}
           onClearAll={clearAll}
           phone={phone}
         />
+          </>
+        )}
         <ViewSheet
           filters={filters}
           mode={props.mode}
@@ -154,7 +181,7 @@ export function CompactFilterBar(props: CompactFilterBarProps) {
           savedViews={props.savedViews}
           phone={phone}
         />
-        {loadedLabel ? (
+        {loadedLabel && !viewOnly ? (
           <span
             // Below 22rem of pane (a phone is 24rem) the count yields first: it is a hint, and
             // the end-of-list row repeats it.
@@ -167,7 +194,7 @@ export function CompactFilterBar(props: CompactFilterBarProps) {
         ) : null}
       </div>
 
-      {chips.length > 0 || folded ? (
+      {!viewOnly && (chips.length > 0 || folded) ? (
         <div className="mt-2" data-active-row="">
           <ScrollStrip label="Active filters" className="gap-1.5">
             {chips.map((chip) => (
@@ -181,6 +208,10 @@ export function CompactFilterBar(props: CompactFilterBarProps) {
                     onFilters({ ...filters, ...chip.clear.patch });
                   } else if (chip.clear.kind === "waitingOnMe") {
                     onWaitingOnMe?.(false);
+                  } else if (chip.clear.kind === "epic") {
+                    onEpic?.("");
+                  } else if (chip.clear.kind === "holdFocus") {
+                    onHoldFocus?.(null);
                   } else {
                     onAgentWork?.(false);
                   }
@@ -241,6 +272,7 @@ export function FilterChrome({
     onAgentFocus: _onAgentFocus,
     sheetLenses: _sheetLenses,
     savedViews: _savedViews,
+    viewOnly: _viewOnly,
     ...legacy
   } = props;
   return <FilterBar {...legacy} />;

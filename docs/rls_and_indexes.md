@@ -10,6 +10,13 @@ role.
 `->>` and `ILIKE` are not. To mark a function LEAKPROOF needs a superuser. A
 Supabase project does not give one, so do not plan on it.
 
+**`numeric` is not leakproof.** In Postgres 16 each `numeric` comparison
+(`=`, `<>`, `<`, `<=`, `>`, `>=`) is not leakproof. So an index on a `numeric`
+column gives the app role no index condition. The comparisons of `text`,
+`timestamptz`, `uuid`, `boolean` and the integer types are leakproof. An
+index still gives its order to a sort. WS-STU C2a measured it on
+`studio_record_hot.v_num` (`tests/unit/test_studio_query_r8.py`).
+
 **Measured (KG-3a, 2026-10-28).** On staging, as `acb_app`, the email search
 parsed each of 7243 bodies, and one COUNT took 2.5 to 5 seconds. On 20000
 ladder rows it took 0.46 ms as a superuser and 5.8 seconds as the app role.

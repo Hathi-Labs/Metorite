@@ -67,6 +67,8 @@ const DATA: Record<string, Record<string, unknown>> = {
   },
   // WS-66 RM-4: the chips are pills in the body, never in the toggle.
   reminderCard: { reminderId: UUID, title: LINKED, when: "15:00 today", state: "due", kind: "action", link: "Task: Fix" },
+  // WS-BUD BUD-1: no head and no toggle; the chips are pills in the body.
+  buddyHello: { chips: [{ id: "tour", label: "Show me around" }] },
 };
 
 /** An older long card in a transcript: its toggle shows. */
@@ -97,7 +99,8 @@ function openCard(name: string): string {
 const toggleOf = (html: string) => /<button[^>]*data-rollup-toggle[^>]*>[\s\S]*?<\/button>/.exec(html)?.[0] ?? "";
 
 describe("a fold toggle holds no link and no control", () => {
-  for (const name of OWN_HEAD_TEMPLATES) {
+  // WS-BUD BUD-1: the hello has no head, so no toggle.
+  for (const name of [...OWN_HEAD_TEMPLATES].filter((n) => n !== "buddyHello")) {
     it(name, () => {
       const html = folded({ type: "template", props: { name, data: DATA[name] } });
       const toggle = toggleOf(html);
@@ -135,7 +138,7 @@ describe("a fold toggle holds no link and no control", () => {
   });
 
   it("an open toggle holds no link and no control either", () => {
-    for (const name of OWN_HEAD_TEMPLATES) {
+    for (const name of [...OWN_HEAD_TEMPLATES].filter((n) => n !== "buddyHello")) {
       const toggle = toggleOf(openCard(name));
       expect(toggle, `${name} drew no toggle`).not.toBe("");
       expect(toggle, name).not.toMatch(/<a[\s>]|<input|<select|<textarea|<button[^>]*>[\s\S]*<button/);

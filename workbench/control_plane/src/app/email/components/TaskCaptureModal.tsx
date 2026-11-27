@@ -1,7 +1,9 @@
 "use client";
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
+import { dueDayOf, dueInstantForDay } from "@/app/projects/lib/quickAdd";
 import { tasksLink } from "@/app/projects/lib/tasksRedirect";
 import { useCallback, useEffect, useState } from "react";
 import {
@@ -58,14 +60,6 @@ const ENERGIES: { value: string; label: string }[] = [
   { value: "high", label: "High" },
 ];
 
-function toDateInput(iso: string): string {
-  // The draft carries ISO strings (possibly with time); the <input type=date>
-  // wants YYYY-MM-DD. Keep just the date part; empty stays empty.
-  if (!iso) return "";
-  const m = iso.match(/^\d{4}-\d{2}-\d{2}/);
-  return m ? m[0] : "";
-}
-
 export function TaskCaptureModal({
   accountId,
   emailId,
@@ -103,6 +97,11 @@ export function TaskCaptureModal({
 
   // Load the preview (default title + similar tasks) when the popup opens.
   // Commitment mode skips this — its draft was detected on send.
+  // A bar tap closes the window, unless it is saving (MOB-9).
+  useCloseOnBarTap(() => {
+    if (!saving) onClose();
+  });
+
   useEffect(() => {
     if (commitment || !emailId) return;
     let cancelled = false;
@@ -381,8 +380,10 @@ export function TaskCaptureModal({
                     </label>
                     <input
                       type="date"
-                      value={toDateInput(draft?.dueAt ?? "")}
-                      onChange={(e) => patch({ dueAt: e.target.value })}
+                      value={dueDayOf(draft?.dueAt ?? "")}
+                      onChange={(e) =>
+                        patch({ dueAt: e.target.value ? dueInstantForDay(e.target.value) : "" })
+                      }
                       className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary/50 focus:outline-none"
                     />
                   </div>

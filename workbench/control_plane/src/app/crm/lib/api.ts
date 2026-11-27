@@ -42,6 +42,8 @@ import type {
   SumCheck,
 } from "./questions";
 import type { BusinessRule, MyChoice, RuleScope, RulesBody } from "./rules";
+import { CHANGE_PAGE_SIZE, type ChangeList } from "./changeHistory";
+import type { PipelinePlan } from "./newPipeline";
 import type { RecordCounts, ResetThen } from "./setup";
 import type { ResetResult } from "./startOver";
 import type {
@@ -68,6 +70,13 @@ import type {
   WinLossReport,
 } from "./types";
 import type { CrmModule, ModuleListResponse, ModuleRecordPage } from "./modules";
+
+/**
+ * What a refusal with no detail says (CRM-U17a). One sentence for every CRM
+ * refusal that has nothing better, with no status code in it. Anything that
+ * turns a failure into words reads it from here.
+ */
+export const TRY_AGAIN = "That did not work. Try again.";
 
 export class CrmError extends Error {
   status: number;
@@ -121,7 +130,7 @@ export async function call<T>(path: string, init?: RequestInit): Promise<T> {
       error?: string;
     };
     throw new CrmError(
-      detailOf(body) || `Gateway error ${res.status}`,
+      detailOf(body) || TRY_AGAIN,
       res.status,
       codeOf(body),
       fieldOf(body),
@@ -316,6 +325,46 @@ export function listPipelines(): Promise<DealPipeline[] | null> {
 }
 
 /**
+ * The lead pipelines, each with its lead statuses in order (WS-CRM CRM-M4a).
+ * Only a row that says `kind: "lead"` counts, so a gateway from before
+ * CRM-M4a, which reads no `kind`, gives none and never its deal pipelines.
+ */
+export async function listLeadPipelines(): Promise<DealPipeline[] | null> {
+  const rows = await orNullOn404(call<DealPipeline[]>("/pipelines?kind=lead"));
+  return rows ? rows.filter((row) => row.kind === "lead") : null;
+}
+
+/**
+ * What a new deal pipeline would hold, in order (WS-CRM CRM-M3a). It reads
+ * only. The gateway answers each refusal of the create here too, so the
+ * dialog shows it before the member presses Create. Admin only, and 404 for
+ * an org off `CRM_PIPELINES_ORGS`.
+ */
+export function previewPipeline(body: Record<string, unknown>): Promise<PipelinePlan> {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(body)) {
+    if (value === undefined || value === null) continue;
+    // The stages go as one JSON value, the shape of the body of a create.
+    query.set(key, typeof value === "string" ? value : JSON.stringify(value));
+  }
+  return call<PipelinePlan>(`/pipelines/preview?${query.toString()}`);
+}
+
+/**
+ * Create a deal pipeline (WS-CRM CRM-M3a). Native mode only: Mirror mode is
+ * 409. It wakes every CRM read, `usePipelines` too, so the Deals board shows
+ * the pipeline switcher when the org has two pipelines.
+ */
+export function createPipeline(body: Record<string, unknown>): Promise<DealPipeline> {
+  return writeAndWake(() =>
+    call<DealPipeline>("/pipelines", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+/**
  * The one place a deal changes lane. `board.moveRequest` decides the shape and
  * this issues it — the drag and the status pill therefore send the same
  * request by construction rather than by two functions agreeing.
@@ -473,6 +522,14 @@ export async function listDigests(limit = 4): Promise<CrmDigest[]> {
   return res?.digests ?? [];
 }
 
+/**
+ * One page of the Change history of the CRM set-up, newest first (WS-CRM
+ * CRM-M1). Read only. The chat reads the same route (`crm_change_history`).
+ */
+export function listChanges(page = 1): Promise<ChangeList> {
+  return call<ChangeList>(`/change-history?page=${page}&page_size=${CHANGE_PAGE_SIZE}`);
+}
+
 // ── The generic Zoho modules (WS-53 CRM-Q6b) ──────────────────────────────
 
 /** The mirrored generic modules, in the profile order. Empty in Native mode. */
@@ -581,6 +638,11 @@ export type CrmModeBody = {
    * then does the cutover card read the status of the switch.
    */
   cutover_done?: boolean;
+  /**
+   * CRM-M3a: true when `CRM_PIPELINES_ORGS` lets an admin of this Native CRM
+   * create a pipeline. Each other CRM leaves it out.
+   */
+  pipeline_create?: boolean;
 };
 
 /**

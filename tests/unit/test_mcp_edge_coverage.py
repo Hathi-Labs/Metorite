@@ -26,7 +26,9 @@ MCP-G1 adds four pairs: the node POST and PATCH (``create_project`` and
 (``preview_move_tasks`` and ``move_tasks``). The preview is a POST that
 writes nothing, so its tool keeps the hints of a read (``READ_ONLY_POST_TOOLS``).
 ``move_tasks`` sends the preview before its move (a prior write), and it has
-``destructiveHint: true``. The grant routes stay OFF the edge.
+``destructiveHint: true``. The grant routes stay OFF the edge. IMG-3 adds
+one class X read, the bytes of a file (:data:`CLASS_X_READS`). Its tool,
+``get_attachment``, names that route in ``param_routes``, and rule 4 reads it.
 
 1. Each pair in ``MCP_ROUTES`` is a route the gateway serves. Its method is
    ``GET``, or ``PATCH``, ``POST`` or ``PUT`` for a pair of
@@ -34,7 +36,9 @@ writes nothing, so its tool keeps the hints of a read (``READ_ONLY_POST_TOOLS``)
    (EA-6a, MCP-G2).
 2. Each pair is class A in ``skill_projects.manifest.MANIFEST``, or it is a
    named exception. EA-3 has one exception, ``GET /auth/me``. A pair of
-   ``MCP_WRITE_ROUTES`` may be class B (EA-6a). No class C or X route appears.
+   ``MCP_WRITE_ROUTES`` may be class B (EA-6a). A class C or X pair appears
+   only by name, in :data:`CLASS_C_WRITES` (MCP-G9, the comment delete),
+   :data:`CLASS_X_WRITES` or :data:`CLASS_X_READS`.
 3. Each tool of ``agent_edge.tools.TOOLS`` declares a ``required_scope`` (a
    resource scope, or ``None`` for any live token), the four annotations, an
    ``inputSchema`` and an ``outputSchema`` (EA-3b-1). A read has the hints of
@@ -71,6 +75,29 @@ NAMED_EXCEPTIONS: dict[tuple[str, str], str] = {
         "EA-6h (EA3-51). The edge reads the member's delete switch at"
         " tools/list. It is not a Projects route. Its PUT stays off the edge."
     ),
+    # WS-MCP SW-31a (agent_coordination.md SW-31): the guidance of a task and
+    # the refs of `my_work`. They are not Projects routes (the editor is a
+    # Settings screen, and the chat tool is a follow-up).
+    ("GET", "/agent-guidance/tasks/{task_id}"): (
+        "SW-31a. `get_task_context` and `claim_task` read the org's guidance for"
+        " a task. It is not a Projects route (agent_coordination.md SW-31)."
+    ),
+    ("GET", "/agent-guidance/refs"): (
+        "SW-31a. `my_work` reads the id and version of the nearest guidance block"
+        " of each row. It is not a Projects route (agent_coordination.md SW-31)."
+    ),
+    # MCP-G19a: `board_stats` counts over the scope of `list_tasks`. The chat
+    # tool for it is a follow-up, so the manifest holds no row yet.
+    ("GET", "/projects/tasks/stats"): (
+        "MCP-G19a. `board_stats` counts the tasks that `list_tasks` lists, with"
+        " the same scope function. The Projects manifest has no chat tool for it"
+        " yet (spec §9.1)."
+    ),
+    # MCP-G21: `list_members` reads the members a task of a project can go to.
+    ("GET", "/projects/assignable-members"): (
+        "MCP-G21. `list_members` reads the members that `set_assignees` would"
+        " accept. The Projects manifest has no chat tool for it yet (task 2216)."
+    ),
     # MCP-P1a (spec §19.5, "The new pairs"): the two list routes of the app
     # door. They hold no data of an app.
     ("GET", "/agent-access/apps"): (
@@ -81,6 +108,16 @@ NAMED_EXCEPTIONS: dict[tuple[str, str], str] = {
         "MCP-P1a. `describe_app` reads the ops of one app and their args schema."
         " It is not a Projects route (spec §19.4)."
     ),
+    # MCP-P1b-2 (spec §19.5, "The new pairs"): the ask and the wait of
+    # `app_write`. Neither is a Projects route, and neither runs a write.
+    ("POST", "/agent-access/apps/{app}/requests"): (
+        "MCP-P1b-2. `app_write` asks the member to approve one door call. The"
+        " route opens a request and runs nothing (spec §19.5, path 2)."
+    ),
+    ("GET", "/agent-access/requests/{request_id}"): (
+        "MCP-P1b-2. `app_write` waits for the member. The route gives an agent"
+        " only a request of its own connection (spec §19.5, AD-16)."
+    ),
 }
 
 #: The tools of the app door whose route is the route of the op in each call
@@ -90,6 +127,11 @@ NAMED_EXCEPTIONS: dict[tuple[str, str], str] = {
 #: rules 3 and 4 read them as any other tool.
 DOOR_ROUTED_TOOLS = frozenset({"app_read", "app_write"})
 
+#: PB-3a (D186). ``read_playbook`` reads the ``acb_playbook`` package and makes
+#: no gateway request, so it has no route. Each such tool leaves rules 3 and 4
+#: by its name here, and :func:`test_only_read_playbook_has_no_route` pins it.
+PLAYBOOK_TOOLS = frozenset({"read_playbook"})
+
 #: The pairs of ``MCP_WRITE_ROUTES`` that are class X in the manifest, each
 #: with its reason. The chat never reaches them. A new entry needs a spec
 #: amendment (§9.5).
@@ -98,6 +140,51 @@ CLASS_X_WRITES: dict[tuple[str, str], str] = {
         "EA-6h (EA3-51). The MCP door only: an outside agent deletes after the"
         " member's yes and with the member's switch on. The chat deletes"
         " through delete_task and its card."
+    ),
+    ("POST", "/projects/nodes/{project_id}/sequences/{name}/reserve"): (
+        "SW-27b (task 3893, agent_coordination.md SW-27). The MCP door only:"
+        " reserve_number gives an outside agent the next number of a project"
+        " sequence. The chat has no need to reserve a number."
+    ),
+    ("POST", "/projects/reservations/{reservation_id}/mark"): (
+        "SW-27c1 (task 3938). The MCP door only: mark_number marks a number of"
+        " the agent's own run used or released. A person's release is SW-27c3."
+    ),
+    # WS-MCP SW-114 (agent_coordination.md SW-114, §3.12.7 rule 11).
+    ("POST", "/projects/agent-runs/{run_id}/children"): (
+        "SW-114. The MCP door only: a hook of the agent reports a sub-agent"
+        " through report_subagent, under an open run of the same member and"
+        " connection. The chat starts no sub-agent, and a person gets 422."
+    ),
+}
+
+#: The pairs of ``MCP_WRITE_ROUTES`` that are class C in the manifest, each
+#: with its reason. A new entry needs a spec amendment (§9.5 rule 2).
+CLASS_C_WRITES: dict[tuple[str, str], str] = {
+    ("DELETE", "/projects/comments/{activity_id}"): (
+        "MCP-G9 (task 843). The chat deletes a comment through delete_comment"
+        " and its card. A signed agent deletes only a comment that its own client"
+        " wrote, on a task in its reach, and the tool has destructiveHint true"
+        " (spec §9.2)."
+    ),
+    ("POST", "/projects/tasks/{task_id}/attachments"): (
+        "CIV-14b (spec §12.9). The chat attaches a file of its own chat through"
+        " attach_to_task and its card, so the chat manifest keeps class C. For an"
+        " outside agent the upload is a class B write: one png, jpeg, gif or webp"
+        " image of 3.75 MB at most, dark behind mcp_image_upload_orgs, and the"
+        " author removes it in the Files tab through the detach route."
+    ),
+}
+
+
+#: The GET pairs of ``MCP_ROUTES`` that are class X in the manifest, each with
+#: its reason. The chat never reaches them. A new entry needs a spec
+#: amendment (§9.5).
+CLASS_X_READS: dict[tuple[str, str], str] = {
+    ("GET", "/projects/attachments/{attachment_id}/{filename}"): (
+        "IMG-3 (projects_ai_chat.md §30.4, owner answer 2026-11-07). The MCP door"
+        " only: get_attachment reads the bytes of an image or a text file, after"
+        " it finds the id in the list of the task. A chat answer carries text."
     ),
 }
 
@@ -113,13 +200,15 @@ def _gateway_routes() -> set[tuple[str, str]]:
 
 
 #: The methods a write pair may have (EA-6a, §9.5 rule 1). MCP-G2 adds
-#: ``PUT``, for the one PUT of the assignee set.
-WRITE_METHODS = frozenset({"PATCH", "POST", "PUT"})
+#: ``PUT``, for the one PUT of the assignee set. SW-16a adds ``DELETE``, for
+#: the DELETE of a task link (``remove_task_link``). MCP-G9 adds a second
+#: DELETE, of one comment (``delete_comment``).
+WRITE_METHODS = frozenset({"PATCH", "POST", "PUT", "DELETE"})
 
 
 def test_the_allowlist_is_not_empty_and_is_get_only_outside_the_write_pairs():
     """Rule 1, the method half. Every pair outside ``MCP_WRITE_ROUTES`` is a
-    GET. Every write pair is a PATCH, a POST or a PUT, and sits in
+    GET. Every write pair is a PATCH, a POST, a PUT or a DELETE, and sits in
     ``MCP_ROUTES``."""
     assert MCP_ROUTES, "an empty allowlist would make every rule below vacuous"
     assert MCP_WRITE_ROUTES <= MCP_ROUTES
@@ -135,7 +224,14 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
     adds the archive request (§9.5, EA3-40). EA-6h adds the agent delete
     (EA3-51). EA-14a adds the release (§12.3). MCP-G2 adds the PUT of the
     assignees and the task move (§9.2). MCP-G1 adds the node POST and PATCH,
-    the move preview and the move (§9.2)."""
+    the move preview and the move (§9.2). MCP-G15 adds the outside decision
+    (§12.1): an agent records a decision that its member made outside
+    Metorite, on its own awaiting run. SW-16a adds the link POST and the link
+    DELETE, the routes of ``add_task_link`` and ``remove_task_link``. SP-8a
+    adds the PUT of the epic contract, the route of the ``epic_contract``
+    block of ``update_task``. MCP-G9 adds the comment PATCH and DELETE, the
+    routes of ``update_comment`` and ``delete_comment``. The route takes only
+    a comment of the agent's own client (``test_mcp_edge_comment_edit_r8.py``)."""
     expected = {
         ("POST", "/projects/nodes"),
         ("PATCH", "/projects/nodes/{project_id}"),
@@ -147,13 +243,38 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
         ("POST", "/projects/tasks/{task_id}/refs"),
         ("POST", "/projects/tasks"),
         ("POST", "/projects/tasks/{task_id}/comments"),
+        ("PATCH", "/projects/comments/{activity_id}"),
+        ("DELETE", "/projects/comments/{activity_id}"),
         ("POST", "/projects/tasks/{task_id}/claim"),
         ("POST", "/projects/tasks/{task_id}/agent-runs"),
         ("POST", "/projects/agent-runs/{run_id}/activities"),
         ("POST", "/projects/agent-runs/{run_id}/finish"),
         ("POST", "/projects/agent-runs/{run_id}/release"),
+        ("POST", "/projects/agent-runs/{run_id}/outside-decision"),
         ("POST", "/projects/tasks/{task_id}/archive-request"),
         ("POST", "/projects/tasks/{task_id}/agent-delete"),
+        ("POST", "/projects/tasks/{task_id}/links"),
+        ("DELETE", "/projects/tasks/{task_id}/links/{link_id}"),
+        # WS-39 LP-1a: `post_project_update` (project_management_app.md §14.2a).
+        ("POST", "/projects/nodes/{project_id}/updates"),
+        ("PUT", "/projects/tasks/{task_id}/epic-contract"),
+        # WS-MCP SW-23: `report_check` (agent_coordination.md SW-23). A pass
+        # closes the task only under the rule of a status move.
+        ("POST", "/projects/tasks/{task_id}/check-result"),
+        # MCP-P1b-2: the ask of `app_write` (spec §19.5). It runs nothing.
+        ("POST", "/agent-access/apps/{app}/requests"),
+        # CIV-14b: `upload_task_image` (spec §12.9). One image, multipart.
+        ("POST", "/projects/tasks/{task_id}/attachments"),
+        # WS-MCP SW-114: `report_subagent` (agent_coordination.md SW-114).
+        ("POST", "/projects/agent-runs/{run_id}/children"),
+        # WS-MCP SW-32: `set_run_plan` (agent_coordination.md SW-32). It
+        # replaces the plan of the agent's own run.
+        ("PUT", "/projects/agent-runs/{run_id}/plan"),
+        # WS-MCP SW-27b: `reserve_number` (agent_coordination.md SW-27). Each
+        # call takes the next number of a project sequence.
+        ("POST", "/projects/nodes/{project_id}/sequences/{name}/reserve"),
+        # WS-MCP SW-27c1: `mark_number`, dark behind `sequence_marks_orgs`.
+        ("POST", "/projects/reservations/{reservation_id}/mark"),
     }
     assert expected == set(MCP_WRITE_ROUTES)
 
@@ -179,6 +300,9 @@ NEVER_ON_THE_EDGE = (
     ("POST", "/projects/nodes/{project_id}/move"),
     ("POST", "/projects/nodes/{project_id}/archive"),
     ("DELETE", "/projects/nodes/{project_id}"),
+    # WS-39 LP-1a (project_management_app.md §14.2a): the delete of a project
+    # update stays a member's act in this slice.
+    ("DELETE", "/projects/nodes/{project_id}/updates/{update_id}"),
 )
 
 
@@ -226,6 +350,35 @@ def test_the_archive_and_its_approval_stay_off_the_edge():
     assert not reached & set(ARCHIVE_ROUTES), reached & set(ARCHIVE_ROUTES)
 
 
+#: MCP-P1b-1 (§19.5, "The member routes"). A person's decision on an app
+#: request, and the member's list of requests. Neither is ever a pair of the
+#: edge or of the app door, so branch 0 refuses a signed call to either.
+MEMBER_ONLY_REQUEST_ROUTES = (
+    ("POST", "/agent-access/requests/{request_id}/decision"),
+    ("GET", "/agent-access/requests"),
+)
+
+
+def test_decision_route_not_in_door_sets():
+    """MCP-P1b-1 (§19.5, §19.11). The decision route serves a member session
+    only. It is in no set of the door: not ``MCP_ROUTES``, not
+    ``MCP_WRITE_ROUTES`` and not ``door_routes()``, and no edge tool reaches
+    it. Mutation: put the decision pair in ``MCP_WRITE_ROUTES``, and this
+    test fails."""
+    from acb_common import app_manifests
+
+    served = _gateway_routes()
+    door = set(app_manifests.door_routes())
+    for pair in MEMBER_ONLY_REQUEST_ROUTES:
+        assert pair in served, pair
+        assert pair not in MCP_ROUTES and pair not in MCP_WRITE_ROUTES, pair
+        assert pair not in door, pair
+    from agent_edge.tools import TOOLS
+
+    reached = _reached(TOOLS)
+    assert not reached & set(MEMBER_ONLY_REQUEST_ROUTES)
+
+
 def test_rule_1_each_pair_is_a_route_the_gateway_serves():
     served = _gateway_routes()
     missing = sorted(pair for pair in MCP_ROUTES if pair not in served)
@@ -245,8 +398,10 @@ def test_rule_2_each_pair_is_class_a_or_a_named_exception():
             continue
         cls = classes.get(pair)
         allowed = {"A", "B"} if pair in MCP_WRITE_ROUTES else {"A"}
-        if pair in CLASS_X_WRITES:
+        if pair in CLASS_X_WRITES or pair in CLASS_X_READS:
             allowed = {"X"}
+        if pair in CLASS_C_WRITES:
+            allowed = {"C"}
         if cls not in allowed:
             wrong.append(f"{pair[0]} {pair[1]} (class {cls or 'none'})")
     assert not wrong, (
@@ -260,6 +415,24 @@ def test_every_named_exception_is_still_in_the_allowlist():
     stale = sorted(set(NAMED_EXCEPTIONS) - set(MCP_ROUTES))
     assert not stale, stale
     assert set(CLASS_X_WRITES) <= set(MCP_WRITE_ROUTES)
+    assert set(CLASS_C_WRITES) <= set(MCP_WRITE_ROUTES)
+    assert set(CLASS_X_READS) <= set(MCP_ROUTES) - set(MCP_WRITE_ROUTES)
+
+
+def test_the_bytes_read_is_the_one_class_x_read_and_only_get_attachment_reaches_it():
+    """IMG-3. The bytes route is a GET of ``MCP_ROUTES`` and not a write
+    pair, class X in the manifest, and one tool reaches it. Mutation: add the
+    pair to the ``routes`` of ``get_task``, and this test fails."""
+    from agent_edge.tools import TOOLS
+
+    classes = {(r.method, r.path): r.cls for r in m.MANIFEST}
+    assert set(CLASS_X_READS) == {("GET", "/projects/attachments/{attachment_id}/{filename}")}
+    for pair in CLASS_X_READS:
+        assert pair in MCP_ROUTES and pair not in MCP_WRITE_ROUTES, pair
+        assert classes[pair] == "X", pair
+        reaching = {t.name for t in TOOLS.values()
+                    if pair in {(t.method, r) for r in (t.route, *t.routes)}}
+        assert reaching == {"get_attachment"}, reaching
 
 
 # ── Rules 3 and 4: the edge's tool records (EA-3b-1) ────────────────────────
@@ -278,6 +451,10 @@ WRITE_HINTS = {**READ_HINTS, "readOnlyHint": False}
 #: The write tools whose ``idempotentHint`` is false, each with its reason. A
 #: new entry needs a spec amendment (§9.2).
 NON_IDEMPOTENT_WRITES: dict[str, str] = {
+    "reserve_number": (
+        "SW-27b. Each call takes a new number of the sequence, and no number"
+        " comes back (agent_coordination.md SW-27)."
+    ),
     "create_task": (
         "EA-6d. The hint is one value for every call, and a call with no"
         " idempotency_key makes a new task each time (spec §9.2)."
@@ -302,6 +479,16 @@ DESTRUCTIVE_WRITES: dict[str, dict[str, bool]] = {
     # it can change who sees a task. A second call moves nothing more.
     "move_tasks": {"readOnlyHint": False, "destructiveHint": True,
                    "idempotentHint": True, "openWorldHint": False},
+    # MCP-G9. An edit replaces the words with no copy, and a delete removes
+    # them. The required key makes the same call twice change nothing more.
+    "update_comment": {"readOnlyHint": False, "destructiveHint": True,
+                       "idempotentHint": True, "openWorldHint": False},
+    "delete_comment": {"readOnlyHint": False, "destructiveHint": True,
+                       "idempotentHint": True, "openWorldHint": False},
+    # SW-27c1. A release burns the number for good. The same mark twice
+    # changes nothing more.
+    "mark_number": {"readOnlyHint": False, "destructiveHint": True,
+                    "idempotentHint": True, "openWorldHint": False},
 }
 
 #: The tools of a write pair that write nothing, each with its reason. Each
@@ -321,7 +508,8 @@ def _tools() -> list:
     from agent_edge.tools import TOOLS
 
     assert TOOLS, "an empty tool list would make rules 3 and 4 vacuous"
-    return [t for t in TOOLS.values() if t.name not in DOOR_ROUTED_TOOLS]
+    return [t for t in TOOLS.values()
+            if t.name not in DOOR_ROUTED_TOOLS and t.name not in PLAYBOOK_TOOLS]
 
 
 def test_only_the_two_door_tools_leave_rules_3_and_4():
@@ -339,6 +527,25 @@ def test_only_the_two_door_tools_leave_rules_3_and_4():
         assert tool.required_scope is None, name
     door = {name for name, tool in TOOLS.items() if tool.door}
     assert door == {"list_apps", "describe_app", *DOOR_ROUTED_TOOLS}
+
+
+def test_only_read_playbook_has_no_route():
+    """PB-3a. A tool with no gateway route is the playbook tool and nothing
+    else. It needs ``projects:read``, it has the hints of a read, and it makes
+    no gateway request. Mutation: give ``get_task`` an empty route, or drop the
+    ``playbook`` flag of ``read_playbook``, and this test fails."""
+    from agent_edge.tools import READ_ANNOTATIONS, TOOLS
+
+    no_route = {name for name, tool in TOOLS.items()
+                if not tool.route and name not in DOOR_ROUTED_TOOLS}
+    assert no_route == PLAYBOOK_TOOLS
+    for name in PLAYBOOK_TOOLS:
+        tool = TOOLS[name]
+        assert tool.playbook and not tool.door and not tool.app_scope, name
+        assert tool.required_scope == "projects:read", name
+        assert tool.method == "GET" and not tool.routes and not tool.params, name
+        assert dict(tool.annotations) == dict(READ_ANNOTATIONS), name
+    assert {n for n, t in TOOLS.items() if t.playbook} == PLAYBOOK_TOOLS
 
 
 def _body_fields(dependant) -> set[str]:
@@ -425,6 +632,15 @@ NAMED_EDGE_INPUTS: frozenset[tuple[str, str]] = frozenset({
     ("list_projects", "text"),
     ("list_projects", "limit"),
     ("list_projects", "cursor"),
+    # MCP-G19c. `compact` of `get_project` leaves out the reads of the field
+    # definitions and the tags. `GET /projects/nodes/{project_id}` takes no
+    # such parameter.
+    ("get_project", "compact"),
+    # MCP-G21. The gateway returns the whole list, and the edge pages it.
+    ("list_members", "limit"),
+    ("list_members", "cursor"),
+    ("list_tags", "limit"),
+    ("list_tags", "cursor"),
     # EA-6d. The edge keeps the key in its own slot (`agent_edge.idempotency`),
     # and the route takes no such field (spec §9.2 and §9.5 rule 4).
     ("create_task", "idempotency_key"),
@@ -434,6 +650,9 @@ NAMED_EDGE_INPUTS: frozenset[tuple[str, str]] = frozenset({
     # EA-15b (§12.4). The edge cuts its merged rows to this length. No route
     # of `my_work` takes it.
     ("my_work", "limit"),
+    # MCP-G4. The edge keeps the runs whose session key is the caller's. The
+    # runs route takes no such parameter.
+    ("list_agent_runs", "mine_only"),
     # MCP-G1. The edge checks the level against the parent, and the node
     # route takes no level. The key uses the slot of `create_task`.
     ("create_project", "level"),
@@ -441,6 +660,23 @@ NAMED_EDGE_INPUTS: frozenset[tuple[str, str]] = frozenset({
     # MCP-G1. The edge compares it with the id of the preview that it runs
     # again. The move route takes no such field.
     ("move_tasks", "preview_id"),
+    # CIV-14c. The edge picks the page size and pages the timeline itself.
+    ("get_task_context", "comments"),
+    # MCP-G20. The edge unpacks the list and sends each item as one call of
+    # `update_task`. No route takes a list. Each item is the input of
+    # `update_task`, so rule 4 holds for it through that record
+    # (`test_rule_4_each_item_of_update_tasks_is_an_update_task_input`).
+    ("update_tasks", "updates"),
+    # MCP-G9. The slot of `add_comment`, keyed by the tool name. The comment
+    # routes take no such field.
+    ("update_comment", "idempotency_key"),
+    ("delete_comment", "idempotency_key"),
+    # WS-39 LP-1a. The slot of `add_comment`, keyed by the tool name. The
+    # update route takes no such field.
+    ("post_project_update", "idempotency_key"),
+    # CIV-14b (spec §12.9). The slot of `add_comment`, keyed by the tool name.
+    # The upload route takes a form with one file and no key.
+    ("upload_task_image", "idempotency_key"),
 })
 
 #: The reads of EA-15 (§12.4). Each composes routes that are already in
@@ -464,7 +700,97 @@ def test_the_ea15_reads_are_listed_and_add_no_pair():
         for route in (tool.route, *tool.routes):
             assert ("GET", route) in MCP_ROUTES, (name, route)
     assert TOOLS["my_work"].edge_inputs == frozenset({"limit"})
-    assert TOOLS["get_task_context"].edge_inputs == frozenset()
+    assert TOOLS["get_task_context"].edge_inputs == frozenset({"comments"})
+
+
+def test_ea5_the_company_context_reads_auth_me_and_adds_no_pair():
+    """EA-5 (D-EA-6, corrected 2026-11-25). ``get_company_context`` reads
+    ``GET /auth/me``, the pair of ``whoami``, and no other route. So the
+    allowlist gains no entry: the branding pair stays out, and the tool's one
+    route is a named exception that EA-3 already held. It needs
+    ``context:read``, it has the hints of a read, and it is dark on
+    ``agent_resources_orgs``. Mutation: give the tool the route
+    ``/settings/branding``, or add that pair to ``MCP_ROUTES``, and this
+    test fails."""
+    from acb_auth.agent_oauth import CONTEXT_READ
+    from agent_edge.tools import TOOLS
+
+    tool = TOOLS["get_company_context"]
+    pair = ("GET", "/auth/me")
+    assert (tool.method, tool.route) == pair and tool.routes == (pair[1],)
+    assert pair in MCP_ROUTES and pair in NAMED_EXCEPTIONS
+    assert tool.required_scope == CONTEXT_READ
+    assert dict(tool.annotations) == READ_HINTS
+    assert tool.resources is True
+    assert not tool.params and not tool.edge_inputs and not tool.prior_writes
+    assert not tool.alt_writes and not tool.param_routes
+    assert tool.input_schema["properties"] == {}
+    assert ("GET", "/settings/branding") not in MCP_ROUTES
+    assert not {p for _, p in MCP_ROUTES if p.startswith("/settings")}
+    assert set(tool.output_schema["properties"]) == {"name", "slug"}
+    assert tool.output_schema["additionalProperties"] is False
+
+
+def test_only_get_company_context_needs_context_read():
+    """EA-5. ``context:read`` reaches one tool. A second needs a spec
+    amendment (§8)."""
+    from acb_auth.agent_oauth import CONTEXT_READ
+    from agent_edge.tools import TOOLS
+
+    assert [n for n, t in TOOLS.items() if t.required_scope == CONTEXT_READ] == [
+        "get_company_context"]
+    assert [n for n, t in TOOLS.items() if t.resources] == ["get_company_context"]
+
+
+def test_sw113_the_agent_map_is_a_read_of_the_one_overview_route():
+    """WS-MCP SW-113 (``agent_coordination.md`` §3.12.7 rule 12). The tool
+    reads the map of SW-102 through the overview route, and no other route.
+    It needs ``projects:read``, it has the hints of a read, and it shows with
+    the runs flag off too, as the gateway map answers then. The pair is
+    class A in the Projects manifest, so rule 2 needs no exception. Mutation:
+    drop the pair from ``MCP_ROUTES``, and this test and rule 4 fail."""
+    from acb_auth.agent_oauth import PROJECTS_READ
+    from agent_edge.tools import TOOLS
+
+    tool = TOOLS["get_agent_map"]
+    pair = ("GET", "/projects/agents/overview")
+    assert (tool.method, tool.route) == pair and tool.routes == (pair[1],)
+    assert pair in MCP_ROUTES and pair not in NAMED_EXCEPTIONS
+    assert tool.required_scope == PROJECTS_READ
+    assert dict(tool.annotations) == READ_HINTS
+    assert tool.runs is False and not tool.edge_inputs and not tool.prior_writes
+    assert dict(tool.params) == {"project_id": "project_id", "show_quiet": "show_quiet"}
+    classes = {(r.method, r.path): r.cls for r in m.MANIFEST}
+    assert classes[pair] == "A"
+
+
+def test_sw114_report_subagent_is_the_one_write_of_the_children_route():
+    """WS-MCP SW-114 (``agent_coordination.md`` §3.12.7 rule 11). The tool
+    writes the POST of the children of a run, and no other route. It needs
+    ``projects:write``, it has the hints of a write, and it shows only while
+    the runs flag is on. The pair is class X in the chat manifest, so it is a
+    named entry of :data:`CLASS_X_WRITES`. The GET of the children stays off
+    the edge. Mutation: drop the pair from ``MCP_WRITE_ROUTES``, and this
+    test and rule 4 fail."""
+    from acb_auth.agent_oauth import PROJECTS_WRITE
+    from agent_edge.tools import TOOLS, WRITE_ANNOTATIONS
+
+    tool = TOOLS["report_subagent"]
+    pair = ("POST", "/projects/agent-runs/{run_id}/children")
+    assert (tool.method, tool.route) == pair and tool.routes == ()
+    assert pair in MCP_WRITE_ROUTES and pair in CLASS_X_WRITES
+    assert ("GET", pair[1]) not in MCP_ROUTES
+    assert tool.required_scope == PROJECTS_WRITE
+    assert dict(tool.annotations) == dict(WRITE_ANNOTATIONS)
+    assert tool.runs is True and not tool.edge_inputs and not tool.prior_writes
+    assert not tool.alt_writes
+    assert dict(tool.params) == {"run_id": "run_id", "agent_id": "agent_id",
+                                 "agent_type": "agent_label", "event": "event",
+                                 "model": "model"}
+    classes = {(r.method, r.path): r.cls for r in m.MANIFEST}
+    assert classes[pair] == "X" and classes[("GET", pair[1])] == "X"
+    reached = _reached(TOOLS)
+    assert ("GET", pair[1]) not in reached
 
 
 def test_rule_4_each_input_maps_to_a_parameter_of_its_route():
@@ -498,6 +824,14 @@ def test_rule_4_each_input_maps_to_a_parameter_of_its_route():
             more = params.get(pair)
             if more is None:
                 wrong.append(f"{tool.name}: {pair[0]} {pair[1]} is not a gateway route")
+                continue
+            served |= more
+        # IMG-3: an input may fill a path parameter of another GET that the
+        # tool reads (``param_routes``). Only ``get_attachment`` has one.
+        for route in tool.param_routes:
+            more = params.get(("GET", route))
+            if more is None or route not in tool.routes:
+                wrong.append(f"{tool.name}: GET {route} is not a route it reads")
                 continue
             served |= more
         for name, parameter in sorted(tool.params.items()):
@@ -560,10 +894,91 @@ def test_rule_4_only_ask_on_task_sends_a_prior_write():
 def test_rule_4_only_update_task_sends_a_write_in_place_of_its_own():
     """MCP-G2. A write in place of the tool's own widens rule 4 for that
     tool, so the spec names each one (§9.2): ``update_task`` sends the task
-    move for ``parent_task_id``, because the PATCH refuses that field.
-    Mutation: give ``set_assignees`` an alt write, and this test fails."""
+    move for ``parent_task_id``, because the PATCH refuses that field. SP-8a:
+    it sends the PUT of the epic contract for ``epic_contract``. MCP-G20:
+    ``update_tasks`` sends the same writes for an item, the move and the PUT
+    of a contract, because each item is a call of ``update_task``. Mutation:
+    give ``set_assignees`` an alt write, and this test fails."""
     declared = {(tool.name, pair) for tool in _tools() for pair in tool.alt_writes}
-    assert declared == {("update_task", ("POST", "/projects/tasks/{task_id}/move"))}
+    assert declared == {("update_task", ("POST", "/projects/tasks/{task_id}/move")),
+                        ("update_task", ("PUT", "/projects/tasks/{task_id}/epic-contract")),
+                        ("update_tasks", ("POST", "/projects/tasks/{task_id}/move")),
+                        ("update_tasks", ("PUT", "/projects/tasks/{task_id}/epic-contract"))}
     params = _route_parameters()
     assert {"parent_task_id", "If-Match"} <= params[("POST", "/projects/tasks/{task_id}/move")]
+    assert {"epic_contract", "If-Match"} <= (
+        params[("PUT", "/projects/tasks/{task_id}/epic-contract")])
     assert "If-Match" in params[("PUT", "/projects/tasks/{task_id}/assignees")]
+
+
+def test_rule_4_each_item_of_update_tasks_is_an_update_task_input():
+    """MCP-G20 (§9.2). ``update_tasks`` adds no write path and no input of
+    its own: its one input ``updates`` is a list of the input of
+    ``update_task``, and it writes through the routes of ``update_task``. So
+    rule 4 of ``update_task`` covers each item. Mutation: add a key to the
+    item schema, or give the tool another route, and this test fails."""
+    from agent_edge.tools import TOOLS
+
+    bulk, one = TOOLS["update_tasks"], TOOLS["update_task"]
+    assert bulk.input_schema["properties"]["updates"]["items"] is one.input_schema
+    assert set(bulk.input_schema["properties"]) == {"updates"}
+    assert (bulk.method, bulk.route) == (one.method, one.route)
+    assert bulk.routes == one.routes and bulk.alt_writes == one.alt_writes
+    assert bulk.params == {} and bulk.prior_writes == ()
+    assert bulk.required_scope == one.required_scope
+
+
+def test_the_sequence_name_rule_is_one_rule():
+    """SW-27b. The edge checks the reserve path with
+    ``agent_oauth.SEQUENCE_NAME_PATTERN``. The route checks it with
+    ``NAME_RE``, and the CHECK of migration 477 holds it too. If the edge
+    rule were wider, a bad name would reach the route and answer 422; if it
+    were narrower, the edge would refuse a name that the route takes."""
+    from acb_auth.agent_oauth import SEQUENCE_NAME_PATTERN
+    from gateway.routes.projects.sequences import NAME_RE
+
+    assert NAME_RE.pattern == SEQUENCE_NAME_PATTERN
+
+
+def test_the_sequence_route_texts_have_one_copy():
+    """SW-27c1. The gateway sends the shared details of ``agent_oauth``, so
+    the edge's map by detail matches them."""
+    from acb_auth import agent_oauth
+    from gateway.routes.projects import sequences
+
+    assert sequences.RUN_NOT_YOURS is agent_oauth.SEQUENCE_RUN_NOT_YOURS
+    assert sequences.NOT_YOUR_RUN is agent_oauth.SEQUENCE_NOT_YOUR_RUN
+
+
+@pytest.mark.parametrize("detail,expected", [
+    ("agent_writes_disabled", "other"),
+    ("This number is not a number of your run.", "not_yours"),
+    ("Feature not enabled", "other"),
+])
+def test_mark_number_maps_a_403_by_its_detail(monkeypatch, detail, expected):
+    """Review P2. The tool's own mapping: a 403 of another cause keeps its
+    own text. Before the fix, every 403 read as "not your run". Mutation:
+    map ``texts={403: ...}`` again, and the "other" cases turn red."""
+    import asyncio
+
+    from acb_auth import agent_oauth
+    from agent_edge import tools as edge_tools
+    from agent_edge.gateway_client import Answer
+
+    if detail == "agent_writes_disabled":
+        detail = agent_oauth.WRITES_DISABLED_CODE
+    answer = Answer(status=403, body={"detail": detail})
+
+    async def fake_write(ctx, method, template, not_found, **kw):
+        keep = {k: v for k, v in kw.items()
+                if k in ("texts", "details", "coded", "prefixes", "coded_statuses")}
+        return edge_tools._written(answer, not_found, **keep)
+
+    monkeypatch.setattr(edge_tools, "_write", fake_write)
+    with pytest.raises(edge_tools.ToolError) as exc:
+        asyncio.run(edge_tools._mark_number(None, {
+            "reservation_id": "00000000-0000-4000-8000-000000000001", "state": "used"}))
+    if expected == "not_yours":
+        assert str(exc.value) == edge_tools.TEXT_MARK_NOT_YOURS
+    else:
+        assert str(exc.value) != edge_tools.TEXT_MARK_NOT_YOURS

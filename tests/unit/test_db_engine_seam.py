@@ -459,7 +459,31 @@ H2_WHATSAPP_EXEMPT_SITES: dict[str, int] = {
 #: `test_workflows_tool_rls_r8.py` fences the path under FORCE RLS.
 #: 70 → 69: the same PR, review round 1. `resume_run` moved to
 #: `_run_session(org)`, and the approval handler passes the approver's org.
-H2_BASELINE_ELSEWHERE = 69
+#: 69 → 67: H-328 part (a) (2026-11-02). In routes/workflows/service.py, the
+#: module read and `_pm_task_updater` moved to `_run_session(org)` with the
+#: run's org (-2). `_resolve_workflow_organization` stays counted until no
+#: caller remains. `test_workflows_lifecycle_rls_r8.py` fences the path
+#: under FORCE RLS.
+#: 67 → 62: H-328 part (b) (2026-11-03). In routes/workflows, the two scans
+#: in `scheduler.py` (-2), `record_skipped_run` (-1) and
+#: `evaluate_automation_health` (-1) moved to `_tenant_session(org)` or
+#: `_run_session(org)`, and `reconcile_orphaned_runs` no longer opens a
+#: session of its own (-1). The one new unbound read is
+#: `service._organization_ids`, a tenant-discovery site that is not counted
+#: here (+1 in H2_TENANT_DISCOVERY_SITES). Measured drop: 5.
+#: 62 → 58: H-328 part (c) (2026-11-12). The base measured 60 already: two
+#: sites left in earlier work, and no PR banked them. In routes/workflows,
+#: the hook door (`hooks.workflow_hook`) and the event door
+#: (`triggers.dispatch_event`) moved their read to `_tenant_session(org)`
+#: (-2). The hook door finds the org through `service._organization_ids`,
+#: which is already a discovery site, so it adds no new one. Measured: 58.
+#: `test_workflows_triggers_r8.py` fences both doors under FORCE RLS.
+#: 58 → 55: H2 (task 566, 2026-11-22). `routes/agent_skills.py` held three
+#: unbound sites (a helper and two request handlers). The handlers run in a
+#: member's request, so they now open the ambient `tenant_session()`. The
+#: file has no `get_db()` left. `test_agent_skills_per_org_r8.py` fences it
+#: under FORCE RLS with two orgs.
+H2_BASELINE_ELSEWHERE = 55
 
 #: routes/apps (H2 slice, 2026-08-10): the sites that STAY on the unbound
 #: seam, as file → exact remaining count. Counts rather than whole files
@@ -473,12 +497,16 @@ H2_BASELINE_ELSEWHERE = 69
 #:     helpers are dual-audience: the HTTP route AND the orchestrator's
 #:     in-process agent tools (``orchestrator/app_tools.py``), which run with
 #:     no request and no bound tenant.
-#:   * ``_common.py`` (1) — ``record_app_audit``, reached from that same
-#:     agent path; converting it would silently drop agent-action audit rows.
 #:   * ``tools.py`` (1) — ``_apply_publish_review``, an Action Broker
 #:     handler that runs when an admin approves a queued proposal.
+#:
+#: ``_common.py`` (1 → 0): task 1317 (2026-11-11) removed the unbound
+#: ``record_app_audit``. Under FORCE RLS its insert wrote no row as
+#: ``acb_app``. The request handlers now write through
+#: ``record_app_audit_bound``, and ``execute_app_action`` writes through
+#: ``tenant_session(<the org of the app row>)``. Fence:
+#: ``test_app_audit_bound_r8.py``.
 H2_APPS_EXEMPT_SITES: dict[str, int] = {
-    "apps/services/gateway/gateway/routes/apps/_common.py": 1,
     "apps/services/gateway/gateway/routes/apps/actions.py": 4,
     "apps/services/gateway/gateway/routes/apps/tools.py": 1,
 }
@@ -595,7 +623,7 @@ def _tenant_session_functions(module_rel: str) -> frozenset[str]:
 
     AST calls, not source text — an H4 marker comment that merely *mentions*
     tenant_session must not read as an opener (first version's false positive:
-    `record_app_audit`'s own exemption comment).
+    the old `record_app_audit`'s own exemption comment).
     """
     path = _REPO / module_rel
     if not path.exists():
@@ -718,6 +746,13 @@ H2_TENANT_DISCOVERY_SITES: dict[tuple[str, str], str] = {
         "It reads only through the SECURITY DEFINER "
         "`whatsapp_member_links_for_phone`, granted to `acb_app` alone, and "
         "it writes nothing",
+    ("apps/services/gateway/gateway/routes/workflows/service.py",
+     "_organization_ids"):
+        "H-328 part (b): which organizations the workflow scans and sweeps "
+        "look at. It lists the RLS-EXEMPT `organization` table, so it does "
+        "not go blind. Each scan checks the `WORKFLOW_UNATTENDED_ORGS` list "
+        "for an id before it reads anything, and every read after it binds "
+        "one organization with `_tenant_session`",
     ("apps/services/gateway/gateway/crm_sync/scheduler.py",
      "_organization_ids"):
         "WS-53 CRM-Z5: which organizations the CRM mirror loop looks at. It "
@@ -750,6 +785,13 @@ H2_TENANT_DISCOVERY_SITES: dict[tuple[str, str], str] = {
         "blind. It runs only when `KNOWLEDGE_EMBED` names an org, and every "
         "chunk read and write after it binds one organization with "
         "`tenant_session`",
+    ("apps/services/gateway/gateway/calendar_sync/scheduler.py",
+     "_organization_ids"):
+        "WS-CAL CE-10: which organizations the calendar sync loop looks at. "
+        "It lists the RLS-EXEMPT `organization` table, so it does not go "
+        "blind. It keeps the orgs that `CALENDAR_SYNC_READ` names, and every "
+        "connection read and write after it binds one organization with "
+        "`tenant_session`",
     ("apps/services/gateway/gateway/kb_sync/scheduler.py",
      "_organization_ids"):
         "WS-61 KC-3: which organizations the Knowledge sync loop looks at. It "
@@ -769,6 +811,14 @@ H2_TENANT_DISCOVERY_SITES: dict[tuple[str, str], str] = {
         "not go blind. Every read and write after it binds one organization "
         "with `tenant_session`, and the sweep starts only while "
         "`agent_run_sweep_enabled` is on",
+    ("apps/services/gateway/gateway/package_host/expiry_loop.py",
+     "_organization_ids"):
+        "WS-PKG PKG-10b: which organizations the daily expiry of the package "
+        "host looks at. It lists the RLS-EXEMPT `organization` table, so it "
+        "does not go blind. It keeps the orgs that `PACKAGE_HOST_ORGS` names, "
+        "and each call of `expire_due` after it binds one organization with "
+        "`tenant_session`. The loop starts only while "
+        "`PACKAGE_EXPIRY_ENABLED` is on",
     ("apps/services/gateway/gateway/routes/github/webhook.py",
      "_installation_org"):
         "WS-54 GH-4: which org owns the GitHub installation of a webhook. "
@@ -776,6 +826,12 @@ H2_TENANT_DISCOVERY_SITES: dict[tuple[str, str], str] = {
         "through the SECURITY DEFINER `github_installation_org` of migration "
         "282, granted to `acb_app` alone, AFTER the HMAC check, and the route "
         "binds the org it returns",
+    ("packages/acb_memory/acb_memory/tenant_guard.py",
+     "_probe_organizations"):
+        "WS-KG KG-9: the memory tenant guard asks which organizations exist, "
+        "two at most. It reads at most two rows of the RLS-EXEMPT `organization` "
+        "table and no other table, so it cannot run bound. A yes keeps Mem0 "
+        "and Graphiti down, and it runs only while one of their flags is on",
     ("apps/services/gateway/gateway/routes/email/memory_purge.py",
      "_organization_ids"):
         "WS-17 EM-G11f2: which organizations the mailbox purge loop sweeps. "
@@ -945,8 +1001,9 @@ _FACTORY_OPEN_ALLOW: dict[str, tuple[int, str]] = {
         "WS-55 EA-1 — the outside-agent token store. ONE helper (`_session`) "
         "that only the token acts open, and it MUST start unbound: an outside "
         "agent sends only an opaque token, so the edge finds the token BEFORE "
-        "it knows the tenant. The first read touches only `agent_token`, which "
-        "is RLS-EXEMPT (`gen_tenant_migration.EXEMPT`, external_agent_access.md "
+        "it knows the tenant. The first read touches only `agent_token`, or "
+        "`sandbox_capabilities` for the sandbox door (SBX-2), which both "
+        "are RLS-EXEMPT (`gen_tenant_migration.EXEMPT`, external_agent_access.md "
         "§10.3). Before it touches the tenant-scoped `agent_connection`, the "
         "act binds the tenant FROM THE TOKEN ROW inside the same transaction, "
         "with the seam's own `set_config(..., true)` statement (the "

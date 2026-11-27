@@ -33,6 +33,13 @@
  * not change. The order holds during a visit, and new cards wait behind the
  * "N new" pill (§7 rule 4). Later draws folded, with its count.
  *
+ * **Why am I seeing this** (WS-58 MD-9, LOOP-4b, `proactive_loop.md` §7.2
+ * W4). A card with `why_seen` has that item last in its menu. It opens
+ * `WhyBox`, one sentence of the server on each line, and "Hide" gives the
+ * focus back to the control that opened the menu. The item calls no server,
+ * and a card with no `why_seen` has no item. The box follows the why line of a
+ * card, and it closes the section of a row.
+ *
  * **Handled** (WS-58 MD-2c, §6.7) draws folded after Later, as "Handled
  * today" and its count. Each row names the entity, who closed it and the
  * time. It is never a card: no menu, no act, no sighting, and no place in
@@ -49,9 +56,10 @@ import Icon, { themedIcon } from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
-import { accentForHue } from "@/lib/statusAccent";
+import { accentForHue, type AccentHue } from "@/lib/statusAccent";
 import { onClear, read } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
+import type { ActivityRow } from "@/lib/runActivity";
 
 import {
   FEED_SHOWN,
@@ -61,6 +69,8 @@ import {
   type FeedAct,
   type FeedAnswer,
   type FeedCard as Card,
+  isAgentQuestionsCard,
+  isExpandAct,
   type HandledEntry,
   type Visit,
   actLeavesCard,
@@ -103,8 +113,17 @@ import {
   runMenuAct,
   stateItem,
 } from "./feedState";
+import dynamic from "next/dynamic";
+
+import { AiWaitingGroup } from "./AiWaitingCard";
 import { CardError, HomeCard, rowMover } from "./HomeCard";
 import { emptyNeedsLine } from "./myDay";
+import { AI_TAB, ALL_TAB, appRowCounts, REMINDERS_TAB, type NeedsTabId, activeNeedsTab, buildNeedsTabs, seeAllHref } from "./needsTabs";
+import NeedsTabBar from "./NeedsTabBar";
+import { useMyDayGo } from "./myDayGo";
+import RemindersBand from "./RemindersBand";
+import { bandCount, bandRows } from "./reminderBand";
+import { isReminderKind } from "./reminderKinds";
 import { carryNeeds, needsKey, runAct } from "./needs";
 import {
   EMPTY_ACTS,
@@ -117,7 +136,28 @@ import {
 } from "./needsActs";
 import { joinNeedsPoll } from "./ShellBell";
 
+/** EA-18e. The question list loads when a card opens it, not with My Day. */
+const QuestionsInCard = dynamic(() => import("./QuestionsInCard"), {
+  ssr: false,
+  loading: () => <Skeleton className="mt-2 h-16 w-full basis-full" />,
+});
+
 const DANGER = accentForHue("red");
+
+/**
+ * The hue of each kind on My Day (owner, 2026-11-01: "some theme colours in
+ * the my day view"). One hue per app, from the one status colour vocabulary:
+ * a row's icon tile and its chip's icon wear it. The AI's own group is amber,
+ * as a run that waits is everywhere.
+ */
+const FEED_APP_HUE: Readonly<Record<string, AccentHue>> = {
+  tasks: "green",
+  projects: "green",
+  email: "blue",
+  approvals: "violet",
+  calendar: "red",
+};
+const appHue = (app: string) => accentForHue(FEED_APP_HUE[app] ?? "gray");
 
 /** The empty overlay. Never written: each change makes a new map. */
 const NO_ACTS: ActOverlay = new Map();
@@ -128,6 +168,8 @@ const NO_MENU: MenuOverlay = new Map();
 export interface Feed {
   answer: FeedAnswer | undefined;
   loading: boolean;
+  /** A newer answer is on its way over the one shown (`useCachedResource`). Absent reads as false. */
+  refreshing?: boolean;
   error: string | null;
   refresh: () => void;
   /** The needs rows that are off: the one store and the feed's overlay (`feedHiddenRows`). */
@@ -280,6 +322,7 @@ export function useFeed(enabled: boolean): Feed {
   return {
     answer: feed.data,
     loading: feed.loading,
+    refreshing: feed.refreshing,
     error: feed.error,
     refresh,
     marked,
@@ -558,11 +601,17 @@ function useSeenObserver(feed: Pick<Feed, "answer" | "seen">, active: boolean) {
 export function FeedColumn({
   feed,
   now,
+  ai = [],
+  onTakeNew,
   className = "",
 }: {
   feed: Feed;
+  /** The member took in the new cards. The Do first band starts a new hold on it (PKG-Q15). */
+  onTakeNew?: () => void;
   /** The page's clock, by the minute. A render reads no clock itself. */
   now: Date | null;
+  /** The assistant runs that wait on the member (`useAiWaiting`), the first group. */
+  ai?: readonly ActivityRow[];
   className?: string;
 }) {
   const [shown, setShown] = useState(FEED_SHOWN);
@@ -574,15 +623,66 @@ export function FeedColumn({
   // and it holds each card's place until the member takes the new cards in.
   // `columnView` is the one rule of the visit, the cut and the pill.
   const [visit, setVisit] = useState<Visit | null>(null);
-  const view = columnView(feed.answer, visit, { shown, marked: feed.marked, hidden: feed.hidden });
+  // The reminder cards draw in the Reminders band (RX-3), so the groups leave
+  // them out and no reminder shows twice. They still count in the page's
+  // number: a reminder that waits on the member needs them.
+  const apart = new Set([
+    ...feed.hidden,
+    ...(feed.answer?.cards ?? []).filter((c) => isReminderKind(c.kind)).map((c) => c.signal_id),
+  ]);
+  const view = columnView(feed.answer, visit, { shown, marked: feed.marked, hidden: apart });
+  // A reminder that waits on the member sits in the band, so an empty column must not say "Nothing needs you".
+  const bandWaits = bandCount(bandRows(feed.answer, feed.marked, feed.hidden, now?.getTime() ?? 0)) > 0;
   // The first answer starts the visit: state from the render, as React's
   // "adjust state while rendering" pattern does it.
   if (visit === null && view.visit !== null) setVisit(view.visit);
   const fresh = view.fresh;
-  const takeNew = () => setVisit(feed.answer ? startVisit(feed.answer.cards) : null);
+  const takeNew = () => {
+    setVisit(feed.answer ? startVisit(feed.answer.cards) : null);
+    onTakeNew?.();
+  };
   const { groups: allGroups, hidden } = view;
   const groups = allGroups.filter((g) => g.id !== "later");
   const later = allGroups.find((g) => g.id === "later");
+  // One tab at a time (owner, 2026-11-01: "not too cognitively loading"; and
+  // 2026-11-07, CC-11: a tab for each app that can need the member). "All" is
+  // the default. A tab that empties falls back to All. The rules are in
+  // `needsTabs.ts`.
+  const [only, setOnly] = useState<NeedsTabId>(ALL_TAB);
+  // The cut (FEED_SHOWN) belongs to All. A tab counts every row of its app
+  // and shows every row it counts, so the number is a promise it keeps.
+  const full = columnView(feed.answer, visit, { shown: Number.MAX_SAFE_INTEGER, marked: feed.marked, hidden: apart });
+  const fullGroups = full.groups.filter((g) => g.id !== "later");
+  const appCounts = appRowCounts(fullGroups);
+  const bandTotal = bandRows(feed.answer, feed.marked, feed.hidden, now?.getTime() ?? 0).length;
+  const tabs = buildNeedsTabs({ apps: appCounts, ai: ai.length, reminders: bandTotal });
+  const active = activeNeedsTab(tabs, only);
+  const filtered = active !== ALL_TAB;
+  const activeApp = tabs.find((t) => t.id === active)?.app;
+  const shownGroups =
+    activeApp === undefined
+      ? filtered
+        ? []
+        : groups
+      : fullGroups.map((g) => ({ ...g, cards: g.cards.filter((c) => c.app === activeApp) })).filter((g) => g.cards.length > 0);
+  const seeAll = seeAllHref(active);
+  const tabBar =
+    tabs.length > 0 ? (
+      // One line on a phone (task 1898): the tabs scroll sideways inside the
+      // bar, edge to edge, and never wrap.
+      <NeedsTabBar
+        panelId="feed-needs-panel"
+        active={active}
+        onChange={setOnly}
+        tabs={tabs.map((t) => ({
+          id: t.id,
+          label: t.label,
+          icon: t.icon || undefined,
+          iconClass: t.ai ? accentForHue("amber").text : t.app ? appHue(t.app).text : t.id === REMINDERS_TAB ? accentForHue("amber").text : undefined,
+          count: t.count,
+        }))}
+      />
+    ) : null;
   const sentinel = useRevealOnScroll(reveal, hidden > 0);
   const nowMs = now?.getTime() ?? null;
   const failed = feed.answer ? feedFailedLines(feed.answer.sources, feed.answer.source_apps) : [];
@@ -599,6 +699,8 @@ export function FeedColumn({
         error={feed.menuErrors[card.signal_id] ?? card.acts.flatMap(actRows).map((r) => feed.errors[r]).find(Boolean)}
         onAct={(a, from) => feed.act(card, a, from)}
         onMenu={(choice) => feed.menu(card, choice)}
+        renderExpand={(c, close) => (isAgentQuestionsCard(c) ? <QuestionsInCard onChanged={feed.refresh} onClose={close} /> : null)}
+        layout="row"
       />
     </div>
   );
@@ -612,13 +714,14 @@ export function FeedColumn({
         <Skeleton className="h-28 w-full rounded-xl" />
       </div>
     ) : (
-      <div className="rounded-xl border border-border bg-card px-2">
+      <div className="rounded-xl border border-border bg-card px-2 glass:rounded-[16px] glass:border-transparent glass:glass-raised">
         <CardError message="Your day could not load." onRetry={feed.refresh} />
       </div>
     );
   } else {
     body = (
       <div className="flex flex-col gap-5">
+        {ai.length > 0 && (active === ALL_TAB || active === AI_TAB) ? <AiWaitingGroup rows={ai} /> : null}
         {fresh > 0 ? (
           // §7 rule 4: a new card never moves the cards under the pointer.
           // It waits here, and enters on a click or on the next visit.
@@ -628,20 +731,25 @@ export function FeedColumn({
             </Button>
           </div>
         ) : null}
-        {groups.length === 0 ? (
-          <div className="flex items-center gap-2.5 rounded-xl border border-border bg-card px-4 py-4">
+        {!filtered && groups.length === 0 ? (
+          <div className="flex items-center gap-2.5 rounded-xl border border-border bg-card px-4 py-4 glass:rounded-[16px] glass:border-transparent glass:glass-raised">
             <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${accentForHue("green").soft}`}>
               <Icon name="Check" size={14} className={accentForHue("green").text} />
             </span>
-            <span className="text-sm text-muted-foreground">{emptyNeedsLine(failed.length > 0)}</span>
+            <span className="text-sm text-muted-foreground">{emptyNeedsLine(failed.length > 0 || bandWaits)}</span>
           </div>
         ) : null}
-        {groups.map((group) => (
+        {shownGroups.map((group) => (
           <div key={group.id} role="group" aria-labelledby={`feed-group-${group.id}`} data-feed-group={group.id}>
-            <div id={`feed-group-${group.id}`} className="px-1 pb-2 text-xs font-medium text-muted-foreground">
-              {group.label}
+            <div className="flex items-center gap-1.5 px-1 pb-2 text-xs font-medium text-muted-foreground">
+              <span id={`feed-group-${group.id}`}>{group.label}</span>
+              <span className="tabular-nums opacity-70" data-feed-group-count="">
+                {group.cards.length}
+              </span>
             </div>
-            <div className="flex flex-col gap-3">{group.cards.map(drawCard)}</div>
+            {/* One surface per group, a row per card (owner, 2026-11-01:
+                optimise My Day). The rows part with a hairline. */}
+            <div className="flex flex-col divide-y divide-border/60 overflow-hidden rounded-xl border border-border bg-card glass:rounded-[16px] glass:border-transparent glass:glass-raised">{group.cards.map(drawCard)}</div>
             {cappedLinks(group, capped, feed.answer?.source_apps).map((link) => (
               <div key={link.app} className="flex justify-center pt-1">
                 <Button
@@ -658,14 +766,14 @@ export function FeedColumn({
             ))}
           </div>
         ))}
-        {hidden > 0 ? (
+        {!filtered && hidden > 0 ? (
           <div ref={sentinel} className="flex justify-center">
             <Button variant="ghost" size="sm" icon="ChevronDown" onClick={reveal}>
               Show {Math.min(hidden, FEED_SHOWN)} more
             </Button>
           </div>
         ) : null}
-        {later ? (
+        {!filtered && later ? (
           // Later draws folded, with its count (MD-2b).
           <div role="group" aria-labelledby="feed-group-later" data-feed-group="later">
             {/* The same size and weight as the other group labels. */}
@@ -684,13 +792,13 @@ export function FeedColumn({
               </span>
             </Button>
             {laterOpen ? (
-              <div id="feed-later-cards" className="flex flex-col gap-3 pt-2">
+              <div id="feed-later-cards" className="mt-2 flex flex-col divide-y divide-border/60 overflow-hidden rounded-xl border border-border bg-card glass:rounded-[16px] glass:border-transparent glass:glass-raised">
                 {later.cards.map(drawCard)}
               </div>
             ) : null}
           </div>
         ) : null}
-        {handled.length > 0 ? (
+        {!filtered && handled.length > 0 ? (
           // Handled draws folded, after Later, with its count (MD-2c). It is
           // a list of what closed, never cards: it holds no act and no menu.
           <div role="group" aria-labelledby="feed-group-handled" data-feed-group="handled">
@@ -709,7 +817,7 @@ export function FeedColumn({
               </span>
             </Button>
             {handledOpen ? (
-              <ul id="feed-handled-rows" className="mt-2 flex flex-col rounded-xl border border-border bg-card p-1.5">
+              <ul id="feed-handled-rows" className="mt-2 flex flex-col rounded-xl border border-border bg-card p-1.5 glass:rounded-[16px] glass:border-transparent glass:glass-raised">
                 {handled.map((entry, i) => (
                   <HandledRow key={`${entry.app}:${entry.href}:${entry.at ?? ""}:${i}`} entry={entry} nowMs={nowMs} />
                 ))}
@@ -717,7 +825,7 @@ export function FeedColumn({
             ) : null}
           </div>
         ) : null}
-        {hidden === 0 && groups.length > 0 ? (
+        {!filtered && hidden === 0 && groups.length > 0 ? (
           <p className="px-1 text-center text-xs text-muted-foreground">You are caught up.</p>
         ) : null}
       </div>
@@ -732,7 +840,25 @@ export function FeedColumn({
       <h2 tabIndex={-1} data-leave-focus="" className="sr-only">
         Your day
       </h2>
-      {body}
+      {/* The Reminders band (RX-3) is the first thing of the column, above
+          every group. The groups leave the reminder cards out. */}
+      {tabBar}
+      <div
+        id="feed-needs-panel"
+        role="tabpanel"
+        aria-labelledby={tabs.length > 0 ? `feed-needs-panel-tab-${active}` : undefined}
+        className="flex min-w-0 flex-col gap-3"
+      >
+        {active === ALL_TAB || active === REMINDERS_TAB ? <RemindersBand feed={feed} now={now} tabbed={active === REMINDERS_TAB} /> : null}
+        {active === REMINDERS_TAB ? null : body}
+        {seeAll ? (
+          <div className="flex justify-center">
+            <Button href={seeAll} variant="text" size="none" icon="ArrowRight" data-feed-see-all="" className="min-h-8 gap-1 text-xs font-medium">
+              See all
+            </Button>
+          </div>
+        ) : null}
+      </div>
       {failed.length > 0 || stale ? (
         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-1">
           <div className="flex min-w-0 flex-col gap-0.5">
@@ -792,8 +918,16 @@ export function HandledRow({ entry, nowMs }: { entry: HandledEntry; nowMs: numbe
 /** An id that is safe in `id` and `aria-labelledby`: no spaces, no odd marks. */
 const safeId = (raw: string) => raw.replace(/[^A-Za-z0-9_:-]/g, "-");
 
-/** The menu's items (§4.2 item 6, MD-2b): Snooze and its four choices, then Dismiss and "Not useful". */
-export function cardMenuItems(onMenu: (choice: MenuChoice) => void): CtxItem[] {
+/** The words of the menu item that opens `WhyBox` (LOOP-4b). */
+export const WHY_LABEL = "Why am I seeing this";
+
+/**
+ * The menu's items (§4.2 item 6, MD-2b): Snooze and its four choices, then
+ * Dismiss and "Not useful". With `onWhy` (LOOP-4b), "Why am I seeing this" is
+ * last, after a separator. It is no `MENU_CHOICES` row, because it writes
+ * nothing.
+ */
+export function cardMenuItems(onMenu: (choice: MenuChoice) => void, onWhy?: () => void): CtxItem[] {
   const item = (c: MenuChoice): CtxItem => ({
     kind: "item",
     label: c.label,
@@ -805,13 +939,108 @@ export function cardMenuItems(onMenu: (choice: MenuChoice) => void): CtxItem[] {
     ...MENU_CHOICES.filter((c) => c.action === "snooze").map(item),
     { kind: "sep" },
     ...MENU_CHOICES.filter((c) => c.action !== "snooze").map(item),
+    ...(onWhy
+      ? ([{ kind: "sep" }, { kind: "item", label: WHY_LABEL, icon: themedIcon("Info"), onSelect: onWhy }] satisfies CtxItem[])
+      : []),
   ];
 }
 
 /**
+ * The box of "Why am I seeing this" (LOOP-4b, W4): one sentence of the server
+ * on each line, and "Hide". It draws the words it gets and calls no server.
+ * `className` is for layout only.
+ */
+export function WhyBox({ lines, onHide, className = "" }: { lines: readonly string[]; onHide: () => void; className?: string }) {
+  return (
+    <div
+      role="region"
+      aria-label={WHY_LABEL}
+      data-feed-why-box=""
+      className={`flex min-w-0 items-start gap-2 rounded-lg border border-border bg-secondary/50 py-2 pr-2 pl-3 ${className}`}
+    >
+      <ul className="flex min-w-0 flex-1 flex-col gap-1 py-1 text-xs text-foreground">
+        {lines.map((line) => (
+          <li key={line} className="break-words">
+            {line}
+          </li>
+        ))}
+      </ul>
+      <Button variant="ghost" size="sm" className="shrink-0" onClick={onHide}>
+        Hide
+      </Button>
+    </div>
+  );
+}
+
+/**
+ * The items of a row's phone menu (task 1898): the acts that the row does not
+ * draw, then the card's own menu. A tap act runs `onAct`, and an open act goes
+ * to its link through `go`. Pure, so the order is a test.
+ */
+export function phoneMenuItems(
+  card: Pick<Card, "href">,
+  acts: readonly FeedAct[],
+  onAct: (act: FeedAct) => void,
+  go: (href: string) => void,
+  onMenu?: (choice: MenuChoice) => void,
+  /** EA-18e. An act that opens inside its card runs `onAct`, as a tap does. */
+  expandHere: (act: FeedAct) => boolean = () => false,
+  /** LOOP-4b. Open "Why am I seeing this". It joins the card's own menu. */
+  onWhy?: () => void,
+): CtxItem[] {
+  const items: CtxItem[] = acts.map((a) => ({
+    kind: "item",
+    label: a.label,
+    icon: themedIcon(a.way === "tap" ? (a.act === "done" ? "Check" : "CheckCheck") : "ArrowRight"),
+    onSelect: () => (a.way === "tap" || expandHere(a) ? onAct(a) : go(a.href ?? card.href)),
+  }));
+  const menu = onMenu ? cardMenuItems(onMenu, onWhy) : [];
+  return items.length > 0 && menu.length > 0 ? [...items, { kind: "sep" }, ...menu] : [...items, ...menu];
+}
+
+/**
+ * The phone's "···" menu of a feed row. It mounts only while it is open, so
+ * `useRouter` runs inside the app, and a static render never calls it. An
+ * open act goes through `useMyDayGo`, so a task opens in My Day's panel
+ * while that flag is on (PK-1), as a click on the row does.
+ */
+function PhoneRowMenu({
+  x,
+  y,
+  card,
+  acts,
+  onAct,
+  onMenu,
+  expandHere,
+  onWhy,
+  onClose,
+}: {
+  x: number;
+  y: number;
+  card: Card;
+  acts: readonly FeedAct[];
+  onAct: (act: FeedAct) => void;
+  onMenu?: (choice: MenuChoice) => void;
+  expandHere?: (act: FeedAct) => boolean;
+  onWhy?: () => void;
+  onClose: () => void;
+}) {
+  const go = useMyDayGo();
+  return (
+    <ContextMenu
+      x={x}
+      y={y}
+      autoFocus
+      items={phoneMenuItems(card, acts, onAct, go, onMenu, expandHere, onWhy)}
+      onClose={onClose}
+    />
+  );
+}
+
+/**
  * One card of the feed (§4.2): the source line, the headline as the door,
- * the why line, the acts and the menu. It draws what it gets. Its one state
- * is whether its menu is open.
+ * the why line, the acts and the menu. It draws what it gets. Its state is
+ * what is open: its menu, an expand act and the box of "Why am I seeing this".
  *
  * The source line ends with a dot for a `new` card, and "Updated" or "Still
  * open" (§6.3 rules 3 and 4). The menu is `ContextMenu`, THE menu, and a card
@@ -824,6 +1053,8 @@ export function FeedCard({
   error,
   onAct,
   onMenu,
+  layout = "card",
+  renderExpand,
 }: {
   card: Card;
   /** `null` before the client clock exists: the card then prints no time. */
@@ -834,13 +1065,55 @@ export function FeedCard({
   onAct: (act: FeedAct, from: HTMLElement) => void;
   /** A menu act. With none, the card draws no menu. */
   onMenu?: (choice: MenuChoice) => void;
+  /**
+   * `card` is the framed card. `row` is a dense row inside its group's one
+   * surface (owner, 2026-11-01): the app's icon, the headline as the door,
+   * one meta line (source and why), and the acts at the row's end.
+   */
+  layout?: "card" | "row";
+  /**
+   * EA-18e. What an expand act (`isExpandAct`) opens under the card. The
+   * column gives it. With none, the act stays the link it was sent as.
+   */
+  renderExpand?: (card: Card, close: () => void) => React.ReactNode;
 }) {
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
+  // Which "···" opened the menu: the phone's holds the row's acts too.
+  const [menuPhone, setMenuPhone] = useState(false);
   const opener = useRef<HTMLElement | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const toggle = useRef<HTMLElement | null>(null);
+  // A card that leaves with its list open (the last answer) must not drop
+  // focus to the page body: it goes to the column's heading.
+  useEffect(() => {
+    if (!expanded) return;
+    return () => {
+      requestAnimationFrame(() => {
+        if (document.activeElement === document.body) {
+          document.querySelector<HTMLElement>("[data-leave-focus]")?.focus();
+        }
+      });
+    };
+  }, [expanded]);
+  const expandHere = (a: FeedAct) => !!renderExpand && isExpandAct(card, a);
+  const expandedId = `feed-expand-${safeId(card.signal_id)}`;
   const time = nowMs === null ? "" : cardTime(card, nowMs);
   const acts = drawnActs(card).filter((a) => !marked || !actSpent(a, marked));
   const mark = stateMark(card);
   const withMenu = !!onMenu && sendable(card);
+  // "Why am I seeing this" (LOOP-4b). The box shows only while the card still
+  // carries its sentences. "Hide" gives the focus back to the control that
+  // opened the menu (`opener`).
+  const [whyOpen, setWhyOpen] = useState(false);
+  const whyLines = card.why_seen ?? [];
+  // A card that loses its sentences closes the box, so the box never comes
+  // back with no click. React renders again at once, with no effect.
+  if (whyOpen && whyLines.length === 0) setWhyOpen(false);
+  const onWhy = whyLines.length > 0 ? () => setWhyOpen(true) : undefined;
+  const hideWhy = () => {
+    setWhyOpen(false);
+    opener.current?.focus();
+  };
   const closeMenu = () => {
     setMenuAt(null);
     const from = opener.current;
@@ -890,6 +1163,201 @@ export function FeedCard({
       ) : null}
     </span>
   );
+  if (layout === "row") {
+    const testId = `feed-card-${safeId(card.signal_id)}`;
+    const headingId = `home-card-${testId}`;
+    // An overdue row says its date in the why line, and its group is red.
+    const showTime = time && card.kind !== "overdue";
+    // A phone, below `sm` (owner, 2026-11-06, task 1898). The acts took the
+    // row, and a title kept one to twelve letters. So the text takes the row
+    // there: the title gets two lines, and the time joins the meta line. A
+    // first act that is a tap stays as one icon button. Every other act moves
+    // into the "···" menu, above the card's own menu, as the rails fold their
+    // acts on a phone (DESIGN_SYSTEM.md, "Touch"). From `sm` the row is as
+    // before. Both forms are in the markup, and CSS picks one, so the server
+    // and the client draw the same thing.
+    const quick = acts[0]?.way === "tap" ? acts[0] : null;
+    const phoneActs = quick ? acts.slice(1) : acts;
+    const phoneMenu = phoneActs.length > 0 || withMenu;
+    const openMenu = (e: React.MouseEvent<HTMLElement>, phone: boolean) => {
+      opener.current = e.currentTarget;
+      const r = e.currentTarget.getBoundingClientRect();
+      setMenuPhone(phone);
+      setMenuAt({ x: Math.max(4, r.right - 200), y: r.bottom + 4 });
+    };
+    return (
+      <section
+        aria-labelledby={headingId}
+        data-testid={testId}
+        data-home-card=""
+        data-feed-row=""
+        className="flex min-w-0 flex-wrap items-center gap-3 px-3 py-2.5"
+      >
+        <span aria-hidden className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${appHue(card.app).soft} ${appHue(card.app).text}`}>
+          <Icon name={feedAppIcon(card.app)} size={15} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <h2 id={headingId} tabIndex={-1} className="flex min-w-0 items-center gap-1.5 rounded-sm text-sm font-medium text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            {card.href ? (
+              // ⚠️ A block, not the Button's centred inline-flex: a long title
+              // centred in its box spilled out of BOTH ends, so its start was
+              // cut (owner, 2026-11-01). A block cuts at the end, with "…".
+              // ⚠️ Two lines on a phone clip with `overflow: hidden`, and
+              // `.cc-button` rounds the box: the rounded corner cut the first
+              // letter of line 2 ("pricing" read "oricing"). So the radius
+              // is 0 there.
+              <Button href={card.href} variant="text" size="none" layout="block" className="min-w-0 text-left text-foreground underline-offset-2 hover:underline max-sm:line-clamp-2 max-sm:break-words max-sm:[--button-radius:0px] sm:truncate">
+                {card.title}
+              </Button>
+            ) : (
+              <span className="max-sm:line-clamp-2 max-sm:break-words sm:truncate">{card.title}</span>
+            )}
+            {card.state === "new" ? (
+              <span role="img" aria-label="New" data-feed-new="" className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+            ) : null}
+          </h2>
+          <p className="truncate text-xs text-muted-foreground" data-feed-source="">
+            {sourceLine(card)}
+            {mark ? (
+              <>
+                {" · "}
+                <span className={`font-medium ${card.kind === "overdue" ? DANGER.text : "text-foreground"}`} data-feed-mark="">
+                  {mark}
+                </span>
+              </>
+            ) : null}
+            {card.why ? <span data-feed-why="">{` · ${card.why}`}</span> : null}
+            {showTime ? (
+              <span className="tabular-nums sm:hidden" data-feed-phone-time="">{` · ${time}`}</span>
+            ) : null}
+          </p>
+          {error ? (
+            <p role="alert" className={`text-xs ${DANGER.text}`}>
+              {error}
+            </p>
+          ) : null}
+        </div>
+        {showTime ? <span className="hidden shrink-0 text-xs tabular-nums text-muted-foreground sm:inline">{time}</span> : null}
+        {quick || phoneMenu ? (
+          // The phone's controls (task 1898): the quick act and the "···".
+          <div className="flex shrink-0 items-center gap-1 sm:hidden" data-feed-phone-acts="">
+            {quick ? (
+              <Button
+                variant="secondary"
+                size="icon-sm"
+                icon={quick.act === "done" ? "Check" : "CheckCheck"}
+                title={quick.label}
+                data-row-act=""
+                data-feed-quick-act=""
+                data-leaves-card={actLeavesCard(card, quick) ? "" : undefined}
+                aria-label={`${quick.label}: ${card.title}`}
+                onClick={(e) => onAct(quick, e.currentTarget)}
+              />
+            ) : null}
+            {phoneMenu ? (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                icon="MoreHorizontal"
+                aria-label={`More for ${card.title}`}
+                aria-haspopup="menu"
+                aria-expanded={menuAt !== null && menuPhone}
+                data-feed-phone-menu=""
+                onClick={(e) => openMenu(e, true)}
+              />
+            ) : null}
+          </div>
+        ) : null}
+        {acts.length > 0 ? (
+          // Quiet in a row (owner, 2026-11-01): a neutral first act and
+          // text for the rest, so a list of rows is not a wall of buttons.
+          <div className="hidden shrink-0 items-center gap-1 sm:flex">
+            {acts.map((a, i) =>
+              a.way === "tap" ? (
+                <Button
+                  key={a.id}
+                  variant={i === 0 ? "secondary" : "ghost"}
+                  size="sm"
+                  icon={a.act === "done" ? "Check" : "CheckCheck"}
+                  data-feed-act={i}
+                  data-row-act=""
+                  data-leaves-card={actLeavesCard(card, a) ? "" : undefined}
+                  aria-label={`${a.label}: ${card.title}`}
+                  onClick={(e) => onAct(a, e.currentTarget)}
+                >
+                  {a.label}
+                </Button>
+              ) : expandHere(a) ? (
+                <Button
+                  key={a.id}
+                  variant={i === 0 ? "secondary" : "ghost"}
+                  size="sm"
+                  icon={expanded ? "ChevronUp" : "ChevronDown"}
+                  data-feed-act={i}
+                  data-feed-expand=""
+                  aria-expanded={expanded}
+                  aria-controls={expandedId}
+                  aria-label={`${a.label}: ${card.title}`}
+                  onClick={(e) => {
+                toggle.current = e.currentTarget;
+                setExpanded((v) => !v);
+              }}
+                >
+                  {a.label}
+                </Button>
+              ) : (
+                <Button
+                  key={a.id}
+                  href={a.href ?? card.href}
+                  variant={i === 0 ? "secondary" : "ghost"}
+                  size="sm"
+                  data-feed-act={i}
+                  data-feed-open=""
+                >
+                  {a.label}
+                </Button>
+              ),
+            )}
+          </div>
+        ) : null}
+        {withMenu ? (
+          <span className="hidden shrink-0 sm:flex">
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              icon="MoreHorizontal"
+              aria-label={`More for ${card.title}`}
+              aria-haspopup="menu"
+              aria-expanded={menuAt !== null && !menuPhone}
+              data-feed-menu=""
+              onClick={(e) => openMenu(e, false)}
+            />
+          </span>
+        ) : null}
+        {withMenu && menuAt && !menuPhone ? (
+          <ContextMenu x={menuAt.x} y={menuAt.y} autoFocus items={cardMenuItems(onMenu, onWhy)} onClose={closeMenu} />
+        ) : null}
+        {menuAt && menuPhone ? (
+          <PhoneRowMenu
+            x={menuAt.x}
+            y={menuAt.y}
+            card={card}
+            acts={phoneActs.map((a) => (expanded && expandHere(a) ? { ...a, label: "Hide answers" } : a))}
+            onAct={(a) => (expandHere(a) ? setExpanded((v) => !v) : onAct(a, opener.current ?? document.body))}
+            expandHere={expandHere}
+            onMenu={withMenu ? onMenu : undefined}
+            onWhy={onWhy}
+            onClose={closeMenu}
+          />
+        ) : null}
+        <div id={expandedId} className="basis-full empty:hidden" hidden={!expanded}>
+          {expanded ? renderExpand?.(card, () => { setExpanded(false); toggle.current?.focus(); }) : null}
+        </div>
+        {/* The why line sits in a truncated line, so the box closes the row. */}
+        {whyOpen && whyLines.length > 0 ? <WhyBox lines={whyLines} onHide={hideWhy} className="basis-full" /> : null}
+      </section>
+    );
+  }
   return (
     <HomeCard
       title={card.title}
@@ -903,6 +1371,7 @@ export function FeedCard({
           <span>{card.why}</span>
         </p>
       ) : null}
+      {whyOpen && whyLines.length > 0 ? <WhyBox lines={whyLines} onHide={hideWhy} className="mx-2 mb-1" /> : null}
       {acts.length > 0 ? (
         <div className="flex flex-wrap items-center gap-2 px-2 pt-1 pb-1">
           {/* §4.2 item 5, by POSITION and never by way: act 0 is the one
@@ -924,6 +1393,24 @@ export function FeedCard({
               >
                 {a.label}
               </Button>
+            ) : expandHere(a) ? (
+              <Button
+                key={a.id}
+                variant={i === 0 ? "primary" : "secondary"}
+                size="sm"
+                icon={expanded ? "ChevronUp" : "ChevronDown"}
+                data-feed-act={i}
+                data-feed-expand=""
+                aria-expanded={expanded}
+                aria-controls={expandedId}
+                aria-label={`${a.label}: ${card.title}`}
+                onClick={(e) => {
+                toggle.current = e.currentTarget;
+                setExpanded((v) => !v);
+              }}
+              >
+                {a.label}
+              </Button>
             ) : (
               <Button
                 key={a.id}
@@ -939,13 +1426,16 @@ export function FeedCard({
           )}
         </div>
       ) : null}
+      <div id={expandedId} className="px-2 empty:hidden" hidden={!expanded}>
+        {expanded ? renderExpand?.(card, () => { setExpanded(false); toggle.current?.focus(); }) : null}
+      </div>
       {error ? (
         <p role="alert" className={`px-2 pb-1 text-xs ${DANGER.text}`}>
           {error}
         </p>
       ) : null}
       {withMenu && menuAt ? (
-        <ContextMenu x={menuAt.x} y={menuAt.y} autoFocus items={cardMenuItems(onMenu)} onClose={closeMenu} />
+        <ContextMenu x={menuAt.x} y={menuAt.y} autoFocus items={cardMenuItems(onMenu, onWhy)} onClose={closeMenu} />
       ) : null}
     </HomeCard>
   );

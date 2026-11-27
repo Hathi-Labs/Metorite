@@ -1,0 +1,13 @@
+# Every 2 minutes (CIV-14f). The timer ships DISABLED: `install` copies it and
+# `enable` turns it on. Enabling it is OWNER-GATE (`deploy`), and it needs the
+# read-only token first (D-EA-5 box token, scope projects:read).
+[Unit]
+Description=Metorite answer watcher every 2 minutes (CIV-14f)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

@@ -51,11 +51,15 @@ export default function ChatSendButton({
       variant="primary"
       size="none"
       radius="keep"
+      // Task 2867: a press keeps the focus where it was. With the box focused,
+      // a phone's keyboard does not close and open again on Send. A keyboard
+      // press (Enter, Space) is not a mouse-down, so it is not touched.
+      onMouseDown={(e) => e.preventDefault()}
       onClick={onClick}
       disabled={disabled}
       loading={loading}
       aria-label={name}
-      title={title ?? (stop ? "Stop the reply (Esc)" : "Send (Ctrl+Enter)")}
+      title={title ?? (stop ? "Stop the reply (Esc)" : "Send (Enter). Shift+Enter starts a new line.")}
       data-chat-primary={action}
       className={`shrink-0 rounded-full glass:glass-press ${large ? "h-11 w-11" : "h-8 w-8"}`}
     >

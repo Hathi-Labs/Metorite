@@ -274,6 +274,7 @@ A webhook for a disconnected installation finds no org (§8.3), so it is dropped
 2. **The signature.** `X-Hub-Signature-256` must be `sha256=` and 64 hex characters. The route computes the HMAC-SHA256 of the raw bytes with `github_app_webhook_secret`, and compares with `hmac.compare_digest`. A missing, malformed or wrong signature gets 401. The route logs `github.webhook.bad_signature` with the delivery id and no body.
 3. **The headers.** `X-GitHub-Event` must be in the handled set of §8.4, or the route answers 202 and logs `github.webhook.ignored`. `X-GitHub-Delivery` must be a GUID, else 400.
 4. **The installation.** The route parses the JSON and reads `installation.id`. It calls the function of §9.3. No org gives 202 and `github.webhook.unknown_installation`, and nothing is written. An `installation` `created` event for a new installation lands here too, before the callback maps it. That is expected.
+4b. **The org switch (SW-53).** `github_app.github_app_org_allowed(org)` must pass. An org off `GITHUB_APP_ORGS` gets 202, and nothing is written.
 5. **The tenant.** The route binds the org with `bind_tenant` and opens `tenant_session(org)`. Every write after this point is bound (R5).
 6. **The delivery key.** `SET key("github", "delivery", <guid>) 1 NX EX 259200` through the tenant Redis wrapper. 259,200 seconds is 3 days, the redelivery window (§4.2 fact 9). A key that exists gives 200 `{"duplicate": true}`. If the handler fails, the route deletes the key and answers 500, so a redelivery runs again. A Redis outage logs `github.webhook.dedupe_unavailable` and goes on, because every handler is idempotent (§8.6).
 7. **The handler.** It runs inside the 10-second answer budget, with a budget of 5 seconds for its own database work. A GitHub API read never runs before the answer. It goes to a background task (§8.5).
@@ -434,6 +435,8 @@ On `pull_request` `opened`, `reopened`, `edited`, `synchronize` and `ready_for_r
 
 A `pull_request` `closed` event, merged or not, or a poll read or a lazy read (§11) that writes `merged` or `closed`. A close without a merge can still finish a task whose other pull request merged earlier (§12.3 step 4). `github_merge.on_merged(db, org, ref, merged_at, merged_by)` runs in the bound tenant, in the transaction of the write. `github_sync.apply_pull_request` is the one caller (§8.6). A refused read past the bound of step 4 calls `github_merge.on_unblocked` for the tasks of that reference.
 
+**The numbers of the task (SW-27c2).** For a write INTO `merged` only, `apply_pull_request` also calls `github_sync.mark_reservations_used`, before `on_merged` and apart from it. It marks the task's project-sequence numbers used, when they are still `reserved` and were reserved at or before the merge (`agent_coordination.md` SW-27). It runs even for a task that the steps of §12.3 skip. Like §12, it covers an org on the App only: the token path of TR-1 marks no number. Fence: `test_sequence_merge_r8.py`.
+
 ### 12.2 The agent-worked rule
 
 A task is **agent-worked** at time `T` when either of these rows exists, with `created_at < T`:
@@ -448,6 +451,7 @@ A task is **agent-worked** at time `T` when either of these rows exists, with `c
 For each task with a `pull_request` reference to the merged pull request:
 
 1. **Skip a closed or held task.** Skip when the task is archived, or its status category is `completed`, `cancelled` or `triage`.
+   Also skip a task of the project `TOOL_FAILURE_PROJECT_ID` in the org `TOOL_FAILURE_ORG_ID`, while `TOOL_FAILURE_TASKS` is on. The failure sync job is the one closer of that project (`tool_failure_log.md` §7.5, TOF-2e).
 2. **Skip a task that people run.** Skip when `agent_worked.reason` is None.
 3. **Skip a task that a person took back.** Look at the newest `status_change` row of the task. Skip when all three are true:
    - its `meta.via` is absent, or does not start with `mcp:` and is not `github`. A move through the in-product chat carries `chat:projects-assistant` (`skill_projects/client.py:52`), and it is a person's move.

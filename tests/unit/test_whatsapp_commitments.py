@@ -6,11 +6,13 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
+from gateway.routes.whatsapp.automation import commitments as wa_commitments
 from gateway.routes.whatsapp.automation.commitments import (
     build_nudge_messages,
     draft_nudge,
     extract_commitment,
 )
+from gateway.routes.whatsapp.automation.drafting import NO_MODEL_ANSWER, DraftUnavailable
 
 
 @pytest.mark.parametrize("body,expect_due", [
@@ -161,15 +163,71 @@ async def test_draft_nudge_none_for_unknown_commitment() -> None:
     assert out is None
 
 
-async def test_draft_nudge_none_on_llm_failure() -> None:
+async def test_draft_nudge_raises_on_llm_failure() -> None:
+    """Task 1128: a failed call is no verdict. It raises, never fabricated."""
     db = _NudgeFakeDB(_Commitment())
 
     async def _boom(*a, **k):
         raise RuntimeError("down")
 
-    with patch("acb_llm.context.acompletion_with_fallback", _boom):
-        out = await draft_nudge(db, "acc", "k-1")
-    assert out is None                       # sentinel, never fabricated
+    with (patch("acb_llm.context.acompletion_with_fallback", _boom),
+          pytest.raises(DraftUnavailable)):
+        await draft_nudge(db, "acc", "k-1")
+
+
+@pytest.mark.parametrize("content", [None, "", "  "])
+async def test_draft_nudge_raises_on_an_empty_answer(content) -> None:
+    """Task 1128: no text is not a NO_DRAFT verdict."""
+    db = _NudgeFakeDB(_Commitment())
+    seen = {}
+
+    async def _empty(*a, **k):
+        seen.update(k)
+        return _resp(content), "x"
+
+    with (patch("acb_llm.context.acompletion_with_fallback", _empty),
+          pytest.raises(DraftUnavailable)):
+        await draft_nudge(db, "acc", "k-1")
+    assert seen["job"] == "writing" and seen["max_tokens"] == 300
+
+
+class _Owned:
+    async def __aenter__(self):
+        return object()
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+async def _nudge_route(monkeypatch, outcome):
+    from fastapi import HTTPException
+
+    async def _owned(*_a, **_k):
+        return "acc"
+
+    async def _nudge(*_a, **_k):
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(wa_commitments, "_tenant_session", _Owned)
+    monkeypatch.setattr(wa_commitments, "_assert_theirs_commitment_owned", _owned)
+    monkeypatch.setattr(wa_commitments, "draft_nudge", _nudge)
+    with pytest.raises(HTTPException) as err:
+        await wa_commitments.draft_commitment_nudge(
+            "k-1", user=type("U", (), {"email": "o@x.test"})())
+    return err.value
+
+
+async def test_the_nudge_route_says_no_answer_when_the_model_gave_nothing(
+        monkeypatch) -> None:
+    err = await _nudge_route(monkeypatch, DraftUnavailable("empty"))
+    assert err.status_code == 502 and err.detail == NO_MODEL_ANSWER
+
+
+async def test_the_nudge_route_keeps_the_422_for_a_no_draft_verdict(monkeypatch) -> None:
+    err = await _nudge_route(monkeypatch, None)
+    assert err.status_code == 422 and "nothing to chase" in err.detail
 
 
 async def test_draft_nudge_none_on_no_draft_verdict() -> None:

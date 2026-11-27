@@ -515,6 +515,17 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+#: ``RETURNING … (xmax = 0) AS inserted`` — true for a row the statement made,
+#: false for a row the conflict arm found. Only a statement that asks gets it.
+_INSERTED_FLAG = re.compile(r"\(\s*xmax\s*=\s*0\s*\)\s+AS\s+inserted", re.I)
+
+
+def _returned(row: dict[str, Any], statement: str, *, inserted: bool) -> SimpleNamespace:
+    """One row of an INSERT, with the ``inserted`` flag when the SQL asks."""
+    flag = {"inserted": inserted} if _INSERTED_FLAG.search(statement) else {}
+    return SimpleNamespace(**row, **flag)
+
+
 #: Column defaults migration 145 declares. Kept here so a row read back after an
 #: INSERT looks like Postgres would have returned it.
 _DEFAULTS: dict[str, dict[str, Any]] = {
@@ -806,6 +817,15 @@ class FakeProjectsDB:
         args = dict(params or {})
         self.statements.append(statement)
         self.calls.append((statement, args))
+        # A lock returns nothing that a route reads, and one process holds it.
+        if "pg_advisory_xact_lock" in statement:
+            return _Result([])
+        # WS-39 SP-1: the cycle rows that a move can break
+        # (`cycles.detach_moved_tasks`). A JOIN over three tables, and the
+        # node form adds two walks. The fake holds no cycle, so no row. The
+        # real queries run in `test_sprint_store_r8.py` (R8).
+        if "AS cycle_node" in statement:
+            return _Result([])
         # WS-27aa's tenant source for the scheduled lifecycle sweep:
         # `workflows.owner_email` → `app_user.organization_id`
         # (`routes/workflows/service._workflow_organization`). Taught
@@ -1487,7 +1507,8 @@ class FakeProjectsDB:
                     # DO NOTHING affects nothing, so `rowcount` is 0 — the number
                     # `tags.register` reports as "created".
                     return _Result(
-                        [SimpleNamespace(**row)], rowcount=1 if updated else 0,
+                        [_returned(row, statement, inserted=False)],
+                        rowcount=1 if updated else 0,
                     )
 
         row = {"id": str(uuid4()), **_DEFAULTS.get(table, {}), **values}
@@ -1507,7 +1528,7 @@ class FakeProjectsDB:
             self._seq += 1
             row.setdefault("seq", self._seq)
         self.tables.setdefault(table, []).append(row)
-        return _Result([SimpleNamespace(**row)])
+        return _Result([_returned(row, statement, inserted=True)])
 
     def _update(self, statement: str, table: str, args: dict) -> _Result:
         assignments = _SET_RE.search(statement)
@@ -2536,6 +2557,32 @@ class FakeProjectsDB:
                 )
 
             return sorted(rows, key=status_key, reverse=reverse)
+        # Task 1792 — the ONE status lane order (`core.status_order_sql`):
+        # `CASE [<alias>.]category WHEN '<stage>' THEN <n> … ELSE <n> END`, then
+        # position, then name. The rank is read off the statement's own WHEN
+        # pairs, as the branch above reads its ARRAY, so a route that reordered
+        # the stages changes this mirror's answer too. Without this branch
+        # `_ORDER_RE` read `CASE` as a column and kept the insert order.
+        stage = re.search(
+            r"ORDER\s+BY\s+CASE\s+(?:\w+\.)?category\s+"
+            r"((?:WHEN\s+'\w+'\s+THEN\s+\d+\s+)+)ELSE\s+(\d+)\s+END",
+            statement, re.I,
+        )
+        if stage:
+            rank = {
+                name: int(n)
+                for name, n in re.findall(r"WHEN\s+'(\w+)'\s+THEN\s+(\d+)", stage.group(1), re.I)
+            }
+            other = int(stage.group(2))
+            return sorted(
+                rows,
+                key=lambda r: (
+                    rank.get(str(r.get("category") or ""), other),
+                    r.get("position") is None,  # Postgres sorts NULL last
+                    _sortable(r.get("position")),
+                    str(r.get("name") or ""),
+                ),
+            )
         # WS-27ae — the delta feed's total order, `(<stamp>, <id>)` ascending.
         # It is the SAME pair the cursor encodes, so a mirror that ordered on
         # the stamp alone would break ties differently from Postgres and the

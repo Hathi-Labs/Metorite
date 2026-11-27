@@ -34,6 +34,7 @@ import json
 from typing import Any
 
 import pytest
+from acb_skills.ask_tools import CARD_DECLINED, card_outcome_text
 
 pytest.importorskip("skill_projects", reason="skill-projects not installed")
 
@@ -270,7 +271,7 @@ async def test_a_declined_card_writes_nothing(monkeypatch) -> None:
     out = await skill_projects.link_tasks_batch(
         _links((A, B, "blocks"), (B, C, "blocks"), (C, D, "blocks"))
     )
-    assert out == W.CANCELLED
+    assert out == card_outcome_text(CARD_DECLINED)
     assert writes(calls) == []
 
 

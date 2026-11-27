@@ -1,5 +1,6 @@
 "use client";
 
+import { usePhoneBar } from "@/lib/shell/phoneBarEvent";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import AssistantToggle from "@/components/AssistantToggle";
@@ -20,7 +21,6 @@ import { AssistantRail } from "./components/AssistantRail";
 import { InboxView } from "./components/InboxView";
 import { EngageView } from "./components/EngageView";
 import { LedProjectView } from "./components/LedProjectView";
-import { QuickCapture } from "./components/QuickCapture";
 // ⚠️ `WorkspacesModal` was deleted 2026-08-25 (D52, WS-39 S1 repair round 1).
 // It was the ClickUp connect flow — paste token → list workspaces → connect —
 // and every one of its calls ended in `build_provider` → 400 "Unknown
@@ -129,8 +129,8 @@ function TasksPageBody() {
   const [maximisedFor, setMaximisedFor] = useState<string | null>(null);
   const taskItems = useTaskStore((s) => s.items);
   const assistantFacts = useMemo(
-    () => (chatOn ? tasksAssistantFacts({ items: taskItems, selectedView, openItemId: selectedItemId }) : null),
-    [chatOn, taskItems, selectedView, selectedItemId],
+    () => (chatOn ? tasksAssistantFacts({ items: taskItems, selectedView, openItemId: focusedItemId ?? selectedItemId }) : null),
+    [chatOn, taskItems, selectedView, selectedItemId, focusedItemId],
   );
   useAssistantFacts(assistantFacts);
   const isInbox = selectedView === "inbox";
@@ -190,12 +190,8 @@ function TasksPageBody() {
     if (tasksEntryView(now) !== now) selectView(tasksEntryView(now));
   }, [selectView]);
 
-  // Tell the mobile bottom bar which My Tasks section is active (for its highlight).
-  useEffect(() => {
-    window.dispatchEvent(
-      new CustomEvent("cc-tasks-section", { detail: selectedView }),
-    );
-  }, [selectedView]);
+  // Tell the mobile bottom bar which My Tasks section is active (for its highlight), in the one `cc-phone-bar` event.
+  usePhoneBar({ active: selectedView === "inbox" ? "tasks-inbox" : "tasks-lists" });
 
   // Mobile bottom-nav tabs (from AppShell) → drive the tasks app.
   useEffect(() => {
@@ -333,7 +329,6 @@ function TasksPageBody() {
         ) : (
           <ItemList />
         )}
-        <QuickCapture />
         <TaskSettingsModal />
         <TaskFocusModal />
         <ReclarifyModal />
@@ -466,7 +461,6 @@ function TasksPageBody() {
         )}
       </div>
 
-      <QuickCapture />
       <TaskSettingsModal />
       {/* Where a detail column is docked the overlay is CONTROLLED — it opens
           only from that pane's maximise. Everywhere else on desktop (Inbox,

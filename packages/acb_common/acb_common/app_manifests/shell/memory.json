@@ -1,0 +1,13 @@
+{
+  "studio": 1,
+  "kind": "system",
+  "id": "memory",
+  "contributes": {
+    "nav": [
+      {
+        "href": "/memory",
+        "feature": "memory"
+      }
+    ]
+  }
+}

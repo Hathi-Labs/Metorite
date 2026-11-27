@@ -247,15 +247,6 @@ export async function fetchOrgPeople(
   return rows.map(mapOrgPerson).filter((p) => p.name);
 }
 
-export async function createPerson(body: OrgPersonWrite): Promise<OrgPerson> {
-  return mapOrgPerson(
-    await gatewayFetch<Raw>(`/people`, {
-      method: "POST",
-      body: JSON.stringify(orgPersonToWire(body)),
-    })
-  );
-}
-
 export async function updatePerson(
   id: string,
   body: OrgPersonWrite
@@ -1007,6 +998,11 @@ export async function apiClarifyPropose(
           title: String((r.parent_suggestion as Raw).title ?? ""),
         }
       : undefined,
+    clarifiedBy:
+      r.clarified_by === "llm" || r.clarified_by === "heuristic"
+        ? r.clarified_by
+        : undefined,
+    fallbackReason: r.fallback_reason ? String(r.fallback_reason) : undefined,
   };
 }
 

@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
+import CardFieldValue, { ValueElement } from "@/components/CardFieldValue";
 import ConfirmationCard, { parseCardBody, runKey } from "@/components/ConfirmationCard";
 import {
   CARD_FIELDS,
@@ -44,6 +45,26 @@ describe("the map", () => {
     expect(fieldSpec("field Cost centre").label).toBe("Cost centre");
     expect(fieldSpec("tags_add")).toMatchObject({ label: "Add tags", kind: "tag" });
     expect(fieldSpec("some_new_key").label).toBe("Some new key");
+  });
+
+  // MCP-P1b-1 re-review P1. A key from agent data may name a member of
+  // `Object.prototype`. The map lookup read the prototype chain, so the spec
+  // was a function with no label, and the card threw on `.trim()`.
+  // Mutation caught: read CARD_FIELDS with a bare index again.
+  it.each(["constructor", "toString", "valueOf", "hasOwnProperty", "__proto__", "isPrototypeOf"])(
+    "reads the key %s as words, never as a member of Object.prototype",
+    (key) => {
+      const spec = fieldSpec(key);
+      expect(typeof spec.label).toBe("string");
+      expect(spec.label.trim().length).toBeGreaterThan(0);
+      expect(spec.kind).toBeUndefined();
+      expect(typeof fieldSpec(`field ${key}`).label).toBe("string");
+      expect(cardKey(key)).toBe(key);
+    },
+  );
+
+  it("reads `__proto__` as the word Proto", () => {
+    expect(fieldSpec("__proto__").label).toBe("Proto");
   });
 });
 
@@ -182,5 +203,24 @@ describe("the one-card batches (file_tasks, link_tasks_batch, 2026-10-18)", () =
     );
     expect(body.fields.map((f) => f.label)).toEqual(["Destinations", "Cannot move"]);
     expect(body.fields.map((f) => f.values?.length)).toEqual([2, 2]);
+  });
+});
+
+describe("the color kind (PJP-1)", () => {
+  it("the one `color` key draws a swatch for status, tag and type cards alike", () => {
+    expect(fieldSpec("color").kind).toBe("color");
+    const html = renderToStaticMarkup(
+      createElement(ValueElement, { item: { text: "#6366F1", named: true }, kind: "color" }),
+    );
+    expect(visible(html)).toContain("Blue");
+    expect(html).toContain("bg-info");
+  });
+
+  it("draws a hue name as its swatch, and a change as old swatch to new swatch", () => {
+    const html = renderToStaticMarkup(
+      createElement(CardFieldValue, { value: "«gray» → «green»", kind: "color" }),
+    );
+    expect(html.indexOf("Gray")).toBeLessThan(html.indexOf("Green"));
+    expect(html).toContain("bg-success");
   });
 });

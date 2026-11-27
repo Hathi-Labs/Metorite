@@ -1,8 +1,10 @@
 # Calendar — events, meetings and reminders
 
+> **Dated 2026-11-11, booking (D205.2).** BK-0 (task 2676) writes the booking section of this spec. Until it merges, build no booking slice.
+
 <!-- ste-tier: strict -->
 
-- **Status:** **Events (§3, §4, §8) are DECIDED, 2026-10-29 (D138).** **Reminders
+- **Status:** **Events (§3, §4, §8) are DECIDED, 2026-10-29 (D138).** **§8.4, invites from a connected inbox (CE-16 to CE-19, tasks 3771 to 3775, docs task 3776), is SPEC, 2026-11-18. The owner answers Q11 to Q13.** **Reminders
   (§5) are DECIDED, 2026-10-25 (D114).** **PN-1 (the web push platform) is
   BUILT, 2026-10-25, dark behind `WEB_PUSH_ENABLED`** (migration 306,
   `gateway/push/`, `public/sw.js`). **RM-1 (the reminder store and API) is
@@ -26,6 +28,11 @@
   2026-10-30.** RE-9 splits into RE-9a and RE-9b. See §5.6 and §10.1.
   **RE-9a (the push message builder and the "Hide details on the lock
   screen" setting) is BUILT, 2026-10-30, dark.** It sends nothing.
+  **RX-2 (a reminder write in chat acts at once, with an Undo and a reminder
+  receipt card) and RX-6 (the other doors: the `set-reminder` job, the Tasks
+  quick capture and "Remind me" on a task) are BUILT 2026-11-02**, behind
+  `CALENDAR_REMINDERS`. A chat that read outside mail keeps the one card
+  (`egress.write_must_show_card`).
   **RE-9b (a due reminder sends a real web push) is BUILT 2026-10-31.** It is
   not dark. It sends wherever `WEB_PUSH_ENABLED` and `CALENDAR_REMINDERS`
   are on, and production has both on. Its code is in migration 318 and in
@@ -35,6 +42,44 @@
   **OB-8 (the chat asks a phone member to turn on notifications) is
   BUILT, 2026-10-30, dark** behind `PUSH_PROMPT_ORGS` (§10.4). No box
   has the flag on.
+  **CE-4 (the event store) is BUILT, 2026-10-31, dark** behind
+  `CALENDAR_EVENTS` (migration 331, `routes/tasks/entries.py`, the
+  `entries` key of `GET /projects/my/calendar`). No box has the flag on.
+  **CE-5a (Google and Outlook events on the grid, read only) is BUILT,
+  2026-11-12, dark** behind `NEXT_PUBLIC_CALENDAR_EVENTS`. The Event kind
+  of CE-5 is task 2616. The rest of CE-5 to CE-12 is not built.
+  **CE-15 (the chat reads the events) is BUILT, 2026-11-16, dark.** The read
+  tool `my_tasks_list_events` is in the `calendar-day` pack (task 3463). It
+  reads the `entries` key, so it shows events only where `CALENDAR_EVENTS` is
+  on. The planner reads no event, so the pack rules tell the model to check
+  each proposed block against the events.
+
+  **The mark of CE-15 is DECIDED by the owner, 2026-11-16 06:36 UTC (task
+  3463).** The code sets `EVENTS_MARK_UNTRUSTED = True`: a read that shows an
+  event marks the chat. In a marked chat, each egress tool,
+  such as `fetch_page`, asks for the member's card, for up to 400 days. The
+  twelve `calendar-day` writes leave that chat only where
+  `HELD_CARD_WRITES_ORGS` names the org, and that list is empty by default.
+
+  Without the mark, `fetch_page` would run with no card after the chat reads
+  a hostile title. The owner did not choose that. None of the twelve writes
+  asks for a platform card.
+
+  **RX-3 (a reminder looks and acts like a reminder in My Day) and RX-4
+  (the push has buttons) are BUILT, 2026-11-02**, under epic task 1402. They
+  are not dark. They draw wherever `CALENDAR_REMINDERS` and the My Day feed
+  are on. See §5.6 "Settled 2026-11-02 (RX-3)" and §5.9 "Settled 2026-11-02
+  (RX-4)".
+  **RX-5 (a due date is a day, and the morning summary push) is BUILT,
+  2026-11-02.** The day rule is not dark: it binds wherever the code ships
+  (§5.11). The push is dark behind `DUE_PUSH_ORGS` (migration 330,
+  `reach/due_push.py`). Repair round 1 (2026-11-02) sent the Tasks date
+  picks and `capture_intake` through the day rule. It also added the shell's
+  zone save and the plan phase of the reminder tick. Repair round 2
+  (2026-11-02) sent a bulk edit, a mail capture and the email date pick through
+  the day rule, and gave the digest the one overdue rule. It also made a
+  replaced push alert (`renotify`), gave a summary a share of the send phase,
+  moved the plan over a long list, and added working days.
 - **Board row:** **WS-CAL**. WS-66 for reminders and web push sits under
   it.
 - **Asked by:** the owner, 2026-10-15. The Calendar must hold more than
@@ -136,47 +181,107 @@ contract (R6) and is out of scope here.
 ### 3.3 The table sketch
 
 `calendar_entries`. Tenant-scoped, FORCE ROW LEVEL SECURITY at the
-`get_db()` seam (R5). Every column is nullable or has a default (R6).
+`get_db()` seam (R5). Every column is nullable or has a default (R6), except
+`owner_email` and `title`. The one writer always fills those two, as for
+`reminders`. Migration 331 (CE-4) builds it.
 
 | Column | Meaning |
 |---|---|
 | `id`, `organization_id` | The row and the tenant. `organization_id` defaults to `app.tenant_id` |
-| `owner_email` | The member who owns the entry. For `external`, the member whose account it came from |
+| `owner_email` | The member who owns the entry, lower case. For `external`, the member whose account it came from |
 | `kind` | `event` or `external`. A CHECK holds the list |
-| `title`, `notes`, `location` | Text |
+| `title`, `notes`, `location` | Text. A title has 1 to 200 characters |
 | `starts_at`, `ends_at` | TIMESTAMPTZ. NULL for an all-day entry |
-| `start_date`, `end_date` | DATE, for an all-day entry only. A date never moves with a time zone |
+| `start_date`, `end_date` | DATE, for an all-day entry only. A date never moves with a time zone. ⚠️ **`end_date` is EXCLUSIVE.** A one-day entry on 8 March has `start_date` 2026-03-08 and `end_date` 2026-03-09. Google and Outlook send an all-day end that way, so CE-10 copies it with no change |
 | `tz` | The IANA zone of the entry. A repeat rule expands in this zone |
 | `recurrence` | An RFC 5545 RRULE, or NULL |
-| `series_id`, `original_start` | One changed or cancelled instance of a series |
-| `status` | `confirmed`, `tentative` or `cancelled` |
-| `busy` | Default true. False for a holiday, or for an entry that blocks no time |
+| `series_id`, `original_start` | One changed or cancelled instance of a series. `series_id` names the Metorite master |
+| `original_start_date` | The all-day instance that a changed instance replaces. `original_start` is an instant, so it cannot name it |
+| `external_series_id` | The master at the provider: Google `recurringEventId`, Outlook `seriesMasterId` |
+| `status` | `confirmed`, `tentative` or `cancelled`. Google `status=cancelled` and a Graph `@removed` set `cancelled` |
+| `busy` | Default true. False for a holiday, or for an entry that blocks no time. Google `transparency=transparent` and Graph `showAs=free` set false |
 | `conference_url` | The join link of a call |
-| `task_id`, `crm_deal_id`, `crm_contact_id`, `meeting_id` | Links. All nullable |
+| `task_id`, `crm_deal_id`, `crm_contact_id`, `meeting_id` | Links. All nullable, with no foreign key yet. A later release adds the keys (expand, then contract) |
 | `source` | `metorite`, `google` or `outlook` |
-| `connection_id`, `external_id`, `etag` | For a synced entry only. `connection_id` names the `integration_connections` row |
+| `connection_id`, `external_id`, `etag`, `external_url` | The account, the provider id, the version and the provider link of an entry. `connection_id` names the `integration_connections` row |
+| `push_to_provider` | `google`, `outlook` or NULL. The provider that CE-11 writes this event to. NULL means the switch is off |
+| `provider_sync_state`, `provider_sync_error` | `pending`, `sent` or `failed`, and the last error (500 characters at most, no token). NULL means that the member wants no write-out. A failed write keeps the row, so the event is never lost |
 | `created_at`, `updated_at` | Times |
 
-`calendar_entry_attendees`. One row for each person on an entry.
+The CHECKs of migration 331:
+
+- Exactly one time pair: a timed pair with `ends_at >= starts_at`, or an
+  all-day pair with `end_date > start_date`.
+- An `external` entry has source `google` or `outlook`, a `connection_id`
+  and an `external_id`. An `event` has source `metorite`.
+- ⚠️ **An event made in Metorite may carry `connection_id` and
+  `external_id`.** CE-11 writes the provider id into the SAME row (§8.2).
+- `connection_id` and `external_id` are both set or both NULL.
+- A write-out state needs `push_to_provider`. `sent` needs an
+  `external_id`. An `external` entry has no write-out state.
+
+**The unique key of a provider event.** `calendar_entries_external_uq` is
+UNIQUE on `(organization_id, connection_id, external_id)` where both are
+set. It covers EVERY source and every kind. So a sync that runs again adds
+no row, and a written-out SINGLE event gets no `external` twin. ⚠️ The key
+does not cover a written-out SERIES. With `singleEvents=true` the provider
+sends each instance of the master with its own id, so CE-10 must skip such
+an instance (§8.1 item 5).
+
+**The keys hold the org.** `calendar_entries_connection_fk` is
+`(organization_id, connection_id)` to `integration_connections
+(organization_id, id)`, with NO ACTION. The attendee key is
+`(organization_id, entry_id)` to `calendar_entries (organization_id, id)`,
+with ON DELETE CASCADE. So a row of one org never names a row of another
+org, and a delete of an org never fails on a row of another org. A partial
+index on `(organization_id, connection_id)` serves the check of a
+connection delete.
+
+**The sync cursor has no column here.** It lives on the connection row, in
+`integration_connections.provider_meta`.
+
+`calendar_entry_attendees`. One row for each person on an entry. A UNIQUE
+index on `(entry_id, COALESCE(member_email, email))` keeps one row for each
+person.
 
 | Column | Meaning |
 |---|---|
-| `entry_id`, `organization_id` | The entry and the tenant |
-| `member_email` | Set when the person is a member of this organization. NULL for a guest |
+| `id`, `entry_id`, `organization_id` | The row, the entry and the tenant. A delete of the entry deletes its rows |
+| `member_email` | Set when the person is a member of this organization, lower case. NULL for a guest |
 | `email`, `display_name` | The guest's address and name |
 | `role` | `organizer` or `attendee`. The owner has an `organizer` row |
-| `rsvp` | `needs_action`, `accepted`, `tentative` or `declined` |
-| `lead_minutes` | This member's own lead time. NULL reads the member default |
+| `rsvp` | `needs_action`, `accepted`, `tentative` or `declined`. The default is `needs_action` |
+| `lead_minutes` | This member's own lead time, 0 or more. NULL reads the member default |
+| `created_at` | Time |
+
+A CHECK needs `member_email` or `email`. ⚠️ Only `member_email` gives a
+member the entry. A guest row with a member's address gives nobody the
+entry.
 
 The lead time is on the attendee row for the reason that migration 187 put
 the block on the overlay. Two people at one meeting want two lead times.
 
 ### 3.4 The read
 
-`GET /projects/my/calendar` stays the one read. With `CALENDAR_EVENTS` on, it
-adds the entries in the window that I own or attend, each with `kind`. With
-the flag off, it returns what it returns today. The client draws by `kind`.
-No lens other than the Calendar reads `calendar_entries`.
+`GET /projects/my/calendar` stays the one read. With `CALENDAR_EVENTS` on and
+`feature:tasks`, it adds an `entries` key. The key holds the entries in the
+window that I own or attend, each with `kind`. The entries never go into
+`rows`, because the client maps each row to a task, and the chat pages
+`rows`. With the flag off, the read runs no entry query, and the body has no
+`entries` key. It is the body of today. The client draws by `kind`. No lens
+other than the Calendar reads `calendar_entries` by SQL.
+
+The chat reads the same `entries` key through this one read. Its tool (CE-15,
+§6.7) adds no query.
+
+The read returns a cancelled entry with its `status`, and CE-8 hides it.
+It compares an all-day entry by date, on the UTC window with one day of
+slack on each side, as `projects/calendar.py` does. The client places it.
+
+⚠️ The read needs `feature:projects`, from its router. The Calendar pane
+needs `feature:tasks` (D138 Q10). A member who holds `feature:tasks` and not
+`feature:projects` cannot reach the read at all. That gap is older than
+CE-4, and CE-4 does not widen the router gate.
 
 ## 4. Meetings with invitees
 
@@ -599,6 +704,12 @@ after two spec audits. The one bell is the shell bell: `ShellBell.tsx` reads
    `reminders`, and the client reads them by `NeedsApp`. The bell rows still
    show, because they filter on `item.app`. A Calendar count waits for a later
    ticket.
+   **Changed 2026-11-03 (owner).** The Calendar row of the sidebar counts the
+   reminders that need the member: `reminder_due`, `reminder_check` and
+   `reminder_unconfirmed`. The client maps the source `reminders` to the app
+   `calendar` through `NEEDS_SOURCE_APP`, and that map closes the key gap. A
+   `scheduled` reminder is not a needs row, so it has no count until it
+   fires. Fence: `src/lib/shell/needs.test.ts`.
 6. **The code moves.** `_reminder_signal`, `reminder_href` and
    `REMINDER_KINDS` move from `feed.py` into `needs.py`, because `feed.py`
    imports `needs.py`. `feed.py` does not re-export them. The PR updates the
@@ -806,6 +917,10 @@ after the review of the Opus reviewer and the verifier. The code is
     `SEND_PHASE_S` (30 s) after the phase starts. A healthy push service
     sends each row in well under a second, so the call starts a few
     seconds after the fire, inside the 90 s.
+  - **The morning summary (RX-5).** A summary shares the tick, so §5.11 caps
+    it: no summary row starts after `SUMMARY_SEND_S` (8 s) of the send phase.
+    The worst wait of a fire is one plan phase, that share, one tick and one
+    plan phase: 10 + 8 + 60 + 10 = 88 s.
 
 **As built (RM-2, 2026-10-25).** The cards come from the feed source
 `reminders` in `routes/shell/feed.py`. Code computes each card from the row
@@ -843,6 +958,60 @@ when the feed reads it, and nothing stores a card.
   version (`cache.bump_member_safe`). After its commit, each answer and each
   move of the member does the same, with the session's org. The next
   `fire_at` or `next_check_at` is the edge of the read cache.
+
+**Settled 2026-11-02 (RX-3).** The owner said that a reminder shows up
+differently than a due task in My Day. A reminder is a moment of the day, not
+a chore. These rules follow.
+
+1. **A Reminders band.** My Day draws a band above the groups of the feed. It
+   holds the reminders that fired and wait on the member, in strong rows.
+   Then it holds today's scheduled reminders in quiet rows. It hides when it
+   has no row. A row shows a Bell glyph and not the Calendar icon. It shows
+   the exact time, the title and the linked object in one line. A
+   check-back row asks "Did you do it?". A quiet row says "Later today" with
+   its time. The band shows five rows, then "Show all". The fired rows come
+   first, so they are never cut by a quiet row.
+2. **Done and Snooze in place.** Each row has both acts. They write the
+   reminder row through `/resolve` and `/snooze`, never the card state. Snooze
+   offers In 1 hour, This evening and Tomorrow morning. A toast offers Undo.
+   The Undo of a done is `/reopen`. The Undo of a snooze is `/reschedule`. A
+   quiet row goes back to its old time. A reminder that waited comes back one
+   minute later, because a past time would fire at once.
+3. **No double listing.** The groups of the feed leave out the three reminder
+   kinds. The card still counts in "N things need you", because a fired
+   reminder needs the member. A quiet row is never a card, a needs row or a
+   count.
+4. **One feed.** The upcoming rows ride in the feed answer as
+   `reminders_ahead`, with `reminder_subjects` for the linked objects. The
+   feed reads them once, beside the state join, in `my_day_band`
+   (`routes/projects/reminders.py`). The read runs only when the `reminders`
+   source answered `ok`. A failed read gives an empty band, and the answer is
+   served and not stored. The bell never runs it.
+5. **The bell.** A fired reminder (`reminder_due`, `reminder_check`) sorts first
+   in the bell, and its row has Done and Snooze too. Before "Show all" the
+   bell shows three reminder rows at most, so the other rows stay in the
+   seven. The server order of `KIND_ORDER` does not change. Only the client
+   groups the kinds first.
+
+Fences: `reminderBand.test.ts`, `reminderActions.test.ts`,
+`remindersBand.test.ts` and `test_shell_feed.py` (`TestTheReminderCards`).
+The real-database cases are in `test_reminder_loop.py` (`test_r8_the_band_*`).
+
+#### RX-7 (2026-11-02)
+
+RX-7 closes the findings that the reviews of RX-2, RX-3 and RX-5 left open. It is built on branch `rx7-follow`.
+
+1. **Snooze zone.** "This evening" and "Tomorrow morning" read the saved zone, not the browser zone. The one reader is `snoozeZone` in `reminderBand.ts`. The chat "Later" presets use it too. The receipt "Change time" already read the zone of the reminder.
+2. **The bell cut.** `needs.KIND_ORDER` now puts `reminder_due` and `reminder_check` first. This replaces the sentence above that said the server order does not change. The cut to 30 rows keeps a fired reminder. `feed_rank.BASE` keeps its values. The test of the needs order names the two kinds as the one exception.
+3. **A repeat.** `lib/reminderWrite.ts` reads `already`, and `createdWords` says that the reminder already exists, with its time.
+4. **A shared chat.** The receipt shows no Undo, Change time or See in Calendar when `ranByViewer` is false (`runMemberEmail` of the message).
+5. **The agent.** `agent-projects/instructions.md` says not to set a reminder that already exists.
+6. **The zone control.** The Calendar settings have a Time zone select. `taskStore.hydrate` and `CalendarView` write the browser zone only through `zoneToSave`, and only after the settings were read.
+7. **East of UTC+12.** The date inputs read a due instant through `dueDayOf`.
+8. **A member with no `feature:tasks`.** The new route `GET` and `PUT /auth/me/zone` (BFF `/api/auth/me/zone`) needs a signed-in member only. It writes through `write_member_settings`, the one write of the settings row. `saveZone.ts` uses it.
+9. **The create lock.** `create_lock_key` holds the tenant, and `test_reminder_create_lock_key.py` fences it.
+
+Fences: `reminderBand.test.ts`, `reminderWrite.test.ts`, `ReminderReceiptCard.test.ts`, `saveZone.test.ts`, `quickAdd.test.ts`, `test_shell_needs.py`, `test_feed_rank.py`, `test_auth_me_zone.py` and `test_auth_me_zone_r8.py`.
 
 ### 5.7 A tap opens the chat
 
@@ -944,13 +1113,13 @@ adds the route. RM-1 added each row as a planned tool. RM-3 made it real.
 
 | Tool | Does | Confirm |
 |---|---|---|
-| `set_reminder` | Makes a reminder: `title`, `at` or `in_minutes`, `kind`, `subject_kind` and `subject_id`, `estimate_minutes`, `important` | One card, until CF-6 |
+| `set_reminder` | Makes a reminder: `title`, `at` or `in_minutes`, `kind`, `subject_kind` and `subject_id`, `estimate_minutes`, `important` | Acts at once, with an Undo (RX-2). One card in a chat that read outside mail |
 | `list_reminders` | Lists my reminders by state and window | A read |
-| `update_reminder` | Changes the text, the time, the kind, the link, the estimate or `important` (PATCH) | One card, until CF-6 |
-| `resolve_reminder` | Done or drop | One card, until CF-6. Its Undo is `reopen_reminder` |
-| `reopen_reminder` | The Undo of a done or a drop (§5.3) | One card, until CF-6 |
+| `update_reminder` | Changes the text, the time, the kind, the link, the estimate or `important` (PATCH) | Acts at once, with an Undo for the title, the kind and the time (RX-2). One card in a chat that read outside mail |
+| `resolve_reminder` | Done or drop | Acts at once (RX-2). Its Undo is `reopen_reminder`. One card in a chat that read outside mail |
+| `reopen_reminder` | The Undo of a done or a drop (§5.3) | Acts at once (RX-2). One card in a chat that read outside mail |
 | `promote_reminder` | Makes a private task in my personal project, and ends the reminder | One card. It cannot reopen |
-| `reschedule_reminder` | A snooze, a named time, or `smart` (§5.5) | One card, until CF-6 |
+| `reschedule_reminder` | A snooze, a named time, or `smart` (§5.5) | Acts at once, with an Undo (RX-2). One card in a chat that read outside mail |
 
 **As built (RM-3, 2026-10-25).** RM-1 built eight routes, and RM-3 built
 the seven tools over them. `reschedule_reminder` reaches two routes:
@@ -960,18 +1129,73 @@ in `reads.py`, the five class B writes are in `writes.py`, and
 `SENDS`, so RM-3 closes gap G24 of `projects_agent_parity.md` §3.3. The fence
 is `tests/unit/test_reminder_tools.py`.
 
-- **Confirm.** One card for each write, until CF-6 exists. Then set,
-  update, resolve, reopen and reschedule act at once with Undo. RM-3 shows
-  each card through `writes._confirm`, the one door. It adds no second card
-  door and no act-at-once path (`chat_first_surface.md`, CF-6).
+- **Confirm.** A reminder is private and reaches nobody else. Undo reverses
+  it. So **RX-2 (owner, 2026-11-01)** made set, update, resolve, reopen and
+  reschedule act at once in a chat that read no outside mail. The receipt is
+  the reminder (see "The receipt" below).
+- **A chat that read outside mail keeps the card.** This is the owner rule. A
+  top-level chat binds `no_egress=False`, also after it read mail, because the
+  mark lives on the session. So `no_egress` alone is not enough.
+  `egress.write_must_show_card` is the one reader. It reads
+  `no_egress_for_this_run`, then the mark through `run_holds_mail`. The card
+  shows for a held run, a run with no context, and a run that cannot ask the
+  member. It shows for a delegated run, and for a run with no session or no
+  tenant. A marked session, an unknown mark and a Redis fault show it too. The
+  card goes through `writes._confirm`, the one door.
+  `writes._reminder_acts_at_once` is the only caller. It is not a general CF-6
+  seam. Only these five tools read it.
+- **One reminder for one ask.** With no card, a model retry, a double tool
+  call or a double click reaches `POST /my/reminders` twice. So the route takes
+  a transaction-level advisory lock on the member. It then looks for an open
+  reminder of that member with the same normalised title and the same link,
+  within one minute of `fire_at`. It answers that row with 200 and
+  `already: true`, and it writes no row and no ledger row. The window is one
+  minute because `in_minutes` reads the clock on each call, so a retry names a
+  later instant. A different link is a different reminder. The chat receipt
+  says "Reminder already set" and shows no Undo, and the pack rule tells the
+  model not to set it again. The fence is `tests/unit/test_reminders_r8.py`.
+- **A shared chat.** The reminder belongs to the member whose message started
+  the run. `X-User-Email` comes from the run binding. `_confirm` binds no
+  responder, so any member who can send in the room could approve the card.
+  So acting at once loses no authority. `reminder_events` keeps the record
+  (`created`, with `source` `chat`). A plain card wrote no row of its own. The
+  other member sees the receipt, and Undo and Change time answer 404 for that
+  member, so the card says "private".
+- **The promote keeps its card.** `promote_reminder` stays class C. It makes a
+  task and cannot reopen. The five other tools stay class B in the manifest.
+  The fence is `tests/unit/test_reminder_acts_at_once.py`. The pins in
+  `test_projects_agent_writes.py` bind a held run to the five tools.
+- **The receipt (RX-2).** A due date is a day. A reminder is a moment. So the
+  receipt of `set_reminder`, `update_reminder` and `reschedule_reminder` is a
+  card of its own (`ReminderReceiptCard.tsx`), not a plain result row. The
+  card shows a Bell, the title, the exact time ("Today, 5:00 PM IST"), the
+  relative time ("in 2 hours") and the linked task.
+- **Three acts on the receipt.** **Undo** puts the write back. **Change time**
+  opens the presets of "Later" and a date and a time, and calls `/reschedule`.
+  **See in Calendar** opens `/calendar?reminder=<id>`. That link opens the
+  Reminders panel and marks the row.
+- **What Undo does.** The card reads machine lines of the receipt:
+  `fire_at`, `zone`, `task_id`, `undo` and `was_*`. Undo drops a new reminder.
+  It moves a move back. It restores the title, the kind and the time of an
+  update. A change of notes, link, estimate or `important` shows no Undo.
+  Undo acts on the member's own reminder only, and any other member gets 404.
+  A fired reminder is still open, so Undo still drops it. A closed reminder
+  answers 409, and the card shows those words.
+- **A task receipt says it is a task.** `create_personal_task` and
+  `create_task` print "Private task captured" and "Task created". A "Make it a
+  reminder" act on a task receipt is deferred.
+- **Later acts at once (RX-2).** The chip "Later" of a fired reminder no
+  longer sends "Snooze this reminder" to the model. It shows three presets:
+  1 hour, This evening and Tomorrow morning. A pick calls `/snooze`. "Make it
+  a task" still sends its words to the model.
 - **Two gates before the card** (review round 1). Each write asks
   `writes._reminder_gate` first. With `CALENDAR_REMINDERS` off, the routes
   answer 404, so the tool refuses and says that reminders are not on. A
   WhatsApp run, or any run with no card channel, cannot confirm a reminder
   until RM-9 adds the acts to `whatsapp_acts.ALLOWED_ACTS`. So the tool
-  refuses there too. Both refusals send the model to a private task with a
-  block (`create_personal_task`). `list_reminders` says the same when the
-  flag is off.
+  refuses there too. Both refusals tell the member plainly, and the tool
+  tells the model to make no task in place of a reminder (owner, 2026-11-01,
+  task 1228). `list_reminders` says the same when the flag is off.
 - **Time.** The tool resolves the time itself. `at` is ISO 8601 with an
   offset, or a wall time with no offset, such as `2026-10-31 17:00`. The tool
   reads a wall time in the member's saved zone, `user_settings.timezone`,
@@ -1029,12 +1253,21 @@ is `tests/unit/test_reminder_tools.py`.
   row prints `reminder_id:`, never `full_id:`, because a `full_id:` line opens
   a task in the chat cards. Only the promote prints a `full_id:`, the one of
   the task that it made.
-- **"Remind me to…" in the command bar.** The `capture` job stops taking it.
-  A new `set-reminder` job opens the composer of §6.1 filled. This waits for
-  the composer (CE-3 and RM-5). RM-3 did not build the job or the `capture`
-  change.
-- **Not in RM-3.** Act at once and Undo (CF-6), the command-bar job and the
-  `capture` change (CE-3, RM-5), and the WhatsApp acts (RM-9).
+- **"Remind me to…" in the command bar (RX-6, built).** The `capture` job
+  stopped taking the words "remind" and "reminder". The `set-reminder` job,
+  "New reminder", opens `/calendar?do=new-reminder`, and the Calendar opens its
+  New reminder form. The job saves nothing when it opens. It needs
+  `feature:projects`, because the routes answer 403 to a member with `tasks`
+  alone. The Calendar pane takes `tasks`, so `bar_feature` gates the job in the
+  command bar too. The composer of CE-3 is not built, so the job fills the
+  title only.
+- **The other doors (RX-6, built).** The Tasks quick capture, kind "Remind",
+  now makes a real reminder at a date and a time through the create route.
+  It no longer sets `defer_until`, and it makes no task. The task detail has a
+  **Remind me** act. It sets a reminder linked to the task
+  (`subject_kind=task`). The due date stays a day.
+- **Not built yet.** The WhatsApp acts (RM-9), the "Make it a reminder" act on
+  a task receipt, the composer of CE-3, and the held-chat slice RX-1.
 
 ### 5.9 Web push on iOS and Android
 
@@ -1049,11 +1282,16 @@ and its item 5 (for reminder pushes, D114.4).
   web notification. So the tap that opens the chat is the one path.
 - **Android.** Push works in Chrome and in the installed app. A notification
   may carry two actions, Done and Later, as a shortcut. The tap still opens
-  the chat.
+  the chat. RX-4 builds the actions, and they read "Done" and "In 1 hour".
 - **Desktop.** Chrome, Edge, Firefox and Safari, from the same toggle.
 - **The service worker.** One file, `public/sw.js`, registered at scope `/`.
   On `push` it shows the notification with a `tag` of the reminder id, so a
-  check-back replaces the first notification and does not stack. On
+  check-back replaces the first notification and does not stack. By the
+  Notifications standard, a replacement makes no sound unless `renotify` is
+  true. So each reminder push and the morning summary carry the `renotify`
+  flag, and the worker passes it on (RX-5, repair round 2). A rare duplicate of
+  a retry then alerts twice, and that is the better fault. A push with no tag
+  never sets it, because `showNotification` throws on `renotify` with no tag. On
   `notificationclick` it focuses an open Metorite window and navigates it,
   or opens a new one at the payload's `url`.
 - **Every notification.** Push is the channel for every card that Reach
@@ -1074,6 +1312,29 @@ and its item 5 (for reminder pushes, D114.4).
   details" covers a shared device. Settled 2026-10-30: RE-9 decision 4 of
   §5.6 holds the rule, and RE-9a builds it.
 
+**Settled 2026-11-02 (RX-4).** The notification has buttons. These rules
+follow.
+
+1. **The payload.** `PushMessage` gains `reminder_id` and `kind`. They hold
+   an id and a card kind, and no text of the reminder. So `hide_push_details`
+   still hides the title, and the payload stays under 600 bytes.
+2. **The buttons.** For `reminder_due` and `reminder_check`, `public/sw.js`
+   adds "Done" and "In 1 hour". A device that allows fewer than two buttons
+   gets none. iOS shows none, and the tap path covers it.
+3. **The click.** A button sends one same-origin `POST` with the session
+   cookie. The path is `/api/projects/my/reminders/<id>/resolve` or
+   `/snooze`. The BFF has no origin check. The session cookie is
+   `SameSite=Lax`, and the request is same-site. A good answer or a 409 ends
+   it. Any other answer opens `/chat?reminder=<id>`, so nothing is lost. This
+   covers a 401 for a signed out session. It covers a 404 for a reminder of
+   another account of the device.
+4. **A plain tap** opens the chat card, as before. The worker has no
+   `fetch` handler. The file changes, so a browser installs it at its next
+   check, and `skipWaiting` makes it live. The repo has no worker version
+   rule.
+
+Fences: `src/lib/pushButtons.test.ts` and `tests/unit/test_reach_push_message.py`.
+
 ### 5.10 What the other docs gain
 
 | Doc | Gains |
@@ -1081,6 +1342,194 @@ and its item 5 (for reminder pushes, D114.4).
 | `chat_run_continuity.md` §S7 | A note: built under WS-66 PN-1. Item 4 grows to every Reach card. Item 5 has the reminder exception of D114.4 |
 | `proactive_reach.md` | `reminder_due`, `reminder_check` and `reminder_unconfirmed` in §4. The D114.3 exception in the budget. RE-9 points at PN-1 |
 | `my_day_feed.md` | The three card kinds |
+
+### 5.11 Due tasks and the morning summary (RX-5)
+
+Owner directive, 2026-11-01. **A due date is a day. A reminder is a moment.**
+A task does not fire at an hour, so a due task gets one morning push and no
+other. This section replaces D-PM-22 of `project_management_app.md`.
+
+**The rule.** A task is overdue when its local due date is before the member's
+local today. A task due today stays due today until that day ends in the
+member's zone, whatever instant the row holds.
+
+- `pm_tasks.due_at` stays one TIMESTAMPTZ. The instant only carries the day.
+- `routes/projects/due_day.py` holds the rule. `is_overdue` is the Python form.
+  `overdue_sql` is the SQL form, `due_at < :day_start`. The two forms are the
+  same test, and `:day_start` is the instant that the reader's today started.
+- A shared count uses the zone of the member who reads it, so a card, a filter
+  and a count agree for that member.
+- The client half is `isOverdue` in `src/lib/taskCard.ts`. It compares the same
+  two local dates. The zone is the browser's, and the browser stores that zone
+  in `user_settings.timezone`.
+
+**The words.** No line names a clock.
+
+- The My Day line reads `Due today.` or `Due tomorrow.` A late task reads
+  `Due yesterday. 1 day late.`
+- A task chip and the WhatsApp views say the day too (`dueLabel`).
+- The source line of a card due today leaves out the state, so the row does
+  not say the words twice.
+- A bell row due today shows no time, because its group heading says the day.
+
+**The group.** A task due today sits in Needs you. It has no `urgent_at`, so
+state rule 4 does not lift it into Now, and it gains no points by the clock. An
+overdue task keeps its `urgent_at`, so it keeps the points of a passed time.
+The order of the needs kinds stays: overdue, approval, due today, notification,
+reply.
+
+**A date with no time.** `personal.stored_due` is the one seam. A date-only
+value becomes noon of that date in the zone of the member who writes. A value
+with a time and an offset stays as it came. So an MCP `due_at` with a time keeps
+it.
+
+A date picker sends the same noon, through `dueInstantForDay`. Quick capture
+sends 09:00 of the picked local day, which is the same day.
+`app/tasks/lib/duePick.test.ts` walks all of `src/`. It refuses a picker that
+parses a date input as midnight UTC. It also refuses a picked value in a due
+key that goes out as it came. The email task pick uses `dueInstantForDay` too, and `dueDayOf`
+reads the instant back into the date input.
+
+`create_task`, `create_tasks`, `update_task`, `create_personal_task`,
+`capture_intake`, `bulk_update` and a mail capture all reach the seam. Their
+routes are `POST /projects/tasks`, `PATCH /projects/tasks/{id}`,
+`POST /projects/my/tasks`, `POST /projects/intake`, organize,
+`POST /projects/tasks/bulk` and `POST /tasks/capture/from-email`.
+`capture_email._draft_due` calls the seam before the parse, so both mail paths
+and a model's date keep the day. `bulk_edit` calls it once, before the first
+task, and it passes the instant to `apply_task_patch`.
+
+The other writers of `pm_tasks.due_at` keep a value that already holds the day:
+
+- A merge takes the earliest instant, and a revert restores an old instant.
+- A recurring successor steps from the old instant, and keeps its hour.
+- A plan from the Tasks planner stores now plus N days, which is the local day
+  of the member who applies it.
+- The importer stores local noon at the offset of the file (`due_instant`).
+- A calendar or timeline drag keeps the local hour of the task.
+
+**The zone.** The member's day needs a saved zone. The shell saves the browser's
+zone once, for a member whose saved zone is the default
+(`lib/shell/saveZone.ts`). So a member who stays on My Day does not stay on UTC.
+"UTC" is the column default, and it is also the answer for a member with no row.
+Any other saved zone stays.
+
+A write that makes the member's row carries the People seed
+(`put_user_settings`, D-PC-16), so the save does not move their day hours. The
+route needs `feature:tasks`, so a member who does not hold it stays on the
+default.
+
+⚠️ That save makes the settings row, and a member with a row no longer follows
+the People seed (D-PC-16). So an HR change of that member's schedule after the
+save does not reach their day hours. The save stays as it is
+(`saveZone.ts`), because a member with no saved zone reads as UTC.
+
+**Where the rule binds.**
+
+- The My Day needs and cards, and the WhatsApp due views.
+- The Overdue filter of the list, the calendar, the export and the dataset.
+- The summaries of a space, a node and "mine".
+- Load, Stuck, Capacity, the dependency conflicts, the candidates and the plan
+  preview.
+- The People dashboard.
+- The client's card, list, detail and Waiting For lines.
+- The email digest and the `promise_due` card. A commitment is a `pm_tasks`
+  row. So `digest._overdue` reads it in the zone of the mailbox owner. The date
+  in the digest is that owner's date.
+- The next occurrence of a recurring task. `next_occurrence` takes the start of
+  the closer's today, so a task closed at 15:00 keeps a successor due that day.
+
+**What stays as it is, and why.**
+
+| Read | Why it stays |
+|---|---|
+| `core._URG` and `priority.ts` `isUrgent` | The D78 urgency window of 48 hours. It says "soon", and it does not say late |
+| `item_lens` upcoming hard dates | A hard date is a fixed appointment of the Calendar, so it is a moment |
+| `analytics_pulse` focus and waiting lines | The report states one UTC day, and its text says so |
+| The UTC day of `analytics_conflicts` and the capacity arithmetic | They place work on a calendar. They do not say that a task is late |
+| `automation.apply_task_patch` for a workflow step | A workflow step has no member, so no member zone exists. A date-only value stays as it came. A member reaches this function only through `bulk_edit`, which calls the seam first |
+| The `legend` of the chat reads (`skill_projects/reads.py`) | It gives the UTC date, because the member's zone costs one more call for each tool. A count in the answer is the member's own, from the server |
+| Rows that chat or a Tasks date picker stored before RX-5 | A row at midnight UTC can be a real time. No backfill guesses. West of UTC such a row reads a day early until somebody edits it |
+| The "Defer until" picks of the Tasks app | A defer date says when a task comes back, so no overdue rule reads it. It stays at midnight UTC |
+| CRM activities, CRM stage limits, Knowledge review dates and Calendar blocks | Each is another object with its own rule |
+
+**The morning summary.** `reach/due_push.py` plans one web push row of the kind
+`due_summary` (migration 330). It says "3 due today, 1 overdue", with the first
+title. A tap opens My Day.
+
+1. **When.** The first tick at or after the member's day start
+   (`day_start_hour`, in the member's zone). A day start missed by more than
+   the TTL of 4 hours plans nothing (`too_late`).
+2. **One for each day.** The key is `due_summary:<member>:<local date>`, under
+   the UNIQUE of `(organization_id, dedupe_key)`, so a retry and a second
+   process plan one row.
+3. **Nothing due.** No row and no push. A Redis mark records the empty read, so
+   a task that lands later that day sends nothing. The mark is a saving and
+   the quiet rule. The key guards a duplicate, also with Redis down.
+   **A working day.** No summary on a day that is not a working day of the
+   member. That is a day off their week (`work_schedule.works_on`). It is also
+   a company holiday of the policy, or a day on leave (`absences.away_rows`,
+   kinds `away` and `holiday`). A `partial` day still counts as work. The next working day's
+   summary lists what is overdue, so nothing is lost. One read serves the whole
+   batch, and a mark quiets the rest of that day. A failed read plans nothing,
+   and a later tick tries again.
+4. **What it reads.** `personal.my_due_rows`, the body of `my_due_tasks`, and
+   `needs.due_kind`, the split of My Day. So the push and My Day agree. A card
+   that the member dismissed on My Day still counts, because the task is due.
+5. **The words.** The title gives the counts. The body gives the first title,
+   then "and 2 more". With `hide_push_details` on, the body is the org name.
+   The outbox holds the fixed text `due_summary`. The send step reads the tasks
+   again, so a task closed since the plan drops out.
+6. **The send.** `send_planned`, `claim_push`, `finish_push` and `push.sender`,
+   with no second path and no ledger row. A member with no device ends as
+   `skipped`, reason `no_device`. The tag `due-summary` never changes, so each
+   day's summary replaces yesterday's on the device. It sets `renotify`, so it
+   still alerts (§5.9).
+7. **Quiet hours.** A row that reaches the send in quiet hours ends as
+   `skipped`, reason `quiet`. It does not wait, so no push goes for that day.
+   Each kind that is not `urgent` follows this rule.
+8. **The order.** The read of planned rows sorts `due_summary` after each
+   reminder kind. So an exact-time reminder never waits behind a summary.
+   **The share.** No summary row starts after `SUMMARY_SEND_S` (8 s) of the send
+   phase, in any org. A row that did not start stays planned, and a later tick
+   sends it. So a morning of 300 members never fills the send phase, and a
+   reminder keeps its 90 s (§5.6). Each tick gives the share to the next org.
+9. **The caps.** It counts against no other cap. The key gives at most one a
+   day.
+10. **The plan phase.** `run_tick` runs the reminder steps of every org first.
+    One plan phase and then the send phase follow. So a morning of summaries
+    never delays a reminder step of another org. `PLAN_PHASE_S` (10 s) bounds
+    the phase, and each tick starts it at the next org. A member with no turn
+    waits for the next tick.
+    **A long list.** One tick plans `PLAN_BATCH` (100) members of an org, and
+    the next tick starts where that batch ended. With Redis down, no read leaves
+    a mark, so the same members come back. Then a tick plans `FAULT_BATCH` (20)
+    members and writes no mark, so each member gets a turn and the phase keeps
+    its time.
+11. **The cost.** A quiet tick costs a few statements: one read of the members,
+    one set read of the People seed and one read of the keys.
+12. **Who.** Each active member who holds `feature:projects`. The org comes from
+    the loop and the member from `app_user`, never from input.
+13. **The flag.** `DUE_PUSH_ORGS`, a comma list of org ids or `*`, default empty.
+    `WEB_PUSH_ENABLED` and `CALENDAR_REMINDERS` must be on too. A SIGHUP reload
+    applies a change. A flip in production reaches real people, so it is the
+    owner's.
+
+Fences:
+
+- `tests/unit/test_due_day.py` holds the rule. It refuses a new `due_at`
+  compare with the clock in the gateway, in any spelling. It also refuses a
+  Python compare of a value named `due` with `at` or `now`.
+- The same file holds the share of a summary and a list that one member never
+  reaches. It names each caller of `apply_task_patch`.
+- `tests/unit/test_due_push_r8.py` runs the planner and the SQL on a real
+  Postgres. One test ties two routes to the reader's zone.
+- `tests/unit/test_email_digest.py` holds the digest's rule.
+- `tests/unit/test_projects_recurrence.py` holds the next occurrence.
+- `src/lib/taskCard.test.ts` holds the client half.
+- `src/app/tasks/lib/duePick.test.ts` holds the date picks.
+- `src/lib/pushButtons.test.ts` holds `renotify`.
+- `src/lib/shell/saveZone.test.ts` holds the zone save.
 
 ## 6. UI and UX
 
@@ -1124,7 +1573,9 @@ from the `--cat-1…12` ramp, `src/lib/categorical.ts` and
 | Reminder | A pin. A 2 px line across the day column at its minute, and a bell glyph in the gutter. No height. A `due` reminder has the accent. An `unconfirmed` one is muted | Drag moves the time. A click opens the chat with the reminder (§5.7) |
 
 A tentative event has a dashed border. The grid mutes a declined event and
-strikes its title. The stripe token is new, so it goes into `src/app/globals.css`
+strikes its title. **Amended 2026-11-18 (§8.4 rule 5):** an entry that I have
+not accepted (`needs_action` or `tentative`) draws light, with a dashed border
+and a light fill. A declined entry hides until "Show declined" is on. The stripe token is new, so it goes into `src/app/globals.css`
 and its mirror `lib/theme/themes.ts`, and `themes.test.ts` holds the two.
 Look at each kind in light mode, at compact density, under a changed
 accent, and beside the Tasks app (CLAUDE.md §4).
@@ -1168,8 +1619,8 @@ it opens (`navigation_shell.md` §5.1).
 | Job | Opens | Fields |
 |---|---|---|
 | `new-event` (new) | `/calendar?do=new-event` | `title`, `start`, `end`, `people` |
-| `set-reminder` (new) | `/calendar?do=new-reminder` | `title`, `at`, `task` |
-| `capture` (exists) | `/tasks?do=capture` | Its description stops at tasks. "Reminder" moves to `set-reminder` |
+| `set-reminder` (built, RX-6) | `/calendar?do=new-reminder` | `title` now. `at` and `task` wait for CE-3 |
+| `capture` (exists) | `/tasks?do=capture` | Its description stops at tasks (RX-6). "Reminder" moved to `set-reminder` |
 
 "Meet Sharath 8:30-10:30 tomorrow" picks `new-event` with the title "Meet
 Sharath", the times and the person. The composer opens filled. The member
@@ -1185,6 +1636,43 @@ One assistant (D99), and one tool for each act:
 | `create_event` | Makes an event, with people and links | A web card. On WhatsApp, the WAC-4 buttons |
 | `update_event` | Moves, renames or changes the people of an event I own | Same |
 | `set_reminder` | Makes a `reminders` row (§5.8). A lead time on an event is `update_event` | §5.8: acts at once, with Undo |
+| `my_tasks_list_events` (CE-15) | Reads the events of my calendars in a window: the synced Google and Outlook events and my own events. Read only | None |
+
+**The read tool of CE-15 (task 3463).** `my_tasks_list_events(from_iso, to_iso,
+offset, limit)` sits in `skill_my_tasks` beside `my_tasks_list_schedule`. It
+joins the `calendar-day` pack. It calls `GET /projects/my/calendar` and reads
+the `entries` key. It adds no SQL, no route and no flag.
+
+The member comes from the run binding. The tool takes no member, org or email
+argument (R5).
+
+With no `entries` key, the tool answers with one fixed line. The key is absent
+when `CALENDAR_EVENTS` is off or the member lacks `feature:tasks`. The line
+says that calendar events are not on.
+
+The tool pages with `paged()`, and it refuses a window above the cap. Each
+entry names its provider and its `status`. A cancelled entry shows as
+cancelled. An all-day entry shows on its one day. A free entry shows as free.
+
+**The text of a stranger (CE-15).** Anyone can send an invite, and the sync
+copies its title, place and notes. So the tool returns the title and the
+place only, each cut to a set length, inside one `UntrustedFrame` block with
+its note first. It never returns notes, the join link or the provider link. A
+line that looks like the end of the block inside a title cannot close it. The
+tool is `read_only`, `idempotent` and not `open_world`.
+
+**Ruling DECIDED by the owner, 2026-11-16 06:36 UTC (task 3463): mark.** The
+read marks the chat as one that holds untrusted input
+(`egress.mark_untrusted_answer`). With the mark, each tool that sends data
+out asks for the member's card in that chat, for up to 400 days. The twelve
+`calendar-day` writes leave the chat only when `HELD_CARD_WRITES_ORGS` is on,
+and it is off by default. Without the mark, `fetch_page` runs with no card
+after a read of a hostile title. None of the twelve writes asks for a platform card. The day rules and
+the calendar settings use a propose-and-confirm step in the chat, and that
+step is not a card.
+
+The choice sits in one constant, `EVENTS_MARK_UNTRUSTED`, set to True. `CALENDAR_EVENTS` is one flag for the whole calendar
+grid, so its flip waits for this ruling.
 
 `create_personal_task` (with `block_start` and `block_end`) and
 `set_my_overlay` stay the tools for a task block. The new tools go into
@@ -1225,13 +1713,107 @@ gate.
    `credentials_encrypted`, never in the environment (D96.3). The email
    app's row stays its own, so a disconnect in one app breaks nothing in
    the other.
+
+   ⚠️ **`calendar_entries.connection_id` has NO cascade** (migration 331,
+   the default NO ACTION). A Metorite event that CE-11 wrote out names the
+   connection too, so a cascade would delete the member's own events. So
+   the disconnect does three steps in one transaction:
+   1. Delete the `external` rows of the connection.
+   2. On the `metorite` rows of the connection, clear `connection_id`,
+      `external_id`, `push_to_provider`, `provider_sync_state` and
+      `provider_sync_error`.
+   3. Only then delete the connection row, if the disconnect deletes it.
+
+   A delete of a connection that an entry still names fails. An
+   organization delete cascades through both tables in one statement, so
+   it works. The member purge deletes the entries of the member before it
+   deletes any connection. CE-10 must add the calendar connection to the
+   purge, after the entries.
 4. **The loop.** A 60-second tick with a due check and a lock, after
    `gateway/crm_sync/scheduler.py`. Google uses a sync token. Outlook uses a
    Graph delta query. The window is 30 days back and 180 days ahead.
 5. **The rows.** Each instance is an `external` entry, read only. A
    provider's "free" entry has `busy = false`. A cancel sets `status`.
+   ⚠️ **Skip an instance whose `recurringEventId` is the `external_id` of a
+   `metorite` row on the same connection.** That instance comes from a
+   series that Metorite wrote out (CE-11). The unique key of §3.3 does not
+   catch it, because the provider gives each instance its own id.
 6. **Conflicts.** `block_overlap` and MD-11's `meeting_overlap` read the busy
    external entries. The day planner treats them as fixed.
+
+### 8.1a The build decisions (D215, 2026-11-12)
+
+The owner asked on 2026-11-12 for Google and Outlook sync in both
+directions, with the least work for the member. These points bind CE-10,
+CE-11 and CE-13.
+
+1. **Scopes (one consent for read and write).** Google asks
+   `https://www.googleapis.com/auth/calendar.readonly` and
+   `https://www.googleapis.com/auth/calendar.app.created`. The first reads
+   every calendar. The second lets Metorite make the calendar "Metorite" and
+   write events only into calendars that Metorite made. So Metorite can
+   never change the member's own events (CE-11 will need `calendar.events`,
+   a later consent). Microsoft asks `Calendars.ReadWrite` and
+   `offline_access`. Graph has no narrower write scope, so the Metorite
+   code writes only to the "Metorite" calendar. `User.Read` is already in
+   `GRAPH_SCOPES`. Never ask a mail scope in the calendar leg.
+2. **Incremental consent.** Google: send `include_granted_scopes=true`. The
+   calendar grant adds to the Gmail grant. Microsoft: the new grant lists the
+   calendar scopes only. The refresh token covers the union.
+3. **One redirect URI.** The calendar flow reuses
+   `_build_redirect_uri(provider)` in `routes/email/transport/oauth.py`,
+   that is `<workbench>/api/email/oauth/{provider}/callback`. The owner
+   adds no URI in either console. The state carries its own purpose,
+   `calendar.connect`, through the caller-purpose MAC of `signing.py`
+   (the precedent is `crm.zoho.connect`). The email callback verifies the
+   email state first. When that fails, it verifies the calendar state and
+   hands over to the calendar module. It never writes a mailbox for a
+   calendar state. The email functions stay unchanged.
+4. **A scope check.** The calendar callback refuses a grant that lacks the
+   calendar scope, or that has no refresh token. It then redirects with
+   `error=scope_missing`.
+5. **The connection row.** `integration_connections`, `owning_app =
+   'calendar'`, `scope_kind = 'member'`. One row for each member and
+   provider. A reconnect updates the row. The sync cursor and the chosen
+   calendars live in `provider_meta`.
+6. **Which calendars.** After consent, Metorite reads every calendar that
+   the member owns or may edit, except holiday and birthday calendars and
+   the calendar "Metorite". The member may untick a calendar in settings.
+   The first sync reads the primary calendar first, so events show fast.
+7. **The calendar "Metorite".** At connect, Metorite makes one calendar
+   named "Metorite" in the member's Google or Outlook account, when
+   `CALENDAR_SYNC_WRITE` is on. Otherwise the loop makes it on the first
+   tick after the flip. Its id lives in `provider_meta.metorite_calendar_id`
+   of the connection row. The member can hide or remove it in one click, and
+   the primary calendar stays clean. The read loop never imports events of
+   this calendar as `external` entries. An event that the member makes by
+   hand in it is ignored.
+8. **Task blocks out (CE-13) and where the provider id lives.** A task with a
+   timed block on `pm_task_personal` writes one event into the calendar
+   "Metorite". The provider event id lives in a new small table,
+   `calendar_task_links`, tenant-scoped (R5), with the key `(organization_id,
+   task_id, member_email, connection_id)` and the columns `external_id`,
+   `etag`, `provider_updated` and `synced_block_hash`. It is NOT a column of
+   `pm_task_personal`, because a member with Google and Outlook has two
+   events for one block. It is NOT in `calendar_entries`: a task block is not
+   an entry (§0). A new migration adds it (R6, taken at build time). The
+   read loop skips an event whose `(connection_id, external_id)` is in this
+   table, and routes it to the block instead.
+   A move or a resize at the provider moves the block. The newer time wins:
+   the provider's `updated` against the block's `updated_at`. An `etag` equal
+   to the stored one is our own echo and changes nothing. A done task, or a
+   cleared block, deletes the provider event. A delete at the provider
+   unschedules the block and keeps the task. Metorite never deletes a task
+   because of a provider change.
+9. **Defaults of the connect flow.** Connect is a button in the Calendar
+   settings and on a first-run card. The write switch (CE-11) is on by
+   default for task blocks: one switch, "Show my timed tasks in Google
+   Calendar" (or Outlook), on at connect. Connect asks for read and write
+   in one consent, so there is no second step. The first sync starts at
+   once and shows "Syncing…" until it ends.
+   A revoked token shows "Reconnect" and stops the loop for that row.
+10. **The guide.** `docs/calendar_connect.md` holds the member steps and the
+    admin steps (CE-14). The panel "How to connect" shows the same steps.
 
 ### 8.2 Write with read (CE-11)
 
@@ -1241,19 +1823,63 @@ together. The owner gates of §8.3 still bind the live flips.
 - An event made in Metorite, with a connected account, has the switch
   **Also in Google Calendar**. It is on by default when connected.
 - Metorite writes the event to the provider. The provider sends the invites.
-  The provider's id goes into `external_id`, and the sync of CE-10 keeps the
-  row current.
-- Task blocks as busy time in the provider is a later choice (Q9).
+  The connection goes into `connection_id`, and the provider's id goes into
+  `external_id`, on the SAME row. The row keeps `source = 'metorite'`.
+  `push_to_provider` names the provider, and `provider_sync_state` records
+  `pending`, `sent` or `failed`.
+- The sync of CE-10 finds that row by the unique key
+  `(organization_id, connection_id, external_id)` of §3.3, and updates it.
+  It never inserts an `external` copy of a single event. For a series, the
+  rule of §8.1 item 5 skips each instance of the master.
+- Task blocks go out as events of the calendar "Metorite" (Q9, D215), not as
+  `calendar_entries` rows. §8.1a points 7 and 8 hold the rule.
 
 ### 8.3 Owner gates
 
 | Gate | Who | Why |
 |---|---|---|
-| Add `calendar.readonly` to the Google consent screen, and pass Google's review of a sensitive scope | Owner | Our OAuth app, and our name on the review |
-| Add `Calendars.Read` to the Azure app | Owner | Same |
-| Put the client secrets on the box with `scripts/secrets.sh` | Owner | Live credentials |
+| Add `calendar.readonly` and `calendar.app.created` to the Google consent screen, add the test users, and pass Google's review of the sensitive scope | Owner | Our OAuth app, and our name on the review. Task 3036 holds the steps. In Testing status a refresh token lasts 7 days |
+| Add the delegated permission `Calendars.ReadWrite` to the Azure app | Owner | Same. No new redirect URI in either console |
+| Enable the Google Calendar API in the Google Cloud project | Owner | Without it every call answers 403 |
+| Put the client secrets on the box with `scripts/secrets.sh` | Owner | Live credentials. They exist for mail already |
 | Turn `CALENDAR_SYNC_READ` on for a real member | Owner | D54.6 |
-| Add the write scopes, and turn `CALENDAR_SYNC_WRITE` on | Owner | The provider sends mail to real people (CLAUDE.md §3a rule 3) |
+| Turn `CALENDAR_SYNC_WRITE` on | Owner | The provider sends mail to real people (CLAUDE.md §3a rule 3) |
+
+### 8.4 Invites in a connected inbox (owner, 2026-11-18)
+
+The owner asked for this on 2026-11-18, in chat. The words are the owner's, so they sit in a block that the linter does not read.
+
+```text
+ability for the two way sync, if any of the connected email inboxes shows an
+invite for an online call or an event, etc., that should also show up in the
+calender, unless that is already synced from an external calendar.
+
+In case it's an event that I have not accepted yet, it should show up as
+probably some grayed-out or light UI/UX. That will make the user understand
+that that is an event that is not confirmed yet.
+```
+
+**What the code does on 2026-11-18.**
+
+- No code reads an invite in a mailbox. No code reads a `text/calendar` part, an `.ics` attachment or a `METHOD` line. The Gmail and Outlook ingestion keep the mail only.
+- `calendar_entries` takes the kinds `event` and `external`, and the sources `metorite`, `google` and `outlook` (migration 331, the checks `calendar_entries_kind` and `calendar_entries_source`). So an entry from a mail needs an expand migration.
+- No entry keeps the iCalendar UID. The Google provider does not map `iCalUID`, and the Graph provider does not map `iCalUId`. So nothing can match a mailed invite to the same event from a synced calendar.
+- The member's own answer to a synced event is not stored. CE-10 maps only the `tentative` status of the event. `calendar_entry_attendees.rsvp` exists (`needs_action`, `accepted`, `tentative`, `declined`), and only CE-9 plans to write it.
+- A tentative external entry has a dashed border (`externalLook.ts:16`) and the note "Not confirmed yet." It has no lighter fill.
+
+**The rules.**
+
+1. **Which invites.** The ingestion reads the `text/calendar` part or the `.ics` attachment of a mail in a connected mailbox of the member. It takes `METHOD:REQUEST` (a new or changed invite) and `METHOD:CANCEL`. It takes an invite only when an `ATTENDEE` of it is an address of the member's own mailbox. A shared mailbox adds no event to the calendar of any member.
+2. **One private entry.** The invite makes one entry of the member, with the new kind `invite` and the source `email`. The entry keeps the id of the mail, and the member's own attendee row with `rsvp = 'needs_action'`. It keeps the title, the time and zone, the organizer and the place. It keeps the call link (Zoom, Meet or Teams) in `conference_url`. The member cannot move it, because the organizer owns the time.
+3. **One event, not two.** Each entry keeps the iCalendar UID. For one instance of a series, it also keeps the `RECURRENCE-ID`. CE-10 writes both from the provider too. For one member, one UID gives one entry on the grid. The synced copy wins, because the provider holds the live state. When the synced copy arrives, it takes the place of the mailed entry and keeps the link to the mail.
+4. **Changes and cancels.** A later invite with the same UID and a higher `SEQUENCE` changes the entry. A `CANCEL` marks it cancelled. The grid shows a cancelled entry struck for 24 hours, and then hides it.
+5. **Not accepted yet.** An entry whose own answer is `needs_action` or `tentative` draws light: a dashed border and a light fill. The sheet says "You have not accepted this yet." This holds for a mailed invite and for a synced event. An accepted entry draws as normal. A declined entry hides by default, and "Show declined" shows it muted and struck (§6.2).
+6. **The answer from the provider.** CE-10 also reads the member's own answer from the provider into the member's attendee row. Google gives it in `attendees[].self` and `responseStatus`, and Graph gives it in `responseStatus.response`. So an accept in Gmail or Outlook draws the entry solid at the next sync.
+7. **Accept or decline in Metorite (CE-19).** The sheet has Accept, Maybe and Decline. With a synced calendar, the answer goes through the API of the provider. With no synced calendar, it goes as an iTIP `REPLY` from the member's own mailbox, after one confirm. Each path reaches a real person, so the live flip is the owner's.
+8. **Invites from strangers.** Anyone can send an invite, and calendar spam is a known attack. Some senders are strangers: not in the org, not in the contacts, and never mailed by the member. Their invites go to a "New invites" list, not onto the grid. Its call link shows its host, and it opens only after a click on **Open link**. The title, the place and the notes are untrusted text. The chat reads them framed (§6.7), and they never become an instruction.
+9. **Two-way sync stays as planned.** CE-10 reads Google and Outlook, CE-13 writes task blocks out, and CE-11 writes events out. The owner gates of §8.3 bind each live flip.
+
+**The demo of this rung (task 3775).** A member gets a Zoom invite by mail. It shows on the calendar, light, within 2 minutes, with **Join**. The member accepts it in Gmail. At the next sync it draws solid, and it shows once. The demo needs CE-10 live, so the owner gates of §8.3 come first.
 
 ## 9. Flags
 
@@ -1264,11 +1890,14 @@ Every flag is OFF by default. Off gives today's behaviour.
 | `CALENDAR_LEAD_TIME` | Gateway | CE-1, CE-6 | The fixed 30 minutes |
 | `CALENDAR_REMINDERS` | Gateway. As for web push, the client has no flag of its own: RM-5 draws reminders only when the reminder routes answer | RM-1 to RM-5 | The reminder routes answer 404. No loop, no cards, no tools, no pins. `/version` carries `calendar_reminders` |
 | `WEB_PUSH_ENABLED` | Gateway. The client has no flag of its own: the Notifications section shows only when `/push/public-key` answers | PN-1, RE-9 | Every `/push` route answers 404, so the section draws nothing, and nothing registers or sends. ✅ ON for every org is approved (D114.8) |
+| `DUE_PUSH_ORGS` | Gateway, a per-org list, or `*` | RX-5 (§5.11) | No morning summary of due tasks. 🔴 A production flip is the owner's |
 | `PUSH_PROMPT_ORGS` | Gateway, a per-org list. The client reads `prompt` in the `/push/public-key` answer | OB-8 (§10.4) | The chat shows no sheet that asks a phone member to turn on notifications |
 | `NEXT_PUBLIC_CALENDAR_COMPOSER` | Control plane | CE-3 | No drag to draw. The Gap Filler as today |
-| `CALENDAR_EVENTS` and `NEXT_PUBLIC_CALENDAR_EVENTS` | Both | CE-4 to CE-9, CE-12 | No events. `/version` carries `calendar_events` |
+| `CALENDAR_EVENTS` and `NEXT_PUBLIC_CALENDAR_EVENTS` | Both. `events_enabled()` in `routes/tasks/entries.py` is the one reader of the gateway flag. CE-5 reads the client flag | CE-4 to CE-9, CE-12 | No events. Each `/tasks/calendar/entries` route answers 404, and the read has no `entries` key. `/version` carries `calendar_events` |
 | `CALENDAR_SYNC_READ` | Gateway | CE-10 | No sync. 🔴 Owner flip |
 | `CALENDAR_SYNC_WRITE` | Gateway | CE-11 | No write-out. 🔴 Owner flip |
+| `CALENDAR_INVITES_ORGS` | Gateway, a per-org list, or `*` | CE-16, CE-17 | No invite is read from a mailbox, and no UID match runs |
+| `CALENDAR_RSVP_ORGS` | Gateway, a per-org list | CE-19 | The sheet shows no Accept, Maybe or Decline. 🔴 Owner flip: a reply reaches a real person |
 
 ## 10. Tickets
 
@@ -1282,20 +1911,46 @@ needs no decision change.
 | **CE-1** Lead time on a task block | AGENT-SAFE. No change | `pm_task_personal.lead_minutes`. `user_settings.block_lead_minutes` and `event_lead_minutes`. `feed.py` reads the lead, not `SOON`. The block menu sets it | A lead of 10 gives `block_soon` 10 minutes before the start. No lead gives 30. The flag off gives 30 for every block | `tests/unit/test_calendar_lead_time.py` (R8, new) and `test_shell_feed.py` |
 | ~~**CE-2**~~ | **REPLACED by WS-66 (§10.1), D114** | — | — | — |
 | **CE-3** The composer and drag to draw | AGENT-SAFE. No change | The composer of §6.1 with Task and Reminder. Event shows only with `NEXT_PUBLIC_CALENDAR_EVENTS`. Drag to draw in `TimeGrid.tsx`. The **New at…** row in the Gap Filler | A drag from 14:00 to 15:00 makes a private task with that block in one save. Esc saves nothing. The keyboard alone can do it | `components/Composer.test.tsx` (new), the conformance suite, `src/lib/shell/seams.test.ts`, and a visual review |
-| **CE-4** The event store | AGENT-SAFE after CE-0 Q1 | The two tables of §3.3. `POST`, `PATCH` and `DELETE` on `/calendar/entries`. The read of §3.4 | I see my entries. A colleague who is not an attendee sees none. Org B sees no row of org A. The flag off gives today's read | `tests/unit/test_calendar_entries_r8.py` (new) and `test_db_engine_seam.py` |
+| **CE-4** The event store — ✅ **BUILT 2026-10-31, dark** (migration 331) | AGENT-SAFE after CE-0 Q1 | The two tables of §3.3. `POST`, `PATCH` and `DELETE` on `/tasks/calendar/entries` (`routes/tasks/entries.py`, under the `feature:tasks` router). The `entries` key of the read of §3.4. The member purge deletes the member's entries and seats. CE-4 writes ONE attendee row: the organizer row of the owner. The body takes no attendees. Attendee input, invite cards and RSVP belong to CE-9 | I see my entries. A colleague who is not an attendee sees none. Org B sees no row of org A. The flag off gives today's read. A PATCH or a DELETE of another member's entry, or of an `external` entry, answers 404 and changes nothing. A naive time is 422. A purged member leaves no entry. An all-day entry returns the same dates in every `tz` | `tests/unit/test_calendar_entries_r8.py` (R8, two orgs, M1 to M7), `test_admin_member_purge.py`, `test_tenant_coverage.py`, `test_tenancy_boundary.py` and `test_db_engine_seam.py` |
 | **CE-5** Events in the UI | AGENT-SAFE after CE-3, CE-4 | The Event kind, the looks of §6.2, the sheet of §6.3, the all-day row and Month of §6.4 | No event shows in Tasks or Projects. An all-day event keeps its date in every zone | Vitest for the composer, `MonthGrid` and the all-day row, and `themes.test.ts` |
 | **CE-6** Event lead time and conflicts | AGENT-SAFE after CE-1, CE-4 | `event_soon` with class `interrupt`. `block_overlap` reads busy entries | A lead of 10 gives `event_soon` 10 minutes before. A free entry gives no overlap | `test_calendar_lead_time.py` and `test_shell_feed_r8.py` |
 | ~~**CE-7a**~~ | **REPLACED by RM-3 and RM-9 (§10.1), D114** | — | — | — |
 | **CE-7b** The event tools and job | AGENT-SAFE after CE-4 | `create_event`, `update_event`, `set_reminder` on an event. The `new-event` job | "Meet Sharath 8:30-10:30 tomorrow" opens a filled composer. The chat makes the event after one confirm | The three tests of CE-7a |
 | **CE-8** Repeat rules | AGENT-SAFE after CE-4 | `recurrence`, `series_id`, `original_start`, expanded in the window. "This event" or "all events" on a change | A weekly 09:00 event in `Asia/Kolkata` stays at 09:00 in that zone. A cancelled instance does not show | `tests/unit/test_calendar_recurrence.py` (new), with a zone that changes its clock |
-| **CE-9** Colleagues on an event | AGENT-SAFE after CE-0 Q2, CE-4 | Attendee rows with `member_email`. The rule of §4.1. `event_invite` with RSVP in place (D101) | An attendee sees the event. A colleague who is not one does not. Decline writes `rsvp` and mutes the entry | `test_calendar_entries_r8.py`, the visibility cases |
+| **CE-9** Colleagues on an event | AGENT-SAFE after CE-0 Q2, CE-4 | Attendee input: the rows with `member_email` and the guest rows. CE-4 writes only the organizer row, and its read already applies the rule of §4.1. `event_invite` with RSVP in place (D101) | An attendee sees the event. A colleague who is not one does not. Decline writes `rsvp` and mutes the entry | `test_calendar_entries_r8.py`, the visibility cases |
 | **CE-10** Read Google and Outlook | 🔴 OWNER-GATE for §8.3. The code is AGENT-SAFE after CE-0 Q1, Q6, CE-4 | §8.1, and the provider of MD-11 | With recorded replies, a sync writes each instance once, and a second sync adds nothing. A disconnect deletes the rows of that connection | `tests/unit/test_calendar_sync_read.py` (R8, new) and the loop in `test_db_engine_seam.py` |
+| **CE-10a** Google read, and the shared sync core | 🔴 OWNER-GATE for the live flip (§8.3). The code is AGENT-SAFE | §8.1 and §8.1a: the connect leg, the calendar row, the 60-second loop, the row writer and the Google provider | With recorded replies, a sync writes each instance once, and a second sync adds nothing. A disconnect removes the rows of that connection. A calendar state never writes a mailbox | `tests/unit/test_calendar_sync_read.py` (R8, new) and the loop in `test_db_engine_seam.py` |
+| **CE-10b** Outlook read | As CE-10a. After the core of CE-10a | The Graph provider on the same core: a delta query for each calendar | As CE-10a, with recorded Graph replies, and an `@removed` item sets `cancelled` | `test_calendar_sync_read.py` |
+| **CE-10c** The connect UI and the help panel | AGENT-SAFE, dark | **Connect Google Calendar** and **Connect Outlook** in `CalendarSettings.tsx`, the states "Syncing…" and "Reconnect", the calendar ticks, and the panel "How to connect" that links `docs/calendar_connect.md` | A member connects from the settings in one click. A revoked token shows "Reconnect". The panel shows the member steps | Vitest for the settings and the panel, and a visual review |
+| **CE-5a** External entries on the grid | AGENT-SAFE, dark | The read-only look of an `external` entry on the grid (§6.2) | An external entry shows in its time, locked, with the provider mark. A busy one counts in the overlap | Vitest for the grid, and a visual review |
+| **CE-13** Tasks out, two ways | 🔴 OWNER-GATE for the live flip (§8.3). After CE-10a | §8.1a points 7 and 8: the calendar "Metorite", the table `calendar_task_links`, the writer, and the return path | A scheduled task block makes one provider event in "Metorite". A move at the provider moves the block. A delete at the provider unschedules the block and keeps the task. A done task deletes the event. The flag off sends no request | `tests/unit/test_calendar_sync_tasks.py` (R8, new) |
+| **CE-14** The setup guide | AGENT-SAFE | `docs/calendar_connect.md` (§8.1a point 10) | A member can connect each of the four account types from the text alone | `ste-lint` on the file |
 | **CE-11** Write events to the provider | 🔴 OWNER-GATE (§8.3). After CE-10 | §8.2 | The flag off sends no request. One event makes one provider event, and the next sync makes no copy | `tests/unit/test_calendar_sync_write.py` (new) |
 | **CE-12** Notes meetings | AGENT-SAFE after CE-4 | `meeting_id`. **Prepare notes** and **Send notetaker**. The "Coming up" band reads entries | Prepare notes twice opens one `meeting` row. A moved event moves the band | `tests/unit/test_calendar_meeting_link.py` (new) |
+| **CE-15** The chat reads the events (task 3463, CHAT-REACH-1) | AGENT-SAFE to build, dark. The live effect needs `CALENDAR_EVENTS` and `feature:tasks`, an enforcement-flip, and D218 adds the owner preview. The untrusted-text ruling is decided: the read marks the chat | §6.7: one read tool `my_tasks_list_events` in `skill_my_tasks`, in the `calendar-day` pack. It reads the `entries` key of `GET /projects/my/calendar`. No SQL, no route, no flag | "What is on my calendar" lists the synced Google and Outlook events with the provider of each. With no `entries` key the tool gives one fixed line and sends one request. The titles and places sit in one `UntrustedFrame` block, and notes and links never show. The tool has no identity argument. The tool refuses a window above the cap. The pack holds 17 tools (20 since P-1a, task 3112). P-1c (task 3923) adds no tool to it | `tests/unit/test_calendar_day_pack.py`, `test_calendar_day_held.py`, `test_pack_requests.py`, `test_studio_split_matrix.py`, `test_connector_chat_reach.py`, `test_read_tool_paging.py`, and a new `tests/unit/test_calendar_events_tool.py` |
+| **CE-16** Invites from a connected inbox (task 3772) | AGENT-SAFE, dark. After CE-4 and CE-17 | §8.4 rules 1, 2, 4 and 8: read the `text/calendar` part or the `.ics` attachment in the Gmail and Outlook ingestion. Write the `invite` entry with the source `email`. Change it by `SEQUENCE`, cancel it, and put a stranger's invite in "New invites" | A mailed invite to the member shows on the grid within 2 minutes, with its call link. A later change moves it, and a cancel strikes it. An invite in a shared mailbox adds nothing. A stranger's invite shows only in "New invites". A long or hostile field is cut and framed | `tests/unit/test_calendar_mail_invites.py` (R8, new), with recorded Gmail and Graph mails |
+| **CE-17** One event across sources (the UID) (task 3771) | AGENT-SAFE, dark. A migration (R1, R6): `ical_uid` and `recurrence_id` on `calendar_entries`, the kind `invite` and the source `email` in the two checks, and one index for the match. The other checks of migration 331 do not change | §8.4 rule 3: CE-10 writes the UID from the provider, and the match rule lets the synced copy win | The same meeting from the mail and from Google shows once. The synced copy keeps the link to the mail. A UID of org A never matches in org B | `tests/unit/test_calendar_uid_match_r8.py` (R8, new) |
+| **CE-18** My answer, and the "not accepted" look (task 3773) | AGENT-SAFE, dark. After CE-5a and CE-10a. The provider half rides `CALENDAR_SYNC_READ` | §8.4 rules 5 and 6: CE-10 writes my answer from the provider. A light fill token in `src/app/globals.css` and `lib/theme/themes.ts`. "Show declined" | An event that I have not answered draws dashed and light. An accept at the provider draws it solid at the next sync. A declined event hides by default | Vitest for `externalLook.ts`, `themes.test.ts`, `test_calendar_sync_read.py`, and a visual review in four contexts |
+| **CE-19** Accept or decline in Metorite (task 3774) | 🔴 OWNER-GATE for the live flip, because a reply reaches a real person. The code is AGENT-SAFE, dark. After CE-18, and CE-11 for the provider path | §8.4 rule 7 | Accept with a synced Google calendar changes my answer at Google and sends no mail of ours. Accept with no synced calendar sends one iTIP `REPLY` from my mailbox, after one confirm. The flag off sends nothing | `tests/unit/test_calendar_rsvp_reply.py` (new) |
 
 **The order.** CE-1 and CE-3 now. CE-0 is decided (D138). Then CE-4, CE-5,
 CE-6, CE-7b, CE-8, CE-9 and CE-12. Then CE-10 and CE-11 together, for Google
 and Outlook at once (D138).
+
+**Carried from the review of CE-4 (2026-11-01).** Each item belongs to the
+ticket that names it:
+
+- **CE-12:** CE-4 stores `task_id`, `crm_deal_id`, `crm_contact_id` and
+  `meeting_id` with no access check. CE-12 must check the access of the
+  member when it reads a link, or check it on the write.
+- **CE-9:** each attendee row keeps the org of its entry, because the
+  attendee key is `(organization_id, entry_id)`.
+- **CE-9:** the member purge must also take the guest rows that hold the
+  address (`email` is the address and `member_email` is NULL).
+- **CE-10:** give a title to a provider event that has none, and shorten a
+  title past 200 characters, before the insert.
+- **CE-5:** `PURGE_LABELS` in `OrganizationAdmin.tsx` needs a label for
+  `calendar_entries` and for `calendar_attendances`.
 
 ### 10.1 WS-66 — reminders and web push (D114)
 
@@ -1316,6 +1971,7 @@ _DB_GATE`, because `deploy.yml` has no ladder database.
 | **RE-9b** A due reminder sends a real web push — ✅ **BUILT 2026-10-31. Not dark: it sends wherever `WEB_PUSH_ENABLED` and `CALENDAR_REMINDERS` are on (production: both on)** (AGENT-SAFE, tier HIGH: a migration, and a send to real devices) | After RE-9a and RM-2. It does not wait for RM-2b | §5.6 "Settled 2026-10-30 (RE-9)", decisions 1 to 3, 5 and 6, and the rulings a to k of RE-9b. The migration (`infra/postgres/318_reach_outbox_web_push.sql`, the next free number on 2026-10-31), the classes in `apps/services/gateway/gateway/reach/classes.py`, the plan step and the send step in `apps/services/gateway/gateway/reach/push_channel.py`, the calls from `_fire`, `_check_back` and `_give_up` in `reminders/loop.py`, the per-channel budget, and the R8 acceptance. The plan step takes the session `db` of the loop and writes the row through a new helper in `reach/outbox.py`, with no new `tenant_session` or `get_db` site (R5). The dedupe key is `reminder:<reminder id>:<reminder_events id>`. The send phase of `run_tick` calls the send step after the steps of every org, with no `REACH_*` flag (ruling k). The margin of the 90 s is one tick (`TICK_SECONDS` = 60) plus the send phase (`SEND_PHASE_S` = 30, ruling k). The outbox `body` holds the fixed text "reminder". The caps count `sent` rows on `web_push` for one member and one local date: 10 for `reminder_due`, and `reach_daily_cap` (default 3) for `reminder_check`. **Non-goals:** WhatsApp (D115), the S7 chat events, a new channel setting (RE-7), and any new flag | A frozen-clock R8 test fires a `reminder_due` row and sends one push through a faked `outbound_guard.request_https` within 90 s of `fire_at`. The decrypted payload holds the url `/chat?reminder=<id>`. A hidden-details member gets no title. A replay of the same tick sends once, and two workers send once. The push of the second cycle is sent, because each ledger row gives its own key. The push is sent with `REACH_ENABLED`, `REACH_ORGS` and `REACH_MEMBERS` all off. A done, dropped or moved reminder sends nothing. `reminder_check` and `reminder_unconfirmed` send nothing in quiet hours. The eleventh `reminder_due` of a day sends nothing. A `reminder_check` over the interrupt cap sends nothing, and its card stays in My Day. Push rows do not count in the WhatsApp cap, and `_SENT_SINCE_SQL` counts by channel. The Reach loop and `whatsapp.deliver` never touch a `web_push` row. `plan.on_whatsapp` still removes the three reminder kinds after their class changes. Org B reads nothing of org A | `tests/unit/test_reach_push.py` (new, `pytestmark = _DB_GATE`), `tests/unit/test_reach_plan.py` and `tests/unit/test_reach_loop.py` (the WhatsApp fence). **Verify:** `bash scripts/dev_db.sh`, then `uv run pytest tests/unit/test_reach_push.py tests/unit/test_reach_plan.py tests/unit/test_reach_loop.py tests/unit/test_reach_r8.py tests/unit/test_reminder_loop.py tests/unit/test_reminders_r8.py tests/unit/test_push_subscriptions.py tests/unit/test_reach_push_message.py tests/unit/test_tenancy_boundary.py`. The production flip needs no new owner act (D114.8): an agent flips both flags once each slice passes on dev.metorite.com. The owner checks a real device through the PN-1 HANDOFF item |
 | **RM-4** A tap opens the chat — ✅ **BUILT 2026-10-29, dark** (AGENT-SAFE) | After RM-3 | §5.7: `/chat?reminder=<id>`, the code-built first message, the chips, the `reminder` context block. As built: §5.7 | A tap on a push opens the chat with the reminder message and no model call. Done from a chip ends the reminder and offers Undo | `src/app/chat/reminderOpen.test.ts` (new, `.ts` because vitest runs `*.test.ts` only), `tests/unit/test_reminder_context.py` and `tests/unit/test_reminders_r8.py` |
 | **RM-5** The Calendar UI and the New reminder form — ✅ **BUILT 2026-10-30. It draws wherever `CALENDAR_REMINDERS` is on (production: on). The client has no flag of its own (§9)** (AGENT-SAFE) | After RM-1 | The pin and the Month chip of §6.2. The Reminders panel: Upcoming, Waiting on you, Unconfirmed. **The New reminder form** (owner decision, 2026-10-30, no D-number): a member makes a reminder in the Calendar with no chat. A button in the title bar tools and a button in the panel header open one `Modal` (`src/components/ui/Modal.tsx`) with a title (200 characters at most), a date and a time (the next half hour by default), and a kind (action or notice). The form makes a standalone reminder and sends no subject. The time is read in the browser zone, which is the zone of the grid, and goes out as ISO with the offset beside `tz`. The form does not read `user_settings.timezone`, because it holds "UTC" until the settings load. The form refuses a time at or before now, under its field. A drag of a pin, or Alt+ArrowUp and Alt+ArrowDown (15 minutes of real time), calls `/reschedule` once. The Calendar refuses a drag or a key move to a time at or before now, and a toast says why. A move of a scheduled reminder offers Undo. A "Move to…" item opens the same date and time controls. A move starts the reminder again, so an unconfirmed pin goes back to cycle 0. A tap on a pin or a panel row opens `/chat?do=new-chat&reminder=<id>`. The panel shows in every mode, and a phone opens it as a sheet from the title bar. With the routes at 404 or 403 the Calendar draws no pin, chip, panel or button and shows no error. | A reminder draws as a line with no height and takes no capacity. Drag moves `fire_at`. With the flag off the Calendar draws nothing. The form sends `fire_at` with an offset and `tz`, and the pin shows at that minute. A reminder changes no `leverageStats` | `reminders.test.ts` beside `lib/reminders.ts` (zone to ISO across a clock change, the split by state, the pin, the absent state on a 404, the one-call `/reschedule`), the conformance suite, `uiGates.test.ts`, and a visual review. Non-goals: events, the full Task, Event and Reminder composer (CE-3), the link picker, the `set-reminder` and `new-event` jobs, push (RE-9b), and the bell glyph (RM-5b) |
+| **RX-5** A due date is a day, and the morning summary — ✅ **BUILT 2026-11-02. The rule is live with the code, and the push is dark behind `DUE_PUSH_ORGS`** (migration 330) | Owner directive, 2026-11-01 | §5.11 | A task due today at noon reads Due today at 18:00 local. One push for each member and local day, and none when nothing is due | `test_due_day.py`, `test_due_push_r8.py`, `taskCard.test.ts` |
 | **RM-5b** The bell glyph on Tasks and Projects | After RM-5 | The bell glyph of §6.5 on a Tasks or Projects card, for the member who set the reminder. Split from RM-5 on 2026-10-30 | A linked card shows the glyph to its own member only | A vitest for the card chip, and the conformance suite |
 | **RM-6** Closed by evidence | Later | The linked task goes to done, or the member sends an email on the linked thread. The reminder closes and says so | A done task closes its reminder, with an `evidence` ledger row | `test_reminder_evidence.py` |
 | **RM-7** Conditional follow-ups | Later | "Remind me if Ravi has not replied by Friday". A reply cancels it | An inbound reply before Friday cancels the reminder | `test_reminder_conditions.py` |
@@ -1559,10 +2215,15 @@ directly.
 | Q6 | Google or Outlook first? | Google. The Gmail connect already runs on our Google project |
 | Q7 | When does write-out start? | After read is live for 2 weeks, and only for events made in Metorite |
 | Q8 | A guest with no connected account | Store the name and address. Send nothing. Offer Connect |
-| Q9 | Do task blocks go to the provider as busy time? | No. An opt-in for each member, after CE-11 |
+| Q9 | Do task blocks go to the provider? | ✅ **DECIDED 2026-11-12 (D215): yes**, as events of the calendar "Metorite", two ways (§8.1a points 7 and 8) |
 | Q10 | The gate of the new acts | `feature:tasks`, as D54.1 |
+| Q11 | An invite from a stranger: on the grid, or in a "New invites" list? (§8.4 rule 8) | The list. Calendar spam is a known attack |
+| Q12 | A declined event: hide it by default? (§8.4 rule 5) | Yes, with "Show declined" |
+| Q13 | With no synced calendar, may Accept send an iTIP reply from the member's own mailbox? (§8.4 rule 7) | Yes, after one confirm. The flip of `CALENDAR_RSVP_ORGS` stays the owner's |
 
 ## 12. Out of scope
+
+> **Booking is now in scope (D205.2).** A guest sees free slots and never a calendar view. Rooms stay out. Metorite's own sender stays off. Read the booking lines below as superseded.
 
 - A team or company calendar, and free and busy of a colleague (D54.4).
 - Several blocks for one task, and the WS-21 kinds `break`, `batch` and

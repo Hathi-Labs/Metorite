@@ -109,6 +109,13 @@ describe("unmappedFeatures", () => {
     ]);
   });
 
+  it("does not call an install-only slug unmapped (PKG-6b)", () => {
+    const access = signedIn({ features: ["chat", "zz_crm", "ghostpane"] });
+    expect(unmappedFeatures(access, ["zz_crm"])).toEqual(["ghostpane"]);
+    // Without the install slugs, the report is what it was.
+    expect(unmappedFeatures(access)).toEqual(["ghostpane", "zz_crm"]);
+  });
+
   it("is empty when every grant has a home", () => {
     expect(unmappedFeatures(signedIn({ features: ["chat", "tasks"] }))).toEqual([]);
   });

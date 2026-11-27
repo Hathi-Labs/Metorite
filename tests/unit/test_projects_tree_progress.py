@@ -47,6 +47,31 @@ USER = projects_user()
 ASYNC = pytest.mark.asyncio
 
 
+@pytest.fixture(scope="module")
+def laddered() -> None:
+    """Lay the tenant ladder on the shared R8 database before a real query.
+
+    The two R8 tests below used to read whatever an earlier test had left, so
+    they passed only when an earlier test of the same CI shard had built the
+    schema. pytest-split cuts the suite in collection order by measured time,
+    so new tests in another file can move the cut. Then `pm_tasks` does not
+    exist (H-328 part (b), shard 6). `apply_ladder` is idempotent, so this is
+    safe on every run.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.pool import NullPool
+
+    from tests.unit._tenant_ladder import apply_ladder
+
+    eng = create_engine(os.environ["TENANT_LADDER_DATABASE_URL"], future=True,
+                        poolclass=NullPool)
+    try:
+        with eng.begin() as conn:
+            apply_ladder(conn)
+    finally:
+        eng.dispose()
+
+
 @pytest.fixture
 def db(monkeypatch: pytest.MonkeyPatch) -> FakeProjectsDB:
     fake = FakeProjectsDB()
@@ -197,6 +222,7 @@ _VIS_SHAPES = [
     reason="TENANT_LADDER_DATABASE_URL unset - R8 needs a real Postgres",
 )
 @pytest.mark.parametrize("unrestricted", _VIS_SHAPES)
+@pytest.mark.usefixtures("laddered")
 @ASYNC
 async def test_the_count_query_runs_on_asyncpg(unrestricted: bool):
     """Either the driver accepts the statement and its binds, or it raises.
@@ -248,6 +274,7 @@ async def test_the_count_query_runs_on_asyncpg(unrestricted: bool):
     not os.environ.get("TENANT_LADDER_DATABASE_URL"),
     reason="TENANT_LADDER_DATABASE_URL unset - R8 needs a real Postgres",
 )
+@pytest.mark.usefixtures("laddered")
 @ASYNC
 async def test_a_cancelled_task_is_counted_apart_from_a_done_one():
     """🔴 The P1, against a real database rather than against the fake.

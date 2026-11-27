@@ -73,6 +73,7 @@ from gateway.routes.email import core as email_core
 from gateway.routes.email import digest as digest_mod
 from gateway.routes.email.automation import replyzero as rz
 from gateway.routes.email.automation import runner as runner_mod
+from gateway.routes.email.automation.engine import BLANK_RULE_TRIES
 from gateway.routes.email.quoting import (
     split_quoted_text,
     strip_disclaimer,
@@ -428,6 +429,117 @@ class TestNoReAskStorm:
         assert stamped == 3
 
 
+# ── The limit on blank rule answers (task 1128) ─────────────────────────────
+
+
+def _rules_stamp(p, mid: str) -> Any:
+    with p.admin_engine.connect() as c:
+        return c.execute(text(
+            "SELECT rules_processed_at FROM email_messages WHERE id = CAST(:m AS uuid)"),
+            {"m": mid}).scalar_one()
+
+
+def _rule_history(p, mid: str) -> list[tuple[str, str]]:
+    with p.admin_engine.connect() as c:
+        return [tuple(r) for r in c.execute(text(
+            "SELECT status, reason FROM email_executed_rules "
+            "WHERE message_id = CAST(:m AS uuid)"), {"m": mid}).fetchall()]
+
+
+@_DB_GATE
+class TestTheBlankLimit:
+    """The real job, select and stamp on Postgres. Only the model is a fake.
+
+    A mail that always blanks stayed in the select of the job, and the select
+    has no age limit, so it cost one model call in each cycle with no end.
+    The default budget mode ``log`` refuses nothing, so nothing stopped it.
+    """
+
+    def _mail(self, p, monkeypatch) -> tuple[str, str, FakeTenantRedis]:
+        owner = f"owner-{uuid.uuid4().hex[:8]}@ai-cost.test"
+        acc = _seed_account(p.admin_engine, org=p.org_b, owner=owner)
+        now = datetime.now(UTC)
+        _seed_rule(p.admin_engine, org=p.org_b, account_id=acc, name="Quotes",
+                   instructions="Mail that asks for a price.",
+                   created_at=now - timedelta(hours=1))
+        mid = _seed_message(p.admin_engine, org=p.org_b, account_id=acc,
+                            thread_id=f"t-blank-{acc}", sender="y@ext-ai-cost.test",
+                            received_at=now - timedelta(minutes=10))
+        redis = FakeTenantRedis()
+        monkeypatch.setattr(tenant_redis, "get_tenant_redis", lambda *a, **k: redis)
+        _patch_providers(monkeypatch, _FakeProvider())
+        return acc, mid, redis
+
+    @staticmethod
+    def _model(monkeypatch, answer) -> list[str]:
+        calls: list[str] = []
+
+        async def fake(**kw):
+            calls.append(kw["model"])
+            return answer()
+
+        monkeypatch.setattr(llm_context, "acompletion_with_fallback", fake)
+        return calls
+
+    async def test_a_blank_mail_ends_as_no_match_after_its_tries(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ) -> None:
+        _assert_non_priv(app_engine)
+        p = promoted
+        acc, mid, _redis = self._mail(p, monkeypatch)
+        calls = self._model(monkeypatch, lambda: (_response("", "stop", 10), "tier-fast"))
+        for tries in range(1, BLANK_RULE_TRIES):
+            async with _as_app(p, p.org_b):
+                await runner_mod._run_rules_job(acc, 50, False, "scheduler")
+            assert len(calls) == tries
+            assert _rules_stamp(p, mid) is None, "a blank answer burned the watermark"
+            assert _rule_history(p, mid) == []
+        async with _as_app(p, p.org_b):
+            await runner_mod._run_rules_job(acc, 50, False, "scheduler")
+        assert len(calls) == BLANK_RULE_TRIES
+        assert _rules_stamp(p, mid) is not None, "the mail never left the select"
+        assert [s for s, _r in _rule_history(p, mid)] == ["SKIPPED"]
+        # The next cycle selects nothing, so the cost has an end.
+        async with _as_app(p, p.org_b):
+            await runner_mod._run_rules_job(acc, 50, False, "scheduler")
+        assert len(calls) == BLANK_RULE_TRIES
+        assert [s for s, _r in _rule_history(p, mid)] == ["SKIPPED"]
+
+    async def test_an_outage_stays_in_the_select_with_no_count(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ) -> None:
+        _assert_non_priv(app_engine)
+        p = promoted
+        acc, mid, redis = self._mail(p, monkeypatch)
+
+        def down():
+            raise RuntimeError("provider is down")
+
+        calls = self._model(monkeypatch, down)
+        runs = BLANK_RULE_TRIES + 2
+        for _ in range(runs):
+            async with _as_app(p, p.org_b):
+                await runner_mod._run_rules_job(acc, 50, False, "scheduler")
+        assert len(calls) == runs, "the outage stopped its own retry"
+        assert _rules_stamp(p, mid) is None
+        assert _rule_history(p, mid) == []
+        assert redis.store == {}
+
+    async def test_a_dry_run_spends_no_try(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ) -> None:
+        _assert_non_priv(app_engine)
+        p = promoted
+        acc, mid, redis = self._mail(p, monkeypatch)
+        calls = self._model(monkeypatch, lambda: (_response("", "stop", 10), "tier-fast"))
+        for _ in range(BLANK_RULE_TRIES + 1):
+            async with _as_app(p, p.org_b):
+                await runner_mod._run_rules_job(acc, 50, True, "member@ai-cost.test")
+        assert len(calls) == BLANK_RULE_TRIES + 1
+        assert _rules_stamp(p, mid) is None
+        assert redis.store == {}
+
+
 # ── The digest brief cache ──────────────────────────────────────────────────
 
 
@@ -466,6 +578,15 @@ class FakeTenantRedis:
         name = self._check(k)
         self.store[name] = value
         self.ttls[name] = kw.get("ex")
+
+    async def incr(self, k, amount=1):
+        name = self._check(k)
+        self.store[name] = int(self.store.get(name) or 0) + amount
+        return self.store[name]
+
+    async def expire(self, k, seconds):
+        self.ttls[self._check(k)] = seconds
+        return True
 
 
 def _brief_db() -> AsyncMock:

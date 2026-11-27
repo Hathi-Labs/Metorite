@@ -28,6 +28,10 @@
  * otherwise start two reverts against the same row and let the slower one win —
  * the classic way an undo stack corrupts the thing it is protecting. `busy`
  * gates the whole thing, and the buttons disable while it is set.
+ *
+ * The gate is `createUndoRunner` in `lib/undo.ts`, so it is a test and not a
+ * click. A toast's Undo comes through it too, as `undoEntry` (UNDO-1 fix
+ * round 1, finding 6): a toast click and Ctrl+Z in one round trip run once.
  */
 
 import {
@@ -46,10 +50,9 @@ import {
   type UndoStack,
   canRedo,
   canUndo,
+  createUndoRunner,
   record,
   redoLabel,
-  stepBack,
-  stepForward,
   undoLabel,
 } from "@/lib/undo";
 import { isRedoShortcut, isTypingTarget, isUndoShortcut } from "@/lib/keyboard";
@@ -61,6 +64,12 @@ export interface UndoApi {
   setScope: (scope: string) => void;
   undo: () => void;
   redo: () => void;
+  /**
+   * Undo ONE entry from its own toast, through the same one-at-a-time gate
+   * as Ctrl+Z. The newest entry moves the stack the way Ctrl+Z does. Rejects
+   * when the step fails, so the toast can say so.
+   */
+  undoEntry: (entry: UndoEntry) => Promise<void>;
   clear: () => void;
   canUndo: boolean;
   canRedo: boolean;
@@ -76,6 +85,10 @@ const NOOP: UndoApi = {
   setScope: () => {},
   undo: () => {},
   redo: () => {},
+  // No provider, no stack: the toast's Undo still runs its own entry.
+  undoEntry: async (entry) => {
+    await entry.undo();
+  },
   clear: () => {},
   canUndo: false,
   canRedo: false,
@@ -120,7 +133,6 @@ export function UndoProvider({ children }: { children: React.ReactNode }) {
   const scopeRef = useRef<string | null>(null);
   // The listener is bound once; it must not close over a stale stack.
   const stackRef = useRef<UndoStack>(EMPTY_UNDO);
-  const busyRef = useRef(false);
   stackRef.current = stack;
 
   const setScope = useCallback((next: string) => {
@@ -144,37 +156,37 @@ export function UndoProvider({ children }: { children: React.ReactNode }) {
    * slow network does not make undo feel broken. A rejection rolls the stack
    * back to exactly where it was, so the failed step is still the next one —
    * pressing undo again retries rather than skipping past it silently.
+   * `createUndoRunner` holds that rule and the one-at-a-time gate.
    */
-  const run = useCallback(
-    (direction: "back" | "forward") => {
-      if (busyRef.current) return;
-      const before = stackRef.current;
-      const step =
-        direction === "back" ? stepBack(before) : stepForward(before);
-      if (!step) return;
-
-      busyRef.current = true;
-      setBusy(true);
-      setStack(step.stack);
-      setError(null);
-
-      void (async () => {
-        try {
-          await (direction === "back" ? step.entry.undo() : step.entry.redo());
-        } catch (err) {
-          setStack(before);
-          setError(String((err as Error).message ?? err));
-        } finally {
-          busyRef.current = false;
-          setBusy(false);
-        }
-      })();
-    },
+  const runner = useMemo(
+    () =>
+      createUndoRunner({
+        read: () => stackRef.current,
+        write: (next) => {
+          stackRef.current = next;
+          setStack(next);
+        },
+        busy: (on) => {
+          setBusy(on);
+          if (on) setError(null);
+        },
+      }),
     [],
   );
+  const fail = useCallback((err: unknown) => {
+    setError(String((err as Error)?.message ?? err));
+  }, []);
 
-  const undo = useCallback(() => run("back"), [run]);
-  const redo = useCallback(() => run("forward"), [run]);
+  const undo = useCallback(() => void runner.undo().catch(fail), [runner, fail]);
+  const redo = useCallback(() => void runner.redo().catch(fail), [runner, fail]);
+  const undoEntry = useCallback(
+    (entry: UndoEntry) =>
+      runner.undoEntry(entry).catch((err: unknown) => {
+        fail(err);
+        throw err;
+      }),
+    [runner, fail],
+  );
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -202,6 +214,7 @@ export function UndoProvider({ children }: { children: React.ReactNode }) {
       setScope,
       undo,
       redo,
+      undoEntry,
       clear,
       canUndo: canUndo(stack),
       canRedo: canRedo(stack),
@@ -210,7 +223,7 @@ export function UndoProvider({ children }: { children: React.ReactNode }) {
       busy,
       error,
     }),
-    [doRecord, setScope, undo, redo, clear, stack, busy, error],
+    [doRecord, setScope, undo, redo, undoEntry, clear, stack, busy, error],
   );
 
   return <UndoContext.Provider value={api}>{children}</UndoContext.Provider>;

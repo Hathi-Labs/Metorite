@@ -135,6 +135,19 @@ def test_a_path_skip_is_an_if_on_the_job_never_a_trigger_filter(job, area):
     assert "always()" not in cond
 
 
+def test_the_unit_shards_follow_the_changes_job_and_the_aggregate_is_never_skipped():
+    # CIV-3. The shards run a selection. A FAILED `changes` job must not skip
+    # them (a skip counts as a pass), and the required aggregate stays `always()`.
+    jobs = _jobs()
+    assert "changes" in jobs["test"]["needs"]
+    cond = jobs["test"]["if"]
+    assert "!cancelled()" in cond and "always()" not in cond
+    assert "needs.changes.outputs.full" not in cond, "the shards decide inside, not by an if"
+    assert jobs["unit-tests"]["if"] == "always()"
+    assert jobs["unit-tests"]["name"] == "Unit tests"
+    assert "paths" not in (yaml.safe_load(_PR_CHECK.read_text(encoding="utf-8"))[True]["pull_request"] or {})
+
+
 def test_the_frontend_unit_job_is_never_skipped_by_path():
     # Its tests read files across the whole repo.
     assert "if" not in _jobs()["frontend"]
@@ -152,13 +165,130 @@ def test_the_visual_review_line_runs_in_a_required_job():
     assert "GITHUB_EVENT_PATH" in run
     assert "git fetch" in run and "--depth=1" in run
     assert "frontend=true" in run, "an unreadable diff must require the line"
+    # Opus review of PR 2252 (P2): at depth 1, HEAD^2 does not resolve, so every PR
+    # would need the line. The step reads HEAD^1..HEAD on the merge ref.
+    checkout = _jobs()["frontend"]["steps"][0]
+    assert "actions/checkout" in checkout.get("uses", ""), checkout
+    assert checkout["with"]["fetch-depth"] == 2, checkout
     assert "^workbench/control_plane/src/" in run
     assert "^Visual review:" in run
     assert "github.event.pull_request.body" not in _PR_CHECK.read_text(encoding="utf-8")
     assert not any(s.get("name", "").startswith("Visual review") for s in _jobs()["changes"]["steps"])
 
 
+def test_the_visual_review_line_reads_the_live_body_first():
+    """CIV-8. A rerun replays the first EVENT, so the event body alone made a
+    missing line cost a push and a whole run. The step reads the live body."""
+    step = _step("frontend", "Visual review line")
+    assert step["env"] == {"GH_TOKEN": "${{ github.token }}"}
+    assert "${{" not in step["run"]
+    assert 'gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}"' in step["run"]
+    assert "gh run rerun <run id> --failed" in step["run"]
+
+
 _BASH = shutil.which("bash")
+
+
+def _make_merge_repo(tmp_path: Path, *, pr_file: str, main_file: str | None = None, merge: bool = True):
+    """A repo shaped like the pull_request checkout. HEAD is a merge commit.
+    Its first parent is main, and main may be NEWER than the event base."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args: str) -> str:
+        return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
+                              check=True, env={**os.environ, "GIT_AUTHOR_NAME": "t",
+                              "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+                              "GIT_COMMITTER_EMAIL": "t@t"}).stdout.strip()
+
+    def put(rel: str) -> None:
+        f = repo / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(rel, encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-qm", rel)
+
+    git("init", "-q", "-b", "main")
+    put("a.txt")
+    base = git("rev-parse", "HEAD")
+    git("switch", "-q", "-c", "pr")
+    put(pr_file)
+    git("switch", "-q", "main")
+    if main_file:
+        put(main_file)
+    if merge:
+        git("merge", "-q", "--no-ff", "-m", "merge", "pr")
+    else:
+        git("switch", "-q", "pr")
+    return repo, base
+
+
+def _run_visual_review(tmp_path: Path, *, event_body, live: str | None, token: bool = True,
+                       touch_frontend: bool = True, event: bool = True,
+                       main_frontend: bool = False, merge: bool = True):
+    """Run the step's script in a tiny repo, with a `gh` shim for the live body."""
+    repo, base = _make_merge_repo(
+        tmp_path,
+        pr_file="workbench/control_plane/src/x.ts" if touch_frontend else "docs/x.md",
+        main_file="workbench/control_plane/src/main_only.ts" if main_frontend else "b.txt",
+        merge=merge)
+    ev = tmp_path / "event.json"
+    ev.write_text(json.dumps({"pull_request": {"number": 77, "body": event_body,
+                                               "base": {"sha": base}}}), encoding="utf-8")
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    gh = shim / "gh"
+    gh.write_text("#!/usr/bin/env bash\n" + (
+        f"printf '%s' {json.dumps(live)}\n" if live is not None
+        else "echo '{\"message\":\"Bad credentials\"}'\nexit 1\n"), encoding="utf-8")
+    gh.chmod(0o755)
+    env = {**os.environ, "PATH": f"{shim}:{os.environ['PATH']}", "GITHUB_REPOSITORY": "o/r"}
+    env.pop("GH_TOKEN", None)
+    if token:
+        env["GH_TOKEN"] = "t"
+    if event:
+        env["GITHUB_EVENT_PATH"] = str(ev)
+    else:
+        env["GITHUB_EVENT_PATH"] = str(tmp_path / "missing.json")
+    run = _step("frontend", "Visual review line")["run"]
+    return subprocess.run([_BASH or "bash", "-eo", "pipefail", "-c", run], cwd=repo, env=env, capture_output=True, text=True)
+
+
+_LINE = "Visual review: no UI change"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None or (os.name == "nt" and not os.environ.get("RUN_BASH_FENCES")),
+                    reason="needs a POSIX bash")
+@pytest.mark.parametrize("kw,code,says", [
+    # the live body names the review, the event body does not: pass (the fix)
+    (dict(event_body="x", live=_LINE), 0, "live body"),
+    # the live body lost the line after the event had it: the live body wins
+    (dict(event_body=_LINE, live="no line"), 1, "no line of its body"),
+    # the API fails: the event body decides, a line in it passes
+    (dict(event_body=_LINE, live=None), 0, "event is checked"),
+    # the API fails and the event body has no line: fail closed
+    (dict(event_body="x", live=None), 1, "no line of its body"),
+    # no token (a fork PR or the local CI): the event body decides
+    (dict(event_body="x", live=_LINE, token=False), 1, "no line of its body"),
+    # an empty live body is a body: it has no line
+    (dict(event_body=_LINE, live=""), 1, "no line of its body"),
+    # a PR that changes nothing under the control plane needs no line
+    (dict(event_body="x", live="x", touch_frontend=False), 0, "no change under"),
+    # no event file (the local CI): nothing to check
+    (dict(event_body="x", live="x", event=False), 0, "no pull request event"),
+    # CIV-39. Main moved after the event and gained a frontend change. The PR has none.
+    (dict(event_body="x", live="x", touch_frontend=False, main_frontend=True), 0, "no change under"),
+    # CIV-39. The PR changes the frontend while main also moved: the line is still required.
+    (dict(event_body="x", live="x", main_frontend=True), 1, "no line of its body"),
+    # CIV-39. HEAD is not a merge commit: fail closed, the line is required.
+    (dict(event_body="x", live="x", touch_frontend=False, merge=False), 1, "no line of its body"),
+])
+def test_the_visual_review_line_step_behaves(tmp_path, kw, code, says):
+    got = _run_visual_review(tmp_path, **kw)
+    assert got.returncode == code, got.stdout + got.stderr
+    assert says in got.stdout + got.stderr, got.stdout + got.stderr
+
+
 
 
 @pytest.mark.skipif(_BASH is None or os.name == "nt", reason="needs a POSIX bash")
@@ -171,3 +301,60 @@ def test_ci_advisory_outside_a_pr_never_blocks(cmd, code, says):
     res = subprocess.run([_BASH, str(_ADVISORY), "a check", "--", cmd], capture_output=True, text=True, env=env)
     assert res.returncode == code
     assert says in res.stdout
+
+
+def test_the_changes_job_reads_the_pr_own_change_on_the_merge_ref():
+    """CIV-29b. The diff is HEAD^1..HEAD, so a main that moved after the event
+    adds nothing to the PR. The old BASE...HEAD range did (PR 2213)."""
+    run = _jobs()["changes"]["steps"][-1]["run"]
+    assert "HEAD^2" in run and "HEAD^1 HEAD" in run
+
+
+def _run_changes_diff(tmp_path: Path, **kw):
+    repo, base = _make_merge_repo(tmp_path, **kw)
+    out = tmp_path / "out.txt"
+    out.write_text("", encoding="utf-8")
+    env = {**os.environ, "BASE": base, "GITHUB_OUTPUT": str(out)}
+    run = _jobs()["changes"]["steps"][-1]["run"]
+    done = subprocess.run([_BASH or "bash", "-eo", "pipefail", "-c", run], cwd=repo, env=env, capture_output=True, text=True)
+    assert done.returncode == 0, done.stdout + done.stderr
+    return dict(line.split("=", 1) for line in out.read_text(encoding="utf-8").splitlines() if "=" in line)
+
+
+@pytest.mark.skipif(shutil.which("bash") is None or (os.name == "nt" and not os.environ.get("RUN_BASH_FENCES")),
+                    reason="needs a POSIX bash")
+@pytest.mark.parametrize("kw,frontend", [
+    # tests and docs only, while main gained a UI change after the event: no browser suite
+    (dict(pr_file="tests/unit/t.py", main_file="workbench/control_plane/src/m.ts"), "false"),
+    # the PR changes the UI: the browser suite runs
+    (dict(pr_file="workbench/control_plane/src/x.ts", main_file="b.txt"), "true"),
+    # HEAD is no merge commit: the old range runs, and a UI change still counts
+    (dict(pr_file="workbench/control_plane/e2e/x.spec.ts", main_file="b.txt", merge=False), "true"),
+])
+def test_the_changes_job_frontend_output(tmp_path, kw, frontend):
+    assert _run_changes_diff(tmp_path, **kw)["frontend"] == frontend
+
+
+def test_the_gate_step_diffs_against_the_first_parent_on_a_merge_ref():
+    """CIV-29b. `--gate --base` gets HEAD^1 on a merge ref, so main's later
+    change cannot widen the unit selection. No merge commit keeps $BASE."""
+    step = next(s for s in _jobs()["changes"]["steps"] if s.get("id") == "gate")
+    run = step["run"]
+    assert 'gate_base="$BASE"' in run
+    assert 'git rev-parse -q --verify HEAD^2' in run and 'gate_base="HEAD^1"' in run
+    assert '--gate --base "$gate_base"' in run
+    assert '--gate --base "$BASE"' not in run
+
+
+def test_the_lists_are_sorted_unique_and_one_entry_a_line():
+    """CIV-HS (task 3284): a PR that adds one name lands it at its sorted place,
+    not at the tail. Two PRs then edit different lines, and merge with no
+    conflict unless their names are neighbours. docs/merge_hotspots.md."""
+    data = json.loads((_ROOT / "tests/fences.json").read_text(encoding="utf-8"))
+    lists = {f"{lang}.{tier}": data[lang][tier] for lang in ("python", "ts") for tier in ("safety", "process")}
+    lists["r8.must_run"] = data["r8"]["must_run"]
+    lists["r8.never_skip"] = data["r8"]["never_skip"]
+    for name, items in lists.items():
+        assert items == sorted(set(items)), f"{name} must be sorted with no repeat"
+    text = (_ROOT / "tests/fences.json").read_text(encoding="utf-8")
+    assert not [ln for ln in text.splitlines() if ln.count('"tests/') > 1], "one entry on a line"

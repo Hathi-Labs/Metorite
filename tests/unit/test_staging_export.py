@@ -23,6 +23,7 @@ from __future__ import annotations
 import grp
 import os
 import pathlib
+import re
 import subprocess
 
 import pytest
@@ -110,6 +111,47 @@ def test_the_minimise_step_blanks_the_assistant_profile() -> None:
     sql = (_ROOT / "infra/staging/minimise.sql").read_text(encoding="utf-8")
     body = sql.split("-- 6. Nothing credential-shaped is left.", 1)[0]
     assert "UPDATE public.user_settings           SET assistant_profile = NULL;" in body
+
+
+def test_the_minimise_step_blanks_push_keys_plugin_auth_and_code_hashes() -> None:
+    """LD-8c: the export carries no push subscription, no plugin auth and no
+    hash of a WhatsApp code, and no WhatsApp act stays open. Each blank comes
+    BEFORE step 6, because step 6 refuses a value in a matching column. The
+    behaviour is proven in ``test_staging_minimise_r8.py`` (R8). The push
+    subscriptions go through RE-9b's DELETE (the test below)."""
+    sql = (_ROOT / "infra/staging/minimise.sql").read_text(encoding="utf-8")
+    body, step6 = sql.split("-- 6. Nothing credential-shaped is left.", 1)
+    # One space for each run of white space, so the alignment of a column
+    # does not decide the result.
+    flat = " ".join(body.split())
+    for stmt in (
+        "DELETE FROM public.push_subscriptions;",
+        "UPDATE public.plugins SET auth_config = '{}'::jsonb, manifest = manifest - 'auth';",
+        "UPDATE public.whatsapp_member_links SET code_hash = '' WHERE code_hash IS NOT NULL;",
+        "UPDATE public.whatsapp_pending_acts SET confirm_code_hash = NULL, "
+        "state = CASE WHEN state IN ('pending', 'running') THEN 'expired' ELSE state END;",
+    ):
+        assert stmt in flat, stmt
+    names = step6.split("a.attname ~* '", 1)[1].split("'", 1)[0]
+    parts = names.strip("()").split("|")
+    for part in ("p256dh", "^auth$", "code_hash"):
+        assert part in parts, part
+
+
+def test_the_credential_names_match_any_token_and_key() -> None:
+    """LD-8c, review finding 4: a part list of four token names let
+    `access_token`, `auth_token`, `id_token` and `bot_token` through. `token`
+    is now a part of a name, and `encryption_key` and `private_key` are
+    parts too. Mutation: put the old four token parts back, and this fails.
+    The R8 suite proves that an `access_token` with a value refuses."""
+    sql = (_ROOT / "infra/staging/minimise.sql").read_text(encoding="utf-8")
+    step6 = sql.split("-- 6. Nothing credential-shaped is left.", 1)[1]
+    names = re.compile(step6.split("a.attname ~* '", 1)[1].split("'", 1)[0], re.IGNORECASE)
+    for name in ("access_token", "auth_token", "id_token", "bot_token", "refresh_token",
+                 "token", "encryption_key", "private_key"):
+        assert names.search(name), name
+    for name in ("author_email", "auth_type", "created_at"):
+        assert not names.search(name), name
 
 
 def test_the_minimise_step_deletes_every_push_subscription() -> None:

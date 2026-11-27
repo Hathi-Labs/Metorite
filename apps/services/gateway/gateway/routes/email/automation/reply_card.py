@@ -23,21 +23,41 @@ opens.
    browser posts. It trashes the one draft that the card wrote, and only
    while its text is still the text that the card wrote.
 
+4. ``GET /email/reply-card/draft-state`` tells the card whether its draft is
+   still in Drafts (owner report, 2026-11-03). It reads the local row only.
+
 So in a chat that read outside mail (H-236 holds that run), the model can
 still get the member's reply out, and it cannot choose where it goes or what
 it says. Fence: ``tests/unit/test_email_chat_reply.py``.
+
+**A reply that already left (2026-11-03, task 1526).** The member can send
+the card's draft from the Email app while the card still waits. The act then
+refuses Send and Save with a 409, so no person gets the reply twice. The
+record of the card holds the LOCAL id of its draft and the time the card was
+made. The server writes both, and no request names them. Fence:
+``tests/unit/test_reply_card_left_drafts.py``, and its R8 half
+``tests/unit/test_reply_card_left_drafts_r8.py``.
 """
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Iterable, Sequence
+from datetime import UTC, datetime
 from email.utils import parseaddr
-from typing import Any
+from typing import Any, NamedTuple
 
 from acb_auth import UserContext, get_current_user
-from acb_skills.reply_card import MAX_REPLY_BODY, clean_reply_body
+from acb_skills.reply_card import (
+    ALREADY_REPLIED,
+    DRAFT_GONE,
+    DRAFT_UNCONFIRMED,
+    MAX_REPLY_BODY,
+    clean_reply_body,
+)
 from fastapi import BackgroundTasks, Depends, HTTPException
 from gateway.routes.email.automation.drafting import (
+    FORMATTING_TEXT_ONLY,
     DraftReplyRequest,
     _store_ai_draft,
     _upsert_reply_draft,
@@ -53,11 +73,15 @@ from gateway.routes.email.core import (
     provider_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_predicate
+from gateway.routes.email.markdown_mail import draft_text, mail_text
 from gateway.routes.email.quoting import strip_for_reading
+from gateway.routes.email.signature import resolve_signature
 from gateway.routes.email.transport.send import (
     SendEmailRequest,
     _as_uuid,
     send_email,
+    thread_head,
 )
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
@@ -67,13 +91,13 @@ EXCERPT_CHARS = 600
 
 #: The mail a reply card answers: a mail of a mailbox of the caller. The
 #: owner join keeps a mail of another member out, as ``_reply_target`` does.
+#: The signature of the reply comes from the resolver (``_load_mail``, WS-17
+#: SG-2), never from a subselect here.
 REPLY_ROW_SQL = (
     "SELECT em.id::text AS id, em.account_id::text AS account_id, "
     "em.provider_message_id, em.thread_id, em.subject, em.from_address, "
     "em.to_addresses, em.cc_addresses, em.received_at, em.snippet, em.body_text, "
-    "em.folder, em.internet_message_id, ea.provider, "
-    "(SELECT s.signature FROM email_assistant_settings s "
-    " WHERE s.account_id = em.account_id) AS signature "
+    "em.folder, em.internet_message_id, ea.provider "
     "FROM email_messages em JOIN email_accounts ea ON ea.id = em.account_id "
     "WHERE em.id = CAST(:mid AS uuid) AND ea.user_id = :uid"
 )
@@ -95,6 +119,20 @@ BCC_ONLY_NOTICE = "You were Bcc'd, so only the sender is ticked."
 #: added person, because the act could not check one.
 ADDED_NOT_RECORDED = ("The added people could not be kept on this card, so the draft in "
                       "Drafts was left as it was. Ask again in a moment.")
+#: The notice when the record of a card that adds nobody failed (task 1526,
+#: fix round 1). With no record the act cannot check that the draft left
+#: Drafts, so the card writes no draft.
+DRAFT_NOT_RECORDED = ("This card could not be recorded, so its reply was not put in "
+                      "Drafts. Ask again in a moment.")
+#: The notice of a card whose draft write had an unknown outcome (item 11).
+#: A draft can exist that no local row names, so the card cannot send.
+DRAFT_UNSAVED = ("This reply could not be saved to Drafts, so this card cannot send it. "
+                 "Ask me to draft it again.")
+#: The 503 of the state read when the database fails (fix round 1, item 7).
+DRAFT_STATE_UNREAD = "The state of this draft could not be read. Try again in a moment."
+#: The 503 when the record of a card cannot be read at the act (fix round 1).
+RECORD_UNREAD = ("The record of this card could not be read, so nothing was sent or "
+                 "saved. Ask for the reply again.")
 #: The classes that a Bcc of a held chat may have (§21.15, the rule of 21.10
 #: open question 5): a person that the member knows. A held chat refuses a
 #: Bcc to any other address, and no tick can allow it.
@@ -109,6 +147,23 @@ HELD_DRAFT_BCC_NOTICE = ("The draft of this reply in Drafts has a Bcc that is no
                          "the card leaves it out: {addrs}.")
 #: The mark of a Bcc that the thread's draft holds (§21.15).
 DRAFT_BCC_MARK = "on the draft in Drafts"
+
+#: The 409 of an act whose draft left Drafts (2026-11-03). The member sent or
+#: deleted it in the Email app, a Gmail edit gave it a new id, or a rule
+#: replaced it (``_resolve_existing_thread_draft``). So the words claim no
+#: send (fix round 1, item 3).
+REPLY_LEFT_DRAFTS = ("This reply is no longer in Drafts. It was sent, deleted or replaced "
+                     "outside this card. Nothing was sent or saved.")
+#: The 409 of an act whose draft id never reached the record (item 10). It
+#: claims no send: the draft can be in Drafts, or it can be missing.
+REPLY_DRAFT_UNCONFIRMED = ("The draft of this card could not be confirmed in Drafts, so "
+                           "nothing was sent or saved. Ask for the reply again.")
+#: The 409 of an act after the mailbox sent a reply in the thread.
+REPLY_ALREADY_SENT = ("This mailbox already sent a reply in this conversation after the "
+                      "card showed. Nothing was sent or saved.")
+#: The 503 when the server cannot check that the reply is still to send.
+REPLY_LEFT_CHECK_FAILED = ("The reply could not be checked against Drafts and Sent, so "
+                           "nothing was sent or saved. Ask for the reply again.")
 
 #: The colleagues that the member copies on mail of this thread, or on mail
 #: to these domains: each Cc of the newest 500 Sent mails of the member's own
@@ -192,6 +247,15 @@ class ReplyCardRequest(BaseModel):
     #: ``org`` or ``sent``, and the record keeps the flag for the Bcc that
     #: the member types on the card (``/reply-card/bcc``).
     held: bool = False
+    #: The chat thread that shows the card (HRD-8b-3). The tool sets it from the
+    #: run, in a run that draws the edit card. With the thread, the record of the
+    #: card can be revised through a chat message (``redraft.revise_new_mail_card``).
+    card_thread_id: str = Field(default="", max_length=200)
+    #: HRD-10d-3 (task 3824): True asks for ``thread_head``, the local id of
+    #: the newest message of the thread that is not a draft, read before the
+    #: drafter. Only ``compose_reply`` with ``CHAT_CARD_PRECONDITION_ORGS`` on
+    #: asks, and it sends the id back as ``expect_thread`` of the act.
+    thread_head: bool = False
 
 
 class ReplyCardBccRequest(BaseModel):
@@ -233,6 +297,11 @@ class ReplyCardActRequest(BaseModel):
     card_request_id: str
     card_thread_id: str
     answer: str
+    #: HRD-10d-3 (task 3824): the ``thread_head`` of the card. A Send passes
+    #: it to ``POST /email/send``, which reads the thread again and refuses a
+    #: newer message with 409 ``thread_changed``. A Save does not read it,
+    #: because it sends nothing. With no value the act is as before.
+    expect_thread: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 def _address(item: Any) -> str:
@@ -355,7 +424,7 @@ async def _read_reply_to(db: Any, owner: str, row: Any) -> list[str]:
 class _Mail:
     """The parts of the original mail that a reply card needs."""
 
-    def __init__(self, row: Any, me: Any, reply_to: list[str]) -> None:
+    def __init__(self, row: Any, me: Any, reply_to: list[str], signature: str = "") -> None:
         frm = row.from_address if isinstance(row.from_address, dict) else (
             json.loads(row.from_address or "{}") if isinstance(row.from_address, str) else {})
         self.account_id = str(row.account_id)
@@ -375,7 +444,8 @@ class _Mail:
         body = strip_for_reading(row.body_text or "") or row.snippet or ""
         self.excerpt = " ".join(body.split())[:EXCERPT_CHARS]
         self.provider = str(getattr(row, "provider", "") or "")
-        self.signature = str(getattr(row, "signature", "") or "")
+        # The signature of a reply from the mailbox, from the resolver.
+        self.signature = signature or ""
         self.folder = str(getattr(row, "folder", "") or "").lower()
 
     def was_received(self) -> bool:
@@ -423,8 +493,11 @@ async def _load_mail(message_id: str, owner: str) -> _Mail:
     async with _tenant_session() as db:
         row = await _reply_row(db, message_id, owner)
         me = await resolve_self(db, str(row.account_id))
+        # WS-17 SG-2 (D-EM-66): the signature of a reply. While reply_mode is
+        # `full`, the default, it is the bytes of before.
+        signature = await resolve_signature(db, str(row.account_id), "reply")
         reply_to = await _read_reply_to(db, owner, row)
-    return _Mail(row, me, reply_to)
+    return _Mail(row, me, reply_to, signature)
 
 
 async def reply_recipients(
@@ -482,6 +555,8 @@ async def reply_card(
     write is best effort: a failure leaves the card as it was."""
     owner = user.email or "anonymous"
     mail = await _load_mail(req.message_id, owner)
+    # HRD-10d-3: the head of the thread BEFORE the drafter reads it.
+    head = await _card_thread_head(mail, owner) if req.thread_head else {}
     reply_to, reply_cc = mail.recipients(False)
     all_to, all_cc = mail.recipients(True)
     if not reply_to:
@@ -558,15 +633,34 @@ async def reply_card(
     bcc_people = _held_bcc(bcc_people, asked_bcc, classes, req.held, notices)
     # The record of the card: the added people, the Bcc and the held flag.
     # It is written for each card, so the member can type a Bcc on it.
+    # Item 10 (task 1526): a card with a text will write a draft, so its record
+    # says ``draft_pending`` in this same write. The act refuses a card whose
+    # draft id never reached the record.
+    # HRD-8b-3: with the edit card on, the record names the chat thread, and the
+    # card TAKES a link that fits it (a reply card draws no "Draft N", so it would
+    # only leave the link waiting for an unrelated card).
+    from acb_skills.reply_card import edit_card_on
+    from gateway.routes.email.automation.redraft import link_fields
+
+    org = str(getattr(user, "organization_id", None) or "")
+    thread = req.card_thread_id.strip() if org and edit_card_on(org) else ""
+    link = (await link_fields(user, thread, all_to, cc=[*all_cc, *added], bcc=bcc_people,
+                              act="reply") if thread else {})
     card_id = await _write_reply_record(
-        user, str(_as_uuid(req.message_id)), added, bcc=bcc_people, held=req.held)
-    record_failed = False
-    if not card_id and (added or bcc_people):
+        user, str(_as_uuid(req.message_id)), added, bcc=bcc_people, held=req.held,
+        draft_pending=bool(body.strip()), thread=thread, to=all_to,
+        cc=[*all_cc, *added], link=link, thread_head=head.get("thread_head", ""))
+    # With no record, the card writes no draft (task 1526, fix round 1): the
+    # act could not check that the draft left Drafts, and a send from the
+    # Email app plus a Send on the card would mail each person twice.
+    record_failed = not card_id
+    if record_failed and (added or bcc_people):
         # Review P3-a: the card adds nobody, and the draft stays as it
         # was below, so a Cc that edit_draft put there is not lost.
         added, usual_added, carried, bcc_people = [], [], [], []
-        record_failed = True
         notices.append(ADDED_NOT_RECORDED)
+    elif record_failed:
+        notices.append(DRAFT_NOT_RECORDED)
     # A Bcc that the tool proposed starts ticked. A Bcc of the draft starts
     # ticked only for a person that the member knows (review P2-a).
     bcc_ticked = [a for a in bcc_people if a in asked_bcc
@@ -604,10 +698,26 @@ async def reply_card(
     draft_id, kept_draft = "", False
     # Item 9: the draft in Drafts names exactly the people that start ticked.
     start = ticked["reply_all"]
+    outcome = DRAFT_FAILED
     if body.strip() and start["to"] and not record_failed:
-        draft_id, kept_draft = await _keep_card_draft(
+        res = await _keep_card_draft(
             mail, owner, start["to"], start["cc"], _reply_subject(mail.subject), body,
             prior=prior, **({"bcc": start.get("bcc", [])} if bcc_people else {}))
+        draft_id, kept_draft = res
+        outcome = _outcome_of(res)
+    # 2026-11-03: the record of THIS card names the draft that it wrote, so
+    # the act refuses when that draft left Drafts. The server writes the id,
+    # and clears ``draft_pending``. Item 11: a write that failed, or no write,
+    # clears the flag too, and the card sends a fresh reply as before. Only an
+    # unknown outcome keeps it, because a draft can exist that no row names.
+    await _note_card_draft(user, card_id, str(_as_uuid(req.message_id)), draft_id,
+                           attempted=outcome != DRAFT_FAILED)
+    # Item 11: an unknown outcome gives the card a notice, and the card shows
+    # its Send and Save stopped, and says why (``draft_unsaved``).
+    unsaved: dict[str, Any] = {}
+    if outcome == DRAFT_UNKNOWN:
+        notices.append(DRAFT_UNSAVED)
+        unsaved["draft_unsaved"] = True
     marks = _person_marks(mail, classes, asked, carried_extra, usual_added,
                           [*everyone_to, *everyone_cc], held=req.untick_new)
     marks.update(_bcc_marks(bcc_people, asked_bcc, classes, held=req.held))
@@ -658,6 +768,8 @@ async def reply_card(
         "draft_id": draft_id,
         # A draft of the member stays in Drafts, beside the card's draft.
         "kept_draft": kept_draft,
+        **unsaved,
+        **head,
     }
     if classes is not None:
         out["classes"] = classes
@@ -759,6 +871,149 @@ async def _recent_reply(mail: Any) -> dict[str, str]:
     except Exception as exc:
         _log.warning("email.reply_card_recent_failed", error=type(exc).__name__)
         return {}
+
+
+async def _card_thread_head(mail: _Mail, owner: str) -> dict[str, str]:
+    """``{"thread_head": <local id>}`` of the card (HRD-10d-3), "" for a mail
+    with no thread. A fault escapes and fails the card, so a card that asked
+    for the head never sends with no check."""
+    async with _tenant_session() as db:
+        row = await thread_head(db, owner, mail.account_id, mail.thread_id)
+    return {"thread_head": row.id if row is not None else ""}
+
+
+@router.get("/thread-head")
+async def thread_head_route(
+    message_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, str]:
+    """HRD-10d-3 (task 3824): the local id of the newest message of the thread
+    of one mail of the member, that is not a draft (``send.thread_head``).
+    ``send_email`` reads it for a reply before its card, and only with
+    ``CHAT_CARD_PRECONDITION_ORGS`` on. A read: it writes nothing and calls
+    no provider. A mail that is not the member's is a 404."""
+    mid = _as_uuid(message_id)
+    if mid is None:
+        raise HTTPException(status_code=404, detail=REPLY_CARD_NOT_FOUND)
+    owner = user.email or "anonymous"
+    async with _tenant_session() as db:
+        row = (await db.execute(text(
+            "SELECT em.account_id::text AS account_id, em.thread_id FROM email_messages em"
+            " JOIN email_accounts ea ON ea.id = em.account_id"
+            " WHERE em.id = CAST(:id AS uuid) AND "
+            + mailbox_predicate("ea", uid="uid", level="read")),
+            {"id": mid, "uid": owner})).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail=REPLY_CARD_NOT_FOUND)
+        head = await thread_head(db, owner, row.account_id, row.thread_id)
+    return {"message_id": head.id if head is not None else ""}
+
+
+# ── A reply that already left (owner report, 2026-11-03, task 1526) ─────────
+
+#: One draft of the member, by its LOCAL id, while it is still in Drafts.
+#: The owner predicate is the one mailbox seam (``mailbox_predicate``), so a
+#: draft of another member reads as not in Drafts. RLS keeps another
+#: organization out. It reads the local row only, and calls no provider.
+#: ``send_draft_endpoint`` deletes the row of a sent draft, and a delete in
+#: the Email app moves it out of Drafts or deletes it.
+_DRAFT_STATE_SQL = (
+    "SELECT 1 FROM email_messages em JOIN email_accounts ea ON ea.id = em.account_id"
+    " WHERE em.id = CAST(:did AS uuid)"
+    " AND LOWER(COALESCE(em.folder, '')) IN ('drafts', 'draft')"
+    " AND {owner}")
+
+
+async def draft_in_drafts(db: Any, owner: str, draft_id: str) -> bool:
+    """True while the draft *draft_id* of *owner* is still in Drafts.
+
+    A draft id that is not a UUID, a draft of another member and a draft that
+    left Drafts all read False. The caller decides what a fault means."""
+    did = _as_uuid(draft_id)
+    if did is None:
+        return False
+    sql = _DRAFT_STATE_SQL.format(owner=mailbox_predicate("ea", uid="uid", level="read"))
+    row = (await db.execute(text(sql), {"did": did, "uid": owner})).fetchone()
+    return row is not None
+
+
+@router.get("/reply-card/draft-state")
+async def reply_card_draft_state(
+    draft_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Is the draft that a reply card wrote still in Drafts? (2026-11-03)
+
+    The card reads it at mount, when the window comes back, each minute while
+    it shows, and when the Email app sends or deletes a draft. Then the card
+    collapses to its title and Close. ``compose_reply`` reads it too, when
+    the card closes or the member writes over it. A read of the local row
+    only, for the session's own member and tenant. It writes nothing and
+    calls no provider. A draft id that is not a UUID is a 404. A database
+    fault is a 503 (fix round 1, item 7), so the card stays as it was."""
+    if _as_uuid(draft_id) is None:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    try:
+        async with _tenant_session() as db:
+            there = await draft_in_drafts(db, user.email or "anonymous", draft_id)
+    except Exception as exc:  # the class only
+        _log.warning("email.reply_card_draft_state_failed", error=type(exc).__name__)
+        raise HTTPException(status_code=503, detail=DRAFT_STATE_UNREAD) from exc
+    return {"draft_id": str(_as_uuid(draft_id)), "in_drafts": there}
+
+
+def _sent_after(reply: dict[str, str], made_at: float | None) -> bool:
+    """True when the reply of :func:`recent_thread_reply` went after the card.
+
+    A card with no time (a record of an older card) and a time that does not
+    parse read False. The compare is strict: a mail that left just before the
+    card does not block it, and the card shows that mail as a recent reply."""
+    if made_at is None or not reply.get("sent_at"):
+        return False
+    try:
+        sent = datetime.fromisoformat(reply["sent_at"])
+    except ValueError:
+        return False
+    if sent.tzinfo is None:
+        sent = sent.replace(tzinfo=UTC)
+    return sent.timestamp() > made_at
+
+
+async def _reply_left(mail: _Mail, owner: str, card: _CardRecord) -> tuple[str, str] | None:
+    """``(reason, words)`` when the reply of this card already left, else None.
+
+    1. The card wrote a draft, and that draft is no longer in the member's
+       Drafts: the member sent it or deleted it in the Email app
+       (:data:`DRAFT_GONE`).
+    2. The mailbox sent a reply in the thread after the card was made
+       (:data:`ALREADY_REPLIED`). This also covers a card that wrote no
+       draft, and a reply that the member sent from the provider's own app,
+       once the sync has it.
+
+    0. The card meant to write a draft, and no draft id reached its record
+       (:data:`DRAFT_UNCONFIRMED`, item 10). The card cannot know where its
+       draft is, so it fails closed with no database read.
+
+    A record with neither a draft id nor a time (a card from before this
+    release) checks nothing. A fault fails closed with a 503: a guard
+    against a double send does not guess."""
+    if card.draft_pending and not card.draft_id:
+        return DRAFT_UNCONFIRMED, REPLY_DRAFT_UNCONFIRMED
+    if not card.draft_id and card.made_at is None:
+        return None
+    try:
+        async with _tenant_session() as db:
+            if card.draft_id and not await draft_in_drafts(db, owner, card.draft_id):
+                return DRAFT_GONE, REPLY_LEFT_DRAFTS
+            if card.made_at is not None:
+                reply = await recent_thread_reply(db, mail.account_id, mail.thread_id)
+                if _sent_after(reply, card.made_at):
+                    return ALREADY_REPLIED, REPLY_ALREADY_SENT
+    except Exception as exc:  # the class only
+        _log.warning("email.reply_card_answer_refused", reason="check_failed",
+                     error=type(exc).__name__)
+        raise HTTPException(status_code=503, detail=REPLY_LEFT_CHECK_FAILED) from exc
+    return None
 
 
 def _mail_people(mail: Any) -> list[str]:
@@ -953,11 +1208,25 @@ def _reply_record_key(card_id: str) -> Any:
 
 async def _write_reply_record(
     user: UserContext, message_id: str, added: list[str], *,
-    bcc: Sequence[str] = (), held: bool = False,
+    bcc: Sequence[str] = (), held: bool = False, draft_pending: bool = False,
+    thread: str = "", to: Sequence[str] = (), cc: Sequence[str] = (),
+    link: dict[str, Any] | None = None,
+    thread_head: str = "",
 ) -> str:
     """Record the added people of one card under a card id that this server
-    mints. Returns the id, or "" on a fault, and then the card adds nobody.
-    The record also holds the Bcc of the card and the held flag (§21.15)."""
+    mints. Returns the id, or "" on a fault. With "" the card adds nobody
+    and writes no draft (task 1526, fix round 1).
+    The record also holds the Bcc of the card and the held flag (§21.15),
+    and ``made_at``, the time the server made the card (2026-11-03). The act
+    refuses when the mailbox sent a reply in the thread after that time.
+    ``draft_pending`` (item 10) says that the card will write a draft. Only
+    :func:`_note_card_draft` clears it, and the act refuses while it is set.
+
+    HRD-8b-3: with a chat ``thread`` the record also holds ``kind``, the thread,
+    and the To and Cc of the card (all of the mail's people and the added ones),
+    so a chat message that closes the card can spend it and link the next card
+    (``redraft``). *link* is the link that this card took (``revises``, ``draft``,
+    ``changed``). The act reads none of these keys."""
     import uuid
 
     from acb_common.tenant_redis import organization_scope
@@ -968,7 +1237,15 @@ async def _write_reply_record(
         return ""
     card_id = uuid.uuid4().hex
     rec = {"owner": (user.email or "").strip().lower(), "message_id": message_id,
-           "added": list(added), "bcc": list(bcc), "held": bool(held)}
+           "added": list(added), "bcc": list(bcc), "held": bool(held),
+           "made_at": time.time(), "draft_pending": bool(draft_pending)}
+    if thread:
+        rec.update({"kind": "reply", "thread": thread,
+                    "to": [str(a) for a in to], "cc": [str(a) for a in cc], **(link or {})})
+    if thread_head:
+        # HRD-10d-3: the head of the thread that the card showed. Only a card
+        # that asked for it holds it, so the record of before is unchanged.
+        rec["thread_head"] = thread_head
     try:
         with organization_scope(org):
             done = await hc._tenant_redis().set(
@@ -980,29 +1257,104 @@ async def _write_reply_record(
     return card_id if done else ""
 
 
-async def _take_reply_record(
-    user: UserContext, card_id: str, message_id: str,
-) -> tuple[list[str], list[str]]:
-    """The added people and the Bcc of the card *card_id*, read once
-    (``GETDEL``). None of another member, another mail, or a fault: the act
-    then takes only the people of the mail, and no Bcc."""
+async def _note_card_draft(
+    user: UserContext, card_id: str, message_id: str, draft_id: str, *,
+    attempted: bool = True,
+) -> None:
+    """Add the LOCAL id of the draft that the card wrote to the record of
+    THIS card (2026-11-03), and clear ``draft_pending`` (item 10). The
+    server writes it, and no request names it.
+
+    A card that wrote no draft (``attempted`` False) clears the flag only. A
+    draft write that gave no id leaves the flag, because a provider draft can
+    exist with no local row. A fault of this write leaves the flag too. The
+    act then refuses the card (``draft_unconfirmed``), so it fails closed."""
     from acb_common.tenant_redis import organization_scope
     from gateway.routes.email.automation import held_card as hc
 
+    did = _as_uuid(draft_id)
+    org = str(getattr(user, "organization_id", None) or "")
+    if not org or not card_id or (attempted and did is None):
+        return
+    try:
+        with organization_scope(org):
+            store = hc._tenant_redis()
+            rec = _record_of(await store.get(_reply_record_key(card_id)), user, message_id)
+            if rec is None:
+                return
+            if did is not None:
+                rec["draft_id"] = did
+            elif not rec.get("draft_pending"):
+                return  # nothing to clear: no extra write
+            rec["draft_pending"] = False
+            await store.set(_reply_record_key(card_id), json.dumps(rec), xx=True,
+                            keepttl=True)
+    except Exception as exc:  # the class only
+        _log.warning("email.reply_card_draft_note_failed", error=type(exc).__name__)
+
+
+class _CardRecord(NamedTuple):
+    """What the act reads from the record of one card."""
+
+    added: list[str]
+    bcc: list[str]
+    #: The LOCAL id of the draft that the card wrote, or "" (2026-11-03).
+    draft_id: str = ""
+    #: When the server made the card, in epoch seconds, or None.
+    made_at: float | None = None
+    #: The card meant to write a draft, and no id reached the record (item 10).
+    draft_pending: bool = False
+    #: The held flag of the record, or None when no record was read. Only a
+    #: record that says False sends HTML (task 3605).
+    held: bool | None = None
+    #: HRD-10d-3: the head of the thread that the card showed, or "".
+    thread_head: str = ""
+
+
+async def _take_reply_record(
+    user: UserContext, card_id: str, message_id: str,
+) -> _CardRecord:
+    """The record of the card *card_id*, read once (``GETDEL``): the added
+    people, the Bcc, the draft that the card wrote and the time it was made.
+
+    No organization, no card id, no record, and a record of another member
+    or another mail all give an empty record. The act then takes only the
+    people of the mail, no Bcc, and checks nothing. A card whose record
+    write failed wrote no draft (``reply_card``). An EXPIRED record is not
+    that case: the card can hold a draft, and the act checks nothing, as for
+    a card from before this release. The record lives ``REPLY_RECORD_TTL_S``
+    (3700 s) and a card waits 3600 s, so only a late answer, for example to
+    a parked card, meets an expired record (item 11, §18.9.1).
+
+    A Redis fault answers 503, so the act sends and saves nothing (task 1526,
+    fix round 1): the record that it could not read can name a draft."""
+    from acb_common.tenant_redis import organization_scope
+    from gateway.routes.email.automation import held_card as hc
+
+    none = _CardRecord([], [])
     org = str(getattr(user, "organization_id", None) or "")
     if not org or not card_id:
-        return [], []
+        return none
     try:
         with organization_scope(org):
             raw = await hc._tenant_redis().getdel(_reply_record_key(card_id))
     except Exception as exc:
-        _log.warning("email.reply_card_record_take_failed", error=type(exc).__name__)
-        return [], []
+        _log.warning("email.reply_card_answer_refused", reason="record_unread",
+                     error=type(exc).__name__)
+        raise HTTPException(status_code=503, detail=RECORD_UNREAD) from exc
     rec = _record_of(raw, user, message_id)
     if rec is None:
-        return [], []
-    return ([str(a) for a in rec.get("added") or [] if a],
-            [str(a) for a in rec.get("bcc") or [] if a])
+        return none
+    made = rec.get("made_at")
+    return _CardRecord(
+        [str(a) for a in rec.get("added") or [] if a],
+        [str(a) for a in rec.get("bcc") or [] if a],
+        str(_as_uuid(str(rec.get("draft_id") or "")) or ""),
+        float(made) if isinstance(made, (int, float)) and not isinstance(made, bool) else None,
+        rec.get("draft_pending") is True,
+        rec.get("held") is not False,
+        str(rec.get("thread_head") or "")[:64],
+    )
 
 
 def _record_of(raw: Any, user: UserContext, message_id: str) -> dict[str, Any] | None:
@@ -1125,7 +1477,8 @@ async def reply_card_act(
     The answer must be on record for THIS card and THIS member
     (``reply_card.take_reply_answer``), and it is taken once. The To and Cc
     are derived again here, and they must equal the lists the card showed.
-    Each refusal sends and saves nothing."""
+    A reply that already left answers 409 (:func:`_reply_left`). Each
+    refusal sends and saves nothing."""
     from acb_skills.reply_card import (
         parse_reply_answer,
         reply_body_refusal,
@@ -1165,7 +1518,8 @@ async def reply_card_act(
     # pick from it. The added people come from the server's record of THIS
     # card, read once, never from a request field.
     derived_to, derived_cc = mail.recipients(True)
-    added, derived_bcc = await _take_reply_record(user, req.card_request_id, req.message_id)
+    card = await _take_reply_record(user, req.card_request_id, req.message_id)
+    added, derived_bcc = card.added, card.bcc
     derived_cc = _unique([*derived_cc, *added], {a.lower() for a in derived_to})
     # §21.15: the Bcc comes from the record of THIS card too. A Bcc that is
     # also on To or Cc is not one.
@@ -1183,12 +1537,32 @@ async def reply_card_act(
             detail=("The card names a person that is not on this mail now, so nothing "
                     "was sent or saved. Ask for the reply again."),
         )
+    # Owner report, 2026-11-03 (task 1526): the member sent the card's draft
+    # from the Email app while the card waited. A Send here then mailed each
+    # person a second time, and a Save made an orphan draft. The draft id and
+    # the time come from the server's record of THIS card, never from the
+    # request. ``detail.reason`` is the machine reason that the tool reads.
+    left = await _reply_left(mail, user.email or owner, card)
+    if left is not None:
+        reason, words = left
+        _log.warning("email.reply_card_answer_refused", reason=reason)
+        raise HTTPException(status_code=409, detail={"reason": reason, "message": words})
     subject = _reply_subject(mail.subject)
     if choice.action == "send":
+        # Task 3605: the text of the card is Markdown. Only a card whose record
+        # says that the chat is not held sends HTML. A held chat, and a card
+        # with no record, send the text part alone.
+        html_ok = card.held is False
         res = await send_email(
             SendEmailRequest(
                 account_id=mail.account_id, to=to, cc=cc or None, bcc=bcc or None,
-                subject=subject, body_text=body, reply_to_message_id=req.message_id,
+                subject=subject, body_text=body if html_ok else mail_text(body),
+                body_markdown=html_ok, reply_to_message_id=req.message_id,
+                # HRD-10d-3: the record of THIS card wins. A request that
+                # leaves the field out cannot skip the check, and a request
+                # cannot name another head. Only a card with no head in its
+                # record takes the field of the request.
+                expect_thread=card.thread_head or req.expect_thread,
             ),
             background, user,
         )
@@ -1208,8 +1582,11 @@ async def reply_card_act(
     draft_id = await _save_draft(mail, user.email or owner, to, cc, subject, body,
                                  **({"bcc": bcc} if derived_bcc else {}))
     _log.info("email.reply_card_saved", reply_all=choice.reply_all)
+    # Task 3605: a draft holds text only (``_write_draft``), and the answer
+    # says when the Markdown formatting of the text did not go into it.
+    lost = {"formatting": FORMATTING_TEXT_ONLY} if draft_text(body)[1] else {}
     return {"ok": True, "action": "save", "to": to, "cc": cc, "mailbox": mail.mailbox,
-            "draft_id": draft_id, **({"bcc": bcc} if bcc else {})}
+            "draft_id": draft_id, **({"bcc": bcc} if bcc else {}), **lost}
 
 
 async def _chat_record(mail: _Mail) -> list[str] | None:
@@ -1226,7 +1603,7 @@ async def _chat_record(mail: _Mail) -> list[str] | None:
 async def _write_draft(
     mail: _Mail, owner: str, to: list[str], cc: list[str], subject: str, body: str,
     *, chat_wrote: bool = False, prior: list[str] | None = None,
-    bcc: list[str] | None = None,
+    bcc: list[str] | None = None, progress: dict[str, bool] | None = None,
 ) -> tuple[str, bool]:
     """Write the reply draft of the conversation. Returns its LOCAL id, and
     True when a draft of the member stays beside it.
@@ -1237,7 +1614,17 @@ async def _write_draft(
 
     ``chat_wrote`` records the body as the text that Metorite wrote
     (``email_ai_drafts``). A send of the reply, or the member's Discard, then
-    trashes the draft only while it still holds that text."""
+    trashes the draft only while it still holds that text.
+
+    ``progress["provider"]`` becomes True when the provider write returned
+    (task 1526, item 11). A fault after that point leaves a provider draft
+    that the rolled-back local row does not name.
+
+    Task 3605: the text of a card is Markdown, and a draft holds text only.
+    So the provider draft and the record of ``chat_wrote`` both get the text
+    part of ``markdown_mail.mail_bodies``, the same string. A plain text
+    does not change."""
+    body = draft_text(body)[0]
     async with _tenant_session() as db:
         async with provider_session(db, owner, account_id=mail.account_id) as sess:
             wrote = await _upsert_reply_draft(
@@ -1252,23 +1639,77 @@ async def _write_draft(
                 # none keeps the Bcc of the draft, as before.
                 **({"bcc": bcc, "exact_bcc": True} if bcc is not None else {}),
             )
+            if progress is not None:
+                progress["provider"] = True
         if chat_wrote and mail.thread_id:
             await _store_ai_draft(db, mail.account_id, mail.thread_id, body,
                                   commit=False)
     return wrote.local_id, wrote.kept_draft
 
 
+#: What the draft write of a card gave (task 1526, item 11).
+#:
+#: * ``written``: a local row names the draft.
+#: * ``failed``: the write raised before the provider write returned, and it
+#:   was not a timeout. No draft exists, so the card sends a fresh reply.
+#: * ``unknown``: a draft can exist that no local row names. That is a
+#:   timeout (the request can have gone out), a fault after the provider
+#:   write returned, or a provider success with no local row. The card then
+#:   cannot send, because the draft could go out from Drafts too.
+DRAFT_WRITTEN, DRAFT_FAILED, DRAFT_UNKNOWN = "written", "failed", "unknown"
+
+
+class CardDraft(tuple):
+    """``(local id, kept draft)``, as before, and ``outcome``."""
+
+    outcome: str
+
+    def __new__(cls, local_id: str, kept: bool, outcome: str) -> CardDraft:
+        obj = super().__new__(cls, (local_id, kept))
+        obj.outcome = outcome
+        return obj
+
+
+def _outcome_of(res: Any) -> str:
+    """The ``outcome`` of a :class:`CardDraft`. A plain ``(id, kept)`` pair
+    reads as written when its id is a UUID, else as failed."""
+    outcome = str(getattr(res, "outcome", "") or "")
+    if outcome:
+        return outcome
+    return DRAFT_WRITTEN if _as_uuid(str(res[0] or "")) else DRAFT_FAILED
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    """True for a timeout, where the request can have reached the provider.
+    The code cannot see more than this, so a timeout reads as unknown."""
+    import httpx
+
+    return isinstance(exc, (TimeoutError, httpx.TimeoutException))
+
+
 async def _keep_card_draft(
     mail: _Mail, owner: str, to: list[str], cc: list[str], subject: str, body: str,
     *, prior: list[str] | None = None, bcc: list[str] | None = None,
-) -> tuple[str, bool]:
-    """The draft of a card that shows: best effort, so the card always shows."""
+) -> CardDraft:
+    """The draft of a card that shows: best effort, so the card always shows.
+    Its ``outcome`` tells a failed write from an unknown one (item 11)."""
+    progress: dict[str, bool] = {}
     try:
-        return await _write_draft(mail, owner, to, cc, subject, body,
-                                  chat_wrote=True, prior=prior, bcc=bcc)
+        local_id, kept = await _write_draft(mail, owner, to, cc, subject, body,
+                                            chat_wrote=True, prior=prior, bcc=bcc,
+                                            progress=progress)
     except Exception as exc:  # the card still shows
-        _log.warning("email.reply_card_draft_failed", error=type(exc).__name__)
-        return "", False
+        unknown = bool(progress.get("provider")) or _is_timeout(exc)
+        outcome = DRAFT_UNKNOWN if unknown else DRAFT_FAILED
+        _log.warning("email.reply_card_draft_failed", error=type(exc).__name__,
+                     outcome=outcome)
+        return CardDraft("", False, outcome)
+    if _as_uuid(local_id) is None:
+        # The provider holds the draft, and no local row names it.
+        _log.warning("email.reply_card_draft_failed", error="no_local_row",
+                     outcome=DRAFT_UNKNOWN)
+        return CardDraft("", kept, DRAFT_UNKNOWN)
+    return CardDraft(local_id, kept, DRAFT_WRITTEN)
 
 
 async def _save_draft(

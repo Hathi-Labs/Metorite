@@ -39,7 +39,8 @@ const CORE_PY = fileURLToPath(
   )
 );
 
-/** The `STATUS_CATEGORIES` tuple as the gateway declares it. */
+/** The `STATUS_CATEGORIES` tuple as the gateway declares it. It is the one
+ *  written list of stages; `_LIFECYCLE` and `STATUS_STAGE_ORDER` derive from it. */
 function serverCategories(): string[] {
   const source = readFileSync(CORE_PY, "utf8");
   const block = source.match(
@@ -283,9 +284,14 @@ describe("one reopen rule, the gateway's (D79)", () => {
     expect(reopenLane(noTodo)?.id).toBe("doing");
   });
 
-  it("answers null when that first status closes too", () => {
+  it("answers null when every status closes (task 1792)", () => {
+    const closedOnly = [lane("done", "done", 1), lane("gone", "cancelled", 5)];
+    expect(reopenLane(closedOnly)).toBeNull();
+  });
+
+  it("skips a Done lane with the lowest position for the open lane (task 1792)", () => {
     const closedFirst = [lane("done", "done", 1), lane("doing", "in_progress", 5)];
-    expect(reopenLane(closedFirst)).toBeNull();
+    expect(reopenLane(closedFirst)?.id).toBe("doing");
   });
 
   it("matches the shape of the gateway's reopen", () => {
@@ -307,7 +313,7 @@ describe("one reopen rule, the gateway's (D79)", () => {
     expect(body).toMatch(/in CLOSING_CATEGORIES:\s*\n\s*return None/);
     const core = readFileSync(CORE_PY, "utf8");
     const pick = core.slice(core.indexOf("async def load_default_status"));
-    expect(pick).toContain('clauses.append("category <> :triage")');
-    expect(pick).toContain('" ORDER BY position, name LIMIT 1"');
+    expect(pick).toContain("category <> :triage AND category NOT IN");
+    expect(pick).toContain("ORDER BY {status_order_sql()} LIMIT 1");
   });
 });

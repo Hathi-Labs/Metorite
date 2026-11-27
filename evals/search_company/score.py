@@ -30,6 +30,11 @@ K = 5
 #: room for a drift of the fusion, and no more. The README says why.
 FLOOR = 0.90
 
+#: The latency limits of ``knowledge_graph.md`` §7.3 (KG-3b), in seconds. A run
+#: passes when p50 is under the first and p95 is under the second.
+P50_LIMIT_S = 1.5
+P95_LIMIT_S = 3.0
+
 EXIT_PASS, EXIT_FAIL, EXIT_NO_GO = 0, 1, 2
 
 
@@ -49,6 +54,9 @@ class Outcome:
     skipped: tuple[str, ...] = ()
     #: A short code when the request failed (``http-500``), or empty.
     error: str = ""
+    #: True when a gold id is among the related records of the answer (rung 4,
+    #: FIND-3). It never counts as a hit: the misses report names it apart.
+    related: bool = False
 
 
 def locate(
@@ -145,8 +153,14 @@ def summarize(outcomes: Sequence[Outcome], registry: Sequence[str], k: int = K) 
 
 
 def verdict(summary: Summary, floor: float = FLOOR) -> int:
-    """0 pass, 1 fail. A failed request, a source with no hit, or a recall under the floor fails."""
+    """0 pass, 1 fail.
+
+    A failed request, a source with no hit, a recall under the floor, a p50 of
+    :data:`P50_LIMIT_S` or more, or a p95 of :data:`P95_LIMIT_S` or more fails.
+    """
     if summary.n == 0 or summary.failing or summary.errors or summary.recall < floor:
+        return EXIT_FAIL
+    if summary.p50 >= P50_LIMIT_S or summary.p95 >= P95_LIMIT_S:
         return EXIT_FAIL
     return EXIT_PASS
 
@@ -174,5 +188,82 @@ def render(summary: Summary, *, mode: str, flags: dict[str, str], floor: float |
     if floor is not None:
         status = "PASS" if verdict(summary, floor) == EXIT_PASS else "FAIL"
         failing = f", failing sources: {', '.join(summary.failing)}" if summary.failing else ""
-        lines.append(f"floor: recall >= {floor:.2f}{failing} -> {status}")
+        lines.append(
+            f"floor: recall >= {floor:.2f}, p50 < {P50_LIMIT_S:.1f}s, "
+            f"p95 < {P95_LIMIT_S:.1f}s{failing} -> {status}"
+        )
+    return "\n".join(lines)
+
+
+# ── the misses set (WS-FIND FIND-1) ─────────────────────────────────────────
+
+
+#: The misses found in the top 5 of one call on today's ``main`` (the baseline of
+#: WS-FIND FIND-1). Each slice of ``find_engine.md`` §9.2 raises it to the number
+#: that its pull request prints, and a drop does not merge. The R8 suite reads it.
+MISSES_BASELINE = 0
+
+
+@dataclass(frozen=True)
+class MissesSummary:
+    """The score of the misses set: cases found in the top 5 of one call."""
+
+    n: int
+    found: int
+    #: ``kind -> (found, cases)``.
+    by_kind: dict[str, tuple[int, int]]
+    #: ``rung -> (found, cases)``.
+    by_rung: dict[int, tuple[int, int]]
+    #: Ids of the cases found, and of the cases missed. Ids only, never words.
+    found_ids: tuple[str, ...]
+    missed_ids: tuple[str, ...]
+    #: Failed requests. A failed request is a miss.
+    errors: int = 0
+    #: Ids of the missed cases whose gold is among the related records of the
+    #: answer (rung 4, FIND-3). Apart from ``found``, as the neighbour score of
+    #: ``knowledge_graph.md`` §7.2.
+    related_ids: tuple[str, ...] = ()
+
+
+def summarize_misses(
+    outcomes: Sequence[Outcome], meta: dict[str, tuple[str, int]], k: int = K,
+) -> MissesSummary:
+    """Score the misses. *meta* maps a case id to ``(kind, rung)``.
+
+    A case counts when its gold id is among the first *k* hits of the WHOLE
+    answer (``place``), the cut of one call that the member reads.
+    """
+    by_kind: dict[str, list[int]] = {}
+    by_rung: dict[int, list[int]] = {}
+    found: list[str] = []
+    missed: list[str] = []
+    for o in outcomes:
+        kind, rung = meta[o.question_id]
+        ok = hit_at(o.place, k)
+        (found if ok else missed).append(o.question_id)
+        for row in (by_kind.setdefault(kind, [0, 0]), by_rung.setdefault(rung, [0, 0])):
+            row[0] += 1 if ok else 0
+            row[1] += 1
+    return MissesSummary(
+        n=len(outcomes), found=len(found),
+        by_kind={x: (a, b) for x, (a, b) in by_kind.items()},
+        by_rung={x: (a, b) for x, (a, b) in sorted(by_rung.items())},
+        found_ids=tuple(found), missed_ids=tuple(missed),
+        errors=sum(1 for o in outcomes if o.error),
+        related_ids=tuple(o.question_id for o in outcomes
+                          if o.related and o.question_id in missed),
+    )
+
+
+def render_misses(summary: MissesSummary, k: int = K) -> str:
+    """The misses score as text. Counts, kinds, rungs and case ids only."""
+    lines = [
+        f"misses: {summary.found}/{summary.n} found in the top {k} of one call",
+        "  by kind: " + ", ".join(f"{x} {a}/{b}" for x, (a, b) in summary.by_kind.items()),
+        "  by rung: " + ", ".join(f"{x} {a}/{b}" for x, (a, b) in summary.by_rung.items()),
+        f"  found ids: {', '.join(summary.found_ids) or 'none'}",
+        f"  missed ids: {', '.join(summary.missed_ids) or 'none'}",
+        f"  missed, found in related records: {', '.join(summary.related_ids) or 'none'}",
+        f"  failed requests: {summary.errors}",
+    ]
     return "\n".join(lines)

@@ -74,14 +74,67 @@ router = APIRouter(
     dependencies=[require_feature_router("integrations")],
 )
 
-#: Where each owning app connects its own accounts (D96.1).
+#: Where each owning app connects its own accounts (D96.1). WS-STU I8a adds
+#: Calendar (its settings sheet, CE-10c) and Knowledge (the Sources view,
+#: KC-1b), so a calendar row and a Drive row link to their own app.
 _SETUP_HREF = {
     "crm": "/crm",
     "email": "/email",
     "whatsapp": "/whatsapp",
+    "calendar": "/calendar?settings=1",
+    "knowledge": "/knowledge/sources",
     "integrations": "/integrations",
 }
 _KNOWN_APPS = frozenset(_SETUP_HREF)
+#: The name of the console in the connector list (IN-11). The registry and
+#: :data:`_SETUP_HREF` name the same app ``integrations``.
+_CONSOLE = "console"
+
+
+def _app_of(owning_app: str | None) -> str:
+    """The key of :data:`_SETUP_HREF` for *owning_app*. ``console`` and an
+    app that the map does not hold are the console, ``integrations``."""
+    app = "integrations" if owning_app == _CONSOLE else owning_app
+    return app if app in _KNOWN_APPS else "integrations"
+
+
+def setup_href_for(provider: str) -> str:
+    """Where a member connects *provider* (WS-STU I8a): the connect flow of
+    its owning app, never a copy of it (D96.1, ``ai_studio.md`` §8.1 rule 1).
+
+    The provider-level map. A connection that is missing has no registry
+    row, so its link cannot come from a row. ``mcp:<server>`` opens the Add
+    form of the console with the name filled in. A provider id reads its
+    owning app from the connector list (IN-11), and an id that the list does
+    not hold opens the console. Studio's read calls it, and copies no path."""
+    from acb_common.connector_list import connector
+    from gateway.connections import mcp as mcp_registry
+
+    if provider.startswith(mcp_registry.PREFIX):
+        name = provider[len(mcp_registry.PREFIX):]
+        if mcp_registry.NAME_RE.fullmatch(name):
+            return f"{_SETUP_HREF['integrations']}?add=mcp&name={name}"
+        return _SETUP_HREF["integrations"]
+    row = connector(provider)
+    return _SETUP_HREF[_app_of(row["owning_app"] if row else None)]
+
+
+def may_connect(user: UserContext, provider: str) -> bool:
+    """True when *user* may start the connect of *provider* (WS-STU I8a).
+
+    The floor of §3.5: an org connection needs ``integrations:manage``, and a
+    member connects their own member connection in the owning app. The scope
+    comes from the connector list (IN-11). An MCP server and an id that the
+    list does not hold are org connections, so they need the right. The
+    owning app checks its own rule again, so this answer only picks the words
+    that Studio shows."""
+    from acb_common.connector_list import connector
+    from gateway.connections import mcp as mcp_registry
+
+    if _can_manage(user):
+        return True
+    row = None if provider.startswith(mcp_registry.PREFIX) else connector(provider)
+    return bool(row and row.get("scope") == "member")
 
 #: The code of an error that the console may show. No provider text.
 _ERR_AUTH = "auth_failed"
@@ -153,9 +206,24 @@ def _host_only(url: str | None) -> str:
 # ── The five sources ────────────────────────────────────────────────────────
 
 
+def _registry_label(provider: str) -> str:
+    """The name of a registry row. An API connection (``api:<template>``,
+    API-5) takes the label of its connector-list row, so the console says
+    "Zoho Books" and not "Api:Zoho Books". Each other row keeps its rule."""
+    if provider == "zoho":
+        return "Zoho CRM"
+    if provider.startswith("api:"):
+        from acb_common.connector_list import connector
+
+        row = connector(provider)
+        if row is not None:
+            return str(row["label"])
+    return provider.replace("_", " ").title()
+
+
 def _registry_row(conn: store.Connection, user: UserContext) -> Row:
     """A row of the registry table. The Zoho CRM row is the first."""
-    app = conn.owning_app if conn.owning_app in _KNOWN_APPS else "integrations"
+    app = _app_of(conn.owning_app)
     detail: dict[str, str] = {}
     location = conn.provider_meta.get("location") if conn.provider_meta else None
     if location:
@@ -167,7 +235,7 @@ def _registry_row(conn: store.Connection, user: UserContext) -> Row:
         id=f"{conn.provider}:{conn.id}",
         kind="oauth",
         provider=conn.provider,
-        label="Zoho CRM" if conn.provider == "zoho" else conn.provider.replace("_", " ").title(),
+        label=_registry_label(conn.provider),
         owning_app=app,
         scope=conn.scope_kind,
         owner=(conn.member_email if not org_scope else conn.connected_by) or None,
@@ -303,7 +371,12 @@ async def _mcp_rows(org: str, user: UserContext) -> list[Row]:
             "agent_scope": ", ".join(srv.agent_scope),
             # H-300: the console draws this key as a switch, not as text.
             "always_confirm": "true" if srv.always_confirm else "false",
+            # MCP-C2: a switch too. The one parse is ``StoredServer``.
+            "read_only_key": "true" if srv.read_only_key else "false",
         }
+        if srv.description:
+            # CSY-7: the panel edits it in place, so it is not a line of text.
+            detail["description"] = srv.description
         host = _host_only(srv.url)
         if host:
             detail["host"] = host
@@ -463,7 +536,17 @@ def _not_found() -> HTTPException:
 
 
 def _split_id(connection_id: str) -> tuple[str, str]:
-    prefix, sep, rest = connection_id.partition(":")
+    """The provider and the key of a row id.
+
+    An API connection (API-2) has the provider ``api:<template>``, so its
+    row id is ``api:<template>:<uuid>``. It splits at the LAST colon. Each
+    other id splits at the first one, because an MCP server name and a key
+    service can hold no colon, and a registry id ends with a uuid.
+    """
+    if connection_id.startswith("api:"):
+        prefix, sep, rest = connection_id.rpartition(":")
+    else:
+        prefix, sep, rest = connection_id.partition(":")
     if not sep or not prefix or not rest:
         raise _not_found()
     return prefix, rest
@@ -499,6 +582,12 @@ async def _disconnect_registry(org: str, provider: str, key: str, user: UserCont
         await github_connection.disconnect(org)
         async with tenant_session(org) as db:
             after = await store.get_by_id(db, org, conn.id)
+    elif conn.provider == "api:zoho_books" and conn.owning_app == "integrations":
+        # API-2: revoke the refresh token at Zoho, then the store disconnect,
+        # under the connect lock of the Books flow.
+        from gateway.routes.integrations_api_connect import disconnect_books
+
+        after = await disconnect_books(org)
     else:
         async with tenant_session(org) as db:
             after = await store.disconnect(db, org, conn.id)

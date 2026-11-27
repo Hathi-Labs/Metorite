@@ -12,7 +12,7 @@
 
 import { CATEGORY_LABEL } from "@/lib/statusCategory";
 
-import { AGENT_STRIP, type AgentFocus, type AgentSummary } from "./agentRuns";
+import { AGENT_STRIP, type AgentFocus, type AgentSummary, HOLD_FILTERS, type HoldFocus } from "./agentRuns";
 import { type Filters } from "./grouping";
 import { hasMoreTasks } from "./paging";
 
@@ -28,6 +28,28 @@ export function compactChromeEnabled(env?: Record<string, string | undefined>): 
   return ["1", "true", "on", "yes"].includes(String(raw ?? "").trim().toLowerCase());
 }
 
+/**
+ * What tool row an Overview keeps (MOB-1, phone audit 2026-11-03). A phone has
+ * no action row, so its tabs live in the View sheet. The Overview used to hide
+ * the whole row, and with it the only way back to the List. It now keeps the
+ * View button alone: the search and Filters act on no roll-up. A desktop
+ * Overview stays bare, because the action row above it holds the tabs.
+ */
+export type ChromeKind = "full" | "view-only" | "none";
+
+export function chromeKind({
+  overview,
+  phone,
+  compact,
+}: {
+  overview: boolean;
+  phone: boolean;
+  compact: boolean;
+}): ChromeKind {
+  if (!overview) return "full";
+  return phone && compact ? "view-only" : "none";
+}
+
 /** What a chip clears. `filters` is a patch of `Filters`; the two toggles are page state. */
 export interface ActiveChip {
   key: string;
@@ -35,13 +57,19 @@ export interface ActiveChip {
   clear:
     | { kind: "filters"; patch: Partial<Filters> }
     | { kind: "waitingOnMe" }
-    | { kind: "agentWork" };
+    | { kind: "epic" }
+    | { kind: "agentWork" }
+    | { kind: "holdFocus" };
 }
 
 export interface ChipInput {
   filters: Filters;
   waitingOnMe: boolean;
   agentWork: boolean;
+  /** SP-2a — the epic the board is narrowed to, when one is chosen. */
+  epic?: { id: string; label: string };
+  /** SW-5: "Held by an agent" or "Free", or none. */
+  holdFocus?: HoldFocus | null;
   me: string;
   /** Turns an address into the name a member reads. */
   labelOf?: (address: string) => string;
@@ -55,6 +83,8 @@ export function activeChips({
   filters,
   waitingOnMe,
   agentWork,
+  epic,
+  holdFocus = null,
   me,
   labelOf = (address) => address,
 }: ChipInput): ActiveChip[] {
@@ -90,8 +120,15 @@ export function activeChips({
   if (waitingOnMe) {
     chips.push({ key: "waiting", label: "Waiting on me", clear: { kind: "waitingOnMe" } });
   }
+  if (epic) {
+    chips.push({ key: "epic", label: epic.label, clear: { kind: "epic" } });
+  }
   if (agentWork) {
     chips.push({ key: "agent", label: "Agent work", clear: { kind: "agentWork" } });
+  }
+  if (holdFocus) {
+    const found = HOLD_FILTERS.find((item) => item.focus === holdFocus);
+    chips.push({ key: "hold", label: found?.label ?? holdFocus, clear: { kind: "holdFocus" } });
   }
   if (filters.archived) {
     chips.push({ key: "archived", label: "Archived", clear: { kind: "filters", patch: { archived: false } } });

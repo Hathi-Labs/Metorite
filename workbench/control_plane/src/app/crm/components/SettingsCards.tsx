@@ -34,27 +34,76 @@ import {
 export function Card({
   title,
   note,
+  action,
   children,
 }: {
   title: string;
   note?: React.ReactNode;
+  /** One control at the right end of the header, such as "New pipeline" (CRM-M3a). */
+  action?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <section className="rounded-xl border border-border bg-card/40" aria-label={title}>
-      <header className="border-b border-border px-4 py-3">
-        <h2 className="text-sm font-semibold text-foreground">{title}</h2>
-        {note && <p className="mt-0.5 text-xs text-muted-foreground">{note}</p>}
+      <header className="flex items-start gap-3 border-b border-border px-4 py-3">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-sm font-semibold text-foreground">{title}</h2>
+          {note && <p className="mt-0.5 text-xs text-muted-foreground">{note}</p>}
+        </div>
+        {action && <div className="shrink-0">{action}</div>}
       </header>
       {children}
     </section>
   );
 }
 
+/**
+ * The one row of a list with nothing to list: loading, failed or empty
+ * (CRM-U17a). The three share it, so the card keeps one height (M1).
+ */
+export const STATE_ROW =
+  "flex min-h-20 items-center justify-center gap-2 px-4 py-6 text-center text-xs text-muted-foreground";
+
+/**
+ * A vocabulary card that has no rows to draw yet: a loading row, or the
+ * reason of a failed read with Retry (CRM-U17a). It wears the title of the
+ * card it stands in for.
+ */
+export function VocabularyNotice({
+  title,
+  state,
+  error,
+  onRetry,
+}: {
+  title: string;
+  state: "loading" | "failed";
+  error?: string | null;
+  onRetry?: () => void;
+}) {
+  return (
+    <Card title={title}>
+      {state === "loading" ? (
+        <p className={STATE_ROW} role="status">
+          Loading…
+        </p>
+      ) : (
+        <div className={STATE_ROW} role="alert">
+          <span className="text-destructive">{error || "The list did not load."}</span>
+          {onRetry && (
+            <Button size="sm" variant="secondary" onClick={onRetry}>
+              Retry
+            </Button>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 /** A list of names to read: no input, no handle and no delete. */
 export function NameList({ names, empty = "None yet." }: { names: string[]; empty?: string }) {
   if (names.length === 0) {
-    return <p className="px-4 py-3 text-xs text-muted-foreground">{empty}</p>;
+    return <p className={STATE_ROW}>{empty}</p>;
   }
   return (
     <ul className="space-y-0.5 px-4 py-3">
@@ -71,14 +120,17 @@ export function NameList({ names, empty = "None yet." }: { names: string[]; empt
  * The stages of each pipeline, to read.
  *
  * Used when the org has two pipelines or more, and in Mirror mode. There is
- * one section for each pipeline. The stage routes of CRM-Q2 do not exist in
- * this build, so no stage here is editable and the note says why.
+ * one section for each pipeline. The stage routes of CRM-Q2 exist, and this
+ * list does not call them yet, so no stage here is editable and the note says why.
  */
 export function PipelineSections({
   pipelines,
   fallback,
   note,
   title = "Deal stages",
+  action,
+  lineOf,
+  emptyLine = "No stages yet.",
 }: {
   pipelines: DealPipeline[] | null;
   /** The one implicit pipeline: the deal statuses, when there is no pipeline list. */
@@ -86,13 +138,19 @@ export function PipelineSections({
   note: string;
   /** The card heading. It is the label of the rail row (CRM-C1). */
   title?: string;
+  /** A control at the right end of the header ("New pipeline", CRM-M3a). */
+  action?: React.ReactNode;
+  /** One line under the name of a section, or null (CRM-M4a: what a lead pipeline feeds). */
+  lineOf?: (pipeline: DealPipeline) => string | null;
+  /** The words of a section with no stage yet (CRM-M4a: "Loading statuses…" while they load). */
+  emptyLine?: string;
 }) {
   const sections =
     pipelines && pipelines.length > 0
       ? [...pipelines].sort((a, b) => a.position - b.position)
       : null;
   return (
-    <Card title={title} note={note}>
+    <Card title={title} note={note} action={action}>
       {sections ? (
         <div className="divide-y divide-border/60">
           {sections.map((pipeline) => {
@@ -119,9 +177,12 @@ export function PipelineSections({
                     </a>
                   )}
                 </div>
+                {lineOf?.(pipeline) && (
+                  <p className="px-4 pt-0.5 text-[11px] text-muted-foreground">{lineOf(pipeline)}</p>
+                )}
                 <NameList
                   names={stagesOf(pipeline).map((stage) => stage.name)}
-                  empty="No stages yet."
+                  empty={emptyLine}
                 />
               </div>
             );

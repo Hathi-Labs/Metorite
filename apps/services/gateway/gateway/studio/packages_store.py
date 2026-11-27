@@ -1,0 +1,1824 @@
+"""The one writer of Studio packages in ``apps`` (WS-STU A3).
+
+Spec: ``project-docs/specs/ai_studio.md`` §3.6 (the manifest) and the §14 A3
+row. Migration: the file that adds ``apps.format`` (322 at build).
+``tests/unit/test_studio_packages_r8.py`` runs this SQL on a real Postgres.
+
+**A package is a row of ``apps``** with ``format = 'manifest'``. Its manifest
+lives in ``apps.manifest``, so no second app table exists (§10). An App
+Workshop app has ``format = 'code'``, or NULL on a row from before A3. The
+App Workshop readers skip a package (``format IS DISTINCT FROM 'manifest'``),
+so a package never shows in ``/apps`` and never becomes an agent tool.
+
+**Tenancy (R5).** Every function takes a session that the caller opened with
+``tenant_session(org)``, so RLS binds each statement. No function takes an
+org. An INSERT writes no ``organization_id``: the column DEFAULT reads the
+bound tenant, and each statement filters on ``_BOUND_ORG`` too.
+
+**The member.** Every function takes the member as a required argument, and
+every statement filters on ``owner_email``. In A3 a member reads and writes
+only the packages that the member owns. ⚠️ The store does not authenticate.
+It only scopes. The caller resolves the member from the session, never from
+request input (R5, contract R11). The one exception is the kill switch of
+J3a (below): it takes the *actor* and finds any package of the bound org.
+
+**Validate before write.** :func:`create_package` and
+:func:`update_manifest` run :func:`acb_common.studio_manifest.validate_manifest`
+before any statement. Then the store checks the JSON text itself: an object,
+no NUL, no lone surrogate, no key that is not text, no float that Postgres
+writes longer, and at most :data:`MAX_MANIFEST_BYTES` bytes. So no manifest
+reaches a statement that the CHECK ``apps_manifest_package`` refuses. Each
+refusal raises one :class:`PackageStoreError` that carries every path.
+
+**The slug.** Since WS-STU A3b-2 only ``apps_org_slug_key`` (org and slug)
+is unique, so a slug that org A holds never blocks a package of org B. The
+slug of a package is ``<manifest id>-<8 hex digits of the new id>``. When the
+slug is taken in the own org anyway, the INSERT writes nothing (``ON CONFLICT
+DO NOTHING``), and the store tries a new id. The clause names no column. No
+refusal names the slug of another org. The slug never changes after the INSERT, and so the
+manifest id never changes either: :func:`update_manifest` refuses a new id.
+
+**Private and a draft.** A new package has ``visibility = 'private'``,
+``status = 'draft'`` and ``workspace_path = ''``, because it has no files. No
+function here changes the visibility or the format. Only :func:`publish_version`
+and :func:`rollback` change the status, and only to ``live``. The trigger
+``apps_format_fixed`` refuses a change of ``format`` on the database too.
+
+**Versions (A4).** :func:`publish_version` and :func:`rollback` write
+``app_versions``. A version row holds the manifest, ``bundle_html = ''`` and
+``bundle_sha256``, the SHA-256 of the manifest JSON text from
+:func:`check_manifest`. The store never deletes a version row, and it never
+writes the manifest, the bundle or the hash of a version again, so history is
+append-only. The one exception is the review of J2 (below). Both functions
+lock the package row first
+(``FOR UPDATE``), so two writers get N and N+1. ``UNIQUE (app_id, version)``
+is the backstop. Each writes its ``app_audit`` row in the same transaction.
+⚠️ A package skips the App Workshop review: no function here calls
+``record_app_audit`` or proposes ``app.publish_review``. The organization
+approval is J2. The install is WS-PKG, and ``apps.live_version`` is only the
+pointer of the author.
+
+**The approval for the org (J2, PKG-11b-2).** The owner decided on
+2026-11-07 (task 2174) that ``app_versions.review_status`` records it, and
+that this store writes it. ``package_host.md`` §6.2 holds the rules.
+:func:`request_org_approval`, :func:`approve_version` and
+:func:`reject_version` move the state of ONE version along
+:data:`REVIEW_MOVES`: ``auto`` to ``pending``, then ``pending`` to
+``approved`` or ``rejected``. ``_REVIEW_MOVE_SQL`` is the one UPDATE of
+``app_versions``. It sets ``review_status`` only, and it names the bound
+org, the package, the version and the expected state. Each move reads the
+version row ``FOR UPDATE`` first, and the UPDATE must change exactly one
+row, or :class:`ApprovalConflict` raises. Each move writes ONE ``app_audit``
+row (op :data:`REVIEW_OP`) in the same transaction. The owner of the package
+asks. The publisher of the version and the owner of the package cannot
+approve it (PKG-Q10). The caller passes ``can_publish``, the check of
+``studio:publish`` that the route makes, because a store does not read
+rights. The routes of J2b-1 (``routes/studio/packages.py``) call the three
+moves, and :func:`list_pending_versions` is the read of an approver: the
+``pending`` versions of the bound org, each with its full manifest, with no
+member filter. The chat twins are not built (J2b-3). The App
+Workshop review (``routes/apps/publish.py``, ``routes/apps/tools.py``) is a
+separate path for a ``code`` app, and this store does not reuse it.
+
+**The delete (A5c-1).** :func:`delete_preview` counts what a delete takes
+and gives :func:`confirm_token` of the counts. :func:`delete_package` is one
+step in the caller's transaction: the package row ``FOR UPDATE`` first, then
+the org lock of the object store (``objects_store.lock_org``), the one lock
+order of a publish. The first step of a call checks the token under both
+locks, and raises :class:`CountsChanged` for a stale one. Each later step
+checks the object names of that preview. Then the step purges at most one
+chunk of change history (``objects_store.purge_record_changes``, C4a-1),
+and then at most one chunk of records (``objects_store.purge_records``). A
+full chunk of history keeps the package for a next step. The purge stops at
+the end of the call. A full chunk ends the step, and the caller commits, so
+no lock stays between two steps. The last step of a call that leaves
+records writes a partial audit row (op :data:`PARTIAL_OP`) in its own
+transaction, so each record that a call removes has an audit row. A step
+that finds fewer records than the chunk deletes the ``apps`` row (the one
+``DELETE FROM apps`` of a package) and writes the ``app_audit`` row through
+:func:`_audit` in the same transaction. The foreign keys cascade to the
+versions, the objects, the fields, the hot rows, the installs, the
+contributions, the grants, the files, the pins and the data. So the store
+still holds no statement that updates or deletes a version row.
+``app_audit`` has no foreign key, so its rows stay.
+
+**The admin path of a delete (A5c-2).** :func:`delete_preview`,
+:func:`delete_package` and :func:`record_partial` take ``as_admin``. The
+route sets it, never a body: only for a holder of ``admin:members:manage``
+who does not own the package. With ``as_admin`` the store reads the package
+of ANY owner in the bound org (:data:`_ADMIN_GET_SQL`). Then it checks that
+the owner has no active ``app_user`` row in the bound org
+(:data:`_OWNER_ACTIVE_SQL`), under the row lock of each step. An active
+owner raises :class:`OwnerActive` on the preview and on the first step of a
+call, and nothing changes. A later step ends the call with the partial row
+(``owner_active``). The owner filter of each other statement holds the owner
+of the row, so the counts, the purge and the ``DELETE FROM apps`` are those
+of A5c-1. Each audit row names the admin as ``user_email``, with ``by:
+"admin"``, ``admin`` and ``owner`` in the detail. :func:`admin_may_delete`
+is the precheck of the route: a read with no lock.
+
+**The lock of an install (PKG-8b).** :func:`lock_for_install` holds the
+package row ``FOR KEY SHARE`` and reads ``live_version`` and the pause
+(``paused``, J2b-1). The install route
+of WS-PKG calls it before the install store, so its lock order is the order
+of a publish: the ``apps`` row, then the org lock of the install store.
+
+**The kill switch (J3a).** :func:`pause_package` and :func:`resume_package`
+hold the only writes of ``apps.paused_at`` and ``apps.paused_by`` (the file
+that adds them is 412 at build). Each locks the ``apps`` row ``FOR UPDATE``,
+then moves each install of the package through the install store
+(``package_host/store.pause_install`` and ``resume_install``), then writes
+its ``app_audit`` row through :func:`_audit`, all in the caller's
+transaction. A pause is not a status: the draft, the versions and
+``apps.status`` stay, and a publish keeps the pause. ⚠️ The two functions
+find a package of any member of the bound org, because an admin stops a
+package (``ai_studio.md`` §9 item 7). The store does not decide who may
+call. No route calls them yet.
+
+**Not here.** No UI. Install is WS-PKG. The routes are
+``routes/studio/packages.py`` (A5, A5c-1 and A5c-2), which runs no SQL of
+its own. The chat tool of a delete is ``acb_skills.studio_tools``
+(``studio_delete_package``, A5c-2).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import uuid
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
+
+from acb_common.secret_shapes import looks_like_secret
+from acb_common.studio_manifest import ManifestError, manifest_hash, validate_manifest
+from sqlalchemy import text
+
+from gateway.package_host.sharing import OTHERS_SEE_THE_INSTALL
+from gateway.studio import objects_store
+
+#: The value of ``apps.format`` for a Studio package.
+FORMAT = "manifest"
+#: The bound of the CHECK ``apps_manifest_package``: the JSON text of a
+#: manifest, in bytes (256 KiB). A2's ``MAX_DOC_BYTES`` is the same number.
+MAX_MANIFEST_BYTES = 262144
+#: A float of this size or more is refused. See :func:`first_bad_value`.
+MAX_FLOAT = 1e15
+#: The tries of a new id when the slug is taken.
+SLUG_TRIES = 3
+#: The hex digits of the new id in the slug.
+SLUG_HEX = 8
+#: The refusal of an ``update_manifest`` that changes the manifest id.
+ID_FIXED = "The manifest id cannot change. Create a new package."
+
+_BOUND_ORG = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
+
+_PACKAGE_COLUMNS = (
+    "id::text, slug, name, description, owner_email, visibility, status, "
+    "manifest, live_version, created_at, updated_at, paused_at, paused_by"
+)
+
+#: A taken slug makes no row. The store then tries a new id.
+_CREATE_SQL = (
+    "INSERT INTO apps (id, slug, name, description, owner_email, visibility, "
+    "status, manifest, workspace_path, format) "
+    "VALUES (CAST(:id AS uuid), :slug, :name, :desc, :m, 'private', 'draft', "
+    "CAST(:manifest AS jsonb), '', 'manifest') "
+    "ON CONFLICT DO NOTHING "
+    f"RETURNING {_PACKAGE_COLUMNS}"
+)
+
+#: The lock of one create from a template (STU-K1a): the bound org, the
+#: member and the manifest id, until the transaction ends. The idiom of
+#: ``objects_store._ORG_LOCK_SQL``. The first column is false when no tenant
+#: is bound, and then the lock key is NULL and Postgres takes no lock.
+_CREATE_LOCK_SQL = (
+    f"SELECT {_BOUND_ORG} IS NOT NULL, pg_advisory_xact_lock(hashtextextended("
+    f"'studio_package_create:' || CAST({_BOUND_ORG} AS text) || ':' || :m || ':' || :mid, 0))"
+)
+
+#: The longest wait for the create lock, in milliseconds. It covers one
+#: publish of a template. Past it the caller gets ``StoreBusy`` (503).
+CREATE_LOCK_WAIT_MS = 5_000
+
+_GET_SQL = (
+    f"SELECT {_PACKAGE_COLUMNS} FROM apps "
+    f"WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
+    "AND owner_email = :m AND id = CAST(:id AS uuid)"
+)
+
+_LIST_SQL = (
+    f"SELECT {_PACKAGE_COLUMNS} FROM apps "
+    f"WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
+    "AND owner_email = :m ORDER BY updated_at DESC, id"
+)
+
+#: The summary of A5: no manifest, so a list of 100 packages never loads 100
+#: manifests. ``manifest_id`` is the id inside the manifest.
+_SUMMARY_SQL = (
+    "SELECT id::text, slug, name, description, status, live_version, created_at, "
+    "updated_at, manifest->>'id' FROM apps "
+    f"WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
+    "AND owner_email = :m ORDER BY updated_at DESC, id"
+)
+
+#: The catalog read of B1c. One statement for all packages of the member. It
+#: reads the object names and the action ids and targets with jsonb path
+#: reads, so it never loads a whole manifest. ``:app`` is NULL for no filter.
+_ACTIONS_SQL = (
+    "SELECT id::text AS id, "
+    "coalesce(jsonb_path_query_array(manifest, '$.objects[*].name'), '[]'::jsonb) AS objects, "
+    "(SELECT coalesce(jsonb_agg(jsonb_build_object("
+    "'id', x->'id', 'uses', x->'uses', 'title', x->'title')), '[]'::jsonb) "
+    "FROM jsonb_array_elements(CASE WHEN jsonb_typeof(manifest->'actions') = 'array' "
+    "THEN manifest->'actions' ELSE '[]'::jsonb END) AS x) AS actions "
+    f"FROM apps WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
+    "AND owner_email = :m AND (CAST(:app AS uuid) IS NULL OR id = CAST(:app AS uuid)) "
+    "ORDER BY updated_at DESC, id"
+)
+
+_UPDATE_SQL = (
+    "UPDATE apps SET manifest = CAST(:manifest AS jsonb), name = :name, "
+    "description = :desc, updated_at = now() "
+    f"WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
+    "AND owner_email = :m AND id = CAST(:id AS uuid) "
+    f"RETURNING {_PACKAGE_COLUMNS}"
+)
+
+_VERSION_FIELDS = (
+    "version, manifest, bundle_sha256, release_notes, published_by, "
+    "published_at, review_status")
+
+#: One statement takes the next number, so it never reads a stale maximum.
+#: The caller holds the package row lock. ``bundle_html`` is '' for a package.
+_VERSION_INSERT_SQL = (
+    "INSERT INTO app_versions (app_id, version, manifest, bundle_html, "
+    "bundle_sha256, release_notes, scope_set_hash, published_by, review_status) "
+    "SELECT CAST(:id AS uuid), COALESCE(MAX(version), 0) + 1, "
+    "CAST(:manifest AS jsonb), '', :sha, :notes, '', :m, 'auto' "
+    "FROM app_versions WHERE app_id = CAST(:id AS uuid) "
+    f"RETURNING app_id::text, {_VERSION_FIELDS}"
+)
+
+#: One page of versions, newest first (STU-A5): at most ``:limit``, each older
+#: than the cursor ``:before``.
+_VERSION_LIST_SQL = (
+    "SELECT v.app_id::text, v.version, NULL, v.bundle_sha256, v.release_notes, "
+    "v.published_by, v.published_at, v.review_status "
+    "FROM app_versions v JOIN apps a ON a.id = v.app_id "
+    f"WHERE a.organization_id = {_BOUND_ORG} AND a.format = 'manifest' "
+    "AND a.owner_email = :m AND a.id = CAST(:id AS uuid) "
+    "AND v.version < CAST(:before AS bigint) ORDER BY v.version DESC LIMIT :limit"
+)
+
+_VERSION_GET_SQL = (
+    "SELECT v.app_id::text, v.version, v.manifest, v.bundle_sha256, "
+    "v.release_notes, v.published_by, v.published_at, v.review_status "
+    "FROM app_versions v JOIN apps a ON a.id = v.app_id "
+    f"WHERE a.organization_id = {_BOUND_ORG} AND a.format = 'manifest' "
+    "AND a.owner_email = :m AND a.id = CAST(:id AS uuid) AND v.version = :v"
+)
+
+#: A publish moves the pointer and the status. It leaves ``manifest`` as it is.
+_PUBLISH_POINT_SQL = (
+    "UPDATE apps SET status = 'live', live_version = :v, updated_at = now() "
+    f"WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
+    "AND owner_email = :m AND id = CAST(:id AS uuid)"
+)
+
+#: A rollback overwrites the draft with the copy, and moves the pointer.
+_ROLLBACK_POINT_SQL = (
+    "UPDATE apps SET manifest = CAST(:manifest AS jsonb), name = :name, "
+    "description = :desc, status = 'live', live_version = :v, updated_at = now() "
+    f"WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
+    "AND owner_email = :m AND id = CAST(:id AS uuid)"
+)
+
+_AUDIT_SQL = (
+    "INSERT INTO app_audit (app_id, app_version, user_email, kind, detail) "
+    "VALUES (CAST(:id AS uuid), :v, :m, :kind, CAST(:detail AS jsonb))"
+)
+
+#: The moves of the review of one version (J2, PKG-11b-2): the name of a move
+#: to its expected state and its new state. No other move exists.
+REVIEW_MOVES: Mapping[str, tuple[str, str]] = {
+    "request": ("auto", "pending"),
+    "approve": ("pending", "approved"),
+    "reject": ("pending", "rejected"),
+}
+#: The op of the audit row of a review move.
+REVIEW_OP = "package.review"
+
+#: The locked read of a review move: the version row ``FOR UPDATE``, with the
+#: owner of its package. It does not filter on the member, because an
+#: approver is not the owner. RLS and the bound org scope it.
+_REVIEW_READ_SQL = (
+    "SELECT v.version, v.published_by, v.review_status, a.owner_email "
+    "FROM app_versions v JOIN apps a ON a.id = v.app_id "
+    f"WHERE a.organization_id = {_BOUND_ORG} AND v.organization_id = {_BOUND_ORG} "
+    "AND a.format = 'manifest' AND a.id = CAST(:id AS uuid) AND v.version = :v "
+    "FOR UPDATE OF v"
+)
+
+#: The ONE UPDATE of ``app_versions``. It sets ``review_status`` and no other
+#: column, of one version, only from the expected state. Fences:
+#: ``test_studio_packages_store.py`` and ``test_studio_package_delete.py``.
+_REVIEW_MOVE_SQL = (
+    "UPDATE app_versions SET review_status = :to "
+    f"WHERE organization_id = {_BOUND_ORG} AND app_id = CAST(:id AS uuid) "
+    "AND version = :v AND review_status = :expected "
+    f"RETURNING app_id::text, {_VERSION_FIELDS}"
+)
+
+#: The member who asked for the review of one version: the newest request row.
+_REVIEW_REQUESTER_SQL = (
+    "SELECT user_email FROM app_audit "
+    f"WHERE organization_id = {_BOUND_ORG} AND app_id = CAST(:id AS uuid) "
+    "AND app_version = :v AND kind = 'action' AND detail->>'op' = :op "
+    "AND detail->>'review' = 'pending' ORDER BY id DESC LIMIT 1"
+)
+
+#: The most pending versions in one read of :func:`list_pending_versions`.
+#: Each row holds a manifest of at most 256 KiB, so the page stays small.
+MAX_PENDING_PAGE = 20
+
+#: The pending versions of the bound org, for a holder of ``studio:publish``
+#: (J2b-1). ⚠️ The ONE read of a version that does not filter on the member,
+#: because the approver is not the owner. RLS and the bound org scope it, and
+#: only a ``pending`` version shows: a private ``auto`` version never shows.
+#: The newest request row gives who asked and when. A read only: no lock.
+_PENDING_SQL = (
+    "SELECT a.id::text, a.name, a.owner_email, v.version, v.published_by, v.published_at, "
+    "v.manifest, r.user_email, r.at "
+    "FROM app_versions v JOIN apps a ON a.id = v.app_id "
+    "LEFT JOIN LATERAL (SELECT user_email, at FROM app_audit "
+    f"WHERE organization_id = {_BOUND_ORG} AND app_id = v.app_id "
+    "AND app_version = v.version AND kind = 'action' AND detail->>'op' = :op "
+    "AND detail->>'review' = 'pending' ORDER BY id DESC LIMIT 1) r ON true "
+    f"WHERE a.organization_id = {_BOUND_ORG} AND v.organization_id = {_BOUND_ORG} "
+    "AND a.format = 'manifest' AND v.review_status = 'pending' "
+    "ORDER BY v.published_at, a.id, v.version LIMIT :limit"
+)
+
+#: The longest release note, in characters.
+MAX_NOTES_CHARS = 2000
+#: The version column is an INT4.
+MAX_VERSION = 2**31 - 1
+#: The most versions in one page of :func:`list_versions`.
+MAX_VERSIONS_PAGE = 100
+#: The refusal of a rollback to the live version.
+ROLLBACK_LIVE = "That version is already the live version."
+#: The refusal of a write whose expected hash is not the hash of the stored
+#: draft (STU-G1c review round 1).
+DRAFT_CHANGED_TEXT = ("The draft changed after the read that this request names. Nothing was "
+                      "written. Read the package again.")
+
+#: The records that one step of a delete removes (A5c-1). A test makes it
+#: smaller, and :func:`delete_package` reads it at each call.
+DELETE_CHUNK = objects_store.PURGE_CHUNK
+#: The op of the audit row of a delete.
+DELETE_OP = "package.delete"
+#: The op of the audit row of a call that ends with records left (202).
+PARTIAL_OP = "package.delete.partial"
+#: The longest wait for the ``apps`` row in a delete step, in milliseconds.
+#: A publish or another delete can hold the row. Past the bound the step
+#: raises ``StoreBusy``.
+ROW_LOCK_WAIT_MS = 1_000
+#: The longest run of one step before its decision, in seconds: the wait for
+#: the ``apps`` row, the wait for the org lock and one purge. A step goes on
+#: to a next step only while one more of these fits before the end of the call.
+#: ⚠️ C4a-1: a step runs two purges, the change history and then the records,
+#: and each stops at the end of the call. Two full purges do not fit in the
+#: budget of a call of the delete route (``DELETE_BUDGET_SECONDS``). So a records
+#: purge that times out after the history purge removed rows does not end the
+#: call as busy. The step counts as a full chunk, and this budget check ends
+#: the call with a 202 (:func:`delete_package`).
+STEP_SECONDS = (ROW_LOCK_WAIT_MS + objects_store.ORG_LOCK_WAIT_MS
+                + objects_store.PURGE_TIMEOUT_MS) / 1000
+#: The refusal of a delete whose confirm token is not the token of now.
+COUNTS_CHANGED_TEXT = ("The package changed after the preview that this request names. Nothing "
+                       "was deleted. Read the new preview, then confirm it.")
+#: The refusal of a later step of a call that found a new object. The earlier
+#: steps of the call removed records, so the text names how many.
+COUNTS_CHANGED_LATER_TEXT = ("The package changed during this delete. The delete stopped after "
+                             "it removed {removed} records. Read the new preview, then confirm "
+                             "it to delete the rest.")
+_TOKEN_HEX = frozenset("0123456789abcdef")
+
+#: The versions, the installs, and the installs that reach a member other
+#: than the owner, of one package. An archived install reaches nobody. A
+#: private install of the owner reaches another member only when the owner
+#: shared it: ``sharing.OTHERS_SEE_THE_INSTALL``, the one rule, which the
+#: member purge and the resolve read too. That rule names ``package_install``
+#: with no alias, so the third count does too. The fourth count (PKG-8a fix
+#: round 2) is the sidebar entry of the owner: a private install of the owner
+#: that the resolve shows, so active and not expired. Only the delete dialog
+#: reads it, so it is not in the token.
+_DELETE_COUNTS_SQL = (
+    "SELECT (SELECT count(*) FROM app_versions v WHERE v.app_id = a.id), "
+    "(SELECT count(*) FROM package_install i "
+    "WHERE i.organization_id = a.organization_id AND i.app_id = a.id), "
+    "(SELECT count(*) FROM package_install "
+    "WHERE package_install.organization_id = a.organization_id "
+    "AND package_install.app_id = a.id AND package_install.state <> 'archived' "
+    "AND NOT (package_install.scope_kind = 'private' "
+    "AND package_install.scope_subject = a.owner_email "
+    f"AND NOT {OTHERS_SEE_THE_INSTALL})), "
+    "(SELECT count(*) FROM package_install o "
+    "WHERE o.organization_id = a.organization_id AND o.app_id = a.id "
+    "AND o.state = 'active' AND o.scope_kind = 'private' "
+    "AND o.scope_subject = a.owner_email "
+    "AND (o.ends_at IS NULL OR o.ends_at > now())) "
+    f"FROM apps a WHERE a.organization_id = {_BOUND_ORG} AND a.format = 'manifest' "
+    "AND a.owner_email = :m AND a.id = CAST(:id AS uuid)"
+)
+
+#: The records that the earlier calls of a delete removed: the sum of the
+#: partial rows of the package. ``app_audit`` keeps them, because it has no
+#: foreign key.
+_PARTIAL_TOTAL_SQL = (
+    "SELECT coalesce(sum(CAST(detail->>'records_this_call' AS bigint)), 0) FROM app_audit "
+    f"WHERE organization_id = {_BOUND_ORG} AND app_id = CAST(:id AS uuid) "
+    "AND kind = 'action' AND detail->>'op' = :op"
+)
+
+#: The one ``DELETE FROM apps`` of a package. The foreign keys cascade to the
+#: versions, the objects, the fields, the records that are left, the hot rows,
+#: the installs, the contributions, the grants, the files, the pins, the tool
+#: grants and the data. ``app_audit`` has no foreign key, so its rows stay.
+#: Fence: ``test_only_delete_package_deletes_a_package``.
+_DELETE_SQL = (
+    "DELETE FROM apps "
+    f"WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
+    "AND owner_email = :m AND id = CAST(:id AS uuid) RETURNING id::text"
+)
+
+#: The package *id* of ANY owner in the bound org (A5c-2). Only the admin path
+#: of a delete reads it: the route passes ``as_admin`` for a holder of
+#: ``admin:members:manage`` who does not own the package, and each read checks
+#: the owner with :data:`_OWNER_ACTIVE_SQL` before any count or write. An App
+#: Workshop app is not a package, so it answers no row.
+_ADMIN_GET_SQL = (
+    f"SELECT {_PACKAGE_COLUMNS} FROM apps "
+    f"WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
+    "AND id = CAST(:id AS uuid)"
+)
+
+#: True when the owner *owner* has an active ``app_user`` row in the bound
+#: org (A5c-2). An invited, suspended or removed row, and no row, are not
+#: active. ``app_user`` keeps one row for each person and org, matched by
+#: ``lower(email)``.
+_OWNER_ACTIVE_SQL = (
+    "SELECT EXISTS (SELECT 1 FROM app_user "
+    f"WHERE organization_id = {_BOUND_ORG} AND lower(email) = :owner "
+    "AND status = 'active')"
+)
+
+#: The refusal of the admin path for the package of an active owner (A5c-2).
+#: The route answers 403 ``owner_active`` with it.
+OWNER_ACTIVE_TEXT = ("The owner of this app is an active member, so only the owner can "
+                     "delete it. Nothing was deleted.")
+
+
+class PackageStoreError(ValueError):
+    """A write or a read that the store refuses before it reaches the database.
+
+    ``errors`` holds each refusal as a JSON path and one sentence, in the
+    shape of A2's :class:`~acb_common.studio_manifest.ManifestError`.
+    """
+
+    def __init__(self, message: str, errors: list[ManifestError] | None = None) -> None:
+        super().__init__(message)
+        self.errors: list[ManifestError] = list(errors or [])
+
+    @property
+    def paths(self) -> list[str]:
+        """The JSON path of each refusal."""
+        return [e.path for e in self.errors]
+
+
+class DraftChanged(Exception):
+    """The stored draft is not the draft that the caller read. Nothing was
+    written. A write that names ``expected_hash`` raises it under the row lock
+    (STU-G1c review round 1). The route answers 409 ``draft_changed``."""
+
+
+def _expect(manifest: dict[str, Any], expected_hash: str | None) -> None:
+    """Raise :class:`DraftChanged` when *expected_hash* is given and is not
+    the canonical hash of *manifest* (``studio_manifest.manifest_hash``, the
+    one hash of a draft). The caller holds the row lock."""
+    if expected_hash is not None and manifest_hash(manifest) != expected_hash:
+        raise DraftChanged(DRAFT_CHANGED_TEXT)
+
+
+@dataclass(frozen=True)
+class Package:
+    """One Studio package: a row of ``apps`` with ``format = 'manifest'``."""
+
+    id: str
+    slug: str
+    name: str
+    description: str
+    owner_email: str
+    visibility: str
+    status: str
+    manifest: dict[str, Any]
+    live_version: int | None
+    created_at: datetime
+    updated_at: datetime
+    #: J3a. When the package was paused, or None when it runs. The action
+    #: door refuses each action of a paused package.
+    paused_at: datetime | None = None
+    #: J3a. The member who paused the package, or None.
+    paused_by: str | None = None
+
+
+@dataclass(frozen=True)
+class PackageSummary:
+    """One package with no manifest (STU-A5): what a list and a limit need."""
+
+    id: str
+    slug: str
+    name: str
+    description: str
+    status: str
+    live_version: int | None
+    created_at: datetime
+    updated_at: datetime
+    manifest_id: str
+
+
+@dataclass(frozen=True)
+class PackageActions:
+    """What the catalog needs of one package (STU-B1c): the names of its
+    objects, and each named action as ``(id, uses, title)``."""
+
+    id: str
+    objects: tuple[str, ...]
+    actions: tuple[tuple[str, str, str | None], ...]
+
+
+def _new_id() -> uuid.UUID:
+    """The id of a new package. A test replaces it to force a slug clash."""
+    return uuid.uuid4()
+
+
+def _member(member: object) -> str:
+    """The member as the store writes ``owner_email``: trimmed, lower case."""
+    if not isinstance(member, str) or not member.strip():
+        raise PackageStoreError("member must be a non-empty string")
+    return member.strip().lower()
+
+
+def _package_id(package_id: object) -> str:
+    """A package id must be a UUID. A bad one fails here, not in a statement
+    that would end the caller's transaction."""
+    try:
+        return str(uuid.UUID(str(package_id)))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise PackageStoreError("package_id must be a UUID") from exc
+
+
+def _refuse(path: str, message: str) -> PackageStoreError:
+    return PackageStoreError(
+        "The manifest is not valid.", [ManifestError(path=path, message=message)])
+
+
+def _path(loc: list[Any]) -> str:
+    """A JSON path in the form of A2: ``$``, ``.key`` and ``[index]``."""
+    out = "$"
+    for part in loc:
+        out += f"[{part}]" if isinstance(part, int) else f".{part}"
+    return out
+
+
+def first_bad_value(doc: Any) -> ManifestError | None:
+    """The first value, a key too, that jsonb refuses or writes longer.
+
+    jsonb refuses the NUL character. A key that is not text is not JSON, and
+    JSON would turn it into text. Postgres writes each jsonb number with all
+    its digits, so a float in exponent form (1e308 becomes 309 digits) grows
+    past the measured size. A lone surrogate has no UTF-8 form, and
+    :func:`_manifest_text` refuses it when it encodes the text.
+
+    Iterative. :func:`validate_manifest` runs first and bounds the depth.
+
+    This is the ONE copy of the check. The install store of the package host
+    (``package_host/store.py``) calls it for each contribution payload. That
+    caller runs no :func:`validate_manifest`, so it bounds the depth first.
+    """
+    stack: list[tuple[Any, list[Any]]] = [(doc, [])]
+    while stack:
+        node, loc = stack.pop()
+        if isinstance(node, str):
+            if "\x00" in node:
+                return ManifestError(
+                    path=_path(loc), message="This text holds a NUL character. Remove it.")
+        elif isinstance(node, bool) or node is None or isinstance(node, int):
+            continue
+        elif isinstance(node, float):
+            if (not math.isfinite(node) or abs(node) >= MAX_FLOAT
+                    or "e" in float.__repr__(node)):
+                return ManifestError(
+                    path=_path(loc),
+                    message="A number must be finite and below 10^15, with no exponent.")
+        elif isinstance(node, dict):
+            for k, v in node.items():
+                if not isinstance(k, str):
+                    return ManifestError(path=_path(loc), message="Each key must be text.")
+                if "\x00" in k:
+                    return ManifestError(
+                        path=_path(loc), message="A key holds a NUL character. Remove it.")
+                stack.append((v, [*loc, k]))
+        elif isinstance(node, list):
+            stack.extend((v, [*loc, i]) for i, v in enumerate(node))
+        else:
+            return ManifestError(
+                path=_path(loc), message="This value is not JSON. Use text, numbers, lists and objects.")
+    return None
+
+
+def _manifest_text(doc: dict[str, Any]) -> str:
+    """The JSON text of a valid manifest, with the length of its jsonb text.
+
+    The separators are those of the jsonb text form. With the value checks of
+    :func:`first_bad_value`, the byte count is the count that the CHECK
+    ``apps_manifest_package`` makes.
+    """
+    bad = first_bad_value(doc)
+    if bad is not None:
+        raise PackageStoreError("The manifest is not valid.", [bad])
+    try:
+        encoded = json.dumps(doc, ensure_ascii=False, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise _refuse("$", "The manifest must be plain JSON.") from exc
+    try:
+        size = len(encoded.encode("utf-8"))
+    except UnicodeEncodeError as exc:
+        raise _refuse("$", "The manifest holds a lone surrogate. Remove it.") from exc
+    if size > MAX_MANIFEST_BYTES:
+        raise _refuse(
+            "$", f"The manifest is larger than {MAX_MANIFEST_BYTES // 1024} KiB. Shorten it.")
+    return encoded
+
+
+def check_manifest(doc: object) -> str:
+    """Validate *doc* as a package manifest. Answers its JSON text.
+
+    The order: an object, then :func:`validate_manifest` with no catalog
+    (structure only), then the checks of the JSON text. Each refusal raises
+    one :class:`PackageStoreError` with every path that A2 names.
+    """
+    if not isinstance(doc, dict):
+        raise _refuse("$", "A manifest is a JSON object.")
+    errors = validate_manifest(doc)
+    if errors:
+        raise PackageStoreError("The manifest is not valid.", errors)
+    return _manifest_text(doc)
+
+
+def _package(row: Any) -> Package:
+    manifest = row[7]
+    if isinstance(manifest, str | bytes):
+        manifest = json.loads(manifest)
+    return Package(
+        id=str(row[0]), slug=str(row[1]), name=str(row[2]), description=str(row[3] or ""),
+        owner_email=str(row[4]), visibility=str(row[5]), status=str(row[6]),
+        manifest=dict(manifest), live_version=None if row[8] is None else int(row[8]),
+        created_at=row[9], updated_at=row[10], paused_at=row[11],
+        paused_by=None if row[12] is None else str(row[12]))
+
+
+async def create_package(db: Any, member: str, manifest: dict[str, Any]) -> Package:
+    """Create a package of *member* from *manifest*: private, a draft, no files.
+
+    The name is ``manifest["name"]`` and the description is
+    ``manifest["purpose"]``. The slug is ``<manifest id>-<8 hex digits>``.
+    A manifest that fails :func:`check_manifest` raises
+    :class:`PackageStoreError` and writes nothing.
+    """
+    m = _member(member)
+    encoded = check_manifest(manifest)
+    params = {"name": manifest["name"], "desc": manifest["purpose"], "m": m,
+              "manifest": encoded}
+    for _ in range(SLUG_TRIES):
+        new_id = _new_id()
+        slug = f"{manifest['id']}-{new_id.hex[:SLUG_HEX]}"
+        row = (await db.execute(text(_CREATE_SQL), {
+            **params, "id": str(new_id), "slug": slug})).first()
+        if row is not None:
+            return _package(row)
+    # The text names no slug, so it tells nothing of a package of another org.
+    raise PackageStoreError("No free name is left for this package. Try again.")
+
+
+async def lock_create(db: Any, member: str, manifest_id: str) -> None:
+    """Take the advisory lock of one create of *member* with *manifest_id* in
+    the bound org, until the transaction ends (STU-K1a).
+
+    The template route takes it first in its create session and first in its
+    publish session. So two calls of one member for one template run one
+    after the other, and the second one reads the package of the first. The
+    wait stops at :data:`CREATE_LOCK_WAIT_MS` with ``objects_store.StoreBusy``.
+    The key holds the org, so a lock of org A never blocks org B."""
+    m = _member(member)
+    if not isinstance(manifest_id, str) or not manifest_id:
+        raise PackageStoreError("manifest_id must be a non-empty string")
+    async with objects_store.bounded_wait(db, CREATE_LOCK_WAIT_MS):
+        bound = (await db.execute(text(_CREATE_LOCK_SQL), {"m": m, "mid": manifest_id})).first()
+    if bound is None or not bound[0]:
+        raise PackageStoreError("A create needs a session bound to a tenant")
+
+
+async def get_package(db: Any, member: str, package_id: str, *,
+                      for_update: bool = False) -> Package | None:
+    """The package *package_id* of *member*, or None. A package of another
+    member or of another org, and an App Workshop app, answer None.
+
+    With *for_update*, the read locks the row until the transaction ends.
+    """
+    sql = _GET_SQL + " FOR UPDATE" if for_update else _GET_SQL
+    row = (await db.execute(text(sql), {
+        "m": _member(member), "id": _package_id(package_id)})).first()
+    return None if row is None else _package(row)
+
+
+async def list_packages(db: Any, member: str) -> list[Package]:
+    """The packages that *member* owns in the bound org, newest change first."""
+    rows = (await db.execute(text(_LIST_SQL), {"m": _member(member)})).all()
+    return [_package(r) for r in rows]
+
+
+async def list_summaries(db: Any, member: str) -> list[PackageSummary]:
+    """The packages that *member* owns in the bound org, newest change first,
+    with no manifest. One statement. A5 counts them for the limit and finds the
+    manifest id of a repeat create from them."""
+    rows = (await db.execute(text(_SUMMARY_SQL), {"m": _member(member)})).all()
+    return [PackageSummary(
+        id=str(r[0]), slug=str(r[1]), name=str(r[2]), description=str(r[3] or ""),
+        status=str(r[4]), live_version=None if r[5] is None else int(r[5]),
+        created_at=r[6], updated_at=r[7], manifest_id=str(r[8] or "")) for r in rows]
+
+
+def _jsonb(value: Any) -> Any:
+    return json.loads(value) if isinstance(value, str | bytes) else value
+
+
+async def list_package_actions(db: Any, member: str, *,
+                               package_id: str | None = None) -> list[PackageActions]:
+    """The objects and named actions of the packages that *member* owns in the
+    bound org, in ONE statement however many packages exist. With
+    *package_id*, only that package. The draft manifest is the source."""
+    pid = None if package_id is None else _package_id(package_id)
+    rows = (await db.execute(text(_ACTIONS_SQL), {"m": _member(member), "app": pid})).all()
+    out: list[PackageActions] = []
+    for row in rows:
+        names = tuple(n for n in (_jsonb(row[1]) or []) if isinstance(n, str))
+        named: list[tuple[str, str, str | None]] = []
+        for a in _jsonb(row[2]) or []:
+            if isinstance(a, dict) and isinstance(a.get("id"), str) and isinstance(a.get("uses"), str):
+                title = a.get("title")
+                named.append((a["id"], a["uses"], title if isinstance(title, str) else None))
+        out.append(PackageActions(id=str(row[0]), objects=names, actions=tuple(named)))
+    return out
+
+
+async def update_manifest(db: Any, member: str, package_id: str,
+                          manifest: dict[str, Any], *,
+                          expected_hash: str | None = None) -> Package | None:
+    """Replace the manifest of the package *package_id* of *member*.
+
+    The name and the description follow the new manifest. The slug, the
+    visibility, the status and the format do not change. Answers None when
+    no package of the member has the id: then nothing changes. A manifest
+    that fails :func:`check_manifest` raises before the database.
+
+    The manifest ``id`` cannot change, because the slug holds it. A new id
+    raises :class:`PackageStoreError` (:data:`ID_FIXED`) and writes nothing.
+    The read locks the row first, so a second writer reads the kept id.
+
+    With *expected_hash*, the stored draft must hash to it under the row lock,
+    or :class:`DraftChanged` raises and nothing is written. So of two saves
+    that read one draft, one writes and the other gets the refusal.
+    """
+    m = _member(member)
+    pid = _package_id(package_id)
+    encoded = check_manifest(manifest)
+    current = await get_package(db, m, pid, for_update=True)
+    if current is None:
+        return None
+    _expect(current.manifest, expected_hash)
+    if current.manifest.get("id") != manifest["id"]:
+        raise PackageStoreError(ID_FIXED, [ManifestError(path="$.id", message=ID_FIXED)])
+    row = (await db.execute(text(_UPDATE_SQL), {
+        "m": m, "id": pid, "manifest": encoded, "name": manifest["name"],
+        "desc": manifest["purpose"]})).first()
+    return None if row is None else _package(row)
+
+
+@dataclass(frozen=True)
+class PackageVersion:
+    """One row of ``app_versions`` for a package. ``manifest`` is None in the
+    answer of :func:`list_versions`, which carries the metadata only."""
+
+    package_id: str
+    version: int
+    manifest: dict[str, Any] | None
+    bundle_sha256: str
+    release_notes: str
+    published_by: str
+    published_at: datetime
+    review_status: str
+
+
+def _version(row: Any) -> PackageVersion:
+    manifest = row[2]
+    if isinstance(manifest, str | bytes):
+        manifest = json.loads(manifest)
+    return PackageVersion(
+        package_id=str(row[0]), version=int(row[1]),
+        manifest=None if manifest is None else dict(manifest),
+        bundle_sha256=str(row[3]), release_notes=str(row[4] or ""),
+        published_by=str(row[5]), published_at=row[6], review_status=str(row[7]))
+
+
+def _notes(notes: object) -> str:
+    if not isinstance(notes, str):
+        raise _refuse("$.notes", "The release notes are text.")
+    if "\x00" in notes:
+        raise _refuse("$.notes", "The release notes hold a NUL character. Remove it.")
+    try:
+        notes.encode("utf-8")
+    except UnicodeEncodeError:
+        raise _refuse("$.notes", "The release notes hold a lone surrogate. Remove it.") from None
+    if looks_like_secret(notes):
+        raise _refuse("$.notes", "The release notes look like a secret. Remove it.")
+    if len(notes) > MAX_NOTES_CHARS:
+        raise _refuse("$.notes", f"The release notes are longer than {MAX_NOTES_CHARS} characters.")
+    return notes
+
+
+def _version_number(version: object) -> int:
+    """A version is an int from 1 to :data:`MAX_VERSION`. The refusal names no value."""
+    if isinstance(version, bool) or not isinstance(version, int) or not 1 <= version <= MAX_VERSION:
+        raise PackageStoreError(f"version must be an integer from 1 to {MAX_VERSION}")
+    return version
+
+
+def _catalog(catalog: object) -> Mapping[str, str]:
+    """A missing catalog would skip the catalog checks, so it is refused."""
+    if not isinstance(catalog, Mapping):
+        raise PackageStoreError("catalog is required: pass a map of action id to class")
+    return catalog
+
+
+def _check_publishable(doc: dict[str, Any], catalog: Mapping[str, str]) -> str:
+    """The JSON text of *doc* after :func:`check_manifest` and A2's checks WITH the catalog."""
+    encoded = check_manifest(doc)
+    errors = validate_manifest(doc, catalog=catalog)
+    if errors:
+        raise PackageStoreError("The manifest is not valid.", errors)
+    return encoded
+
+
+def _sha256(encoded: str) -> str:
+    """The SHA-256 of the manifest JSON text, as UTF-8 bytes."""
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+async def _append_version(db: Any, m: str, pid: str, encoded: str, notes: str) -> PackageVersion:
+    row = (await db.execute(text(_VERSION_INSERT_SQL), {
+        "id": pid, "manifest": encoded, "sha": _sha256(encoded), "notes": notes,
+        "m": m})).first()
+    if row is None:  # pragma: no cover - the INSERT .. SELECT always answers a row
+        raise PackageStoreError("The version was not written.")
+    return _version(row)
+
+
+async def _audit(db: Any, m: str, pid: str, version: int | None, kind: str,
+                 detail: dict[str, Any]) -> None:
+    """The audit row, in the caller's transaction. It never drops an error."""
+    await db.execute(text(_AUDIT_SQL), {
+        "id": pid, "v": version, "m": m, "kind": kind,
+        "detail": json.dumps(detail, ensure_ascii=False)})
+
+
+async def publish_version(db: Any, member: str, package_id: str, notes: str, *,
+                          catalog: Mapping[str, str],
+                          expected_hash: str | None = None) -> PackageVersion | None:
+    """Publish the draft of the package *package_id* of *member* as version N+1.
+
+    Answers None when no package of the member has the id. The call locks the
+    row, reads the stored draft, and runs :func:`check_manifest` on it again.
+    Then it runs A2's ``validate_manifest`` WITH *catalog*, so a colour, a px
+    size, an unknown block or an action that the catalog does not serve
+    raises :class:`PackageStoreError` and writes nothing.
+
+    *catalog* maps an action id to its class letter, as
+    ``routes/studio/actions.catalog_rows`` serves it (``{row["id"]:
+    row["class"]}``). The caller passes it, because a store must not import
+    a route module. The caller reads it BEFORE it opens the store session.
+
+    One transaction writes the version row (``review_status = 'auto'``,
+    ``scope_set_hash = ''``, ``published_by`` the member), sets
+    ``apps.status = 'live'`` and ``apps.live_version = N+1``, and writes the
+    ``app_audit`` row (kind ``publish``). ``apps.manifest`` stays as it is.
+    No review step runs here: J2 owns the organization approval.
+
+    With *expected_hash*, the stored draft must hash to it under the row lock,
+    or :class:`DraftChanged` raises and nothing is written (STU-G1c review
+    round 1). A chat publish names the draft that its approved plan names, so
+    a save that lands after its read cannot go live in its place.
+    """
+    m = _member(member)
+    pid = _package_id(package_id)
+    note = _notes(notes)
+    known = _catalog(catalog)
+    current = await get_package(db, m, pid, for_update=True)
+    if current is None:
+        return None
+    _expect(current.manifest, expected_hash)
+    encoded = _check_publishable(current.manifest, known)
+    version = await _append_version(db, m, pid, encoded, note)
+    await db.execute(text(_PUBLISH_POINT_SQL), {"m": m, "id": pid, "v": version.version})
+    await _audit(db, m, pid, version.version, "publish", {
+        "version": version.version, "sha256": version.bundle_sha256, "notes": note})
+    return version
+
+
+async def rollback(db: Any, member: str, package_id: str, version: int, *,
+                   catalog: Mapping[str, str]) -> PackageVersion | None:
+    """Roll the package back to *version*. History stays append-only.
+
+    ⚠️ This OVERWRITES THE DRAFT. In one transaction under the row lock it
+    inserts version N+1 as a copy of the manifest of *version*, sets
+    ``apps.manifest`` to that copy (the name and the description follow it),
+    and sets ``apps.live_version = N+1``. It writes an ``app_audit`` row (kind
+    ``rollback``) whose detail names both numbers, and says the draft was
+    overwritten. Any edit of the draft since the last publish is lost.
+
+    Answers None for a missing package or a missing version. Raises
+    :class:`PackageStoreError` (:data:`ROLLBACK_LIVE`) for the live version.
+    *catalog* is required, as for :func:`publish_version`. The copy runs
+    :func:`check_manifest` and A2's checks WITH the catalog before any write,
+    so a version with an action that the catalog withdrew or reclassified is
+    refused, and the draft stays as it is.
+    """
+    m = _member(member)
+    pid = _package_id(package_id)
+    version = _version_number(version)
+    known = _catalog(catalog)
+    current = await get_package(db, m, pid, for_update=True)
+    if current is None:
+        return None
+    old = await get_version(db, m, pid, version)
+    if old is None or old.manifest is None:
+        return None
+    if current.live_version == version:
+        raise PackageStoreError(ROLLBACK_LIVE)
+    encoded = _check_publishable(old.manifest, known)
+    new = await _append_version(db, m, pid, encoded, f"Rollback to version {version}.")
+    await db.execute(text(_ROLLBACK_POINT_SQL), {
+        "m": m, "id": pid, "manifest": encoded, "name": old.manifest["name"],
+        "desc": old.manifest["purpose"], "v": new.version})
+    await _audit(db, m, pid, new.version, "rollback", {
+        "to_version": version, "new_version": new.version,
+        "from_version": current.live_version, "draft_overwritten": True,
+        "sha256": new.bundle_sha256})
+    return new
+
+
+async def list_versions(db: Any, member: str, package_id: str, *,
+                        limit: int = MAX_VERSIONS_PAGE,
+                        before: int | None = None) -> list[PackageVersion]:
+    """One page of the versions of a package of *member*, newest first, with
+    no manifest: at most *limit* (1 to :data:`MAX_VERSIONS_PAGE`), and only
+    the versions older than *before* when it is given. A package of another
+    member or org answers an empty list."""
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_VERSIONS_PAGE:
+        raise PackageStoreError(f"limit must be an integer from 1 to {MAX_VERSIONS_PAGE}")
+    cursor = MAX_VERSION + 1 if before is None else _version_number(before)
+    rows = (await db.execute(text(_VERSION_LIST_SQL), {
+        "m": _member(member), "id": _package_id(package_id), "before": cursor,
+        "limit": limit})).all()
+    return [_version(r) for r in rows]
+
+
+async def get_version(db: Any, member: str, package_id: str,
+                      version: int) -> PackageVersion | None:
+    """One version, with its manifest, or None."""
+    _version_number(version)
+    row = (await db.execute(text(_VERSION_GET_SQL), {
+        "m": _member(member), "id": _package_id(package_id), "v": version})).first()
+    return None if row is None else _version(row)
+
+
+# --- the approval for the org (J2, PKG-11b-2) --------------------------------
+
+
+#: The refusal of a move without the right ``studio:publish``.
+NO_PUBLISH_RIGHT = "Only a holder of studio:publish can approve or reject a version."
+#: The refusal of an approval by the publisher or the owner (PKG-Q10).
+SELF_APPROVAL = ("The member who published this version, or the owner of the package, "
+                 "cannot approve it. Another holder of studio:publish approves.")
+
+
+class ApprovalConflict(Exception):
+    """The version is not in the state that the move expects. Nothing was
+    written. The route answers 409. ``current`` is the state that the store
+    read, or None when the guarded UPDATE changed no row."""
+
+    def __init__(self, message: str, current: str | None = None) -> None:
+        super().__init__(message)
+        self.current = current
+
+
+class ApprovalRefused(Exception):
+    """The actor may not make this move. Nothing was written. The route
+    answers 403."""
+
+
+@dataclass(frozen=True)
+class _ReviewRow:
+    version: int
+    published_by: str
+    review_status: str
+    owner_email: str
+
+
+def _same(a: str, b: str) -> bool:
+    return a.strip().lower() == b.strip().lower()
+
+
+async def _review_row(db: Any, pid: str, version: int) -> _ReviewRow | None:
+    """The version row, locked ``FOR UPDATE``, or None."""
+    row = (await db.execute(text(_REVIEW_READ_SQL), {"id": pid, "v": version})).first()
+    if row is None:
+        return None
+    return _ReviewRow(version=int(row[0]), published_by=str(row[1]),
+                      review_status=str(row[2]), owner_email=str(row[3]))
+
+
+def _right(can_publish: object) -> None:
+    """Only ``True`` passes. A truthy value that is not a bool is refused."""
+    if can_publish is not True:
+        raise ApprovalRefused(NO_PUBLISH_RIGHT)
+
+
+async def _move_review(db: Any, actor: str, pid: str, current: _ReviewRow, move: str,
+                       requested_by: str) -> PackageVersion:
+    """Move one version along :data:`REVIEW_MOVES`, with its audit row.
+
+    The caller holds the row lock of :func:`_review_row`. A state that is not
+    the expected one raises :class:`ApprovalConflict`. The guarded UPDATE must
+    change exactly one row, or :class:`ApprovalConflict` raises too."""
+    expected, to = REVIEW_MOVES[move]
+    if current.review_status != expected:
+        raise ApprovalConflict(
+            f"The version is {current.review_status}, so it cannot move to {to}. "
+            f"Only a version that is {expected} can.", current.review_status)
+    rows = (await db.execute(text(_REVIEW_MOVE_SQL), {
+        "id": pid, "v": current.version, "expected": expected, "to": to})).all()
+    if len(rows) != 1:
+        raise ApprovalConflict("The version changed under this move. Nothing was written.")
+    await _audit(db, actor, pid, current.version, "action", {
+        "op": REVIEW_OP, "review": to, "by": actor, "requested_by": requested_by})
+    return _version(rows[0])
+
+
+async def request_org_approval(db: Any, member: str, package_id: str,
+                               version: int) -> PackageVersion | None:
+    """Ask for the approval of *version* for the org: ``auto`` to ``pending``.
+
+    Only the owner of the package asks. Answers None when the bound org holds
+    no such version of a package of *member*. A ``pending`` version answers
+    as it is, and the call writes nothing. An ``approved`` or a ``rejected``
+    version raises :class:`ApprovalConflict`: the owner publishes a new
+    version and asks again. The move writes one audit row (``requested_by``
+    is the member)."""
+    m = _member(member)
+    pid = _package_id(package_id)
+    v = _version_number(version)
+    current = await _review_row(db, pid, v)
+    if current is None or not _same(current.owner_email, m):
+        return None
+    if current.review_status == "pending":
+        return await get_version(db, m, pid, v)
+    return await _move_review(db, m, pid, current, "request", m)
+
+
+async def _requester(db: Any, pid: str, current: _ReviewRow) -> str:
+    """The member of the newest request row, or the owner when no row exists."""
+    row = (await db.execute(text(_REVIEW_REQUESTER_SQL), {
+        "id": pid, "v": current.version, "op": REVIEW_OP})).first()
+    return current.owner_email if row is None else str(row[0])
+
+
+async def approve_version(db: Any, approver: str, package_id: str, version: int, *,
+                          can_publish: bool) -> PackageVersion | None:
+    """Approve *version* for the org: ``pending`` to ``approved``.
+
+    *can_publish* is the check of ``studio:publish`` that the caller made for
+    *approver*. Anything but ``True`` raises :class:`ApprovalRefused` before
+    any statement. Answers None when the bound org holds no such version.
+    The publisher of the version and the owner of the package raise
+    :class:`ApprovalRefused` (PKG-Q10). A version that is not ``pending``
+    raises :class:`ApprovalConflict`. The move touches this version only."""
+    a = _member(approver)
+    pid = _package_id(package_id)
+    v = _version_number(version)
+    _right(can_publish)
+    current = await _review_row(db, pid, v)
+    if current is None:
+        return None
+    if _same(current.published_by, a) or _same(current.owner_email, a):
+        raise ApprovalRefused(SELF_APPROVAL)
+    return await _move_review(db, a, pid, current, "approve", await _requester(db, pid, current))
+
+
+async def reject_version(db: Any, rejecter: str, package_id: str, version: int, *,
+                         can_publish: bool) -> PackageVersion | None:
+    """Reject *version* for the org: ``pending`` to ``rejected``.
+
+    The rule of the right is the rule of :func:`approve_version`. Any holder of
+    ``studio:publish`` can reject, the publisher and the owner too, because a
+    reject only narrows the share. A rejected version stays rejected."""
+    r = _member(rejecter)
+    pid = _package_id(package_id)
+    v = _version_number(version)
+    _right(can_publish)
+    current = await _review_row(db, pid, v)
+    if current is None:
+        return None
+    return await _move_review(db, r, pid, current, "reject", await _requester(db, pid, current))
+
+
+@dataclass(frozen=True)
+class PendingVersion:
+    """One version that waits for the approval for the org (J2b-1).
+
+    ``manifest`` is the FULL manifest of the version. A two-version diff is a
+    later slice. ``requested_by`` and ``requested_at`` come from the newest
+    request row. With no such row, ``requested_by`` is the owner and
+    ``requested_at`` is None."""
+
+    package_id: str
+    name: str
+    owner_email: str
+    version: int
+    published_by: str
+    published_at: datetime
+    manifest: dict[str, Any]
+    requested_by: str
+    requested_at: datetime | None
+
+
+def _pending(row: Any) -> PendingVersion:
+    manifest = row[6]
+    if isinstance(manifest, str | bytes):
+        manifest = json.loads(manifest)
+    owner = str(row[2])
+    return PendingVersion(
+        package_id=str(row[0]), name=str(row[1]), owner_email=owner, version=int(row[3]),
+        published_by=str(row[4]), published_at=row[5], manifest=dict(manifest or {}),
+        requested_by=owner if row[7] is None else str(row[7]), requested_at=row[8])
+
+
+async def list_pending_versions(db: Any, *, can_publish: bool,
+                                limit: int = MAX_PENDING_PAGE) -> tuple[list[PendingVersion], bool]:
+    """The ``pending`` versions of each package of the bound org, oldest
+    first, at most *limit* (1 to :data:`MAX_PENDING_PAGE`). The second value
+    is True when more rows wait past the page.
+
+    *can_publish* is the check of ``studio:publish`` that the caller made.
+    Anything but ``True`` raises :class:`ApprovalRefused` before any
+    statement. A version in another state never shows, so the read names no
+    private package. The read takes no lock and writes nothing."""
+    _right(can_publish)
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_PENDING_PAGE:
+        raise PackageStoreError(f"limit must be an integer from 1 to {MAX_PENDING_PAGE}")
+    rows = (await db.execute(text(_PENDING_SQL), {"op": REVIEW_OP, "limit": limit + 1})).all()
+    return [_pending(r) for r in rows[:limit]], len(rows) > limit
+
+
+# --- the lock of an install (WS-PKG PKG-8b) ---------------------------------
+
+#: The row of a package that the install route holds, ``FOR KEY SHARE``. A
+#: publish takes ``FOR UPDATE`` on the same row, so the two wait for each
+#: other here, before either takes the org lock of the install store.
+_INSTALL_LOCK_SQL = (
+    "SELECT live_version, paused_at IS NOT NULL FROM apps "
+    f"WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
+    "AND owner_email = :m AND id = CAST(:id AS uuid) AND status <> 'archived' "
+    "FOR KEY SHARE"
+)
+
+
+@dataclass(frozen=True)
+class InstallTarget:
+    """The package row that an install route holds (PKG-8b).
+
+    ``live_version`` is ``apps.live_version``: the version that an org or a
+    group install runs. None means that the package has no published version.
+    ``paused`` is True when the kill switch of J3a holds the package. The org
+    install of J2b-1 refuses a paused package.
+    """
+
+    package_id: str
+    live_version: int | None
+    paused: bool = False
+
+
+async def lock_for_install(db: Any, member: str, package_id: str) -> InstallTarget | None:
+    """Lock the package *package_id* of *member* ``FOR KEY SHARE``, and read
+    its live version (``package_host.md`` §5.5, PKG-8b).
+
+    The install route calls this BEFORE ``package_host/store.set_version``
+    or ``store.install``. A publish holds the row ``FOR UPDATE``, then the
+    org lock of the install store. So the route takes the row first, as the
+    publish does. Else the FK check of the install INSERT waits for the row
+    while the route holds the org lock, and the publish waits for that lock.
+
+    The lock ends with the caller's transaction. Answers None for a package
+    of another member or org, an App Workshop app and an archived package.
+    The read writes nothing.
+    """
+    pid = _package_id(package_id)
+    row = (await db.execute(text(_INSTALL_LOCK_SQL), {"m": _member(member), "id": pid})).first()
+    if row is None:
+        return None
+    return InstallTarget(package_id=pid, live_version=None if row[0] is None else int(row[0]),
+                         paused=bool(row[1]))
+
+
+# --- the kill switch of a package (J3a) --------------------------------------
+
+#: The op of the audit row of a pause, and of a resume (J3a).
+PAUSE_OP = "package.pause"
+RESUME_OP = "package.resume"
+
+#: The package row of a pause or a resume, ``FOR UPDATE``. ⚠️ It names the
+#: bound org and the format, and NOT ``owner_email``: an admin stops a
+#: package of another member (``ai_studio.md`` §9 item 7). The caller decides
+#: who may call.
+_STOP_ROW_SQL = (
+    "SELECT paused_at, live_version FROM apps "
+    f"WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
+    "AND id = CAST(:id AS uuid) FOR UPDATE"
+)
+
+#: A pause stamps the time and the actor once. A publish and a rollback name
+#: neither column, so a publish keeps the pause.
+_PAUSE_SQL = (
+    "UPDATE apps SET paused_at = now(), paused_by = :by "
+    f"WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
+    "AND id = CAST(:id AS uuid) AND paused_at IS NULL"
+)
+
+_RESUME_SQL = (
+    "UPDATE apps SET paused_at = NULL, paused_by = NULL "
+    f"WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
+    "AND id = CAST(:id AS uuid) AND paused_at IS NOT NULL"
+)
+
+#: The installs of one package in one state, in id order. A read only: the
+#: install store holds each write of an install.
+_INSTALLS_IN_STATE_SQL = (
+    "SELECT CAST(id AS text) FROM package_install "
+    f"WHERE organization_id = {_BOUND_ORG} AND app_id = CAST(:id AS uuid) "
+    "AND state = :state ORDER BY id"
+)
+
+
+@dataclass(frozen=True)
+class PackageStop:
+    """The answer of :func:`pause_package` and :func:`resume_package` (J3a).
+
+    ``paused`` is the state of the package after the call. ``changed`` is
+    True when the call moved the package row or an install, and only then
+    does the call write an audit row. ``installs`` counts the installs that
+    the call moved."""
+
+    package_id: str
+    paused: bool
+    changed: bool
+    installs: int
+
+
+async def _move_installs(db: Any, pid: str, was: str, pause: bool) -> int:
+    """Move each install of the package *pid* that is in the state *was*,
+    through the install store. Answers the count that moved.
+
+    The caller holds the ``apps`` row ``FOR UPDATE``, so the lock order is the
+    order of a publish: the row, then the org lock of the install store
+    (``package_host.md`` §5.5). Each move takes that lock and the row lock of
+    the install. The expiry job or the member purge can move an install after
+    the read. The store then raises ``StateRefused`` or ``InstallNotFound``
+    before any write, so the session stays usable and the install needs no
+    move."""
+    # A lazy import: the install store imports this module (``first_bad_value``).
+    from gateway.package_host import store as install_store
+
+    move = install_store.pause_install if pause else install_store.resume_install
+    rows = (await db.execute(text(_INSTALLS_IN_STATE_SQL), {"id": pid, "state": was})).all()
+    moved = 0
+    for row in rows:
+        try:
+            if await move(db, install_id=str(row[0])):
+                moved += 1
+        except (install_store.InstallNotFound, install_store.StateRefused):
+            continue
+    return moved
+
+
+async def pause_package(db: Any, actor: str, package_id: str) -> PackageStop | None:
+    """Pause the package *package_id* of the bound org, for each member (J3a).
+
+    The kill switch of ``ai_studio.md`` §9 item 7. In one transaction it
+    locks the ``apps`` row ``FOR UPDATE``, stamps ``paused_at`` and
+    ``paused_by`` (*actor*, the session member), moves each ``active`` install
+    of the package to ``paused`` (``package_host/store.pause_install``), and
+    writes one ``app_audit`` row (op :data:`PAUSE_OP`). The action door then
+    refuses each action of the package (``package_paused``), and the resolve
+    shows no install of it. The draft, the versions and the status stay.
+
+    ⚠️ The store does not decide who may pause. It finds any package of the
+    bound org, so a package of another org answers None and writes nothing.
+    The route of J3 checks that *actor* is the owner or an admin.
+
+    A pause of a paused package stamps nothing again, and it still pauses an
+    active install, such as the one of a first publish during the pause.
+    A call that moves nothing writes no audit row.
+    """
+    m = _member(actor)
+    pid = _package_id(package_id)
+    row = (await db.execute(text(_STOP_ROW_SQL), {"id": pid})).first()
+    if row is None:
+        return None
+    stamped = row[0] is None
+    if stamped:
+        await db.execute(text(_PAUSE_SQL), {"id": pid, "by": m})
+    moved = await _move_installs(db, pid, "active", pause=True)
+    changed = stamped or moved > 0
+    if changed:
+        await _audit(db, m, pid, None if row[1] is None else int(row[1]), "action",
+                     {"op": PAUSE_OP, "installs": moved})
+    return PackageStop(package_id=pid, paused=True, changed=changed, installs=moved)
+
+
+async def resume_package(db: Any, actor: str, package_id: str) -> PackageStop | None:
+    """Resume the paused package *package_id* of the bound org (J3a).
+
+    The twin of :func:`pause_package`, with the same lock order and the same
+    rule of who may call. It clears ``paused_at`` and ``paused_by``, moves
+    each ``paused`` install of the package to ``active``
+    (``package_host/store.resume_install``), and writes one ``app_audit`` row
+    (op :data:`RESUME_OP`).
+
+    A package that is not paused changes nothing: the call moves no install
+    and writes no audit row. No route pauses one install yet, so each paused
+    install of a paused package is a pause of the package.
+    """
+    m = _member(actor)
+    pid = _package_id(package_id)
+    row = (await db.execute(text(_STOP_ROW_SQL), {"id": pid})).first()
+    if row is None:
+        return None
+    if row[0] is None:
+        return PackageStop(package_id=pid, paused=False, changed=False, installs=0)
+    await db.execute(text(_RESUME_SQL), {"id": pid})
+    moved = await _move_installs(db, pid, "paused", pause=False)
+    await _audit(db, m, pid, None if row[1] is None else int(row[1]), "action",
+                 {"op": RESUME_OP, "installs": moved})
+    return PackageStop(package_id=pid, paused=False, changed=True, installs=moved)
+
+
+# --- the delete of a package (A5c-1) ----------------------------------------
+
+
+@dataclass(frozen=True)
+class DeletePreview:
+    """What a delete of one package removes, and the token that confirms it.
+
+    ``objects`` holds each object by name, with its field count and its
+    record count up to ``objects_store.COUNT_CAP``. ``confirm`` is
+    :func:`confirm_token` of these counts. The preview holds no manifest
+    text and no record value."""
+
+    id: str
+    name: str
+    slug: str
+    objects: tuple[objects_store.ObjectCount, ...]
+    versions: int
+    installs: int
+    other_member_installs: int
+    confirm: str
+    #: The sidebar entry of the owner: an active private install of the owner
+    #: (PKG-8a fix round 2). The dialog alone reads it, and the token does not.
+    own_entries: int = 0
+
+    @property
+    def fields(self) -> int:
+        """The fields of all objects."""
+        return sum(o.fields for o in self.objects)
+
+    @property
+    def records(self) -> int:
+        """The records of all objects, each up to the cap."""
+        return sum(o.records for o in self.objects)
+
+    @property
+    def capped(self) -> bool:
+        """True when an object holds more records than the cap."""
+        return any(o.capped for o in self.objects)
+
+
+@dataclass(frozen=True)
+class DeleteStep:
+    """One step of a delete.
+
+    ``deleted`` is True when the ``apps`` row is gone. ``removed`` is the
+    records that this step removed. ``names`` are the object names of the
+    preview that the member confirmed, so the next step of the call can
+    check them. ``left`` is the preview of now when the call ends here with
+    records left: the route answers 202 with its token. ``changed`` is True
+    when a later step found an object that the confirmed preview did not
+    hold (409). ``busy`` is True when a later step got ``StoreBusy``, or when
+    the preview of the end was busy: then ``left`` can be None. ``gone`` is
+    True when another call deleted the package between two steps of this
+    call (404). ``owner_active`` is True when a later step of the admin path
+    found that the owner is an active member again (403, A5c-2).
+    ``history_left`` is True when the step ended with a full chunk of change
+    history (C4a-1), so the package holds history rows still, also with no
+    record left."""
+
+    deleted: bool
+    removed: int
+    names: tuple[str, ...] = ()
+    left: DeletePreview | None = None
+    changed: bool = False
+    busy: bool = False
+    gone: bool = False
+    owner_active: bool = False
+    history_left: bool = False
+
+
+class CountsChanged(Exception):
+    """The confirm token is not the token of the package now, so nothing was
+    deleted. ``preview`` is the preview of now, with its own token. The route
+    answers 409 ``counts_changed`` with it."""
+
+    def __init__(self, preview: DeletePreview) -> None:
+        super().__init__(COUNTS_CHANGED_TEXT)
+        self.preview = preview
+
+
+class OwnerActive(Exception):
+    """The admin path refuses the package of an owner who is an active member
+    of the bound org (A5c-2). Nothing was read past the owner and nothing
+    changed. The route answers 403 ``owner_active``."""
+
+    def __init__(self) -> None:
+        super().__init__(OWNER_ACTIVE_TEXT)
+
+
+def confirm_token(package_id: str, objects: Sequence[objects_store.ObjectCount],
+                  versions: int, installs: int, other_member_installs: int) -> str:
+    """The SHA-256 of the canonical JSON of the id, the object names and the
+    counts. The token stops a delete after a stale preview. It is not an
+    authorization: the owner check runs before it."""
+    doc = {
+        "v": 1, "id": package_id, "versions": versions, "installs": installs,
+        "other_member_installs": other_member_installs,
+        "objects": [[o.name, o.fields, o.records, o.capped]
+                    for o in sorted(objects, key=lambda o: o.name)],
+    }
+    canonical = json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode("ascii")).hexdigest()
+
+
+def _confirm(token: object) -> str:
+    """A confirm token is 64 lower-case hex digits. The refusal names no value."""
+    if not isinstance(token, str) or len(token) != 64 or not set(token) <= _TOKEN_HEX:
+        raise PackageStoreError("confirm must be 64 lower-case hexadecimal digits")
+    return token
+
+
+def _count(value: object, what: str, low: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < low:
+        raise PackageStoreError(f"{what} must be a whole number from {low}")
+    return value
+
+
+def _names(names: object) -> frozenset[str]:
+    """The object names of the confirmed preview, as a later step takes them."""
+    if (isinstance(names, str | bytes) or not isinstance(names, tuple | list | set | frozenset)
+            or not all(isinstance(n, str) for n in names)):
+        raise PackageStoreError("names must be the object names of the confirmed preview")
+    return frozenset(names)
+
+
+async def _preview(db: Any, current: Package) -> DeletePreview | None:
+    """The preview of *current*, or None when its row is gone. A delete by
+    another call can commit between the read of the package and this count.
+    That is a 404, not a 500. The counts filter on the owner of the row, so
+    the admin path (A5c-2) counts the same rows as the owner."""
+    objects = await objects_store.package_counts(db, current.id)
+    row = (await db.execute(text(_DELETE_COUNTS_SQL), {
+        "m": current.owner_email, "id": current.id})).first()
+    if row is None:
+        return None
+    versions, installs, other, own = (int(v) for v in row)
+    found = tuple(objects)
+    return DeletePreview(
+        id=current.id, name=current.name, slug=current.slug, objects=found,
+        versions=versions, installs=installs, other_member_installs=other,
+        confirm=confirm_token(current.id, found, versions, installs, other), own_entries=own)
+
+
+async def _admin_package(db: Any, pid: str, *, for_update: bool = False) -> Package | None:
+    """The package *pid* of any owner in the bound org, or None (A5c-2). Only
+    the admin path reads it, and each caller checks the owner next."""
+    sql = _ADMIN_GET_SQL + " FOR UPDATE" if for_update else _ADMIN_GET_SQL
+    row = (await db.execute(text(sql), {"id": pid})).first()
+    return None if row is None else _package(row)
+
+
+async def _owner_active(db: Any, owner: str) -> bool:
+    """True when *owner* has an active ``app_user`` row in the bound org. A
+    fault of the read raises, so the admin path never reads it as "left"."""
+    return bool((await db.execute(text(_OWNER_ACTIVE_SQL), {
+        "owner": _member(owner)})).scalar_one())
+
+
+async def admin_may_delete(db: Any, package_id: str) -> bool:
+    """The precheck of the admin path (A5c-2). False when no package of the
+    bound org has the id. :class:`OwnerActive` raises when its owner is an
+    active member. True when the owner has no active row. A read: it takes no
+    lock. Each step of the delete checks the owner again under the row lock.
+
+    ⚠️ The caller checks ``admin:members:manage`` first. The store does not
+    authenticate."""
+    current = await _admin_package(db, _package_id(package_id))
+    if current is None:
+        return False
+    if await _owner_active(db, current.owner_email):
+        raise OwnerActive()
+    return True
+
+
+async def delete_preview(db: Any, member: str, package_id: str, *,
+                         as_admin: bool = False) -> DeletePreview | None:
+    """The preview of a delete of the package *package_id* of *member*, or
+    None. A package of another member or org, an App Workshop app, and a
+    package that a concurrent delete removes answer None. A read: it takes no
+    lock. The record counts run under the 5 s deadline of the object store,
+    and a timeout raises ``StoreBusy``.
+
+    With *as_admin* (A5c-2) the package of any owner in the bound org
+    answers, and :class:`OwnerActive` raises before any count when its owner
+    is an active member. Only the route sets *as_admin*."""
+    m = _member(member)
+    pid = _package_id(package_id)
+    if not as_admin:
+        current = await get_package(db, m, pid)
+    else:
+        current = await _admin_package(db, pid)
+        if current is not None and await _owner_active(db, current.owner_email):
+            raise OwnerActive()
+    return None if current is None else await _preview(db, current)
+
+
+def _who(current: Package, admin: str | None = None) -> dict[str, Any]:
+    """Who deletes: the owner, or an admin of the bound org (A5c-2)."""
+    if admin is None:
+        return {"by": "owner", "owner": current.owner_email, "name": current.name,
+                "slug": current.slug}
+    return {"by": "admin", "admin": admin, "owner": current.owner_email,
+            "name": current.name, "slug": current.slug}
+
+
+async def record_partial(db: Any, member: str, package_id: str, this_call: int,
+                         reason: str, *, as_admin: bool = False) -> None:
+    """The partial audit row of a call whose step could not read the package:
+    another call deleted it (``gone``), or its row wait was busy (``busy``).
+    ``app_audit`` has no foreign key, so the row can name a package that is
+    gone. It names the member, the package id and the records of the earlier
+    steps of this call, which committed. The route calls it for a busy row
+    wait in a new session, because that wait ended the transaction of its
+    step. With *as_admin* (A5c-2) the row names the admin as ``user_email``
+    and ``by: "admin"``. The step could not read the row, so it names no
+    owner: the earlier rows of the call name the owner."""
+    m = _member(member)
+    pid = _package_id(package_id)
+    count = _count(this_call, "this_call", 0)
+    who: dict[str, Any] = {"by": "admin", "admin": m} if as_admin else {"by": "owner", "owner": m}
+    await _audit(db, m, pid, None, "action", {
+        "op": PARTIAL_OP, **who, "records_this_call": count, "reason": reason})
+
+
+async def _read_for_delete(db: Any, m: str, pid: str, as_admin: bool = False) -> Package | None:
+    """The package row ``FOR UPDATE``, with a wait of at most
+    :data:`ROW_LOCK_WAIT_MS`. A publish or another delete can hold the row.
+    Past the bound it raises ``StoreBusy``, and the transaction is over. The
+    admin path (A5c-2) reads the row of any owner in the bound org."""
+    async with objects_store.bounded_wait(db, ROW_LOCK_WAIT_MS):
+        if as_admin:
+            return await _admin_package(db, pid, for_update=True)
+        return await get_package(db, m, pid, for_update=True)
+
+
+async def _end_call(db: Any, m: str, current: Package, seen: frozenset[str], this_call: int,
+                    reason: str, *, removed: int = 0, admin: bool = False,
+                    history_left: bool = False) -> DeleteStep:
+    """The end of a call that leaves records: the partial audit row, in the
+    transaction of this step, and the preview of now for the token of a 202.
+
+    The audit row comes first. A failed insert rolls back this step, its
+    purge too. A busy preview leaves the row in place and gives no token, so
+    the route answers 503 and the caller reads the preview again. *m* is
+    the caller: the owner, or the admin when *admin* (A5c-2)."""
+    await _audit(db, m, current.id, current.live_version, "action", {
+        "op": PARTIAL_OP, **_who(current, m if admin else None), "records_this_call": this_call,
+        "reason": reason})
+    try:
+        left = await _preview(db, current)
+    except objects_store.StoreBusy:
+        left = None
+    return DeleteStep(deleted=False, removed=removed, names=tuple(sorted(seen)), left=left,
+                      changed=reason == "changed", busy=reason == "busy" or left is None,
+                      history_left=history_left)
+
+
+async def _finish_delete(db: Any, m: str, current: Package, seen: frozenset[str],
+                         before: int, gone: int, *, first: bool,
+                         admin: bool = False) -> DeleteStep | None:
+    """The last step of a delete: no record is left, because the org lock
+    keeps each record writer out. It deletes the ``apps`` row (the one
+    ``DELETE FROM apps`` of a package, and the cascade takes the rest) and
+    writes the final audit row in the same transaction. Its one caller is
+    :func:`delete_package`.
+
+    The counts of the final row can be busy. On the first step of a call
+    ``StoreBusy`` raises, and the step rolls back. On a later step the
+    earlier steps and this purge hold, so the call ends with the partial row
+    (reason ``busy``), and the next call deletes the package.
+
+    The ``DELETE FROM apps`` filters on the owner of the row, and the audit
+    row names *m*, the caller: the owner, or the admin when *admin*."""
+    pid = current.id
+    try:
+        left = await _preview(db, current)
+    except objects_store.StoreBusy:
+        if first:
+            raise
+        return await _end_call(db, m, current, seen, before + gone, "busy", removed=gone,
+                               admin=admin)
+    if left is None:  # pragma: no cover - the row lock holds the row
+        return None
+    earlier = int((await db.execute(text(_PARTIAL_TOTAL_SQL), {
+        "id": pid, "op": PARTIAL_OP})).scalar_one())
+    row = (await db.execute(text(_DELETE_SQL), {"m": current.owner_email, "id": pid})).first()
+    if row is None:  # pragma: no cover - the row lock holds the row
+        raise PackageStoreError("The package was not deleted.")
+    await _audit(db, m, pid, current.live_version, "action", {
+        "op": DELETE_OP, **_who(current, m if admin else None), "objects": len(left.objects),
+        "fields": left.fields,
+        "records_this_call": before + gone, "records_total": earlier + before + gone,
+        "versions": left.versions, "installs": left.installs,
+        "other_member_installs": left.other_member_installs})
+    return DeleteStep(deleted=True, removed=gone, names=tuple(sorted(seen)))
+
+
+async def _purge_chunk(db: Any, pid: str, size: int,
+                       end_at: float | None) -> tuple[int, int, bool]:
+    """One chunk of a delete step (C4a-1): at most *size* rows of change
+    history first, then at most *size* records. Answers the history rows, the
+    records and ``cut``. A full chunk of history keeps the package for a next
+    step, so the last step leaves no history to the cascade.
+
+    ``cut`` is True when the records purge ran out of time after the history
+    purge removed rows. The step made progress, so it counts as a full chunk,
+    and the budget check of :func:`delete_package` decides. Else a
+    ``StoreBusy`` of either purge raises."""
+    history = await objects_store.purge_record_changes(db, pid, limit=size, deadline=end_at)
+    try:
+        gone = await objects_store.purge_records(db, pid, limit=size, deadline=end_at)
+    except objects_store.StoreBusy:
+        if history == 0:
+            raise
+        return history, 0, True
+    return history, gone, False
+
+
+async def delete_package(db: Any, member: str, package_id: str, *,
+                         confirm: str | None = None, names: Any = None,
+                         chunk: int | None = None, removed: int = 0,
+                         end_at: float | None = None,
+                         as_admin: bool = False) -> DeleteStep | None:
+    """One step of the delete of the package *package_id* of *member*, in the
+    caller's transaction (A5c-1). Answers None when no package of the member
+    has the id: then nothing changes.
+
+    **The lock order.** The ``apps`` row ``FOR UPDATE`` first, then the org
+    lock (``objects_store.lock_org``), the order of a publish. So a delete
+    and a publish of one package run one at a time, and no step deadlocks
+    with a record write.
+
+    **The row wait.** The step waits at most :data:`ROW_LOCK_WAIT_MS` for the
+    ``apps`` row. Past it ``StoreBusy`` raises, and the transaction is over.
+    For a later step the route writes the partial row in a new session
+    (:func:`record_partial`). A later step that finds the package gone,
+    because another call deleted it, writes the partial row of the earlier
+    steps and answers ``gone``.
+
+    **The first step of a call** takes *confirm*. It builds the preview under
+    both locks. A token that is not :func:`confirm_token` of now raises
+    :class:`CountsChanged`, and nothing changes. ``StoreBusy`` raises too,
+    because the call removed nothing yet. The step answers the object names
+    of that preview in ``names``.
+
+    **Each later step** takes *names* in place of a token. It reads the
+    object names under both locks. A name that is not in *names* (a publish
+    between two steps added it) ends the call with ``changed``. A
+    ``StoreBusy`` ends the call with ``busy``. Each end writes the partial
+    audit row (:func:`_end_call`), because the earlier steps of the call
+    removed records.
+
+    **The purge** deletes at most *chunk* records (:data:`DELETE_CHUNK` when
+    None), and it stops at *end_at* (a time of the object store clock) when
+    that comes first. A full chunk can leave records. Then the step goes on
+    to a next step only while :data:`STEP_SECONDS` more fit before *end_at*.
+    Else this step is the last of the call. It writes the partial audit row
+    (op :data:`PARTIAL_OP`) and builds the preview of the 202, in its own
+    transaction, so a failed audit rolls back its purge too.
+
+    **The last step of a delete** finds fewer records than the chunk. The org
+    lock keeps each record writer out, so none is left. It deletes the
+    ``apps`` row (the cascade takes the rest) and writes the final audit row
+    (op :data:`DELETE_OP`) through :func:`_audit` in that transaction.
+    *removed* is the records that the earlier steps of this call removed.
+    ``records_this_call`` counts this call only. ``records_total`` adds the
+    partial rows of the earlier calls.
+
+    **The admin path (A5c-2).** With *as_admin*, *member* is the admin, and
+    the step reads the row of any owner in the bound org. Under the row lock
+    it checks that the owner has no active ``app_user`` row. An active owner
+    raises :class:`OwnerActive` on the first step, before any other read. On
+    a later step it ends the call with the partial row (reason
+    ``owner_active``) and ``owner_active``, so the earlier steps keep their
+    row. Each audit row names the admin. Only the route sets *as_admin*.
+    """
+    m = _member(member)
+    pid = _package_id(package_id)
+    token = None if confirm is None else _confirm(confirm)
+    if (token is None) == (names is None):
+        raise PackageStoreError("Send confirm on the first step of a call, and names after it.")
+    seen: frozenset[str] = frozenset() if names is None else _names(names)
+    size = _count(DELETE_CHUNK if chunk is None else chunk, "chunk", 1)
+    before = _count(removed, "removed", 0)
+    current = await _read_for_delete(db, m, pid, as_admin)
+    if current is None:
+        if token is None and before > 0:
+            await record_partial(db, m, pid, before, "gone", as_admin=as_admin)
+            return DeleteStep(deleted=False, removed=0, names=tuple(sorted(seen)), gone=True)
+        return None
+    if as_admin and await _owner_active(db, current.owner_email):
+        if token is not None:
+            raise OwnerActive()
+        await _audit(db, m, pid, current.live_version, "action", {
+            "op": PARTIAL_OP, **_who(current, m), "records_this_call": before,
+            "reason": "owner_active"})
+        return DeleteStep(deleted=False, removed=0, names=tuple(sorted(seen)), owner_active=True)
+    if token is not None:
+        await objects_store.lock_org(db)
+        now = await _preview(db, current)
+        if now is None:  # pragma: no cover - the row lock holds the row
+            return None
+        if now.confirm != token:
+            raise CountsChanged(now)
+        seen = frozenset(o.name for o in now.objects)
+    else:
+        try:
+            await objects_store.lock_org(db)
+            found = await objects_store.object_names(db, pid)
+        except objects_store.StoreBusy:
+            return await _end_call(db, m, current, seen, before, "busy", admin=as_admin)
+        if not set(found) <= seen:
+            return await _end_call(db, m, current, seen, before, "changed", admin=as_admin)
+    try:
+        history, gone, cut = await _purge_chunk(db, pid, size, end_at)
+    except objects_store.StoreBusy:
+        if token is not None:
+            raise
+        return await _end_call(db, m, current, seen, before, "busy", admin=as_admin)
+    if history >= size or gone >= size or cut:
+        if end_at is not None and objects_store._clock() + STEP_SECONDS > end_at:
+            return await _end_call(db, m, current, seen, before + gone, "budget", removed=gone,
+                                   admin=as_admin, history_left=history >= size or cut)
+        return DeleteStep(deleted=False, removed=gone, names=tuple(sorted(seen)),
+                          history_left=history >= size or cut)
+    return await _finish_delete(db, m, current, seen, before, gone, first=token is not None,
+                                admin=as_admin)

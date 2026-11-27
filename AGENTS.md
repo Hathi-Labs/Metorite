@@ -240,7 +240,14 @@ the lock until WS-43 removes its last use (D84).
 - Commit review cadence -- after every batch of ~5 commits (or any major feature/fix
   wave) on main, run a review pass over the changed files: check comments for accuracy
   and staleness, cross-references in docs, logic/type-hint correctness, and check
-  that the deploy run's `Unit tests (a signal on a push, a gate on a release)` job is green. When a review is complete, mark it:
+  that the batch that holds your merge passed. That is the `deploy` push run whose
+  `Unit tests (a signal on a push, a gate on a release)` job started after your
+  merge, and whose summary names your PR. Your own push run can show that job as
+  cancelled before it started, because another run took your merge into its batch.
+  That run can be older or newer than yours. A cancelled job
+  that ran for 90 minutes, or that has the annotation "The job has exceeded the
+  maximum execution time", is a hung batch. Treat it as red. If the job is red,
+  fix forward or revert at once (D-2026-10-16). When a review is complete, mark it:
   `git tag review/YYYY-MM-DD && git push --tags`
   Check whether a review is currently due:
   `git log $(git describe --tags --match "review/*" --abbrev=0 2>/dev/null || echo "")..HEAD --oneline`

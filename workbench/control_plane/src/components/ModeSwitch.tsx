@@ -29,6 +29,8 @@ export interface ModeOption<Id extends string> {
   icon: string;
   /** Shown text. Defaults to the id, with its first letter capitalised. */
   label?: string;
+  /** The tooltip. Defaults to none. An icon-only tab needs one. */
+  title?: string;
 }
 
 /**
@@ -46,6 +48,8 @@ export function ModeSwitch<Id extends string>({
   onPick,
   layout = "toolbar",
   label = "View mode",
+  iconOnly = false,
+  labelClass,
 }: {
   modes: readonly ModeOption<Id>[];
   /**
@@ -57,6 +61,16 @@ export function ModeSwitch<Id extends string>({
   layout?: "toolbar" | "sheet";
   /** The group's accessible name. */
   label?: string;
+  /**
+   * OP-12: draw the icon alone, in a toolbar. The button keeps the label as its
+   * accessible name and the option's `title` as its tooltip.
+   */
+  iconOnly?: boolean;
+  /**
+   * Classes for the words of each option, so a caller can hide them by the
+   * width of its own box. Use a class that keeps them for a screen reader.
+   */
+  labelClass?: string;
 }) {
   const sheet = layout === "sheet";
   return (
@@ -69,7 +83,9 @@ export function ModeSwitch<Id extends string>({
         <Button
           key={entry.id}
           variant="ghost"
-          size={sheet ? "lg" : "sm"}
+          size={sheet ? "lg" : iconOnly ? "icon-sm" : "sm"}
+          title={entry.title}
+          aria-label={iconOnly && !sheet ? (entry.label ?? sentenceCase(entry.id)) : undefined}
           selected={mode === entry.id}
           icon={entry.icon}
           // The phone drawer's rows read from the left edge, like every other
@@ -78,7 +94,11 @@ export function ModeSwitch<Id extends string>({
           layout={sheet ? "flex w-full items-center justify-start gap-2.5" : undefined}
           onClick={() => onPick(entry.id)}
         >
-          {entry.label ?? sentenceCase(entry.id)}
+          {iconOnly && !sheet ? null : labelClass ? (
+            <span className={labelClass}>{entry.label ?? sentenceCase(entry.id)}</span>
+          ) : (
+            (entry.label ?? sentenceCase(entry.id))
+          )}
         </Button>
       ))}
     </div>

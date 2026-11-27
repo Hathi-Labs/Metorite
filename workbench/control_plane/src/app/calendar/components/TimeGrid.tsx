@@ -1,7 +1,6 @@
 "use client";
 
 import Icon, { themedIcon } from "@/components/Icon";
-import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import { ParentCrumb } from "@/components/TaskMeta";
 import { useCallback, useRef, useState } from "react";
@@ -34,6 +33,7 @@ import {
   type RangeForm,
   deadlinesForDay,
   layoutBlocks,
+  openConflicts,
   reservedWindowsForDay,
   type DragPayload,
   type OutcomeById,
@@ -55,25 +55,27 @@ import {
   type CalReminder,
   type ZonedTime,
 } from "../lib/reminders";
+import { STRIP_SHARE_DAY, STRIP_SHARE_WEEK, allDayRow, laneSegments, segmentsForDay, splitByTasks, taskInset, type ExternalView } from "../lib/externalEntries";
+import { ExternalAllDayRow } from "./ExternalAllDayRow";
+import { externalLook } from "./externalLook";
 
 
-// ── the card tones ───────────────────────────────────────────────────────────
-// One rule for each state. A state sets the accent bar and the tint, and it
-// never stacks with another. The surface is a token mixed into `--background`,
-// so it is opaque: no hour line and no now line shows through a card.
+// ── the card ─────────────────────────────────────────────────────────────────
+// A block is a task, so it is drawn as the boards draw a task card
+// (`TaskCardShell`): a neutral raised surface, a hairline and a soft lift.
+// A state has ONE carrier of colour, the bar on the left edge. It never
+// tints the card or its border (owner, 2026-11-03: the tinted cards did not
+// fit the rest of Metorite). The "Now" and "Overlaps" marks are words in a
+// status colour, as a board card's chips are, not filled pills.
 //
-// The tints are light on purpose. Text on a card is `META` (below) or
-// `text-foreground`, and both clear 4.5 : 1 on every surface here, in light and
-// dark (DESIGN_SYSTEM.md §7, measured on 2026-10-31). `text-muted-foreground`
-// does not: it is 4.6 : 1 on white and falls under 4.5 on any tint.
+// The surfaces are opaque: no hour line and no now line shows through a
+// card. Text on a card is `META` (below) or `text-foreground`, and both clear
+// 4.5 : 1 on each surface, in light and dark (DESIGN_SYSTEM.md §7).
+// `text-muted-foreground` does not: it falls under 4.5 on the done surface.
 type CardTone = {
   bar: string;
   /** The bar of the current block, before "now" fills it. */
   track: string;
-  border: string;
-  rest: string;
-  now: string;
-  past: string;
   /** The faint layer over the elapsed part of the current block. */
   elapsed: string;
 };
@@ -81,52 +83,31 @@ const CARD_TONE: Record<
   "base" | "leveraged" | "one" | "conflict" | "done",
   CardTone
 > = {
-  base: {
-    bar: "bg-primary",
-    track: "bg-primary/35",
-    border: "border-primary/25 hover:border-primary/50",
-    rest: "bg-[color-mix(in_srgb,var(--primary)_5%,var(--background))]",
-    now: "bg-[color-mix(in_srgb,var(--primary)_7%,var(--background))]",
-    past: "bg-[color-mix(in_srgb,var(--primary)_3%,var(--background))]",
-    elapsed: "bg-primary/5",
-  },
-  leveraged: {
-    bar: "bg-warning",
-    track: "bg-warning/35",
-    border: "border-primary/25 hover:border-primary/50",
-    rest: "bg-[color-mix(in_srgb,var(--primary)_5%,var(--background))]",
-    now: "bg-[color-mix(in_srgb,var(--primary)_7%,var(--background))]",
-    past: "bg-[color-mix(in_srgb,var(--primary)_3%,var(--background))]",
-    elapsed: "bg-primary/5",
-  },
-  one: {
-    bar: "bg-warning",
-    track: "bg-warning/35",
-    border: "border-warning/40 hover:border-warning/70",
-    rest: "bg-[color-mix(in_srgb,var(--warning)_8%,var(--background))]",
-    now: "bg-[color-mix(in_srgb,var(--warning)_10%,var(--background))]",
-    past: "bg-[color-mix(in_srgb,var(--warning)_4%,var(--background))]",
-    elapsed: "bg-warning/5",
-  },
+  base: { bar: "bg-primary", track: "bg-primary/35", elapsed: "bg-primary/[0.06]" },
+  leveraged: { bar: "bg-warning", track: "bg-warning/35", elapsed: "bg-warning/[0.06]" },
+  one: { bar: "bg-warning", track: "bg-warning/35", elapsed: "bg-warning/[0.06]" },
   conflict: {
     bar: "bg-destructive",
     track: "bg-destructive/35",
-    border: "border-destructive/35 hover:border-destructive/60",
-    rest: "bg-[color-mix(in_srgb,var(--destructive)_5%,var(--background))]",
-    now: "bg-[color-mix(in_srgb,var(--destructive)_8%,var(--background))]",
-    past: "bg-[color-mix(in_srgb,var(--destructive)_3%,var(--background))]",
-    elapsed: "bg-destructive/5",
+    elapsed: "bg-destructive/[0.06]",
   },
-  done: {
-    bar: "bg-success",
-    track: "bg-success/35",
-    border: "border-success/25 hover:border-success/50",
-    rest: "bg-[color-mix(in_srgb,var(--success)_5%,var(--background))]",
-    now: "bg-[color-mix(in_srgb,var(--success)_5%,var(--background))]",
-    past: "bg-[color-mix(in_srgb,var(--success)_5%,var(--background))]",
-    elapsed: "bg-success/5",
-  },
+  done: { bar: "bg-success", track: "bg-success/35", elapsed: "bg-success/[0.06]" },
 };
+/** The surface by time. Ahead: raised. Now: raised a step more. Past: flat.
+ *  Done: sunk into the grid, because it is context, not work.
+ *
+ *  The grid sits on `--card`, so a card in `bg-card` would not lift in dark.
+ *  `RAISED` goes half a step toward `--popover`: a lighter grey in dark,
+ *  white in light. `SUNK` mixes into `--background`: the grid's own grey in
+ *  dark, a pale grey in light. Both are opaque. */
+const RAISED = "bg-[color-mix(in_srgb,var(--popover)_50%,var(--card))]";
+const SUNK = "bg-[color-mix(in_srgb,var(--muted-foreground)_8%,var(--background))]";
+const CARD_SURFACE = {
+  rest: `border-border ${RAISED} shadow-sm hover:border-primary/40`,
+  now: `border-primary/30 ${RAISED} shadow-md`,
+  past: `border-border ${RAISED} hover:border-primary/40`,
+  done: `border-transparent ${SUNK} hover:border-border`,
+} as const;
 /** Secondary text on a card: `--muted-foreground` pulled 30% toward the
  *  foreground, so it reads at 4.5 : 1 or more on each tint. */
 const META = "text-[color-mix(in_srgb,var(--muted-foreground),var(--foreground)_30%)]";
@@ -163,6 +144,9 @@ export function TimeGrid({
   onMoveReminder,
   onPickReminderMove,
   onResolveReminder,
+  externals = [],
+  onOpenExternal,
+  reserveAllDay = false,
 }: {
   days: Date[];
   items: MyTask[];
@@ -214,7 +198,14 @@ export function TimeGrid({
   /** "Move to…" opens the date and time form. */
   onPickReminderMove?: (id: string) => void;
   onResolveReminder?: (id: string, action: "done" | "drop") => void;
+  /** Google and Outlook events (CE-5a). Read only: no handle, no lane of a task. */
+  externals?: ExternalView[];
+  onOpenExternal?: (id: string) => void;
+  /** Flag on: keep the all-day row's height, so the body does not jump on a load. */
+  reserveAllDay?: boolean;
 }) {
+  const allDay = allDayRow(externals, days);
+  const hasAllDay = allDay.bars.length > 0 || allDay.more.some(Boolean) || reserveAllDay;
   const hours = Array.from({ length: dayEnd - dayStart }, (_, i) => dayStart + i);
   const gridHeight = hours.length * HOUR_PX;
   // Where the time pill sits in the gutter: day view, today, inside the grid.
@@ -403,8 +394,10 @@ export function TimeGrid({
       {/* Column headers (week). The grid body below is its own stacking
           context (`relative z-0`), so no pin, now line or block in it can
           draw over this header when the grid scrolls under it. */}
+      {(days.length > 1 || hasAllDay) && (
+        <div className="sticky top-0 z-10 bg-background">
       {days.length > 1 && (
-        <div className="sticky top-0 z-10 flex border-b border-border bg-background">
+        <div className="flex border-b border-border">
           <div className="w-14 shrink-0" />
           {days.map((d) => {
             const today = sameDay(d, now);
@@ -428,6 +421,9 @@ export function TimeGrid({
               </div>
             );
           })}
+        </div>
+      )}
+      {hasAllDay && <ExternalAllDayRow days={days} externals={externals} onOpen={(id) => onOpenExternal?.(id)} />}
         </div>
       )}
 
@@ -486,6 +482,7 @@ export function TimeGrid({
           // The blocks in their lanes, drawn below. A pin line stops at the
           // edge of each lane a block holds at its height (`pinSegments`).
           const laid = layoutBlocks(blocks);
+          const clashes = openConflicts(blocks, now);
           const boxes: BlockBox[] = laid.map(({ block: b, lane, lanes }) => {
             const end = resizing?.id === b.item.id ? new Date(resizing.endMs) : b.end;
             const mins = (end.getTime() - b.start.getTime()) / 60000;
@@ -497,6 +494,13 @@ export function TimeGrid({
             };
           });
           const dayKey = day.toISOString();
+          // An event that shares time with a task takes a strip on the right.
+          // The task cards give up the same share, so no text is under it.
+          const stripShare = days.length > 1 ? STRIP_SHARE_WEEK : STRIP_SHARE_DAY;
+          const { clear: clearExt, beside: besideExt } = splitByTasks(
+            segmentsForDay(externals, day, reminderZone),
+            spans,
+          );
           const nowTop =
             ((minutesInto(now) - dayStart * 60) / 60) * HOUR_PX;
           return (
@@ -673,6 +677,56 @@ export function TimeGrid({
                 </div>
               )}
 
+              {/* external events (CE-5a) — hatched, read only, no handle. They
+                  take lanes among themselves and never join `blocksForDay`.
+                  They come before the task cards in the DOM, so a card draws
+                  over one. A click opens the sheet and stops here, so it does
+                  not open the schedule-here sheet. */}
+              {(() => {
+                // A task at the same time would cover an event, so an event that
+                // shares time with a task takes a strip on the right edge, above
+                // the cards (z-10, under the pins). The rest keep the column.
+                const clear = clearExt;
+                const beside = besideExt;
+                const draw = (laid: ReturnType<typeof laneSegments>, strip: boolean) =>
+                  laid.map(({ seg, lane, lanes }) => {
+                    const top = ((seg.startMin - dayStart * 60) / 60) * HOUR_PX;
+                    const height = Math.max(20, ((seg.endMin - seg.startMin) / 60) * HOUR_PX - 2);
+                    if (top + height < 0 || top > gridHeight) return null;
+                    const x = seg.entry;
+                    const span = strip ? stripShare * 100 : 100;
+                    const from = strip ? 100 - span : 0;
+                    return (
+                      <button
+                        key={`ex-${x.id}-${seg.startMin}`}
+                        type="button"
+                        data-external-strip={strip ? "" : undefined}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onOpenExternal?.(x.id);
+                        }}
+                        title={x.title}
+                        aria-label={`${x.source === "google" ? "Google" : "Outlook"} event: ${x.title}`}
+                        className={`absolute overflow-hidden rounded-md px-1.5 py-0.5 text-left text-[11px] leading-tight focus-visible:ring-2 focus-visible:ring-ring ${strip ? "z-10" : ""} ${externalLook(x)}`}
+                        style={{
+                          top: Math.max(0, top) + 1,
+                          height,
+                          left: `calc(${from + (lane / lanes) * span}% + 2px)`,
+                          width: `calc(${span / lanes}% - 4px)`,
+                        }}
+                      >
+                        <span className="line-clamp-2 break-words font-medium">{x.title}</span>
+                      </button>
+                    );
+                  });
+                return (
+                  <>
+                    {draw(laneSegments(clear), false)}
+                    {draw(laneSegments(beside), true)}
+                  </>
+                );
+              })()}
+
               {/* reminder pins (WS-66 RM-5) — a line with no height at the
                   minute of the reminder. Not a block: no lane, no capacity.
                   The line is pointer-events-none. The button is the handle.
@@ -750,7 +804,9 @@ export function TimeGrid({
                   ((minutesInto(b.start) - dayStart * 60) / 60) * HOUR_PX;
                 const mins = (end.getTime() - b.start.getTime()) / 60000;
                 const height = Math.max(20, (mins / 60) * HOUR_PX - 2);
-                const conflict = lanes > 1;
+                // Any overlap splits the lanes. Only a clash of two open
+                // blocks, still ahead, is marked (`openConflicts`).
+                const conflict = lanes > 1 && clashes.has(b.item.id);
                 const isDone = b.item.disposition === "DONE";
                 // The block that contains "now" — the one you should be in.
                 const isNow =
@@ -785,8 +841,13 @@ export function TimeGrid({
                         ),
                       )
                     : null;
-                const leftPct = (lane / lanes) * 100;
-                const widthPct = 100 / lanes;
+                const inset = taskInset(
+                  besideExt,
+                  { start: minutesInto(b.start), end: minutesInto(b.start) + Math.max(mins, (20 / HOUR_PX) * 60) },
+                  stripShare,
+                );
+                const leftPct = (lane / lanes) * 100 * (1 - inset);
+                const widthPct = (100 / lanes) * (1 - inset);
                 // The card's width in px: the column, split by its lanes.
                 const cardW = (colW || 600) * (widthPct / 100) - 4;
                 const layout = blockLayout(mins, cardW, Boolean(b.item.parent), {
@@ -809,7 +870,13 @@ export function TimeGrid({
                       : isLeveraged
                         ? CARD_TONE.leveraged
                         : CARD_TONE.base;
-                const surface = isPast ? tone.past : isNow ? tone.now : tone.rest;
+                const surface = isDone
+                  ? CARD_SURFACE.done
+                  : isPast
+                    ? CARD_SURFACE.past
+                    : isNow
+                      ? CARD_SURFACE.now
+                      : CARD_SURFACE.rest;
                 const planned = fmtLeft(Math.max(1, Math.round(mins)));
                 // A one-row card is 21 px tall, so its toolbar buttons are small.
                 const btnCls = `tech-transition relative rounded ${one ? "p-px" : "p-0.5"} focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:before:absolute pointer-coarse:before:-inset-1`;
@@ -827,15 +894,19 @@ export function TimeGrid({
                       : form === "start"
                         ? fmtClockShort(b.start)
                         : "";
+                // Words in a status colour, as a board card's chips are
+                // (`TaskMeta`). The status blue is fixed, so an accent never
+                // moves it.
                 const nowChip = isNow ? (
-                  <Badge tone="info" size="md" ink="foreground" className="shrink-0">
+                  <span className="shrink-0 text-[11px] font-medium leading-4 tabular-nums text-info">
                     Now · {leftText(end, now)}
-                  </Badge>
+                  </span>
                 ) : null;
                 const overlapChip = conflict ? (
-                  <Badge tone="destructive" size="md" ink="foreground" className="shrink-0">
+                  <span className="inline-flex shrink-0 items-center gap-0.5 text-[11px] font-medium leading-4 text-destructive">
+                    <Icon name="AlertTriangle" className="h-3 w-3" aria-hidden />
                     Overlaps
-                  </Badge>
+                  </span>
                 ) : null;
                 const actualChip =
                   actualMins != null ? (
@@ -907,15 +978,13 @@ export function TimeGrid({
                       width: `calc(${widthPct}% - 4px)`,
                     }}
                     title={
-                      conflict ? "Overlaps another block — double-booked" : undefined
+                      conflict ? "Overlaps another open block — double-booked" : undefined
                     }
                     className={[
                       "group absolute cursor-grab overflow-hidden rounded-md border text-left active:cursor-grabbing",
                       "transition-[box-shadow,border-color] duration-[var(--motion-duration)] hover:shadow-md",
                       "has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring",
                       surface,
-                      tone.border,
-                      isNow ? "shadow-sm" : "",
                     ].join(" ")}
                   >
                     {/* elapsed part of the current block: a faint layer. No

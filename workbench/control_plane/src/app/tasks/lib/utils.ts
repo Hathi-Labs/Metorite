@@ -11,7 +11,7 @@ import { Disposition, Energy, MyTask, ProviderKind, Source } from "./types";
 // Re-exported rather than moved at every call site: seventeen files import
 // them from here, and a rename that touches seventeen files to change nothing
 // is a diff nobody can review.
-export { durationLabel, initials, relativeTime } from "@/lib/taskCard";
+export { dueLabel, durationLabel, initials, relativeTime } from "@/lib/taskCard";
 
 /** True if a hard-date item is overdue. */
 export function isOverdue(item: MyTask, nowMs = Date.now()): boolean {

@@ -18,6 +18,8 @@
 // of `dueAt`. That is what keeps the badge from going stale: the common case
 // has nothing to go stale, and the uncommon case is a fact somebody asserted.
 
+import { isOverdue } from "@/lib/taskCard";
+
 import { MyTask } from "./types";
 
 /** Days of silence after which a waiting-for is "stale".
@@ -64,15 +66,14 @@ export function daysWaiting(
  *    • `expectedBy` null — nobody promised anything, so the only honest line
  *      is my own deadline for the work, read live off `dueAt`. Nothing is
  *      copied, so nothing can go stale when that deadline moves.
- *  Neither present ⇒ false: there is no date to be late against. */
+ *  Neither present ⇒ false: there is no date to be late against.
+ *
+ *  Both lines are days, so the one rule of `isOverdue` judges them (RX-5). */
 export function isWaitingOverdue(
   item: Pick<MyTask, "expectedBy" | "dueAt">,
   nowMs: number = Date.now(),
 ): boolean {
-  const line = item.expectedBy || item.dueAt;
-  if (!line) return false;
-  const due = new Date(line).getTime();
-  return !Number.isNaN(due) && due < nowMs;
+  return isOverdue(item.expectedBy || item.dueAt, null, nowMs);
 }
 
 /** Which fact `isWaitingOverdue` judged against — so the view can SAY which

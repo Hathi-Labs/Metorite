@@ -117,10 +117,10 @@ class WebFixtures:
             if page is None:
                 fixtures.unknown.append(f"fetch {url}")
                 return f"fetch_page: {url} not found."
-            # As the real tool does (web_tools.fetch_page): a floor of 500, no
-            # upper cap, and a marker where the text is cut.
-            limit = max(500, int(max_chars))
-            return page if len(page) <= limit else page[:limit] + f"\n\n[... truncated at {limit} chars]"
+            # As the real tool does: web_tools.frame_page is the frame helper of
+            # fetch_page. It cuts at max_chars (a floor of 500 and a ceiling of
+            # 100,000), puts the text in one WEB PAGE block and marks the cut.
+            return web_tools.frame_page(page, url.strip(), "text/html; charset=utf-8", max_chars)
 
         mp.setattr(web_tools, "web_search", web_search)
         mp.setattr(web_tools, "fetch_page", fetch_page)

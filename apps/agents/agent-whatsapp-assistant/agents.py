@@ -25,10 +25,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from acb_common import get_logger, get_settings
 from acb_common.paging import prefix_limit, prefix_page
+from acb_common.settings import internal_auth_headers
 
 # H-236: every tool states ``open_world``. Each one is a read or a draft over
 # the gateway's own ``/whatsapp/*`` routes, and none sends (the DOCTRINE
@@ -106,25 +108,6 @@ def _current_user_email() -> str:
     except Exception:
         return ""
 
-
-def _internal_token() -> str:
-    """The gateway's internal bearer token.
-
-    ``gateway_internal_token`` IS a real Settings field
-    (``acb_common/settings.py``) — the service-identity/LLM-key split — and it
-    ships empty, which is why ``litellm_master_key`` is the fallback rather than
-    the primary. The order below is load-bearing in that direction: on a box
-    where the split HAS been provisioned, "simplifying" this to read
-    ``litellm_master_key`` first sends the wrong token and 403s every call.
-    """
-    settings = get_settings()
-    return (
-        getattr(settings, "gateway_internal_token", "")
-        or getattr(settings, "litellm_master_key", "")
-        or "sk-local"
-    )
-
-
 def _headers() -> dict[str, str]:
     """Internal bearer + the acting user, which is not optional.
 
@@ -149,7 +132,7 @@ def _headers() -> dict[str, str]:
             "the run with user_email in its payload."
         )
     return {
-        "Authorization": f"Bearer {_internal_token()}",
+        **internal_auth_headers(),
         "Content-Type": "application/json",
         "X-User-Email": user,
     }
@@ -524,6 +507,245 @@ async def draft_waiting_on_nudge(commitment_id: str) -> str:
     )
 
 
+# ── Settings, rules, calls and link reads (P-4a, task 3960) ───────────────
+# Each tool reads one gateway route as the member and sends nothing. The routes
+# check that the account is the member's own.
+
+async def _account_or_default(account_id: str | None) -> str | None:
+    return account_id or await _default_account_id()
+
+
+_NO_ACCOUNT = "No WhatsApp Business number is connected yet."
+
+
+@_annotate_risk(open_world=False)
+async def whatsapp_streams(account_id: str | None = None) -> str:
+    """Count the chats in each triage stream: needs reply, waiting, groups, all
+    and snoozed. Answers "how many chats wait for me?"."""
+    params = {"account_id": account_id} if account_id else None
+    d = await _get("/whatsapp/streams", params)
+    return (
+        "WhatsApp streams — "
+        f"{d.get('needs_reply', 0)} need reply · {d.get('waiting', 0)} waiting · "
+        f"{d.get('groups', 0)} groups · {d.get('all', 0)} in all · "
+        f"{d.get('snoozed', 0)} snoozed"
+    )
+
+
+@_annotate_risk(open_world=False)
+async def whatsapp_pulse(account_id: str | None = None, days: int = 7) -> str:
+    """The health of the WhatsApp inbox over the last `days` (1 to 90): the
+    number of messages in and out, the reply speed, who waited longest, the
+    load by intent and the busiest chats."""
+    params: dict[str, Any] = {"days": max(1, min(int(days), 90))}
+    if account_id:
+        params["account_id"] = account_id
+    d = await _get("/whatsapp/pulse", params)
+    resp = d.get("response") or {}
+    lines = [
+        f"WhatsApp pulse, last {d.get('window_days', params['days'])} days: "
+        f"{d.get('inbound', 0)} in · {d.get('outbound', 0)} out · "
+        f"{d.get('active_chats', 0)} active chats",
+        f"Replies: {resp.get('replied', 0)} · median {resp.get('median_minutes')} min"
+        f" · p90 {resp.get('p90_minutes')} min",
+    ]
+    for w in (d.get("waiting_longest") or []):
+        lines.append(
+            f"• waiting {w.get('waited_hours')}h: {w.get('name')} "
+            f"(chat_id={w.get('chat_id')})")
+    for i in (d.get("by_intent") or []):
+        lines.append(f"• intent {i.get('key')}: {i.get('count')}")
+    for b in (d.get("busiest") or []):
+        lines.append(f"• busiest {b.get('name')}: {b.get('count')} (chat_id={b.get('chat_id')})")
+    return "\n".join(lines)
+
+
+@_annotate_risk(open_world=False)
+async def list_whatsapp_labels(account_id: str | None = None) -> str:
+    """List the WhatsApp labels of the founder's numbers, with the number of
+    chats that carry each."""
+    params = {"account_id": account_id} if account_id else None
+    rows = await _get("/whatsapp/labels", params)
+    if not rows:
+        return "No WhatsApp labels."
+    lines = ["WhatsApp labels:"]
+    for r in rows:
+        lines.append(
+            f"• {r.get('name')} — {r.get('chat_count', 0)} chats "
+            f"(label id={r.get('wa_label_id')})")
+    return "\n".join(lines)
+
+
+@_annotate_risk(open_world=False)
+async def list_whatsapp_categories(account_id: str | None = None) -> str:
+    """List the chat categories of a number with their policies: notify,
+    auto-reply and draft. Uses the first number when account_id is empty."""
+    aid = await _account_or_default(account_id)
+    if not aid:
+        return _NO_ACCOUNT
+    rows = await _get("/whatsapp/categories", {"account_id": aid})
+    if not rows:
+        return "No categories for this number."
+    lines = ["WhatsApp categories:"]
+    for r in rows:
+        lines.append(
+            f"• {r.get('name')} — notify={r.get('notify_policy')}, "
+            f"auto_reply={r.get('auto_reply_policy')}, draft={r.get('draft_policy')}"
+            f" (category id={r.get('id')})")
+    return "\n".join(lines)
+
+
+@_annotate_risk(open_world=False)
+async def list_whatsapp_templates(
+    account_id: str | None = None, approved_only: bool = False,
+) -> str:
+    """List the message templates of a number. approved_only keeps the ones that
+    can send now. This tool never sends a template."""
+    aid = await _account_or_default(account_id)
+    if not aid:
+        return _NO_ACCOUNT
+    rows = await _get(
+        "/whatsapp/templates", {"account_id": aid, "approved_only": bool(approved_only)})
+    if not rows:
+        return "No WhatsApp templates for this number."
+    lines = ["WhatsApp templates:"]
+    for r in rows:
+        lines.append(
+            f"• {r.get('name')} ({r.get('language')}, {r.get('category')}, "
+            f"{r.get('meta_status')}): {(r.get('body') or '')[:100]}")
+    return "\n".join(lines)
+
+
+@_annotate_risk(open_world=False)
+async def list_whatsapp_saved_replies(account_id: str | None = None) -> str:
+    """List the saved replies of a number, with each shortcut."""
+    aid = await _account_or_default(account_id)
+    if not aid:
+        return _NO_ACCOUNT
+    rows = await _get("/whatsapp/saved-replies", {"account_id": aid})
+    if not rows:
+        return "No saved replies for this number."
+    lines = ["Saved replies:"]
+    for r in rows:
+        key = f" {r['shortcut']}" if r.get("shortcut") else ""
+        lines.append(f"• {r.get('title')}{key}: {(r.get('body') or '')[:100]}")
+    return "\n".join(lines)
+
+
+@_annotate_risk(open_world=False)
+async def whatsapp_rules_preview(
+    account_id: str | None = None, within_office_hours: bool = True, limit: int = 25,
+) -> str:
+    """Dry-run the auto-reply rules over the recent chats that need a reply, and
+    say what each rule would do. Nothing is sent."""
+    aid = await _account_or_default(account_id)
+    if not aid:
+        return _NO_ACCOUNT
+    d = await _get("/whatsapp/rules/preview", {
+        "account_id": aid, "within_office_hours": bool(within_office_hours),
+        "limit": max(1, min(int(limit), 200))})
+    items = d.get("items") or []
+    if not items:
+        return "No chat needs a reply, so no rule would act."
+    summary = ", ".join(f"{n} {k}" for k, n in (d.get("summary") or {}).items())
+    lines = [f"Rule preview (nothing sent): {summary}"]
+    for i in items:
+        appr = " · needs approval" if i.get("requires_approval") else ""
+        lines.append(
+            f"• {i.get('name')}: {i.get('action')} — {i.get('reason')}{appr} "
+            f"(chat_id={i.get('chat_id')})")
+    return "\n".join(lines)
+
+
+@_annotate_risk(open_world=False)
+async def list_whatsapp_calls(account_id: str | None = None) -> str:
+    """List the calls that the WhatsApp bridge tracks for a number, live and
+    recent. This tool never places or answers a call."""
+    aid = await _account_or_default(account_id)
+    if not aid:
+        return _NO_ACCOUNT
+    d = await _get("/whatsapp/calls", {"account_id": aid})
+    if not d.get("bridge_reachable", True):
+        return "The WhatsApp bridge does not answer, so the call list is not known."
+    calls = d.get("calls") or []
+    if not calls:
+        return "No calls are tracked for this number."
+    lines = ["WhatsApp calls:"]
+    for c in calls:
+        lines.append(
+            f"• {c.get('direction')} {c.get('kind')} with {c.get('peer')} — "
+            f"{c.get('phase')}, started {c.get('started_at')} "
+            f"(call_id={c.get('call_id')})")
+    return "\n".join(lines)
+
+
+@_annotate_risk(open_world=False)
+async def whatsapp_call_events(call_id: str, account_id: str | None = None) -> str:
+    """Read the event timeline of one call: signalling, phases and media. Use it
+    to find why a call failed."""
+    aid = await _account_or_default(account_id)
+    if not aid:
+        return _NO_ACCOUNT
+    d = await _get(f"/whatsapp/calls/{quote(str(call_id), safe='')}/events", {"account_id": aid})
+    if not d.get("bridge_reachable", True):
+        return "The WhatsApp bridge does not answer, so the call timeline is not known."
+    events = d.get("events") or []
+    if not events:
+        return "No events for this call."
+    call = d.get("call") or {}
+    lines = [f"Call {call_id}: {call.get('phase')} {call.get('end_reason') or ''}".rstrip()]
+    for e in events:
+        lines.append(f"• {e.get('at')} {e.get('kind')}: {(e.get('detail') or '')[:120]}")
+    return "\n".join(lines)
+
+
+@_annotate_risk(open_world=False)
+async def whatsapp_call_diagnostics(account_id: str | None = None) -> str:
+    """Say if a number can place a call, and what is missing when it cannot."""
+    aid = await _account_or_default(account_id)
+    if not aid:
+        return _NO_ACCOUNT
+    d = await _get("/whatsapp/calls/diagnostics", {"account_id": aid})
+    if not d.get("bridge_reachable", True):
+        return f"The WhatsApp bridge does not answer. {d.get('verdict') or ''}".strip()
+    return (
+        f"Call readiness: {d.get('verdict') or 'no verdict'}\n"
+        f"session={d.get('session_exists')} · logged_in={d.get('logged_in')} · "
+        f"connected={d.get('connected')} · caller_ready={d.get('caller_ready')} · "
+        f"active_calls={d.get('active_calls', 0)}"
+    )
+
+
+@_annotate_risk(open_world=False)
+async def whatsapp_connection_info() -> str:
+    """Say how the WhatsApp connection is set up: the webhook URL and if
+    one-click signup is on. It never shows the verify token."""
+    d = await _get("/whatsapp/connection/info")
+    url = d.get("webhook_url") or "not set (the public domain is unknown)"
+    return (
+        f"Webhook callback URL: {url}\n"
+        f"Embedded signup: {'on' if d.get('embedded_signup') else 'off'} · "
+        f"Graph version: {d.get('graph_version')}"
+    )
+
+
+@_annotate_risk(open_world=False)
+async def whatsapp_link_status() -> str:
+    """Say if the member's phone is linked to chat on WhatsApp, and the state of
+    each link. It never issues a code."""
+    d = await _get("/me/whatsapp-link")
+    if not d.get("enabled"):
+        return "Chat on WhatsApp is not set up on this deployment."
+    links = d.get("links") or []
+    if not links:
+        return f"No phone is linked. The business number is {d.get('display_number')}."
+    lines = [f"Chat on WhatsApp links (business number {d.get('display_number')}):"]
+    for k in links:
+        hint = f" phone ending {k['phone_hint']}" if k.get("phone_hint") else ""
+        lines.append(f"• {k.get('organization_name')}: {k.get('status')}{hint}")
+    return "\n".join(lines)
+
+
 # ── MAF agent factory (Dynamic Agent Loader entry point) ─────────────────────
 
 _TOOLS = [
@@ -540,6 +762,19 @@ _TOOLS = [
     summarize_whatsapp_group,
     list_whatsapp_group_summaries,
     transcribe_whatsapp_voice_note,
+    # Settings, rules, calls and link (read only)
+    whatsapp_streams,
+    whatsapp_pulse,
+    list_whatsapp_labels,
+    list_whatsapp_categories,
+    list_whatsapp_templates,
+    list_whatsapp_saved_replies,
+    whatsapp_rules_preview,
+    list_whatsapp_calls,
+    whatsapp_call_events,
+    whatsapp_call_diagnostics,
+    whatsapp_connection_info,
+    whatsapp_link_status,
     # Drafting (never sends)
     draft_whatsapp_reply,
     draft_waiting_on_nudge,

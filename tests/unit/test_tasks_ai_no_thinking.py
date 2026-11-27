@@ -6,17 +6,17 @@ binds the tiers to ``deepseek/deepseek-flash`` and ``deepseek/deepseek-v4-pro``,
 and both think by default. The reasoning used up the cap and ``content`` came
 back empty.
 
-One call keeps its reasoning on purpose: the day plan (``calendar.py``,
-``_llm_rank_day``). Task 1123 gave it a cap of ``PLAN_MAX_TOKENS`` so the model
-has room to think, and ``tests/unit/test_calendar_plan_llm.py`` fences it.
+The day plan (``calendar.py``, ``_llm_rank_day``) asks for no reasoning too,
+since 2026-11-01. With thinking on, one call used all 8000 tokens and the plan
+outran the 30 s limit of the BFF. No Tasks call is exempt now.
 
 Mutations this file catches (R7). Each one ran red:
 
 * a Tasks call drops ``thinking=`` -> ``test_every_tasks_call_asks_for_no_reasoning``;
 * ``NO_THINKING`` becomes ``{"type": "enabled"}`` ->
   ``test_the_value_is_disabled`` and ``test_the_profile_parse_reads_the_answer``;
-* the day plan's cap goes back to a small number while it is exempt ->
-  ``test_the_exempt_call_has_room_to_think``.
+* the day plan thinks again, or loses room for its JSON ->
+  ``test_the_day_plan_answers_fast``.
 """
 from __future__ import annotations
 
@@ -34,10 +34,8 @@ from gateway.routes.tasks.core import NO_THINKING
 TASKS_DIR = (Path(__file__).resolve().parents[2]
              / "apps/services/gateway/gateway/routes/tasks")
 CALL = "acompletion_with_fallback"
-#: The calls that keep their reasoning, by file, with the reason.
-EXEMPT = {
-    "calendar.py": "the day plan thinks, with a cap of PLAN_MAX_TOKENS (task 1123)",
-}
+#: The calls that keep their reasoning, by file, with the reason. None today.
+EXEMPT: dict[str, str] = {}
 ANSWER = '{"skills": ["cad"], "experience_summary": "Designs parts.", "domain": "mechanical"}'
 
 
@@ -76,9 +74,11 @@ class TestTheFence:
         names = {name for name, _line, _call in _calls()}
         assert set(EXEMPT) <= names
 
-    def test_the_exempt_call_has_room_to_think(self) -> None:
-        """The day plan may think only while its cap leaves room for it."""
-        assert tasks_calendar.PLAN_MAX_TOKENS >= 4000
+    def test_the_day_plan_answers_fast(self) -> None:
+        """The day plan runs on the fast tier, with room for its JSON only."""
+        assert tasks_calendar.PLAN_MODEL == "tier-fast"
+        assert 1500 <= tasks_calendar.PLAN_MAX_TOKENS <= 3000
+        assert "calendar.py" in {name for name, _line, _call in _calls()}
 
     def test_the_value_is_disabled(self) -> None:
         assert NO_THINKING == {"type": "disabled"}

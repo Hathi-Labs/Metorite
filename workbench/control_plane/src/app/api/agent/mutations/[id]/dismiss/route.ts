@@ -6,6 +6,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
+import { refuseUnsafePath } from "@/lib/gatewayPath";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +17,8 @@ export async function DELETE(
   const me = await requireIdentity();
   if (me instanceof NextResponse) return me;
   const { id } = await params;
+  const refused = refuseUnsafePath([id]);
+  if (refused) return refused;
   try {
     const res = await gatewayFetch(
       `${GATEWAY_URL}/agent/mutations/audit/${encodeURIComponent(id)}`,

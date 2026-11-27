@@ -29,16 +29,23 @@ import {
   chipRows,
   doneThisWeek,
   droppedStage,
+  chipRowsWithSet,
   inChip,
+  todayIdsOf,
   mineStatuses,
   myTasksHref,
+  applyMyTasksUpdate,
+  myTasksMode,
+  readPickedMode,
+  writePickedMode,
+  myTasksTrulyEmpty,
   myTasksQuery,
   openCount,
   MY_TASKS_MAX_PAGES,
   MY_TASKS_MAX_ROWS,
+  MY_TASKS_EMPTY_TEXT,
   MY_TASKS_PAGE,
   STATUS_READ_FAILED,
-  phoneMyTasksTap,
   planMineDrop,
   projectChipText,
   quickAddHome,
@@ -83,8 +90,10 @@ describe("the old ids open My tasks with a chip", () => {
     expect(asChip(" Next ")).toBe("next");
   });
 
-  it("the chips are All, Today, Next, Waiting, Someday and Done", () => {
-    expect(MY_TASKS_CHIPS.map((c) => c.label)).toEqual(["All", "Today", "Next", "Waiting", "Someday", "Done"]);
+  it("the chips are All, New, Today, Next, Waiting, Someday, Done and Archive", () => {
+    expect(MY_TASKS_CHIPS.map((c) => c.label)).toEqual([
+      "All", "New", "Today", "Next", "Waiting", "Someday", "Done", "Archive",
+    ]);
   });
 });
 
@@ -121,6 +130,9 @@ const RULES: [string, ChipRow, MyTasksChip[]][] = [
   ["SOMEDAY", row({ disposition: "SOMEDAY" }), ["all", "someday"]],
   ["DONE, due today", row({ disposition: "DONE", due_at: "2026-10-27", completed_at: "2026-10-26T10:00:00Z" }), ["all", "done"]],
   ["INBOX", row({ disposition: "INBOX", is_mine: false }), ["all"]],
+  // D170 (INB-1): assigned, untriaged work shows as New. The server's `is_new` decides.
+  ["NEXT and mine, New (no disposition of mine yet)", row({ is_new: true }), ["all", "new", "next"]],
+  ["SOMEDAY by derivation, New", row({ disposition: "SOMEDAY", is_new: true }), ["all", "new", "someday"]],
   ["TRASH", row({ disposition: "TRASH" }), []],
 ];
 
@@ -139,23 +151,93 @@ describe("each chip is the server's rule", () => {
     );
   });
 
+  it("the Today chip lists each task that it counts, also a task of another member (CC-2 fix round 1)", () => {
+    // The shared fixture: my mark, my block and my One Thing on tasks of
+    // another member. The mine list does not hold them. The Today read does.
+    const fixture = JSON.parse(
+      fs.readFileSync(path.join(ROOT, "..", "..", "..", "..", "..", "tests", "fixtures", "today_rule_cases.json"), "utf8"),
+    ) as {
+      today: string;
+      cases: { name: string; task: { assignee: string | null; effective: string }; why: string[] }[];
+    };
+    const others = fixture.cases.filter((c) => c.task.assignee === "other" && c.why.length > 0);
+    const arms = new Set(others.flatMap((c) => c.why));
+    expect([...arms].sort()).toEqual(["focus", "one_thing", "scheduled"]);
+    const mineRow = { ...row({ due_at: fixture.today }), id: "mine-due" };
+    const otherRows = others.map((c, i) => ({
+      ...row({ disposition: c.task.effective, is_mine: false }),
+      id: `other-${i}`,
+    }));
+    const ids = todayIdsOf({ today_rule: true, today_ids: ["mine-due", ...otherRows.map((r) => r.id)] });
+    // The flag off: no set, so the chip is the old rule over the list.
+    expect(chipRowsWithSet([mineRow], "today", fixture.today, "UTC", null, otherRows).map((r) => r.id)).toEqual([
+      "mine-due",
+    ]);
+    // The flag on: the list rows of the set, then each set row the list lacks.
+    const got = chipRowsWithSet([mineRow], "today", fixture.today, "UTC", ids, otherRows).map((r) => r.id);
+    expect(got).toEqual(["mine-due", ...otherRows.map((r) => r.id)]);
+    expect(got.length).toBe(ids?.size);
+    // A row of the set that the list also holds shows once.
+    expect(chipRowsWithSet([mineRow, ...otherRows], "today", fixture.today, "UTC", ids, otherRows)).toHaveLength(
+      ids?.size ?? 0,
+    );
+    // Another chip never takes rows of the set.
+    expect(chipRowsWithSet([mineRow], "next", fixture.today, "UTC", ids, otherRows).map((r) => r.id)).toEqual([
+      "mine-due",
+    ]);
+  });
+
+  it("a filtered Today chip shows the filtered list and adds no row of the set", () => {
+    const listed = { ...row({ due_at: TODAY }), id: "match" };
+    const other = { ...row({ disposition: "NEXT", is_mine: false }), id: "other" };
+    const ids = new Set(["match", "other"]);
+    const chip = (filtered: boolean) =>
+      chipRowsWithSet([listed], "today", TODAY, "UTC", ids, [listed, other], filtered).map((r) => r.id);
+    expect(chip(false)).toEqual(["match", "other"]);
+    expect(chip(true)).toEqual(["match"]);
+  });
+
+  it("the Today chip lists the server set only when the summary sends it (WS-MDC CC-2)", () => {
+    const rows = RULES.map(([name, r]) => ({ ...r, id: name }));
+    const old = chipRows(rows, "today", TODAY, "UTC").map((r) => r.id);
+    // The flag off: no `today_ids`, so the old rule and nothing new.
+    expect(todayIdsOf({ by_disposition: {} } as never)).toBeNull();
+    expect(todayIdsOf({ today_rule: false, today_ids: ["NEXT and mine, no date"] })).toBeNull();
+    expect(chipRows(rows, "today", TODAY, "UTC", null).map((r) => r.id)).toEqual(old);
+    // The flag on: an open row of the set joins, and a closed or trashed row never does.
+    const ids = todayIdsOf({
+      today_rule: true,
+      today_ids: ["NEXT and mine, no date", "TRASH", "DONE, due today"],
+    });
+    const got = chipRows(rows, "today", TODAY, "UTC", ids).map((r) => r.id);
+    expect(got).toEqual(rows.filter((r) => r.id === "NEXT and mine, no date" || old.includes(r.id)).map((r) => r.id));
+  });
+
   it("the server's fold counts the same five keys, by the same rules", () => {
     // The table above mirrors these lines. A change on either side fails here.
     const mine = fs.readFileSync(
       path.join(ROOT, "..", "..", "..", "..", "..", "apps", "services", "gateway", "gateway", "routes", "projects", "mine.py"),
       "utf8",
     );
-    expect(mine).toContain('DISPOSITION_KEYS: tuple[str, ...] = ("inbox", "today", "next", "waiting", "someday", "done")');
+    expect(mine).toMatch(
+      /DISPOSITION_KEYS: tuple\[str, \.\.\.\] = \(\s*"inbox", "today", "next", "waiting", "someday", "done", "new",?\s*\)/,
+    );
+    expect(mine).toContain("counts[\"new\"] += 1");
     expect(mine).toContain('elif effective == "NEXT" and mine:');
     expect(mine).toContain('elif effective == "WAITING":');
     expect(mine).toContain('elif effective == "SOMEDAY":');
     expect(mine).toContain('elif effective == "DONE":');
     expect(mine).toMatch(/if completed_at is not None or effective != "NEXT" or not is_mine:/);
-    for (const chip of ids.filter((c) => c !== "all")) expect(mine).toContain(`"${chip}"`);
+    // "archive" is not a fold key: the Archive chip reads its own rows (ARC-1).
+    for (const chip of ids.filter((c) => c !== "all" && c !== "archive")) expect(mine).toContain(`"${chip}"`);
   });
 
   it("the Today chip calls the one Today rule", () => {
-    expect(code("lib/myTasks.ts")).toContain("isInToday(");
+    // WS-MDC CC-2: through `inTodayChip`, whose old-rule branch is `isInToday`.
+    expect(code("lib/myTasks.ts")).toContain("inTodayChip(");
+    expect(code("../../lib/shell/todayRule.ts")).toContain(
+      "if (!serverIds) return isInToday(item, ctx.today, ctx.timeZone);",
+    );
   });
 
   it("the chip counts come from the server summary, and All shows none", () => {
@@ -289,18 +371,13 @@ describe("the task panel keeps a disposition control", () => {
 // ── The tabs, the phone, the facts and the address ─────────────────────────
 
 describe("the tabs", () => {
-  it("are a project's canvases with the same ids and icons, less the Timeline", () => {
+  it("are a project's canvases with the same ids and icons, less the Timeline, the Backlog and the Agents map", () => {
+    // WS-39 SP-3a: the Backlog plans the sprints of one Sprints node. My tasks
+    // is a lens across nodes, so it has none.
+    const notMine = new Set(["timeline", "backlog", "agents"]);
     expect(MY_TASKS_MODES).toEqual(
-      VIEW_MODES.filter((m) => m.id !== "timeline").map((m) => ({ id: m.id, icon: m.icon })),
+      VIEW_MODES.filter((m) => !notMine.has(m.id)).map((m) => ({ id: m.id, icon: m.icon })),
     );
-  });
-});
-
-describe("the phone tab", () => {
-  it("opens My tasks, and on My tasks opens the Projects sheet", () => {
-    expect(phoneMyTasksTap(null)).toBe("open");
-    expect(phoneMyTasksTap("my-inbox")).toBe("open");
-    expect(phoneMyTasksTap("my-tasks")).toBe("sheet");
   });
 });
 
@@ -497,8 +574,10 @@ describe("Today in the member's stored zone (item 8)", () => {
   it("the space passes the summary's zone to every chip filter", () => {
     const space = code("components/MyTasksSpace.tsx");
     expect(space).toContain("summary.data?.time_zone");
-    expect(space).toContain("chipRows(list.rows, chip, today, zone)");
-    expect(space).toContain("chipRows(month.rows, chip, today, zone)");
+    expect(space).toContain("chipRowsWithSet(list.rows, chip, today, zone, todayIds, setRows, filtered)");
+    expect(space).toContain("chipRowsWithSet(month.rows, chip, today, zone, todayIds, setRows, filtered)");
+    expect(space).toContain('useMyTodaySet(Boolean(todayIds) && chip === "today")');
+    expect(space).toContain("todayIdsOf(summary.data)");
   });
 });
 
@@ -515,5 +594,132 @@ describe("errors of My tasks (items 6 and 7)", () => {
   it("the Overview offers Retry when the summary read failed", () => {
     expect(space).toContain("!summary.data && summary.error");
     expect(space).toContain("onClick: summary.refresh");
+  });
+});
+
+describe("PJP-13 — the tab My tasks opens on", () => {
+  it("a desktop opens the Board and a phone opens the List", () => {
+    expect(myTasksMode(null, false)).toBe("board");
+    expect(myTasksMode(null, true)).toBe("list");
+  });
+
+  it("a picked tab wins on both, so it survives a resize", () => {
+    expect(myTasksMode("calendar", false)).toBe("calendar");
+    expect(myTasksMode("calendar", true)).toBe("calendar");
+    expect(myTasksMode("list", false)).toBe("list");
+    expect(myTasksMode("board", true)).toBe("board");
+  });
+
+  it("the page waits for the viewport and sends every update through applyMyTasksUpdate", () => {
+    const page = code("page.tsx");
+    expect(page).toMatch(/myTasksMode\(myTasksRaw\.chosen, isMobile \|\| !viewMounted\)/);
+    expect(page).toMatch(/applyMyTasksUpdate\(raw, isMobile \|\| !viewMounted, update, pick\)/);
+  });
+
+  // The page REMOUNTS when the viewport crosses the phone line (the shell
+  // returns another tree), so its state is lost. A pick survives in
+  // sessionStorage. The vitest setup has no DOM, so this plays the page's
+  // own steps against the same pure functions and a fake store.
+  function session() {
+    const data = new Map<string, string>();
+    return { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => void data.set(k, v) };
+  }
+  type Raw = ReturnType<typeof applyMyTasksUpdate>;
+  /** A page life: mount from the store, apply updates, write the pick, and shown mode. */
+  function page(store: ReturnType<typeof session>, isMobile: boolean) {
+    let raw: Raw = { attention: false, chip: "all", chosen: readPickedMode(store) };
+    const shown = () => myTasksMode(raw.chosen, isMobile);
+    const update = (u: Parameters<typeof applyMyTasksUpdate>[2], pick: boolean) => {
+      raw = applyMyTasksUpdate(raw, isMobile, u, pick);
+      if (raw.chosen) writePickedMode(store, raw.chosen);
+    };
+    return { shown, update, view: () => ({ mode: shown(), attention: raw.attention, chip: raw.chip }) };
+  }
+
+  it("a picked tab survives a resize and the remount it causes", () => {
+    for (const picked of ["table", "list", "calendar"] as const) {
+      const store = session();
+      let p = page(store, false);
+      expect(p.shown()).toBe("board");
+      p.update({ ...p.view(), mode: picked }, true);
+      expect(p.shown()).toBe(picked);
+      p = page(store, true); // 390 px: the page remounts
+      expect(p.shown()).toBe(picked);
+      p = page(store, false); // back to 1440 px
+      expect(p.shown()).toBe(picked);
+    }
+  });
+
+  it("a pick equal to the default still counts (List on a phone, then wide)", () => {
+    const store = session();
+    let p = page(store, true);
+    p.update({ ...p.view(), mode: "list" }, true);
+    p = page(store, false);
+    expect(p.shown()).toBe("list");
+  });
+
+  it("a chip change or an echo of the shown view never records a pick", () => {
+    const store = session();
+    let p = page(store, false);
+    p.update({ ...p.view(), chip: "today" }, false);
+    p.update((v) => ({ ...v }), false);
+    expect(readPickedMode(store)).toBeNull();
+    p = page(store, true);
+    expect(p.shown()).toBe("list");
+    p = page(store, false);
+    expect(p.shown()).toBe("board");
+  });
+
+  it("a broken store never throws", () => {
+    const broken = {
+      getItem: () => {
+        throw new Error("off");
+      },
+      setItem: () => {
+        throw new Error("off");
+      },
+    };
+    expect(readPickedMode(broken)).toBeNull();
+    expect(() => writePickedMode(broken, "table")).not.toThrow();
+    expect(readPickedMode(null)).toBeNull();
+    expect(readPickedMode({ getItem: () => "nonsense", setItem: () => {} })).toBeNull();
+  });
+
+  it("each explicit tab path passes pick true", () => {
+    const space = code("components/MyTasksSpace.tsx");
+    expect(space).toMatch(/onPick=\{\(mode\) => onView\(\{ \.\.\.view, mode, attention: false \}, true\)\}/);
+    expect(space).toMatch(/onMode=\{\(next\) => onView\(\{ \.\.\.view, mode: next as MyTasksMode \}, true\)\}/);
+    const page = code("page.tsx");
+    expect(page).toMatch(/mode: tab, attention: false \}\), true\)/);
+    expect(page).toMatch(/legacy,\s*\);/);
+  });
+
+  it("the old ?app=my-today link still opens the List", () => {
+    expect(code("page.tsx")).toMatch(/legacy \? \{ \.\.\.v, chip, mode: "list", attention: false \}/);
+  });
+});
+
+describe("PJP-12a — an empty My tasks", () => {
+  const base = { chip: "all", loaded: true, total: 0, filtered: false } as const;
+
+  it("says so only on chip All, after the read, with no row and no filter", () => {
+    expect(myTasksTrulyEmpty(base)).toBe(true);
+    expect(myTasksTrulyEmpty({ ...base, chip: "today" })).toBe(false);
+    expect(myTasksTrulyEmpty({ ...base, loaded: false })).toBe(false);
+    expect(myTasksTrulyEmpty({ ...base, total: 3 })).toBe(false);
+    expect(myTasksTrulyEmpty({ ...base, filtered: true })).toBe(false);
+  });
+
+  it("uses the owner's words", () => {
+    expect(MY_TASKS_EMPTY_TEXT).toBe("It's empty. Go to Projects and pick up tasks.");
+  });
+
+  it("draws the shared EmptyState for every tab, and its action opens the project tree", () => {
+    const space = code("components/MyTasksSpace.tsx");
+    expect(space).toMatch(/message=\{MY_TASKS_EMPTY_TEXT\}/);
+    expect(space).toMatch(/onClick: onOpenProjects/);
+    // One branch before the tab switch, so List, Board and Table all show it.
+    expect(space.indexOf(") : emptyChip ? (")).toBeLessThan(space.indexOf(': mode === "table" ? ('));
+    expect(code("page.tsx")).toMatch(/if \(isMobile\) setSheet\("tree"\);\s*else setRailOpen\(true\);\s*\}\}\s*phone=/);
   });
 });

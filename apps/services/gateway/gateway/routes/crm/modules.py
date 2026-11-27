@@ -57,6 +57,7 @@ session that the router binds, never from the request. Each read runs in one
 
 from __future__ import annotations
 
+import difflib
 import json
 from typing import Any
 
@@ -92,6 +93,7 @@ from gateway.routes.crm.fill_rank import annotate, fills_for
 from gateway.routes.crm.records import refuse_nul, refuse_nul_tree
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 #: The provider whose profile names the modules. One provider today.
 PROVIDER = "zoho"
@@ -153,6 +155,17 @@ class ModuleListResponse(ListResponse):
     as columns by the CRM-Q4 rules."""
 
     field_defs: list[ModuleFieldDef] = Field(default_factory=list)
+    #: The API name that the path resolved to (CRM-Q34-12), so a label in
+    #: the path answers with the name of the store.
+    module: str | None = None
+
+    #: CRM-Q34-7: no record holds each word of ``q``, so the rows hold one of
+    #: these stored names, near spellings of a word. Each such row carries
+    #: ``near: true`` and its stored name in ``matched``. Absent otherwise.
+    near: list[str] | None = Field(default=None, exclude_if=lambda value: value is None)
+    #: CRM-Q34-7: ``q`` found no record. At most 3 stored names nearest to
+    #: ``q``, for the next call. Absent otherwise.
+    nearest: list[str] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class ModuleRecordPage(BaseModel):
@@ -286,30 +299,135 @@ def _summary(row: dict[str, Any], count: int = 0) -> ModuleSummary:
 
 #: The most module names that one 404 names.
 MODULE_CHOICES_MAX = 20
+#: The most close modules that a refusal names (CRM-Q34-12).
+CLOSE_MAX = 3
+#: The longest refusal text, in characters. The chat reads it as tool text.
+REFUSAL_MAX = 400
+#: The least ``difflib`` ratio of a close module.
+CLOSE_CUTOFF = 0.6
+
+
+def fold_module(text: Any) -> str:
+    """A module name in one form: lower case, with no space, ``_`` or ``-``
+    and no other mark. So "Sales Orders", "sales_orders" and "SalesOrders"
+    fold to the same word."""
+    return "".join(ch for ch in str(text or "").lower() if ch.isalnum())
+
+
+def _forms(api_name: str, row: dict[str, Any]) -> tuple[str, ...]:
+    """The folded label, plural label and singular label of a module."""
+    return tuple(
+        f for f in (fold_module(row.get("label")), fold_module(row.get("singular_label")),
+                    fold_module(row.get("plural_label")))
+        if f
+    )
+
+
+def _refusal(mirrored: dict[str, dict[str, Any]], module: str, close: list[str],
+             ambiguous: list[str] | None = None) -> HTTPException:
+    """The 404 ``unknown_module``. It names the close modules, or the two
+    modules that a name fits, each with its API name and label. The text is
+    at most :data:`REFUSAL_MAX` characters."""
+    def shown(name: str) -> str:
+        label = str((mirrored.get(name) or {}).get("label") or "")
+        return f"{name} ({label})" if label and label != name else name
+
+    asked = " ".join(str(module).split())[:60]
+    if ambiguous:
+        head = (f"'{asked}' fits more than one module: "
+                f"{', '.join(shown(n) for n in ambiguous)}. Use the API name.")
+    elif close:
+        head = (f"This module is not mirrored. Did you mean: "
+                f"{', '.join(shown(n) for n in close)}?")
+    else:
+        head = "This module is not mirrored."
+    names = sorted(str(k) for k in mirrored)
+    more = len(names) - MODULE_CHOICES_MAX
+    listed = ", ".join(names[:MODULE_CHOICES_MAX]) or "none"
+    if more > 0:
+        listed += f", and {more} more"
+    message = f"{head} The mirrored modules are: {listed}."
+    if len(message) > REFUSAL_MAX:
+        room = REFUSAL_MAX - len(head) - len(" The mirrored modules are: , and more.")
+        kept = listed[:max(room, 0)].rsplit(", ", 1)[0] if room > 0 else ""
+        message = f"{head} The mirrored modules are: {kept}, and more." if kept else head
+    return HTTPException(status_code=404, detail={
+        "code": "unknown_module", "message": message[:REFUSAL_MAX],
+    })
+
+
+def _ladder(mirrored: dict[str, dict[str, Any]], module: str) -> list[str]:
+    """The modules that the first fitting step of the ladder finds."""
+    folded = fold_module(module)
+    if module in mirrored:
+        return [module]
+    if not folded:
+        return []
+    # Task 3864: the last step takes a final "s" more or less, so "invoice"
+    # finds Invoices and "invoices" finds a module with the label Invoice.
+    other = folded[:-1] if folded.endswith("s") else folded + "s"
+    for found in (
+        [n for n in mirrored if fold_module(n) == folded],
+        [n for n, row in mirrored.items() if folded in _forms(n, row)],
+        [n for n, row in mirrored.items()
+         if other == fold_module(n) or other in _forms(n, row)],
+    ):
+        if found:
+            return found
+    return []
+
+
+def _miss(mirrored: dict[str, dict[str, Any]], module: str) -> HTTPException:
+    """The 404 of a name that no module owns, or that two modules fit."""
+    found = _ladder(mirrored, module)
+    if len(found) > 1:
+        return _refusal(mirrored, module, [], found[:CLOSE_MAX])
+    keyed: dict[str, str] = {}
+    for name, row in mirrored.items():
+        for form in (fold_module(name), *_forms(name, row)):
+            keyed.setdefault(form, name)
+    close = list(found)
+    for form in difflib.get_close_matches(
+        fold_module(module), list(keyed), n=CLOSE_MAX * 3, cutoff=CLOSE_CUTOFF,
+    ):
+        if keyed[form] not in close:
+            close.append(keyed[form])
+    return _refusal(mirrored, module, close[:CLOSE_MAX])
+
+
+def resolve_module(mirrored: dict[str, dict[str, Any]], module: str) -> str:
+    """The API name of the module that *module* names, or a 404 that names
+    the close modules (CRM-Q34-12). The ONE resolver of every ``module:<X>``
+    path: the fields, list, record and timeline routes, the field search and
+    the term route. A chat says the label that people use, and the store keys
+    a module by its API name.
+
+    The ladder: the API name; then the API name folded (:func:`fold_module`);
+    then the label, the plural label or the singular label, folded. The first
+    step that finds a module decides. One module wins. Two modules are not
+    guessed: the 404 names both. No module: the 404 names up to
+    :data:`CLOSE_MAX` close ones. *mirrored* is the org's own set
+    (:func:`mirrored_modules`), so a module of another org never resolves.
+    """
+    found = _ladder(mirrored, module)
+    if len(found) == 1:
+        return found[0]
+    raise _miss(mirrored, module)
 
 
 def _require_module(mirrored: dict[str, dict[str, Any]], module: str) -> dict[str, Any]:
     """The profile row of *module*, or 404. Runs before any read of a record,
     so a name outside the mirrored set never reaches a statement.
 
-    The 404 names the mirrored modules (at most :data:`MODULE_CHOICES_MAX`),
-    so a model that guessed a name can pick a real one. ``GET /crm/modules``
-    gives the same names to the same member."""
+    It checks the API name only: a caller that goes on with *module* as its
+    key must not pass a label. A route that takes a label calls
+    :func:`resolve_module` first and goes on with the name that it gives.
+    The 404 is the one of :func:`resolve_module`: it names the close modules
+    and the mirrored ones, so a model that guessed a name can pick a real
+    one. ``GET /crm/modules`` gives the same names to the same member."""
     row = mirrored.get(module)
     if row is None:
-        names = sorted(str(k) for k in mirrored)
-        more = len(names) - MODULE_CHOICES_MAX
-        shown = ", ".join(names[:MODULE_CHOICES_MAX]) or "none"
-        if more > 0:
-            shown += f", and {more} more"
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "code": "unknown_module",
-                "message": f"This module is not mirrored. The mirrored modules "
-                           f"are: {shown}.",
-            },
-        )
+        raise _miss(mirrored, module)
     return row
 
 
@@ -426,7 +544,8 @@ async def list_modules(
 ) -> list[ModuleSummary]:
     """The mirrored generic modules, in the profile order, with a row count.
 
-    A Native org, and an org with no profile, gets an empty list.
+    A Native org gets the modules that still hold records (CRM-Z10d). An org
+    with no profile gets an empty list.
     """
     async with _tenant_session() as db:
         mirrored = await mirrored_modules(db)
@@ -514,6 +633,8 @@ async def list_module_records(
     """One page of a mirrored module's records. 404 for a module that the
     profile does not mirror. ``q`` matches ``name``, and ``sort`` is one of
     :data:`MODULE_RECORDS` ``sorts``. A NUL in the query is a 422 (CRM-Q25c).
+    For an org on ``CRM_MODULE_FIND_ORGS``, ``q`` finds across the module
+    instead (CRM-Q34-7, :func:`_find_page`).
 
     Field filters (CRM-U9): ``owner`` (``me`` is the caller), the
     ``updated_from`` and ``updated_to`` days, and ``custom.<key>=<value>`` or
@@ -521,14 +642,37 @@ async def list_module_records(
     of the four core lists. A key that the module has no definition for is
     ignored, so a stale link or view still opens the list (CRM-Q8 prune).
     """
+    from gateway.routes.crm.field_sql import (
+        field_filter_refusal,
+        field_pairs,
+        module_field_where,
+    )
+    from gateway.routes.crm.flags import module_find_allowed
+
     if request is not None:
         refuse_nul(request.query_params.multi_items())
     async with _tenant_session() as db:
-        _require_module(await mirrored_modules(db), module)
+        module = resolve_module(await mirrored_modules(db), module)
         extra_where, extra_params = await _field_filters(
             db, module, updated_from, updated_to,
             custom_pairs(request.query_params if request is not None else None),
         )
+        finding = module_find_allowed(current_tenant())
+        source = ""
+        pairs = field_pairs(request.query_params if request is not None else None)
+        if pairs:
+            # CRM-Q34-4: the filters of a module total, read by the same builder.
+            if not finding:
+                raise field_filter_refusal()
+            built = await module_field_where(db, module, pairs)
+            extra_where = (*extra_where, built.sql[len(" WHERE "):])
+            extra_params, source = {**extra_params, **built.params}, built.source
+        if q is not None and finding:
+            return await _find_page(
+                db, module, q, sort=sort, direction=direction, page=page,
+                page_size=page_size, owner=resolve_owner(owner, user),
+                extra_where=extra_where, extra_params=extra_params, user=user,
+                source=source)
         query = list_contract(
             MODULE_RECORDS, q=q, sort=sort, direction=direction,
             page=page, page_size=page_size, owner=resolve_owner(owner, user),
@@ -536,11 +680,12 @@ async def list_module_records(
             extra_params={"module": module, **extra_params},
         )
         total = (await db.execute(
-            text(f"SELECT count(*) FROM crm_module_records{query.where}"), query.params,
+            text(f"SELECT count(*) FROM crm_module_records{source}{query.where}"),
+            query.params,
         )).scalar() or 0
         rows = (await db.execute(
             text(
-                f"SELECT {_COLUMNS} FROM crm_module_records{query.where} "
+                f"SELECT {_COLUMNS} FROM crm_module_records{source}{query.where} "
                 f"ORDER BY {query.order_by} LIMIT :limit OFFSET :offset"
             ),
             {**query.params, "limit": query.limit, "offset": query.offset},
@@ -548,8 +693,190 @@ async def list_module_records(
         defs = await _field_defs(db, module, user.organization_id)
     return ModuleListResponse(
         rows=[_record(r).model_dump() for r in rows], total=int(total),
-        field_defs=defs,
+        field_defs=defs, module=module,
     )
+
+
+async def _find_page(
+    db: Any, module: str, q: str, *, sort: str | None, direction: str, page: int,
+    page_size: int, owner: str | None, extra_where: tuple[str, ...],
+    extra_params: dict[str, Any], user: UserContext, source: str = "",
+) -> ModuleListResponse:
+    """One page of the module list with ``q`` across the module (CRM-Q34-7).
+
+    The list contract builds every other filter, and ``field_sql.find_where``
+    builds ``q``: the ONE predicate that the module total uses too. The count
+    and the page read the detoasted copy once for each row. When the count is
+    0, the near pass of ``field_sql.find_near`` runs: its rows carry
+    ``near: true`` and the stored name in ``matched``. A ``q`` that still
+    finds no row gives ``nearest``.
+
+    The reads run under the LOCAL statement timeout of the aggregate
+    (``aggregate.STATEMENT_TIMEOUT_MS``), and a cancel is its 503
+    ``aggregate_timeout`` (fix round, F2)."""
+    from gateway.routes.crm.aggregate import (
+        _TIMEOUT_SQL,
+        STATEMENT_TIMEOUT_MS,
+        TIMEOUT_DETAIL,
+        _is_timeout,
+    )
+    from gateway.routes.crm.field_sql import find_words
+
+    words = find_words(q)
+    await db.execute(text(_TIMEOUT_SQL), {"ms": str(STATEMENT_TIMEOUT_MS)})
+    try:
+        return await _find_rows(db, module, words, sort=sort, direction=direction,
+                                page=page, page_size=page_size, owner=owner,
+                                extra_where=extra_where, extra_params=extra_params,
+                                user=user, source=source)
+    except DBAPIError as exc:
+        if _is_timeout(exc):
+            raise HTTPException(status_code=503, detail=TIMEOUT_DETAIL) from None
+        raise
+
+
+async def _find_rows(
+    db: Any, module: str, words: list[str], *, sort: str | None, direction: str,
+    page: int, page_size: int, owner: str | None, extra_where: tuple[str, ...],
+    extra_params: dict[str, Any], user: UserContext, source: str = "",
+) -> ModuleListResponse:
+    """The reads of :func:`_find_page`, under its statement timeout."""
+    from gateway.routes.crm.field_sql import (
+        DETOAST_JOIN,
+        find_near,
+        find_where,
+        module_scope,
+        row_near_name,
+    )
+
+    scope = await module_scope(db, module)
+    query = list_contract(
+        MODULE_RECORDS, q=None, sort=sort, direction=direction,
+        page=page, page_size=page_size, owner=owner,
+        extra_where=("module = :module", *extra_where),
+        extra_params={"module": module, **extra_params},
+    )
+    where, params = query.where, dict(query.params)
+    if words:
+        exact = find_where(scope, words)
+        where, params = f"{where} AND {exact.sql}", {**params, **exact.params}
+    source = DETOAST_JOIN if words else source
+
+    async def read(where_sql: str, args: dict[str, Any]) -> tuple[int, list[Any]]:
+        total = int((await db.execute(
+            text(f"SELECT count(*) FROM crm_module_records{source}{where_sql}"), args,
+        )).scalar() or 0)
+        if not total:
+            return 0, []
+        rows = (await db.execute(
+            text(
+                f"SELECT {_COLUMNS} FROM crm_module_records{source}{where_sql} "
+                f"ORDER BY {query.order_by} LIMIT :limit OFFSET :offset"
+            ),
+            {**args, "limit": query.limit, "offset": query.offset},
+        )).fetchall()
+        return total, rows
+
+    total, rows = await read(where, params)
+    wired = [_record(r).model_dump() for r in rows]
+    near: list[str] | None = None
+    nearest: list[str] | None = None
+    if words and not total:
+        hit = await find_near(db, scope, words, query.where, query.params)
+        if hit.near:
+            again = find_where(scope, words, hit.near)
+            total, rows = await read(f"{query.where} AND {again.sql}",
+                                     {**query.params, **again.params})
+            wired = [_record(r).model_dump() for r in rows]
+            for row in wired:
+                row["near"] = True
+                row["matched"] = row_near_name(scope, row.get("name"), row.get("fields") or {},
+                                               hit)
+            near = hit.names() if total else None
+        if not total:
+            nearest = list(hit.nearest)
+    defs = await _field_defs(db, module, user.organization_id)
+    return ModuleListResponse(rows=wired, total=total, field_defs=defs, near=near,
+                              nearest=nearest, module=module)
+
+
+# ── The company search reads the mirrored modules (FIND-11) ─────────────────
+#
+# ``find_engine.md`` §4.4 and §9.2. The CRM source of ``retrieval/sources.py``
+# calls these two functions, as the member, in the bound tenant. They are no
+# route: the source checks ``feature:crm``, the kill switch, the access rule
+# and the flags first. The modules are the mirrored ones of the profile
+# (:func:`mirrored_modules`), so a module that the profile does not mirror
+# gives no record and no name. Each read runs in ONE ``_tenant_session()``, so
+# FORCE row level security keeps it in the org.
+
+#: The most modules that one company search reads, as one 404 names at most
+#: :data:`MODULE_CHOICES_MAX`.
+FIND_MODULES_MAX = MODULE_CHOICES_MAX
+#: The time one company search of the modules may run in the database. It is
+#: shorter than the engine's own limit, so the search gives what it found.
+FIND_STATEMENT_MS = 2_000
+
+async def find_module_names(user: UserContext, q: str, limit: int) -> list[dict[str, Any]]:
+    """The mirrored records that hold *q*, as the module list holds them: the
+    SAME predicate, ``field_sql.find_where`` (``find_engine.md`` §4.4 rule 1).
+
+    Exact only: every word of *q* is in the record name or a text or lookup
+    value, in any case. The near spelling is the job of :func:`near_module_names`
+    and the engine, so an exact hit never hides a near one. The newest record
+    first. At most *limit* in all, and the newest modules' records first when
+    the cap cuts. Each row is ``{id, module, name, label, modified}``.
+    """
+    from gateway.routes.crm.aggregate import _TIMEOUT_SQL, _is_timeout
+    from gateway.routes.crm.core import clip_query
+    from gateway.routes.crm.field_sql import DETOAST_JOIN, find_where, find_words, module_scope
+
+    refuse_nul([("q", q or "")])
+    words = find_words(clip_query(q))
+    if not words or limit <= 0:
+        return []
+    found: list[dict[str, Any]] = []
+    async with _tenant_session() as db:
+        mirrored = await mirrored_modules(db)
+        await db.execute(text(_TIMEOUT_SQL), {"ms": str(FIND_STATEMENT_MS)})
+        for module, row in list(mirrored.items())[:FIND_MODULES_MAX]:
+            scope = await module_scope(db, module)
+            where = find_where(scope, words)
+            try:
+                rows = (await db.execute(
+                    text(
+                        "SELECT id, module, name, ext_modified_at "
+                        f"FROM crm_module_records{DETOAST_JOIN} "
+                        f"WHERE module = :module AND {where.sql} "
+                        "ORDER BY ext_modified_at DESC NULLS LAST, id LIMIT :limit"
+                    ),
+                    {**where.params, "module": module, "limit": limit},
+                )).fetchall()
+            except DBAPIError as exc:
+                if _is_timeout(exc):
+                    break
+                raise
+            label = str(row.get("singular_label") or row.get("label") or module)
+            found += [{"id": str(r.id), "module": str(r.module), "name": r.name,
+                       "label": label, "modified": r.ext_modified_at} for r in rows]
+    found.sort(key=lambda r: (r["modified"] is None, -(r["modified"].timestamp()
+                                                         if r["modified"] else 0), r["id"]))
+    return found[:limit]
+
+
+async def near_module_names(user: UserContext, words: list[str], k: int) -> dict[str, list[Any]]:
+    """The record names of the mirrored modules that are near each of *words*
+    (``find_engine.md`` §4.3 ``near``). ``field_sql.near_record_names`` reads
+    the newest names and scores them with ``acb_common.name_match``: the one
+    matcher, with its own floor and its own deadline (rule 3)."""
+    from gateway.routes.crm.field_sql import near_record_names
+
+    refuse_nul([("q", " ".join(words))])
+    async with _tenant_session() as db:
+        mirrored = await mirrored_modules(db)
+        if not mirrored:
+            return {}
+        return await near_record_names(db, list(mirrored)[:FIND_MODULES_MAX], words, k)
 
 
 @router.get("/modules/{module}/records/{record_id}", response_model=ModuleRecordPage)
@@ -562,7 +889,8 @@ async def get_module_record(
     link of each lookup. 404 for an unknown module or record."""
     async with _tenant_session() as db:
         mirrored = await mirrored_modules(db)
-        row = _require_module(mirrored, module)
+        module = resolve_module(mirrored, module)
+        row = mirrored[module]
         wanted = checked_uuid(record_id, "id")
         found = (await db.execute(
             text(_ONE_SQL), {"id": wanted, "module": module},
@@ -602,7 +930,7 @@ async def get_module_record_timeline(
     strict = offset is not None
     want = (offset or 0) + limit + 1 if strict else limit
     async with _tenant_session() as db:
-        _require_module(await mirrored_modules(db), module)
+        module = resolve_module(await mirrored_modules(db), module)
         wanted = checked_uuid(record_id, "id")
         found = (await db.execute(
             text(_EXISTS_SQL), {"id": wanted, "module": module},
@@ -687,7 +1015,8 @@ async def patch_module_record(
         refuse_nul_tree(given)
     async with _tenant_session() as db:
         mirrored = await mirrored_modules(db)
-        row = _require_module(mirrored, module)
+        module = resolve_module(mirrored, module)
+        row = mirrored[module]
         wanted = checked_uuid(record_id, "id")
         found = (await db.execute(
             text(_ONE_SQL), {"id": wanted, "module": module},

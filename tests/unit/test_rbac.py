@@ -184,7 +184,7 @@ def _bearer_app(gateway_token: str | None = None):
     """
     if gateway_token is not None:
         _os.environ["GATEWAY_INTERNAL_TOKEN"] = gateway_token
-        _os.environ.pop("LITELLM_MASTER_KEY", None)  # prevent fallback
+        _os.environ.pop("LITELLM_MASTER_KEY", None)
 
     app = FastAPI()
 
@@ -279,13 +279,28 @@ class TestBearerIdentityChain:
 
     # ── Token disabled (empty GATEWAY_INTERNAL_TOKEN) ───────────────────
 
-    def test_bearer_disabled_when_token_empty(self, monkeypatch):
-        """No internal token configured → Bearer auth disabled → fail OPEN. We
-        preserve the old SSO-header trust so an unprovisioned/dev gateway isn't
-        bricked (mirrors require_internal_auth's fail-open contract)."""
-        # Force an empty token deterministically — env alone is unreliable, the
-        # cached Settings may still carry LITELLM_MASTER_KEY from .env.
+    def test_bearer_disabled_when_token_empty_fails_closed(self, monkeypatch):
+        """No internal token configured → Bearer auth disabled → fail CLOSED
+        (WS-24b, 2026-11-06). Before WS-24b the LLM-key fallback kept the
+        token non-empty on every real box, so a bare header was refused
+        there. With the fallback gone the empty token must refuse it too."""
         monkeypatch.setattr("acb_auth.deps._get_internal_token", lambda: "")
+        monkeypatch.setattr("acb_auth.deps._acb_env", lambda: "prod")
+        client = TestClient(_bearer_app(None))
+        r = client.get("/whoami", headers={
+            "Authorization": "Bearer anything",
+            "X-User-Email": "dev@fracktal.in",
+        })
+        assert r.status_code == 200
+        data = r.json()
+        assert data["email"] is None
+        assert data["role"] == "employee"
+
+    def test_bearer_disabled_when_token_empty_stays_open_on_dev(self, monkeypatch):
+        """ACB_ENV=dev keeps the old SSO-header trust, so a laptop with no
+        token is not bricked. The rule is the one of require_llm_api_auth."""
+        monkeypatch.setattr("acb_auth.deps._get_internal_token", lambda: "")
+        monkeypatch.setattr("acb_auth.deps._acb_env", lambda: "dev")
         client = TestClient(_bearer_app(None))
         r = client.get("/whoami", headers={
             "Authorization": "Bearer anything",

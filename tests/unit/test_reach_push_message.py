@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 import pytest
 from gateway.push.sender import PushMessage
 from gateway.reach import push_message
-from gateway.reach.push_message import HIDDEN_TITLE, build
+from gateway.reach.push_message import DUE_TAG, HIDDEN_TITLE, build, build_due
 
 RID = "6f1c2b9e-0000-4000-8000-00000000abcd"
 # 2026-11-02 04:00 UTC is 9:30 AM in Kolkata and 11:00 PM (the day before) in New York.
@@ -66,7 +66,8 @@ def test_hidden_details_leave_no_title_or_time_in_the_payload() -> None:
     raw = msg.payload()
     data = json.loads(raw)
     assert data == {"title": "Metorite: a reminder", "body": ORG,
-                    "url": f"/chat?reminder={RID}", "tag": RID}
+                    "url": f"/chat?reminder={RID}", "tag": RID, "renotify": True,
+                    "reminder_id": RID, "kind": "reminder_due"}
     for secret in ("Acme", "buyer", "9:30", "AM", "PM"):
         assert secret not in raw
     # The same holds for the other two kinds.
@@ -88,3 +89,97 @@ def test_a_long_title_is_clipped_and_a_bad_zone_falls_back_to_utc() -> None:
 def test_the_payload_url_passes_the_sender_s_path_check() -> None:
     # `PushMessage.payload` raises on a url that is not a path on this app.
     assert build("reminder_due", ROW, ORG, False).payload()
+
+
+def test_the_payload_carries_what_the_buttons_need_and_stays_small() -> None:
+    """RX-4. The worker adds Done and "In 1 hour" from `reminder_id` and
+    `kind`. Mutation: drop `reminder_id=rid` from `build` and this fails."""
+    for kind in push_message.KINDS:
+        msg = build(kind, ROW, ORG, hide_details=False)
+        data = json.loads(msg.payload())
+        assert data["reminder_id"] == RID
+        assert data["kind"] == kind
+    # A push service carries about 4 KB. A long title is clipped at 80 characters.
+    long_row = {**ROW, "title": "x" * 500}
+    raw = build("reminder_due", long_row, "O" * 60, hide_details=False).payload()
+    assert len(raw.encode("utf-8")) < 600
+
+
+def test_a_message_with_no_reminder_keeps_the_four_keys() -> None:
+    assert set(json.loads(PushMessage(title="T", url="/x", tag="g").payload())) == {"title", "url", "tag"}
+
+
+def test_each_reminder_push_and_the_summary_alert_when_they_replace_one() -> None:
+    """A check-back has the tag of the fired reminder, and each day's summary has
+    the tag of yesterday's. By the Notifications standard a replacement is
+    silent without ``renotify``. Mutation: drop ``renotify=True`` from ``build``
+    or from ``build_due`` and this fails."""
+    for kind in ("reminder_due", "reminder_check", "reminder_unconfirmed"):
+        for hide in (False, True):
+            data = json.loads(build(kind, ROW, ORG, hide).payload())
+            assert data["renotify"] is True and data["tag"] == RID
+    due = build_due(due_today=1, overdue=0, first_title="A", org_name=ORG, hide_details=False)
+    assert json.loads(due.payload())["renotify"] is True
+    assert json.loads(due.payload())["tag"] == DUE_TAG
+
+
+def test_a_push_with_no_tag_never_carries_the_flag() -> None:
+    """``showNotification`` throws on ``renotify`` with no tag. Mutation: move
+    the flag out of the ``tag`` branch of ``payload`` and this fails."""
+    assert "renotify" not in json.loads(PushMessage(title="T", renotify=True).payload())
+# ── The morning summary (RX-5, calendar_events_reminders.md §5.11) ──────────
+
+
+@pytest.mark.parametrize("today,late,title", [
+    (3, 1, "3 due today, 1 overdue"),
+    (3, 0, "3 due today"),
+    (0, 1, "1 overdue"),
+])
+def test_the_title_gives_the_counts_and_leaves_out_a_zero(today, late, title) -> None:
+    assert push_message.due_title(today, late) == title
+
+
+def test_the_summary_gives_the_first_title_and_the_rest() -> None:
+    msg = push_message.build_due(due_today=3, overdue=1, first_title="  Call   the buyer ",
+                                 org_name=ORG, hide_details=False)
+    assert isinstance(msg, PushMessage)
+    assert msg.title == "3 due today, 1 overdue"
+    assert msg.body == "Call the buyer and 3 more"
+    assert (msg.url, msg.tag, msg.urgency) == ("/", push_message.DUE_TAG, "normal")
+    assert msg.ttl == push_message.ttl_of(push_message.DUE_SUMMARY) == 4 * 3600
+    assert json.loads(msg.payload())["url"] == "/"
+
+
+def test_one_task_has_no_and_more() -> None:
+    msg = push_message.build_due(due_today=1, overdue=0, first_title="Call the buyer",
+                                 org_name=ORG, hide_details=False)
+    assert msg.body == "Call the buyer"
+
+
+def test_hidden_details_keep_the_counts_and_drop_the_title() -> None:
+    msg = push_message.build_due(due_today=2, overdue=1, first_title="Call the buyer",
+                                 org_name=ORG, hide_details=True)
+    assert msg.title == "2 due today, 1 overdue"
+    assert msg.body == ORG
+    assert "buyer" not in msg.payload()
+    empty = push_message.build_due(due_today=1, overdue=0, first_title="x", org_name=" ",
+                                   hide_details=True)
+    assert empty.body == "Metorite"
+
+
+def test_a_long_title_is_cut_before_the_rest() -> None:
+    msg = push_message.build_due(due_today=2, overdue=0, first_title="x" * 200, org_name=ORG,
+                                 hide_details=False)
+    assert msg.body.endswith("… and 1 more")
+    assert len(msg.body) == push_message.TITLE_CLIP + len(" and 1 more")
+
+
+def test_a_read_at_its_cap_says_a_floor_and_never_a_false_split() -> None:
+    msg = push_message.build_due(due_today=1, overdue=199, first_title="Old task", org_name=ORG,
+                                 hide_details=False, capped=True)
+    assert msg.title == "200+ due or overdue"
+    assert msg.body == "Old task and 199+ more"
+
+
+def test_the_summary_is_no_reminder_kind() -> None:
+    assert push_message.DUE_SUMMARY not in push_message.KINDS

@@ -451,7 +451,7 @@ describe("no raw Tailwind palette colours", () => {
     "app/email/components/automation/ai-settings/VoiceProfileDialog.tsx": 2,
     "app/email/components/automation/ai-settings/actionFormat.tsx": 50,
     "app/email/components/automation/ai-settings/common.tsx": 6,
-    "app/email/components/automation/ai-settings/fixDialog.tsx": 6,
+    "app/email/components/automation/ai-settings/fixDialog.tsx": 2,
     // 73 since WS-17 EM-G7: both OAuth chips left the banner (O-GM-5, and
     // review round 1: the banner gives no setup link).
     "app/integrations/components/ApiKeysView.tsx": 43,
@@ -747,7 +747,7 @@ describe("checkboxes go through the Checkbox primitive", () => {
     "app/notes/components/NotesSettingsModal.tsx": 2,
     "app/settings/groups/page.tsx": 1,
     "app/settings/organization/OrganizationAdmin.tsx": 1,
-    "app/workflows/components/TriggerPanel.tsx": 3,
+    "app/workflows/components/TriggerPanel.tsx": 2,
   };
 
   const boxes = (rel: string) =>
@@ -894,7 +894,6 @@ describe("selects and file pickers go through the primitives", () => {
     "app/whatsapp/calls/page.tsx": 1,
     "app/whatsapp/settings/categories/page.tsx": 1,
     "app/workflows/components/NodeInspector.tsx": 6,
-    "app/workflows/components/TriggerPanel.tsx": 1,
     "components/genUITemplates.tsx": 1,
     "components/room/ShareSheet.tsx": 1,
     // Added 2026-09-20, when SELECT_TAG widened to catch `<Select>`. These
@@ -1184,15 +1183,13 @@ describe("the headless substrate is wrapped, not imported", () => {
     // panel and buttons, and no portalled picker inside.
     ...MY_TASKS_ALERT_LAYER,
     "app/tasks/components/TaskSettingsModal.tsx",
-    // CRM-U2 (WS-53, 2026-10-11) — the five CRM overlays. The record sheet
-    // is a `Modal` drawer, and the lost-reason delete is a `ConfirmDialog`.
+    // CRM-U2 (WS-53, 2026-10-11) — the CRM overlays. The lost-reason delete
+    // is a `ConfirmDialog`. The record sheet left this list with ORC-1: it is
+    // a `CardPanel` now, and `crmCardPanel.test.ts` holds it.
     "app/crm/components/ConvertModal.tsx",
     "app/crm/components/MoveModal.tsx",
     "app/crm/components/PipelineSettings.tsx",
     "app/crm/components/QuickCreateModal.tsx",
-    // CRM-Q6b: both record pages draw their drawer through ONE frame, so the
-    // frame is what imports Modal (the `ManagerFrame` rule above).
-    "app/crm/components/RecordShell.tsx",
   ];
 
   it("the converted /projects dialogs do not grow an overlay back by hand", () => {
@@ -1237,7 +1234,9 @@ describe("the headless substrate is wrapped, not imported", () => {
     // moves onto `Modal`.
     const low = MY_TASKS_ALERT_LAYER.filter((f) => !/layer="alert"/.test(read(f)));
     expect(low, "These open under TaskFocusModal. Give them layer=\"alert\".").toEqual([]);
-    expect(read("app/tasks/components/TaskFocusModal.tsx")).toMatch(/fixed inset-0 z-\[80\]/);
+    // TC-1 (2026-11-03): the overlay now sits at the card layer (z-15, `lib/layers.ts`),
+    // below every dialog, so the alert layer stays safe and no longer needed.
+    expect(read("app/tasks/components/TaskFocusModal.tsx")).toContain("TASK_CARD_FRAME");
   });
 
   // ── The Toast primitive (WS-27ak item 3) ─────────────────────────────────

@@ -201,6 +201,8 @@ export function spaceMarker(
 
 export interface ChildOption {
   kind: NodeKind;
+  /** TPL-1b — opens the template picker instead of the inline name row. */
+  template?: boolean;
   /** The LEVEL's own word — "New subproject", never "New project". */
   label: string;
   /**
@@ -225,7 +227,9 @@ export interface ChildOption {
  */
 export function childCreationOptions(
   kind: NodeKind,
-  generation: number
+  generation: number,
+  /** TPL-1b — `PROJECTS_TEMPLATES_ORGS` holds the org, so offer the picker. */
+  withTemplate = false
 ): ChildOption[] {
   const project: ChildOption =
     generation === 1
@@ -239,7 +243,14 @@ export function childCreationOptions(
 
   if (generation > 2) return [];
   // A folder offers only the one level it holds; it cannot hold a folder.
-  return kind === "folder" ? [project] : [project, folder];
+  // The template entry follows the project entry and never leads, so the
+  // single-click `+` on a row keeps making a blank project.
+  const fromTemplate: ChildOption[] = withTemplate
+    ? [{ ...project, label: "New from template…", template: true }]
+    : [];
+  return kind === "folder"
+    ? [project, ...fromTemplate]
+    : [project, ...fromTemplate, folder];
 }
 
 export interface ProjectGrant {

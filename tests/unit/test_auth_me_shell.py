@@ -20,6 +20,7 @@ from typing import Any
 
 import pytest
 from acb_auth import UserContext, UserRole, build_access, get_current_user
+from acb_common.app_manifests.shell_manifest import load_vocabulary
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from gateway.routes.admin import me
@@ -28,7 +29,7 @@ from gateway.routes.shell.intent import JOBS
 ROOT = Path(__file__).resolve().parents[2]
 NAV = ROOT / "workbench" / "control_plane" / "src" / "lib" / "nav.ts"
 PRESETS = ROOT / "workbench" / "control_plane" / "src" / "lib" / "shell" / "presets.ts"
-REGISTRY = ROOT / "workbench" / "control_plane" / "src" / "lib" / "shell" / "registry.ts"
+REGISTRY = ROOT / "workbench" / "control_plane" / "src" / "lib" / "shell" / "jobs.generated.ts"
 
 
 class _Result:
@@ -104,11 +105,11 @@ class TestValidation:
         {"newOrder": ["launch-rocket"]},
         {"answered": "maybe"},
         {"answered": "answered"},
-        {"pins": ["/tasks"] * 30},
+        {"pins": ["/tasks"] * (me.MAX_PINS + 1)},
         # `known` takes the same names and the same cap as `pins`.
         {"known": ["/nowhere"]},
         {"known": ["/"]},
-        {"known": ["/tasks"] * 30},
+        {"known": ["/tasks"] * (me.MAX_PINS + 1)},
         {"known": "/tasks"},
         # The body never names the member or the tenant (R5, R11).
         {"pins": [], "user_id": "someone@else.example"},
@@ -117,11 +118,29 @@ class TestValidation:
         {"chat_first_message_at": "yesterday"},
         {"chat_first_message_at": 1_700_000_000},
         {"chat_first_message_at": "2026-10-21T09:00:00.000Z" + "0" * 20},
+        # The tour mark takes the same rule (WS-OB GD-5a).
+        {"tour_seen_at": "yesterday"},
+        {"tour_seen_at": 1_700_000_000},
     ])
     def test_a_bad_layout_is_refused_and_writes_nothing(self, fake: _FakeDB, body: dict) -> None:
         res = _client(_user()).put("/auth/me/shell", json=body)
         assert res.status_code == 422, res.text
         assert fake.sql == []
+
+    def test_a_tab_on_the_old_bundle_saves_with_the_answer_s_guide(self, fake: _FakeDB) -> None:
+        """`guide` is the server's fact. An old tab spreads the whole answer
+        back into its save, so the PUT drops `guide` and saves the rest. It
+        is never stored. Without this every sidebar save of that tab was a
+        422 until a reload."""
+        for guide in (True, False):
+            fake.sql.clear()
+            body = {"preset": "engineer", "answered": "answered", "pins": ["/tasks"], "guide": guide}
+            res = _client(_user()).put("/auth/me/shell", json=body)
+            assert res.status_code == 200, res.text
+            [(_, params)] = _writes(fake)
+            stored = json.loads(params["shell_prefs"])
+            assert "guide" not in stored
+            assert stored["pins"] == ["/tasks"]
 
     def test_a_good_layout_is_stored_with_its_names(self, fake: _FakeDB) -> None:
         body = {"preset": "engineer", "answered": "answered",
@@ -152,6 +171,17 @@ class TestValidation:
         assert json.loads(params["shell_prefs"])["answered"] == "skipped"
 
 
+    def test_the_cap_of_pins_and_known_is_64(self, fake: _FakeDB) -> None:
+        """PKG-Q24: install panes join the list, so the cap went from 24 to 64."""
+        assert me.MAX_PINS == 64
+        for key in ("pins", "known"):
+            fake.sql.clear()
+            res = _client(_user()).put("/auth/me/shell", json={key: ["/tasks"] * 64})
+            assert res.status_code == 200, res.text
+            res = _client(_user()).put("/auth/me/shell", json={key: ["/tasks"] * 65})
+            assert res.status_code == 422, res.text
+
+
 # ── The nudge mark (WS-62 CF-2, `chat_first_surface.md` §4.7, D-CF-7) ──────
 
 
@@ -180,9 +210,13 @@ class TestTheNudgeMark:
         res = _client(_user()).put("/auth/me/shell", json=body)
         assert res.status_code == 200, res.text
         [(sql, params)] = _writes(fake)
-        assert ("DO UPDATE SET shell_prefs = jsonb_set(EXCLUDED.shell_prefs, "
+        assert ("DO UPDATE SET shell_prefs = jsonb_set(jsonb_set(jsonb_set(EXCLUDED.shell_prefs, "
                 "ARRAY['chat_first_message_at'], "
                 "COALESCE(user_settings.shell_prefs->'chat_first_message_at', "
+                "CAST('null' AS jsonb)), true), ARRAY['tour_seen_at'], "
+                "COALESCE(user_settings.shell_prefs->'tour_seen_at', "
+                "CAST('null' AS jsonb)), true), ARRAY['buddy_hello_at'], "
+                "COALESCE(user_settings.shell_prefs->'buddy_hello_at', "
                 "CAST('null' AS jsonb)), true)") in sql
         assert sql.endswith("RETURNING shell_prefs")
         assert json.loads(params["shell_prefs"])["preset"] == "engineer"
@@ -209,7 +243,10 @@ class TestTheNudgeMark:
         assert res.status_code == 200, res.text
         assert res.json()["chat_first_message_at"] is None
         [(sql, params)] = _writes(fake)
-        assert "DO UPDATE SET shell_prefs = EXCLUDED.shell_prefs, updated_at" in sql
+        # The nudge mark is written as named. Only the omitted tour mark is
+        # kept (WS-OB GD-5a).
+        assert "ARRAY['chat_first_message_at']" not in sql
+        assert "DO UPDATE SET shell_prefs = jsonb_set(jsonb_set(EXCLUDED.shell_prefs, ARRAY['tour_seen_at']" in sql
         assert json.loads(params["shell_prefs"])["chat_first_message_at"] is None
 
     def test_a_member_with_no_row_reads_null(self, fake: _FakeDB) -> None:
@@ -220,6 +257,638 @@ class TestTheNudgeMark:
         assert _client(_user()).get("/auth/me/shell").json()["chat_first_message_at"] is None
 
 
+# ── The tour mark (WS-OB GD-5a, `assistant_guide.md` §5.3) ─────────────────
+
+
+class TestTheTourMark:
+    def test_the_mark_alone_merges_and_stores_the_server_s_time(self, fake: _FakeDB) -> None:
+        """`markTourSeen` sends the key alone. The server merges it, as it
+        merges the nudge mark, and writes its OWN time, not the device's."""
+        fake.stored = json.dumps({"answered": "skipped", "pins": ["/tasks"]})
+        sent = "2001-01-01T00:00:00.000Z"
+        res = _client(_user()).put("/auth/me/shell", json={"tour_seen_at": sent})
+        assert res.status_code == 200, res.text
+        [(sql, params)] = _writes(fake)
+        written = json.loads(params["shell_prefs"])
+        assert list(written) == ["tour_seen_at"]
+        assert written["tour_seen_at"] != sent
+        assert me._stamp(written["tour_seen_at"]) == written["tour_seen_at"]
+        assert written["tour_seen_at"] > "2026-01-01"
+        assert "|| EXCLUDED.shell_prefs" in sql
+
+    def test_the_tour_mark_keeps_a_stored_time_in_sql(self, fake: _FakeDB) -> None:
+        """The first start stays on the server. The R8 twin proves the value."""
+        res = _client(_user()).put("/auth/me/shell", json={"tour_seen_at": STAMP})
+        assert res.status_code == 200, res.text
+        [(sql, _)] = _writes(fake)
+        assert ("ARRAY['tour_seen_at'], COALESCE(NULLIF(user_settings.shell_prefs->'tour_seen_at', "
+                "CAST('null' AS jsonb)), EXCLUDED.shell_prefs->'tour_seen_at', "
+                "CAST('null' AS jsonb)), true)") in sql
+
+    def test_the_nudge_mark_alone_still_takes_the_new_time(self, fake: _FakeDB) -> None:
+        res = _client(_user()).put("/auth/me/shell", json={"chat_first_message_at": STAMP})
+        assert res.status_code == 200, res.text
+        [(sql, _)] = _writes(fake)
+        assert "tour_seen_at" not in sql
+
+    def test_both_marks_alone_are_one_stamp(self, fake: _FakeDB) -> None:
+        body = {"chat_first_message_at": STAMP, "tour_seen_at": STAMP}
+        res = _client(_user()).put("/auth/me/shell", json=body)
+        assert res.status_code == 200, res.text
+        [(sql, params)] = _writes(fake)
+        stored = json.loads(params["shell_prefs"])
+        assert set(stored) == {"chat_first_message_at", "tour_seen_at"}
+        assert stored["chat_first_message_at"] == STAMP
+        assert "|| EXCLUDED.shell_prefs" in sql
+
+    def test_a_layout_save_that_names_the_tour_mark_still_keeps_the_stored_one(self, fake: _FakeDB) -> None:
+        """An old tab copies the whole answer back. A layout save never writes
+        ``tour_seen_at``, whether the body says null or a time."""
+        for sent in (None, STAMP):
+            fake.stored = json.dumps({"answered": "skipped", "tour_seen_at": STAMP})
+            body = {"answered": "skipped", "chat_first_message_at": None, "tour_seen_at": sent}
+            res = _client(_user()).put("/auth/me/shell", json=body)
+            assert res.status_code == 200, res.text
+            [(sql, params)] = _writes(fake)[-1:]
+            assert "ARRAY['tour_seen_at'], COALESCE(user_settings.shell_prefs->'tour_seen_at'" in sql
+            assert json.loads(params["shell_prefs"])["tour_seen_at"] is None
+
+    def test_a_layout_save_keeps_only_the_marks_it_omits(self, fake: _FakeDB) -> None:
+        """A body that names the nudge mark keeps the tour mark alone, so an
+        explicit null still clears the nudge mark (CF-2)."""
+        fake.stored = json.dumps({"answered": "skipped", "tour_seen_at": STAMP})
+        body = {"answered": "skipped", "chat_first_message_at": None}
+        res = _client(_user()).put("/auth/me/shell", json=body)
+        assert res.status_code == 200, res.text
+        [(sql, _)] = _writes(fake)
+        assert ("DO UPDATE SET shell_prefs = jsonb_set(jsonb_set(EXCLUDED.shell_prefs, "
+                "ARRAY['tour_seen_at'], ") in sql
+        assert "ARRAY['chat_first_message_at']" not in sql
+
+    def test_a_client_put_never_writes_the_hello_mark(self, fake: _FakeDB) -> None:
+        """BUD-1: the hello route is the ONLY writer of ``buddy_hello_at``.
+        A body of the mark alone writes nothing, so it cannot block the hello
+        and cannot wipe the layout."""
+        fake.stored = json.dumps({"answered": "skipped", "pins": ["/tasks"]})
+        res = _client(_user()).put("/auth/me/shell", json={"buddy_hello_at": STAMP})
+        assert res.status_code == 200, res.text
+        assert _writes(fake) == []
+        assert res.json()["buddy_hello_at"] is None
+        assert res.json()["pins"] == ["/tasks"]
+
+    def test_a_layout_save_never_writes_the_hello_mark(self, fake: _FakeDB) -> None:
+        for sent in (None, STAMP):
+            fake.stored = json.dumps({"answered": "skipped", "buddy_hello_at": STAMP})
+            body = {"answered": "skipped", "chat_first_message_at": None, "buddy_hello_at": sent}
+            res = _client(_user()).put("/auth/me/shell", json=body)
+            assert res.status_code == 200, res.text
+            [(sql, params)] = _writes(fake)[-1:]
+            assert "ARRAY['buddy_hello_at'], COALESCE(user_settings.shell_prefs->'buddy_hello_at'" in sql
+            assert json.loads(params["shell_prefs"])["buddy_hello_at"] is None
+
+    def test_a_mark_beside_another_mark_leaves_the_hello_alone(self, fake: _FakeDB) -> None:
+        res = _client(_user()).put(
+            "/auth/me/shell", json={"tour_seen_at": STAMP, "buddy_hello_at": STAMP})
+        assert res.status_code == 200, res.text
+        [(_, params)] = _writes(fake)
+        assert list(json.loads(params["shell_prefs"])) == ["tour_seen_at"]
+
+    def test_the_read_carries_the_mark_and_drops_a_bad_one(self, fake: _FakeDB) -> None:
+        fake.stored = json.dumps({"answered": "skipped", "tour_seen_at": STAMP})
+        assert _client(_user()).get("/auth/me/shell").json()["tour_seen_at"] == STAMP
+        fake.stored = json.dumps({"answered": "skipped", "tour_seen_at": "soon"})
+        assert _client(_user()).get("/auth/me/shell").json()["tour_seen_at"] is None
+
+    def test_the_keep_names_marks_only(self) -> None:
+        with pytest.raises(ValueError):
+            me._set_layout_keep(("preset",))
+
+
+# ── The guide flag (WS-OB GD-5a, `assistant_guide.md` §7) ──────────────────
+
+
+def _guide_orgs(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    from types import SimpleNamespace
+
+    import acb_common.guide_flags as flags
+
+    monkeypatch.setattr(flags, "get_settings", lambda: SimpleNamespace(guide_orgs=raw))
+
+
+def _in_org(org: str | None) -> UserContext:
+    return UserContext(email="ana@alpha.example", role=UserRole.EMPLOYEE,
+                       organization_id=org, access=build_access([], roles=["member"]))
+
+
+class TestTheGuideFlag:
+    @pytest.mark.parametrize(("raw", "org", "on"), [
+        ("*", "org-a", True),
+        ("org-b, ORG-A", "org-a", True),
+        ("org-b", "org-a", False),
+        ("", "org-a", False),
+        ("*", None, False),
+    ])
+    def test_the_read_says_guide_for_the_session_s_org(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+        raw: str, org: str | None, on: bool,
+    ) -> None:
+        _guide_orgs(monkeypatch, raw)
+        assert _client(_in_org(org)).get("/auth/me/shell").json()["guide"] is on
+
+    def test_the_org_comes_from_the_session_never_the_request(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _guide_orgs(monkeypatch, "org-b")
+        client = _client(_in_org("org-a"))
+        res = client.get("/auth/me/shell?organization_id=org-b",
+                         headers={"X-Organization-Id": "org-b"})
+        assert res.json()["guide"] is False
+
+    def test_a_save_answers_with_the_flag_and_never_stores_it(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _guide_orgs(monkeypatch, "*")
+        res = _client(_in_org("org-a")).put("/auth/me/shell", json={"pins": ["/tasks"]})
+        assert res.status_code == 200, res.text
+        assert res.json()["guide"] is True
+        [(_, params)] = _writes(fake)
+        assert "guide" not in json.loads(params["shell_prefs"])
+
+
+# ── An install pane (WS-PKG PKG-6c-1, `package_host.md` §10) ─────────────
+
+
+APP = "/apps/0f8a3c1e-field-visits"
+OTHER = "/apps/77aa-not-mine"
+
+
+def _host_orgs(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "package_host_orgs", raw)
+
+
+def _nav(href: str, *, install_id: str | None = "i-1", source: str = "org") -> dict[str, Any]:
+    return {"key": href, "source": source, "install_id": install_id,
+            "needs_setup": False, "href": href, "label": "Field visits"}
+
+
+class _Resolve:
+    """A stand-in for ``resolve.resolve_for``. It records each call."""
+
+    def __init__(self, nav: list[dict[str, Any]] | None = None, fail: bool = False) -> None:
+        self.nav = nav if nav is not None else [_nav(APP)]
+        self.fail = fail
+        self.calls: list[dict[str, Any]] = []
+
+    async def __call__(self, db: Any, *, viewer: str, can_use: Any) -> dict[str, Any]:
+        self.calls.append({"db": db, "viewer": viewer, "can_use": can_use})
+        if self.fail:
+            raise RuntimeError("resolve away")
+        return {"version": "v", "contributions": {"nav": self.nav}}
+
+
+@pytest.fixture
+def resolver(monkeypatch: pytest.MonkeyPatch) -> _Resolve:
+    from gateway.package_host import resolve
+
+    r = _Resolve()
+    monkeypatch.setattr(resolve, "resolve_for", r)
+    return r
+
+
+ORG = "11111111-1111-1111-1111-111111111111"
+
+
+class TestAnInstallPane:
+    def test_flag_off_an_install_href_is_422_and_runs_no_sql(
+        self, fake: _FakeDB, resolver: _Resolve, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _host_orgs(monkeypatch, "")
+        for key in ("pins", "known"):
+            res = _client(_in_org(ORG)).put("/auth/me/shell", json={key: ["/tasks", APP]})
+            assert res.status_code == 422, res.text
+            # The answer is the one of the system list, as before PKG-6c-1.
+            [err] = res.json()["detail"]
+            assert err["loc"] == [key] and err["msg"] == f"Value error, unknown pane: {APP}"
+        assert fake.sql == [] and resolver.calls == []
+
+    def test_flag_on_for_another_org_only_is_still_422(
+        self, fake: _FakeDB, resolver: _Resolve, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _host_orgs(monkeypatch, "22222222-2222-2222-2222-222222222222")
+        res = _client(_in_org(ORG)).put("/auth/me/shell", json={"pins": [APP]})
+        assert res.status_code == 422, res.text
+        assert fake.sql == [] and resolver.calls == []
+
+    @pytest.mark.parametrize("bad", [
+        "apps/x", "//evil.example/x", "/apps//x", "/apps\\x", "/\\evil",
+        "/apps/x\n", "/apps/\x00x", "/apps/\x7f", "/" + "a" * 200, "", "https://evil.example",
+    ])
+    @pytest.mark.parametrize("raw", ["", "*"])
+    def test_an_unsafe_href_is_422_in_each_mode(
+        self, fake: _FakeDB, resolver: _Resolve, monkeypatch: pytest.MonkeyPatch,
+        bad: str, raw: str,
+    ) -> None:
+        _host_orgs(monkeypatch, raw)
+        for key in ("pins", "known"):
+            res = _client(_in_org(ORG)).put("/auth/me/shell", json={key: [bad]})
+            assert res.status_code == 422, (key, bad, res.text)
+        assert fake.sql == [] and resolver.calls == []
+
+    def test_flag_on_a_held_install_href_is_stored_and_reads_back(
+        self, fake: _FakeDB, resolver: _Resolve, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _host_orgs(monkeypatch, ORG)
+        body = {"pins": ["/tasks", APP, APP], "known": ["/tasks", APP]}
+        res = _client(_in_org(ORG)).put("/auth/me/shell", json=body)
+        assert res.status_code == 200, res.text
+        assert res.json()["pins"] == ["/tasks", APP]
+        assert res.json()["known"] == ["/tasks", APP]
+        [(_, params)] = _writes(fake)
+        stored = json.loads(params["shell_prefs"])
+        assert stored["pins"] == ["/tasks", APP] and stored["known"] == ["/tasks", APP]
+        fake.stored = params["shell_prefs"]
+        got = _client(_in_org(ORG)).get("/auth/me/shell").json()
+        assert got["pins"] == ["/tasks", APP] and got["known"] == ["/tasks", APP]
+
+    def test_the_resolve_reads_the_session_s_viewer_and_tenant(
+        self, fake: _FakeDB, resolver: _Resolve, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """R5: the request names no org and no viewer. The resolve runs in
+        the session of the write, with ``user.email`` and its entitlements."""
+        _host_orgs(monkeypatch, ORG)
+        user = _in_org(ORG)
+        res = _client(user).put(
+            "/auth/me/shell?organization_id=other&viewer=x@evil.example",
+            json={"pins": [APP]},
+            headers={"X-Organization-Id": "other", "X-User-Email": "x@evil.example"})
+        assert res.status_code == 200, res.text
+        [call] = resolver.calls
+        assert call["viewer"] == "ana@alpha.example"
+        assert call["db"] is fake
+        assert call["can_use"] == user.can_use_feature
+        # The body cannot name them either.
+        for extra in ({"viewer": "x@evil.example"}, {"organization_id": "other"}):
+            res = _client(user).put("/auth/me/shell", json={"pins": [APP], **extra})
+            assert res.status_code == 422, res.text
+
+    def test_a_href_the_resolve_does_not_hold_drops_in_silence(
+        self, fake: _FakeDB, resolver: _Resolve, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _host_orgs(monkeypatch, "*")
+        body = {"preset": "engineer", "answered": "answered",
+                "pins": [OTHER, "/tasks", APP], "known": [OTHER, "/projects"]}
+        res = _client(_in_org(ORG)).put("/auth/me/shell", json=body)
+        assert res.status_code == 200, res.text
+        [(_, params)] = _writes(fake)
+        stored = json.loads(params["shell_prefs"])
+        assert stored["pins"] == ["/tasks", APP]
+        assert stored["known"] == ["/projects"]
+        # The rest of the save lands.
+        assert stored["preset"] == "engineer"
+
+    @pytest.mark.parametrize(("entry", "pinned"), [
+        (_nav(OTHER, install_id=None), OTHER),
+        (_nav(OTHER, source="system"), OTHER),
+        # A system pane owns a child path, so no install takes it.
+        (_nav("/tasks/field-visits"), "/tasks/field-visits"),
+        (_nav("/apps//x"), OTHER),
+        ({"key": OTHER, "source": "org", "install_id": "i-2"}, OTHER),
+    ])
+    def test_only_a_nav_entry_of_an_install_counts(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+        entry: dict[str, Any], pinned: str,
+    ) -> None:
+        from gateway.package_host import resolve
+
+        _host_orgs(monkeypatch, "*")
+        monkeypatch.setattr(resolve, "resolve_for", _Resolve(nav=[entry]))
+        res = _client(_in_org(ORG)).put("/auth/me/shell", json={"pins": [pinned]})
+        assert res.status_code == 200, res.text
+        [(_, params)] = _writes(fake)
+        assert json.loads(params["shell_prefs"])["pins"] == []
+
+    def test_a_fault_in_the_resolve_is_503_and_writes_nothing(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from gateway.package_host import resolve
+
+        _host_orgs(monkeypatch, "*")
+        monkeypatch.setattr(resolve, "resolve_for", _Resolve(fail=True))
+        res = _client(_in_org(ORG)).put("/auth/me/shell", json={"pins": ["/tasks", APP]})
+        assert res.status_code == 503, res.text
+        assert _writes(fake) == []
+
+    def test_a_save_of_system_panes_only_needs_no_resolve(
+        self, fake: _FakeDB, resolver: _Resolve, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _host_orgs(monkeypatch, "*")
+        res = _client(_in_org(ORG)).put("/auth/me/shell", json={"pins": ["/tasks"]})
+        assert res.status_code == 200, res.text
+        assert resolver.calls == []
+
+    def test_the_read_keeps_an_install_href_only_while_the_flag_is_on(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        fake.stored = json.dumps({"pins": ["/tasks", APP, "/tasks/sub", "//x", 7],
+                                  "known": [APP, "/projects"]})
+        _host_orgs(monkeypatch, ORG)
+        on = _client(_in_org(ORG)).get("/auth/me/shell").json()
+        assert on["pins"] == ["/tasks", APP] and on["known"] == [APP, "/projects"]
+        _host_orgs(monkeypatch, "")
+        off = _client(_in_org(ORG)).get("/auth/me/shell").json()
+        assert off["pins"] == ["/tasks"] and off["known"] == ["/projects"]
+        # With no flag named, the pure read is the system list only.
+        assert me.stored_shell(fake.stored)["pins"] == ["/tasks"]
+
+    def test_with_no_context_the_model_takes_system_panes_only(self) -> None:
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            me.ShellPrefs.model_validate({"pins": [APP]})
+        got = me.ShellPrefs.model_validate({"pins": [APP, APP]}, context={"install_hrefs": True})
+        assert got.pins == [APP]
+
+
+class TestTheHrefRules:
+    """The pure part, ``gateway/package_host/shell_pins.py``."""
+
+    def test_safe_href_mirrors_the_client(self) -> None:
+        from gateway.package_host.shell_pins import MAX_HREF, safe_href
+
+        assert safe_href(APP) == APP
+        assert safe_href("/" + "a" * (MAX_HREF - 1)) is not None
+        for bad in (None, 7, "", "x", "//x", "/a//b", "/\\x", "/a\\b", "/a\tb", "/a\x7f",
+                    "/" + "a" * MAX_HREF):
+            assert safe_href(bad) is None, bad
+
+    def test_system_owns_a_pane_and_its_child_paths(self) -> None:
+        from gateway.package_host.shell_pins import system_owns
+
+        assert system_owns("/tasks") and system_owns("/tasks/x") and system_owns("/tasks?a=1")
+        assert system_owns("/people/me/x")
+        assert not system_owns("/tasksx") and not system_owns(APP) and not system_owns("/")
+
+    def test_install_nav_hrefs_reads_a_bad_shape_as_none(self) -> None:
+        from gateway.package_host.shell_pins import install_nav_hrefs
+
+        for body in (None, [], {}, {"contributions": []}, {"contributions": {"nav": {}}},
+                     {"contributions": {"nav": [None, "x"]}}):
+            assert install_nav_hrefs(body) == frozenset()
+        body = {"contributions": {"nav": [_nav(APP), _nav(OTHER, install_id=None)],
+                                  "jobs": [_nav("/apps/job")]}}
+        assert install_nav_hrefs(body) == frozenset({APP})
+
+
+# ── The module runs flag (WS-STU STU-Q15a, `ai_studio.md` §14) ──────────────
+
+
+def _module_run_orgs(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "module_run_orgs", raw, raising=False)
+
+
+class TestTheModuleRunsFlag:
+    """`/studio` shows the Module Studio tab only when the read says
+    `module_runs: true`. `gateway.module_runs.module_runs_allowed` is the one
+    reader, and the org is the session's."""
+
+    @pytest.mark.parametrize(("raw", "org", "on"), [
+        ("*", "org-a", True),
+        ("org-b, ORG-A", "org-a", True),
+        ("org-b", "org-a", False),
+        ("", "org-a", False),
+        ("*", None, False),
+    ])
+    def test_the_read_says_module_runs_for_the_session_s_org(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+        raw: str, org: str | None, on: bool,
+    ) -> None:
+        _module_run_orgs(monkeypatch, raw)
+        assert _client(_in_org(org)).get("/auth/me/shell").json()["module_runs"] is on
+
+    def test_the_org_comes_from_the_session_never_the_request(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _module_run_orgs(monkeypatch, "org-b")
+        res = _client(_in_org("org-a")).get(
+            "/auth/me/shell?organization_id=org-b", headers={"X-Organization-Id": "org-b"},
+        )
+        assert res.json()["module_runs"] is False
+
+    def test_a_save_answers_with_the_flag_and_never_stores_it(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _module_run_orgs(monkeypatch, "*")
+        body = {"pins": ["/tasks"], "module_runs": False}
+        res = _client(_in_org("org-a")).put("/auth/me/shell", json=body)
+        assert res.status_code == 200, res.text
+        assert res.json()["module_runs"] is True
+        [(_, params)] = _writes(fake)
+        assert "module_runs" not in json.loads(params["shell_prefs"])
+
+
+class TestTheSkillOfferFlag:
+    """The chat draws the skill offer only when the read says `skill_offer: true`
+    (WS-TOF TOF-1d). `gateway.routes.studio.flags.skill_offer_allowed` is the one
+    reader, STUDIO_ORGS must hold the org too, and the org is the session's."""
+
+    @staticmethod
+    def _orgs(monkeypatch: pytest.MonkeyPatch, offer: str, studio: str) -> None:
+        from acb_common import get_settings
+
+        monkeypatch.setattr(get_settings(), "studio_skill_offer_orgs", offer, raising=False)
+        monkeypatch.setattr(get_settings(), "studio_orgs", studio, raising=False)
+
+    @pytest.mark.parametrize(("offer", "studio", "org", "on"), [
+        ("*", "*", "org-a", True),
+        ("org-b, ORG-A", "org-a", "org-a", True),
+        ("org-b", "*", "org-a", False),
+        ("", "*", "org-a", False),
+        ("*", "", "org-a", False),
+        ("*", "*", None, False),
+    ])
+    def test_the_read_says_skill_offer_for_the_session_s_org(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+        offer: str, studio: str, org: str | None, on: bool,
+    ) -> None:
+        self._orgs(monkeypatch, offer, studio)
+        assert _client(_in_org(org)).get("/auth/me/shell").json()["skill_offer"] is on
+
+    def test_the_org_comes_from_the_session_never_the_request(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._orgs(monkeypatch, "org-b", "*")
+        res = _client(_in_org("org-a")).get(
+            "/auth/me/shell?organization_id=org-b", headers={"X-Organization-Id": "org-b"},
+        )
+        assert res.json()["skill_offer"] is False
+
+    def test_a_save_answers_with_the_flag_and_never_stores_it(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._orgs(monkeypatch, "*", "*")
+        body = {"pins": ["/tasks"], "skill_offer": False}
+        res = _client(_in_org("org-a")).put("/auth/me/shell", json=body)
+        assert res.status_code == 200, res.text
+        assert res.json()["skill_offer"] is True
+        [(_, params)] = _writes(fake)
+        assert "skill_offer" not in json.loads(params["shell_prefs"])
+
+
+# ── The chat pin flag (WS-CO CO-11, `chat_organization.md` §18) ─────────────
+
+
+def _chat_pin_orgs(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "chat_pin_orgs", raw, raising=False)
+
+
+class TestTheChatPinFlag:
+    """The chat list shows Pin and the Pinned group only when the read says
+    `chat_pin: true`. `gateway.chat_session_member.pin_allowed` is the one
+    reader, and the org is the session's."""
+
+    @pytest.mark.parametrize(("raw", "org", "on"), [
+        ("*", "org-a", True),
+        ("org-b, ORG-A", "org-a", True),
+        ("org-b", "org-a", False),
+        ("", "org-a", False),
+        ("*", None, False),
+    ])
+    def test_the_read_says_chat_pin_for_the_session_s_org(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+        raw: str, org: str | None, on: bool,
+    ) -> None:
+        _chat_pin_orgs(monkeypatch, raw)
+        assert _client(_in_org(org)).get("/auth/me/shell").json()["chat_pin"] is on
+
+    def test_the_org_comes_from_the_session_never_the_request(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _chat_pin_orgs(monkeypatch, "org-b")
+        res = _client(_in_org("org-a")).get(
+            "/auth/me/shell?organization_id=org-b", headers={"X-Organization-Id": "org-b"},
+        )
+        assert res.json()["chat_pin"] is False
+
+    def test_a_save_answers_with_the_flag_and_never_stores_it(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _chat_pin_orgs(monkeypatch, "*")
+        body = {"pins": ["/tasks"], "chat_pin": False}
+        res = _client(_in_org("org-a")).put("/auth/me/shell", json=body)
+        assert res.status_code == 200, res.text
+        assert res.json()["chat_pin"] is True
+        [(_, params)] = _writes(fake)
+        assert "chat_pin" not in json.loads(params["shell_prefs"])
+
+
+# ── The chat topics flag (WS-CO CO-2b, `chat_organization.md` §6) ───────────
+
+
+def _chat_topics_orgs(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "chat_topics_orgs", raw, raising=False)
+
+
+class TestTheChatTopicsFlag:
+    """The chat list shows the topic groups and the chat shows the topic chip
+    only when the read says `chat_topics: true`. `gateway.chat_topic.
+    topics_allowed` is the one reader, and the org is the session's.
+    Mutation: send `pin_allowed(bound)` as `chat_topics` -> red."""
+
+    @pytest.mark.parametrize(("raw", "org", "on"), [
+        ("*", "org-a", True),
+        ("org-b, ORG-A", "org-a", True),
+        ("org-b", "org-a", False),
+        ("", "org-a", False),
+        ("*", None, False),
+    ])
+    def test_the_read_says_chat_topics_for_the_session_s_org(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+        raw: str, org: str | None, on: bool,
+    ) -> None:
+        _chat_topics_orgs(monkeypatch, raw)
+        _chat_pin_orgs(monkeypatch, "")
+        assert _client(_in_org(org)).get("/auth/me/shell").json()["chat_topics"] is on
+
+    def test_the_org_comes_from_the_session_never_the_request(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _chat_topics_orgs(monkeypatch, "org-b")
+        res = _client(_in_org("org-a")).get(
+            "/auth/me/shell?organization_id=org-b", headers={"X-Organization-Id": "org-b"},
+        )
+        assert res.json()["chat_topics"] is False
+
+    def test_a_save_answers_with_the_flag_and_never_stores_it(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _chat_topics_orgs(monkeypatch, "*")
+        body = {"pins": ["/tasks"], "chat_topics": False}
+        res = _client(_in_org("org-a")).put("/auth/me/shell", json=body)
+        assert res.status_code == 200, res.text
+        assert res.json()["chat_topics"] is True
+        [(_, params)] = _writes(fake)
+        assert "chat_topics" not in json.loads(params["shell_prefs"])
+
+
+# ── The Agents lenses flag (WS-MCP AMR-1, `agent_coordination.md` §5.12) ────
+
+
+def _agent_lenses_orgs(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "agent_lenses_orgs", raw, raising=False)
+
+
+class TestTheAgentLensesFlag:
+    """The Agents view draws its new lenses only when the read says
+    `agent_lenses: true`. `gateway.agent_lenses_flag.agent_lenses_allowed` is
+    the one reader, and the org is the session's. Mutation: send
+    `topics_allowed(bound)` as `agent_lenses` -> red."""
+
+    @pytest.mark.parametrize(("raw", "org", "on"), [
+        ("*", "org-a", True),
+        ("org-b, ORG-A", "org-a", True),
+        ("org-b", "org-a", False),
+        ("", "org-a", False),
+        ("*", None, False),
+    ])
+    def test_the_read_says_agent_lenses_for_the_session_s_org(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+        raw: str, org: str | None, on: bool,
+    ) -> None:
+        _agent_lenses_orgs(monkeypatch, raw)
+        _chat_topics_orgs(monkeypatch, "")
+        assert _client(_in_org(org)).get("/auth/me/shell").json()["agent_lenses"] is on
+
+    def test_the_org_comes_from_the_session_never_the_request(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _agent_lenses_orgs(monkeypatch, "org-b")
+        res = _client(_in_org("org-a")).get(
+            "/auth/me/shell?organization_id=org-b", headers={"X-Organization-Id": "org-b"},
+        )
+        assert res.json()["agent_lenses"] is False
+
+    def test_a_save_answers_with_the_flag_and_never_stores_it(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _agent_lenses_orgs(monkeypatch, "*")
+        body = {"pins": ["/tasks"], "agent_lenses": False}
+        res = _client(_in_org("org-a")).put("/auth/me/shell", json=body)
+        assert res.status_code == 200, res.text
+        assert res.json()["agent_lenses"] is True
+        [(_, params)] = _writes(fake)
+        assert "agent_lenses" not in json.loads(params["shell_prefs"])
+
+
 # ── The write ──────────────────────────────────────────────────────────────
 
 
@@ -228,7 +897,10 @@ class TestTheWrite:
         res = _client(_user()).put("/auth/me/shell", content="null",
                                    headers={"Content-Type": "application/json"})
         assert res.status_code == 200
-        assert res.json() == me.EMPTY_SHELL
+        assert res.json() == {**me.EMPTY_SHELL, "guide": False, "module_runs": False,
+                              "skill_offer": False, "chat_pin": False,
+                              "chat_topics": False,
+                              "agent_lenses": False}
         [(sql, params)] = _writes(fake)
         assert sql.startswith("UPDATE user_settings SET shell_prefs = NULL")
         assert params == {"uid": "ana@alpha.example"}
@@ -248,7 +920,7 @@ class TestTheWrite:
         assert params["day_start_hour"] == 8 and params["day_end_hour"] == 19
         # An existing row takes the layout only, never the seed. The body
         # omits the nudge mark, so the stored one is kept in SQL (CF-2).
-        assert "DO UPDATE SET shell_prefs = jsonb_set(EXCLUDED.shell_prefs" in sql
+        assert "DO UPDATE SET shell_prefs = jsonb_set(jsonb_set(jsonb_set(EXCLUDED.shell_prefs" in sql
         assert sql.endswith("updated_at = now() RETURNING shell_prefs")
         assert "day_start_hour = EXCLUDED" not in sql
 
@@ -271,7 +943,10 @@ class TestTheRead:
     def test_no_row_is_never_asked(self, fake: _FakeDB) -> None:
         res = _client(_user()).get("/auth/me/shell")
         assert res.status_code == 200
-        assert res.json() == me.EMPTY_SHELL
+        assert res.json() == {**me.EMPTY_SHELL, "guide": False, "module_runs": False,
+                              "skill_offer": False, "chat_pin": False,
+                              "chat_topics": False,
+                              "agent_lenses": False}
 
     def test_a_failed_read_is_503_never_the_empty_layout(self, fake: _FakeDB) -> None:
         fake.fail = True
@@ -284,7 +959,11 @@ class TestTheRead:
         body = _client(_user()).get("/auth/me/shell").json()
         assert body == {"preset": None, "answered": "skipped", "pins": ["/tasks"],
                         "known": None, "cardOrder": None, "newOrder": ["capture"],
-                        "chat_first_message_at": None}
+                        "chat_first_message_at": None, "tour_seen_at": None,
+                        "buddy_hello_at": None, "guide": False, "module_runs": False,
+                        "skill_offer": False, "chat_pin": False,
+                        "chat_topics": False,
+                              "agent_lenses": False}
 
     def test_a_stale_known_entry_is_dropped_not_refused(self, fake: _FakeDB) -> None:
         fake.stored = json.dumps({"answered": "answered", "preset": "engineer",
@@ -335,17 +1014,29 @@ class TestOneVocabulary:
 
     def test_the_panes_are_nav_ts_s(self) -> None:
         source = NAV.read_text(encoding="utf-8")
-        assert set(re.findall(r'href: "(/[^"]*)"', source)) == me.SHELL_PANES
+        panes = set(re.findall(r'href: "(/[^"]*)"', source))
+        assert panes == me.SHELL_PANES == set(load_vocabulary().panes)
 
     def test_the_presets_are_presets_ts_s(self) -> None:
         source = PRESETS.read_text(encoding="utf-8")
         ids = set(re.findall(r'^\s+id: "([a-z-]+)",$', source, re.M))
-        assert ids == me.SHELL_PRESETS
+        assert ids == me.SHELL_PRESETS == set(load_vocabulary().presets)
         assert len(ids) == 8
 
     def test_the_cards_are_presets_ts_s(self) -> None:
         source = PRESETS.read_text(encoding="utf-8")
-        assert _ts_list(source, "CARD_KEYS") == me.SHELL_CARDS
+        cards = _ts_list(source, "CARD_KEYS")
+        assert cards == me.SHELL_CARDS == set(load_vocabulary().cards)
+
+    def test_the_gateway_sets_derive_from_the_manifest(self) -> None:
+        vocab = load_vocabulary()
+        for got, want in (
+            (me.SHELL_PANES, vocab.panes),
+            (me.SHELL_PRESETS, vocab.presets),
+            (me.SHELL_CARDS, vocab.cards),
+        ):
+            assert isinstance(got, frozenset)
+            assert got == frozenset(want)
 
     def test_the_jobs_are_the_command_bar_s(self) -> None:
         """The PUT checks job ids against the gateway's list (`intent.py`).
@@ -353,8 +1044,8 @@ class TestOneVocabulary:
         So this reads the TypeScript, as `TestOneJobList` does, and it fails
         when the two lists drift."""
         source = REGISTRY.read_text(encoding="utf-8")
-        match = re.search(r"export const JOBS[^=]*=\s*\[(.*?)\n\];", source, re.S)
-        assert match, "JOBS not found in registry.ts"
+        match = re.search(r"export const GENERATED_JOBS[^=]*=\s*\[(.*?)\n\];", source, re.S)
+        assert match, "GENERATED_JOBS not found in jobs.generated.ts"
         ts_ids = set(re.findall(r'^\s+id: "([a-z-]+)",$', match.group(1), re.M))
         assert len(ts_ids) >= 10
         assert me._job_ids() == ts_ids

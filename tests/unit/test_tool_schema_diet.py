@@ -65,13 +65,18 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
     # group_field. Every argument that existed keeps its name and type.
     # WS-53 §18.16 part 4: `term`, the member's own word for a figure. A new
     # optional argument, so no call breaks.
+    # WS-53 CRM-Q25e part 2: `fields`, 2 to 5 number fields in ONE statement.
+    # A new optional argument, so no call breaks.
+    # WS-53 CRM-Q34-10 (2026-11-18): `group_field2`, a second group field of
+    # a module total. A new optional argument, so no call breaks.
     'crm_aggregate': {'params': {'bucket': 'string',
                                  'close_from': 'string', 'close_to': 'string',
                                  'created_from': 'string', 'created_to': 'string',
                                  'custom': 'object', 'entity': 'string',
                                  'field': 'string', 'field_filters': 'object',
+                                 'fields': 'array',
                                  'group_by': 'string', 'group_field': 'string',
-                                 'measure': 'string',
+                                 'group_field2': 'string', 'measure': 'string',
                                  'owner': 'string', 'page': 'integer',
                                  'pipeline_id': 'string',
                                  'q': 'string', 'status': 'string', 'term': 'string',
@@ -84,8 +89,13 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
                               'required': ['module', 'record_id']},
     'crm_get_record': {'params': {'entity': 'string', 'record_id': 'string'},
                        'required': ['entity', 'record_id']},
-    'crm_list_fields': {'params': {'entity': 'string', 'page': 'integer'},
-                        'required': ['entity']},
+    # WS-53 CRM-Q34-6 (task 3699, 2026-11-18): `query` finds a field by its
+    # words, in one module or in each mirrored module. So `entity` is no
+    # longer required. A new optional argument, so no call breaks. With
+    # CRM_MODULE_FIND_ORGS empty, the tool ignores `query`.
+    'crm_list_fields': {'params': {'entity': 'string', 'page': 'integer',
+                                   'query': 'string'},
+                        'required': []},
     'crm_list_module_records': {'params': {'module': 'string', 'page': 'integer',
                                            'page_size': 'integer', 'q': 'string'},
                                 'required': ['module']},
@@ -108,6 +118,15 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
     'crm_search_notes': {'params': {'limit': 'integer', 'query': 'string'},
                          'required': ['query']},
     'crm_stage_dwell': {'params': {'days': 'integer', 'page': 'integer'}, 'required': []},
+    # WS-CRM CRM-M1 (crm_conversational.md §8): the read of the Change history
+    # of the CRM set-up. A new tool, so no call breaks. No member or org
+    # argument: the gateway binds them (R5). It is in the `crm` family, so it
+    # is injectable. The chat reaches it through the `crm-records` pack, and
+    # the orchestrator's base does not hold it, so the core floor and its
+    # total do not move.
+    'crm_change_history': {'params': {'area': 'string', 'page': 'integer',
+                                      'since': 'string', 'until': 'string'},
+                           'required': []},
     # WS-53 CRM-Q32-8 (crm_platform.md §18.14.10): the reply of a CRM question
     # card. It loads with the `crm` family only, with org_facts, so the core
     # floor and its total do not move. `choice` is the KEY of an option. No
@@ -126,7 +145,8 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
                           'options': 'string', 'question': 'string'},
                'required': ['context', 'question']},
     'emit_generative_ui': {'params': {'ui': 'string'}, 'required': ['ui']},
-    'fetch_page': {'params': {'max_chars': 'integer', 'url': 'string'},
+    # WEB-7: + render (a boolean, optional), so no call breaks.
+    'fetch_page': {'params': {'max_chars': 'integer', 'render': 'boolean', 'url': 'string'},
                    'required': ['url']},
     'get_errors': {'params': {'filePaths': 'string'}, 'required': []},
     'get_workflow_run': {'params': {'run_id': 'string'},
@@ -167,6 +187,9 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
     # PDF, from one spec object. The same shape as make_document. A family
     # tool, so the core floor and its total do not move.
     'make_report': {'params': {'spec': 'object'}, 'required': ['spec']},
+    # SBX-19: Python over stored tool results, dark per org. A new tool.
+    'compute_run': {'params': {'code': 'string', 'inputs': 'array', 'timeout_s': 'integer'},
+                    'required': ['code']},
     # MT-0c-1 (D16): query_history no longer takes SQL. The contract change is
     # deliberate — a model-composed `query` string was a raw-SQL tool, which
     # saas_multitenancy.md §0.9.3 makes a condition on the pooled decision. All
@@ -180,6 +203,11 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
     # workspace and the thread come from the run's context, never the model.
     'read_attachment': {'params': {'name': 'string', 'offset': 'integer'},
                         'required': ['name']},
+    # WS-VOX VOX-3 (projects_ai_chat.md §31): an attached image to tier-vision.
+    # A file name and a question only: the workspace, the thread, the org and
+    # the member come from the run's context, never the model (R5).
+    'analyze_image': {'params': {'file_name': 'string', 'question': 'string'},
+                      'required': ['file_name', 'question']},
     'recall_agent': {'params': {'query': 'string'}, 'required': ['query']},
     'recall_notes': {'params': {'offset': 'integer', 'path': 'string',
                                 'query': 'string'},
@@ -207,7 +235,7 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
                   'required': ['fact', 'path']},
     'save_org_memory': {'params': {'fact': 'string'}, 'required': ['fact']},
     'share_artifact': {'params': {'path': 'string'}, 'required': ['path']},
-    'web_search': {'params': {'max_results': 'integer', 'query': 'string'},
+    'web_search': {'params': {'max_results': 'integer', 'query': 'string', 'source': 'string'},
                    'required': ['query']},
     'write_artifact': {'params': {'content': 'string',
                                   'encoding': 'string',
@@ -217,7 +245,7 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
 }
 
 # ---------------------------------------------------------------------------
-# 3. Per-tool token ceilings for the core floor (19 tools at the diet, 22 with decide, read_attachment and package_artifacts)
+# 3. Per-tool token ceilings for the core floor (19 tools at the diet, 23 with decide, read_attachment, package_artifacts and analyze_image)
 # ---------------------------------------------------------------------------
 # Post-diet measurement 2026-08-01 (chars/4 run-context tokenizer), rounded up
 # with ~10% headroom so ordinary wording edits don't fail CI. The floor summed
@@ -241,7 +269,7 @@ CORE_SCHEMA_CEILINGS: dict[str, int] = {
     # The tool returns them on demand (write_artifact.genui_guide), and the
     # docstring keeps the names. Measured 641.
     "emit_generative_ui": 700,
-    "fetch_page": 270,
+    "fetch_page": 310,  # WEB-7: + render (measured 233 -> 273, +40)
     "get_errors": 170,
     "list_integrations": 190,
     "load_artifact_kit": 430,
@@ -254,6 +282,9 @@ CORE_SCHEMA_CEILINGS: dict[str, int] = {
     # joined the floor. Measured 277. The floor then measured 6534, under
     # the total ceiling.
     "read_attachment": 300,
+    # WS-VOX VOX-3: the "when to call" rule is in the docstring in full,
+    # because a native agent reads no addendum. Measured 252.
+    "analyze_image": 280,
     "recall_notes": 215,
     "run_diagnostics": 240,
     "run_script": 270,
@@ -262,7 +293,7 @@ CORE_SCHEMA_CEILINGS: dict[str, int] = {
     # tools now say "name the file, and paste no link". share_artifact
     # measured 196 (was 201) and write_artifact 533 (was 575).
     "share_artifact": 210,
-    "web_search": 280,
+    "web_search": 320,  # WEB-4: + source (web, papers, wiki)
     "write_artifact": 550,
 }
 
@@ -272,7 +303,13 @@ CORE_SCHEMA_CEILINGS: dict[str, int] = {
 #: 2026-10-15, agent reads page part 2: recall_notes gained an `offset`
 #: (193 -> 215, +22), and paid for it itself. Its worked example left the
 #: docstring, so it measured 180, and the floor 6,693 -> 6,680.
-CORE_SCHEMA_TOTAL_CEILING = 6_700
+#: WEB-4 added `source` to web_search (+28).
+#: 2026-11-08 (WS-VOX VOX-3, projects_ai_chat.md §31): analyze_image joined the
+#: floor as a NEW tool, not a nudge. The floor measured 6,771 before it and
+#: 7,023 with it (+252). The spec puts the "when to call" rule in its
+#: docstring in full, because a native agent reads no addendum, so no other
+#: tool pays for it. The email assistant and the worker opt out of it.
+CORE_SCHEMA_TOTAL_CEILING = 7_040  # WEB-7: + render on fetch_page (+40); VOX-3: + analyze_image (+252)
 
 
 def _tools_by_name() -> dict[str, object]:

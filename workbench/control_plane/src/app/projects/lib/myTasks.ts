@@ -8,7 +8,7 @@
  * `subject=me`. This file holds its pure rules, so the page and the component
  * stay thin:
  *
- * 1. **The chips.** All, Today, Next, Waiting, Someday and Done. Each chip is
+ * 1. **The chips.** All, New, Today, Next, Waiting, Someday and Done. Each chip is
  *    a filter on the row's overlay, with the rules of the server's
  *    `mine.fold_dispositions`. The counts on the chips come from
  *    `by_disposition`, never from a page of rows.
@@ -23,7 +23,7 @@
  * Fence: `myTasks.test.ts`.
  */
 
-import { isInToday } from "@/app/tasks/lib/today";
+import { inTodayChip } from "@/lib/shell/todayRule";
 import { STATUS_CATEGORIES, categoryLabel, landingLane } from "@/lib/statusCategory";
 
 import type { NodeSummary, StatusRow, TaskRow, ThroughputReport } from "./api";
@@ -48,15 +48,103 @@ export const MY_TASKS_MODES = [
 
 export type MyTasksMode = (typeof MY_TASKS_MODES)[number]["id"];
 
+/**
+ * The My tasks tab a project canvas id names, or null when there is none (the
+ * Timeline). A mode command of the palette lands here while My tasks is open
+ * (MOB-1, phone audit 2026-11-03).
+ */
+export function myTasksModeFor(mode: string): MyTasksMode | null {
+  return MY_TASKS_MODES.find((entry) => entry.id === mode)?.id ?? null;
+}
+
+/**
+ * PJP-13 — the tab My tasks opens on. A member who picked a tab keeps it. With
+ * no pick, a desktop opens the Board and a phone opens the List, the same rule
+ * the project boards use. `chosen` is null until the member picks.
+ */
+export function myTasksMode(chosen: MyTasksMode | null, isMobile: boolean): MyTasksMode {
+  return chosen ?? (isMobile ? "list" : "board");
+}
+
+/** PJP-13 — the session key that keeps a picked tab across a remount (the page remounts when the viewport crosses the phone line). */
+export const MY_TASKS_PICK_KEY = "cc-my-tasks-picked-mode";
+
+interface PickStore {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
+/** The tab the member picked this session, or null. Never throws. */
+export function readPickedMode(store: PickStore | null | undefined): MyTasksMode | null {
+  try {
+    const raw = store?.getItem(MY_TASKS_PICK_KEY);
+    return raw ? myTasksModeFor(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Keeps the picked tab for the session. Never throws. */
+export function writePickedMode(store: PickStore | null | undefined, mode: MyTasksMode): void {
+  try {
+    store?.setItem(MY_TASKS_PICK_KEY, mode);
+  } catch {
+    /* storage is off: the pick then lasts until the next remount */
+  }
+}
+
+/** What the page holds for My tasks. `chosen` is the explicit tab pick, null until the member picks one. */
+export interface MyTasksRaw {
+  attention: boolean;
+  chip: MyTasksChip;
+  chosen: MyTasksMode | null;
+}
+
+/**
+ * PJP-13 — one update of the My tasks view. `pick` is true only for an
+ * explicit tab choice (a tab click, the mode command, a link that opens List,
+ * the phone tab). It records `chosen` even when it equals the default. A chip
+ * change, or an echo of the shown view, leaves `chosen` as it was.
+ */
+export function applyMyTasksUpdate(
+  raw: MyTasksRaw,
+  isMobile: boolean,
+  update: { mode: MyTasksMode; attention: boolean; chip: MyTasksChip } | ((v: { mode: MyTasksMode; attention: boolean; chip: MyTasksChip }) => { mode: MyTasksMode; attention: boolean; chip: MyTasksChip }),
+  pick: boolean,
+): MyTasksRaw {
+  const current = { mode: myTasksMode(raw.chosen, isMobile), attention: raw.attention, chip: raw.chip };
+  const next = typeof update === "function" ? update(current) : update;
+  return { attention: next.attention, chip: next.chip, chosen: pick ? next.mode : raw.chosen };
+}
+
+/** PJP-12a — the text of an empty My tasks, chip All, nothing hidden by a filter. */
+export const MY_TASKS_EMPTY_TEXT = "It's empty. Go to Projects and pick up tasks.";
+
+/** PJP-12a — true when My tasks is truly empty: chip All, read done, no row, no filter. */
+export function myTasksTrulyEmpty(opts: {
+  chip: MyTasksChip;
+  loaded: boolean;
+  total: number;
+  filtered: boolean;
+}): boolean {
+  return opts.chip === "all" && opts.loaded && opts.total === 0 && !opts.filtered;
+}
+
 // ── The chips ───────────────────────────────────────────────────────────────
 
 export const MY_TASKS_CHIPS = [
   { id: "all", label: "All" },
+  // D170 (INB-1, 2026-11-03): work assigned to me that I have not opened or
+  // planned. The inbox holds captures only, so this is where it shows.
+  { id: "new", label: "New" },
   { id: "today", label: "Today" },
   { id: "next", label: "Next" },
   { id: "waiting", label: "Waiting" },
   { id: "someday", label: "Someday" },
   { id: "done", label: "Done" },
+  // ARC-1 (2026-11-09): the tasks I filed, across projects. This chip reads
+  // its own rows (`myArchive.archiveQuery`) and filters nothing on the client.
+  { id: "archive", label: "Archive" },
 ] as const;
 
 export type MyTasksChip = (typeof MY_TASKS_CHIPS)[number]["id"];
@@ -89,9 +177,16 @@ export function chipForApp(id: string | null | undefined): MyTasksChip | null {
 }
 
 /** The overlay facts a chip reads off a row (`with_overlay=1`). */
-export type ChipRow = Pick<
+export type ChipRow = Partial<Pick<TaskRow, "id">> & Pick<
   TaskRow,
-  "disposition" | "is_mine" | "completed_at" | "archived_at" | "defer_until" | "start_date" | "due_at"
+  | "disposition"
+  | "is_mine"
+  | "is_new"
+  | "completed_at"
+  | "archived_at"
+  | "defer_until"
+  | "start_date"
+  | "due_at"
 >;
 
 /**
@@ -99,18 +194,29 @@ export type ChipRow = Pick<
  *
  * - Next: the effective disposition is NEXT, and the task is assigned to me.
  * - Waiting, Someday and Done: the effective disposition.
- * - Today: `isInToday`, the one Today rule (`tasks/lib/today.ts`), which the
- *   server's `in_today` mirrors.
+ * - Today: `isInToday`, the old Today rule (`tasks/lib/today.ts`), which the
+ *   server's `in_today` mirrors. With `TODAY_RULE_ORGS` on, the summary sends
+ *   `today_ids`, the set of the one Today predicate (WS-MDC CC-2), and the
+ *   chip lists that set (`todayRule.ts` `inTodayChip`).
+ * - New: the server's `is_new` (`mine.new_work`), no stated disposition of mine.
  * - All: every row but TRASH. TRASH is in no chip.
  *
  * `disposition` arrives EFFECTIVE (`effective_disposition`, D77), so a closed
  * lane already reads DONE here.
  */
-export function inChip(row: ChipRow, chip: MyTasksChip, today: string, timeZone?: string): boolean {
+export function inChip(
+  row: ChipRow,
+  chip: MyTasksChip,
+  today: string,
+  timeZone?: string,
+  todayIds?: ReadonlySet<string> | null,
+): boolean {
   const effective = String(row.disposition ?? "");
   switch (chip) {
     case "all":
       return effective !== "TRASH";
+    case "new":
+      return Boolean(row.is_new);
     case "next":
       return effective === "NEXT" && Boolean(row.is_mine);
     case "waiting":
@@ -119,9 +225,12 @@ export function inChip(row: ChipRow, chip: MyTasksChip, today: string, timeZone?
       return effective === "SOMEDAY";
     case "done":
       return effective === "DONE";
+    case "archive":
+      return Boolean(row.archived_at);
     case "today":
-      return isInToday(
+      return inTodayChip(
         {
+          id: row.id ?? "",
           disposition: effective as never,
           isMine: Boolean(row.is_mine),
           archivedAt: row.archived_at ?? undefined,
@@ -130,8 +239,8 @@ export function inChip(row: ChipRow, chip: MyTasksChip, today: string, timeZone?
           startDate: row.start_date ?? undefined,
           deferUntil: row.defer_until ?? undefined,
         },
-        today,
-        timeZone,
+        { today, timeZone },
+        todayIds,
       );
   }
 }
@@ -142,8 +251,91 @@ export function chipRows<T extends ChipRow>(
   chip: MyTasksChip,
   today: string,
   timeZone?: string,
+  todayIds?: ReadonlySet<string> | null,
 ): T[] {
-  return rows.filter((row) => inChip(row, chip, today, timeZone));
+  return rows.filter((row) => inChip(row, chip, today, timeZone, todayIds));
+}
+
+/**
+ * The rows of a chip, with the Today set (WS-MDC CC-2, fix round 1 item 1).
+ *
+ * The Today set is not a subset of mine: a mark, a block or the One Thing on
+ * a visible task of another member is part of my day. So with the flag on
+ * (`todayIds`), the Today chip lists the rows of the mine list that the set
+ * holds, and adds each task of the set that the list does not hold, from
+ * `GET /projects/my/today?with_tasks=true` (`setRows`). The count, the rows
+ * and the set are then one set. Any other chip, and the flag off, is
+ * `chipRows` as before.
+ *
+ * `filtered` (`grouping.isFiltered`) says that a filter of the bar is on. The
+ * read of the set takes no filter, so a filtered chip adds no row of it. The
+ * list that the server filtered is then what shows.
+ */
+export function chipRowsWithSet<T extends ChipRow & { id: string }>(
+  rows: readonly T[],
+  chip: MyTasksChip,
+  today: string,
+  timeZone: string | undefined,
+  todayIds: ReadonlySet<string> | null,
+  setRows: readonly T[] | null | undefined,
+  filtered = false,
+): T[] {
+  const listed = chipRows(rows, chip, today, timeZone, todayIds);
+  if (chip !== "today" || filtered || !todayIds || !setRows) return listed;
+  const held = new Set(rows.map((row) => row.id));
+  const added = setRows.filter(
+    (row) => !held.has(row.id) && todayIds.has(row.id) && inChip(row, chip, today, timeZone, todayIds),
+  );
+  return [...listed, ...added];
+}
+
+/** The line of a failed read of the Today set (CC-2 fix round 2). */
+export const TODAY_SET_FAILED =
+  "Metorite could not load all of today's tasks. The tasks assigned to you show below.";
+
+/** What the Today chip still waits for, or lost, from the read of the set. */
+export interface TodaySetGap {
+  /** The read failed, and the chip lacks rows that it counts. */
+  failed: boolean;
+  /** The read is on its way: one place for each id that the list lacks. */
+  pending: number;
+}
+
+/**
+ * The gap between the Today chip's count and its rows (CC-2 fix round 2).
+ *
+ * With the flag on, `today_ids` can name tasks that the mine list does not
+ * hold, and only the read of the set brings them. While that read is on its
+ * way, the chip reserves one place for each such id, so no row jumps in. When
+ * it fails, the chip says so, because the count then names more tasks than
+ * the rows. With the flag off, on another chip, with a filter on, or with the
+ * set read, there is no gap. A filtered chip adds no row of the set, so it
+ * waits for none.
+ */
+export function todaySetGap(
+  rows: readonly { id: string }[],
+  chip: MyTasksChip,
+  todayIds: ReadonlySet<string> | null,
+  read: { data?: unknown; error?: string | null },
+  filtered = false,
+): TodaySetGap {
+  const none: TodaySetGap = { failed: false, pending: 0 };
+  if (chip !== "today" || filtered || !todayIds || read.data) return none;
+  const held = new Set(rows.map((row) => row.id));
+  const missing = [...todayIds].filter((id) => !held.has(id)).length;
+  if (missing === 0) return none;
+  return read.error ? { failed: true, pending: 0 } : { failed: false, pending: missing };
+}
+
+/**
+ * The ids of the Today set, from the summary, or null for the old rule.
+ * `today_ids` comes only with `TODAY_RULE_ORGS` on (WS-MDC CC-2).
+ */
+export function todayIdsOf(
+  summary: Pick<NodeSummary, "today_rule" | "today_ids"> | null | undefined,
+): ReadonlySet<string> | null {
+  if (!summary?.today_rule || !Array.isArray(summary.today_ids)) return null;
+  return new Set(summary.today_ids.map(String));
 }
 
 /** The server count of a chip, or null when the summary has not said. */
@@ -151,7 +343,8 @@ export function chipCount(
   summary: Pick<NodeSummary, "by_disposition"> | null | undefined,
   chip: MyTasksChip,
 ): number | null {
-  if (chip === "all") return null;
+  // All and Archive have no server count here: the Archive view counts its own rows.
+  if (chip === "all" || chip === "archive") return null;
   const value = summary?.by_disposition?.[chip];
   return typeof value === "number" ? value : null;
 }
@@ -197,15 +390,6 @@ export function withoutMyTasks(search: string): string {
   if (params.get("app") === "my-tasks") params.delete("app");
   const qs = params.toString();
   return qs ? `/projects?${qs}` : "/projects";
-}
-
-/**
- * What the phone's "My tasks" tab does (`phoneTabs.ts`). Away from My tasks
- * it opens My tasks. On My tasks it opens the Projects sheet, so the tree
- * stays one tap away.
- */
-export function phoneMyTasksTap(app: string | null | undefined): "open" | "sheet" {
-  return app === "my-tasks" ? "sheet" : "open";
 }
 
 // ── The board ───────────────────────────────────────────────────────────────

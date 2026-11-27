@@ -12,6 +12,11 @@ against the code first.
 
 | Record | Date | What it holds | Cited by |
 |---|---|---|---|
+| `2026-11-final-review/` | 2026-11 | The final review of 2026-11-11 before the first swarm: the seams and their duplicates, the spec set, the board and swarm readiness. Its `README.md` lists each file | `specs/building_blocks.md`, D205 |
+| `2026-11-epic-research/` | 2026-11 | The research behind the epics of 2026-11-10: WhatsApp bots, knowledge everywhere, CRM complete and the CRM mirror. Its `README.md` lists each file | the spec slices WB-0, KS-0, CRX-0 and MIR-0 |
+| `2026-11-plan-audit/` | 2026-11 | The plan audit of 2026-11-06: the 30 contradictions, the fork feature matrix, and six plans for the dark fork apps (Meetings, Dashboard, Memories, Agents, the builders, the delivery monitor and clean-up). Its `README.md` lists each file | `work_plan.md` D190 |
+| `ai_native_onboarding_2026-11.md` | 2026-11 | How the best products onboard a creator and a joiner, with the evidence graded | `specs/onboarding.md` §12 |
+| `assistant_guide_2026-11.md` | 2026-11 | Tours, assistants that point at the button, and sample data, with the evidence graded | `specs/assistant_guide.md` |
 | `plane_pm_research_2026-08.md` | 2026-08 | A read of Plane (AGPL-3.0, patterns only), with the verdicts P-1 to P-31 | `specs/project_management_app.md` |
 | `paca_pm_research_2026-08.md` | 2026-08 | A read of Paca (Apache-2.0), with the adopt, adapt and refuse table | `specs/project_management_app.md`, `specs/workflows_app.md` |
 | `note_taker_research_2026-07.md` | 2026-07 | The evidence base of the note taker | `specs/note_taker_app.md` |

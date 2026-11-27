@@ -45,6 +45,8 @@ LLM_ENTRY_ANY = frozenset({
     "acompletion", "completion", "chat_completion", "_call_llm", "aembedding",
     # The billed Router entry (H-171). Every routed completion goes through it.
     "completion_on_router",
+    # Its streamed twin (task 3542). The routed arm of the streamed helper.
+    "stream_on_router",
 })
 #: Entry points matched only as a bare name, because ``.complete()`` is a
 #: common method name elsewhere. ``acb_llm`` exports these two.
@@ -58,9 +60,20 @@ VOICE_SITES: dict[str, tuple[tuple[str, ...], str | None]] = {
     GW + "email/automation/drafting.py::_llm_compose_assist": (("email",), None),
     GW + "email/automation/rules.py::_llm_generate_rules": (("title",), None),
     GW + "email/digest.py::_digest_brief": (("summary",), GW + "email/digest.py::_BRIEF_SYSTEM"),
+    # WS-63 PZ-33b: the summary of a private chat, a note the member reads.
+    "apps/services/gateway/gateway/chat_summary_job.py::_ask": (
+        ("summary",), "apps/services/gateway/gateway/chat_summary_job.py::SYSTEM"),
+    # WS-ALN ALN-5b: the rules that Mira proposes from a page. A lead reads
+    # each one-line rule, so it takes the voice of a title.
+    GW + "project_rules_propose.py::_ask": (
+        ("title",), GW + "project_rules_propose.py::SYSTEM"),
     # WS-53 CRM-Q28: the weekly CRM digest, prose a member reads on Reports.
     "apps/services/gateway/gateway/crm_sync/digest.py::_complete": (
         ("summary",), "apps/services/gateway/gateway/crm_sync/digest.py::SYSTEM"),
+    # WS-BRIEF BR-2a-2: the lead of the brief, prose a member reads. The call is
+    # in `_ask`, and `messages_for` builds the prompt with the summary voice.
+    "apps/services/gateway/gateway/brief/phrase.py::_ask": (
+        ("summary",), "apps/services/gateway/gateway/brief/phrase.py::messages_for"),
     GW + "notes/copilot.py::_craft": (("chat",), None),
     GW + "notes/copilot_agenda.py::draft_agenda": (("chat", "title"), None),
     GW + "notes/share.py::_draft": (("email",), None),
@@ -73,7 +86,7 @@ VOICE_SITES: dict[str, tuple[tuple[str, ...], str | None]] = {
         ("summary", "title"), GW + "notes/templates.py::build_system_prompt"),
     GW + "notes/summaries.py::_map_reduce": (
         ("summary", "title"), GW + "notes/templates.py::build_system_prompt"),
-    GW + "tasks/ai.py::_llm_propose": (("title", "description"), None),
+    GW + "tasks/ai.py::_ask_clarify_model": (("title", "description"), None),
     GW + "tasks/ai.py::_llm_suggest_title": (("title",), None),
     GW + "tasks/calendar.py::_llm_rank_day": (("summary",), None),
     GW + "tasks/capture_email.py::_llm_capture": (("title", "description"), None),
@@ -109,8 +122,10 @@ MACHINE_SITES: dict[str, str] = {
     "packages/acb_llm/acb_llm/client.py::_routed_text": "transport to the Router",
     "packages/acb_llm/acb_llm/context.py::_complete_with_fallback": "transport",
     "packages/acb_llm/acb_llm/context.py::_stream_text": "transport",
+    # Task 3541: the routed arm of `_stream_text`. It streams from the Router
+    # since task 3542.
+    "packages/acb_llm/acb_llm/context.py::_routed_text": "transport to the Router",
     # Embeddings.
-    "apps/services/email_ingestion/email_ingestion/email_embeddings.py::_embed_batch": "embedding",
     "apps/services/whatsapp_ingestion/whatsapp_ingestion/wa_embeddings.py::_embed_batch": "embedding",
     GW + "tasks/capability.py::_embed": "embedding",
     # Classifiers, routers and extraction: JSON that code reads.
@@ -122,12 +137,15 @@ MACHINE_SITES: dict[str, str] = {
     GW + "email/automation/learning.py::_ai_confirms_sender_pattern._old": "yes or no",
     GW + "email/automation/replyzero.py::_llm_determine_thread_status._old": "thread status",
     GW + "notes/copilot.py::_decide": "act or stay silent, as JSON",
-    GW + "tasks/ai.py::_find_parent_task": "an index",
+    GW + "tasks/ai.py::_llm_parent_check": "an index",
     GW + "tasks/ai.py::_llm_enrich": "enum and assignee fields",
     ORC + "resolution.py::resolve_with_llm": "an entity tie-break integer",
     "packages/acb_memory/acb_memory/graphiti_client.py::_is_episode_worthy": "yes or no",
     GW + "settings.py::test_tier": "a health ping",
     "packages/acb_skills/acb_skills/loader.py::_call_llm_for_merge_resolution": "resolves a merge conflict in an agent file",
+    # VOX-3 (task 2263): a tool result that the chat model reads. The chat's
+    # own answer carries the house voice, so this call writes no member prose.
+    "packages/acb_skills/acb_skills/attachment_tools.py::analyze_image": "a tool result for the chat model, which writes the member's answer",
     # The member's own words or voice is the point, so the house voice must
     # not bias what the call learns or imitates.
     GW + "email/automation/drafting.py::_llm_summarize_writing_style": "learns the member's own style",

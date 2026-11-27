@@ -32,14 +32,16 @@ vi.mock("next/link", () => ({
     createElement("a", { href, ...rest }, children as never),
 }));
 
-import SessionRunDot, { sessionDot } from "@/components/SessionRunDot";
+import SessionRunDot, { SESSION_DOT_LABEL, sessionDot } from "@/components/SessionRunDot";
 import NavBadge from "@/components/NavBadge";
 import { paneBadge } from "@/components/Sidebar";
 import { HIDDEN_MS } from "@/lib/liveRuns";
 import { activityRows, chatLink, runBadge, runStatusText, type ActivityRow } from "@/lib/runActivity";
 import {
   FAVICON_NEEDS,
+  FAVICON_NEEDS_SVG,
   FAVICON_REPLY,
+  FAVICON_REPLY_SVG,
   MISSES_TO_FINISH,
   OPEN_ELSEWHERE_TTL_MS,
   RESTART_WINDOW_MS,
@@ -561,19 +563,43 @@ describe("the hidden tab's title and favicon", () => {
     expect(doc.title).toBe("Metorite Control Plane");
   });
 
+  it("an SVG link takes the SVG twin, which follows a dark tab strip; the .ico link keeps the PNG (owner, 2026-11-01)", () => {
+    const ico = new FakeLink({ rel: "icon", href: "/favicon.ico?abc", type: "image/x-icon" });
+    const svg = new FakeLink({ rel: "icon", href: "/icon.svg?def", type: "image/svg+xml" });
+    const doc = fakeDoc([ico, svg]);
+    doc.visibilityState = "hidden";
+    applyTabSignal(doc, 1, 0);
+    expect(ico.getAttribute("href")).toBe(FAVICON_NEEDS);
+    expect(svg.getAttribute("href")).toBe(FAVICON_NEEDS_SVG);
+    expect(svg.getAttribute("type")).toBe("image/svg+xml");
+    applyTabSignal(doc, 0, 1);
+    expect(svg.getAttribute("href")).toBe(FAVICON_REPLY_SVG);
+    doc.visibilityState = "visible";
+    applyTabSignal(doc, 0, 1);
+    expect(svg.getAttribute("href")).toBe("/icon.svg?def");
+    expect(svg.getAttribute("type")).toBe("image/svg+xml");
+    // The twins are the app's own comet with the same switch to white.
+    const own = read("app/icon.svg");
+    for (const f of [FAVICON_NEEDS_SVG, FAVICON_REPLY_SVG]) {
+      const twin = readFileSync(fileURLToPath(new URL(`../../public${f}`, import.meta.url)), "utf-8");
+      expect(twin, f).toContain("@media (prefers-color-scheme:dark){.a{fill:#ffffff}}");
+      expect(twin, f).toContain(own.match(/ d="([^"]+)"/)![1]);
+    }
+  });
+
   it("adds a link when the page has none, and takes it away on restore", () => {
     const doc = fakeDoc([]);
     doc.visibilityState = "hidden";
     applyTabSignal(doc, 0, 2);
     expect(doc.appended).toHaveLength(1);
-    expect(doc.appended[0].getAttribute("href")).toBe(FAVICON_REPLY);
+    expect(doc.appended[0].getAttribute("href")).toBe(FAVICON_REPLY_SVG);
     doc.visibilityState = "visible";
     applyTabSignal(doc, 0, 2);
     expect(doc.appended[0].removed).toBe(true);
   });
 
   it("swaps to pre-made files, and draws no canvas", () => {
-    for (const f of [FAVICON_NEEDS, FAVICON_REPLY]) {
+    for (const f of [FAVICON_NEEDS, FAVICON_REPLY, FAVICON_NEEDS_SVG, FAVICON_REPLY_SVG]) {
       expect(existsSync(fileURLToPath(new URL(`../../public${f}`, import.meta.url))), f).toBe(true);
     }
     for (const f of ["lib/runSignals.ts", "lib/shell/RunSignals.tsx"]) {
@@ -663,7 +689,7 @@ describe("the phone's agent pill", () => {
     expect(html).not.toMatch(/(^|[\s"])animate-pulse/);
     expect(html).not.toMatch(/#[0-9a-f]{3,8}\b|\b(bg|text|border)-(red|blue|green|amber|sky|yellow|slate|gray|zinc)-\d/);
     const css = read("app/globals.css");
-    expect(css).toMatch(/\.agent-pill-bottom \{\s*bottom: calc\(3\.5rem \+ env\(safe-area-inset-bottom, 0px\) \+ 0\.5rem\);/);
+    expect(css).toMatch(/\.agent-pill-bottom \{\s*bottom: calc\(var\(--phone-bar-h\) \+ 0\.5rem\);/);
     expect(css).toMatch(/@media \(prefers-reduced-motion: no-preference\) \{\s*\.agent-pill-progress \{\s*animation:/);
     // The only animation of the line sits inside the motion query.
     expect(css.match(/animation: agent-pill-progress/g)).toHaveLength(1);
@@ -746,6 +772,42 @@ describe("the badge, the panel and the chat lists show a new reply", () => {
     expect(html).toContain('aria-label="New reply"');
     expect(html).toContain("bg-info");
     expect(renderToStaticMarkup(createElement(SessionRunDot, { running: false, unread: false }))).toBe("");
+  });
+
+  it("the row dot: a card that waits wins over a run and an unread reply (task 3600)", () => {
+    expect(sessionDot(true, true, true)).toBe("needs_input");
+    expect(sessionDot(true, false, true)).toBe("needs_input");
+    expect(sessionDot(false, true, true)).toBe("needs_input");
+    expect(sessionDot(false, false, true)).toBe("needs_input");
+    expect(sessionDot(true, true)).toBe("running");
+    expect(SESSION_DOT_LABEL.needs_input).toBe("Needs your answer");
+    const html = renderToStaticMarkup(createElement(SessionRunDot, { running: true, unread: true, needsInput: true }));
+    expect(html).toContain('aria-label="Needs your answer"');
+    expect(html).toContain('title="Needs your answer"');
+    expect(html).toContain('data-session-dot="needs_input"');
+    expect(html).toContain("bg-warning");
+    expect(html).not.toContain("bg-success");
+    expect(html).not.toContain("animate-pulse");
+  });
+
+  it("the chat page and the picker give the dot the waiting chats (task 3600)", () => {
+    const page = read("app/chat/page.tsx");
+    expect(page).toContain("const needsInputIds = useNeedsInputIds();");
+    expect(page).toMatch(/needsInput=\{needsInputIds\.has\(s\.id\)\}/);
+    expect(page.match(/needsInputIds=\{needsInputIds\}/g)).toHaveLength(2);
+    expect(page).toMatch(/needsInput=\{sessions\.some\(\(s\) => needsInputIds\.has\(s\.id\)\)\}/);
+    const picker = read("lib/shell/SessionPicker.tsx");
+    expect(picker).toContain("needsInput={needsInputIds.has(s.id)}");
+    expect(picker).toContain("needsInput={needsInput}");
+  });
+
+  it("useNeedsInputIds keeps one set while the ids hold (task 3600)", () => {
+    const src = read("hooks/useActiveSessions.ts");
+    const body = src.slice(src.indexOf("export function useNeedsInputIds"), src.indexOf("export function localTitle"));
+    expect(body).toContain('r.state === "needs_input"');
+    expect(body).toMatch(/\.sort\(\)\.join\(","\)/);
+    expect(body).toMatch(/\[idsKey\]/);
+    expect(body).toContain(": EMPTY");
   });
 
   it.each([

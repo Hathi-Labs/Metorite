@@ -83,6 +83,90 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-445 · Add `aroh-dev-1` to the SSH config of the owner's PC, and point CI at it when the CI lane moves there · [OWNER]
+- **Metorite:** task 3899 finished the rest of the box setup on 2026-11-22. The box is on the tailnet as `aroh-dev-1` (`100.64.118.14`), `dev_verify.sh` passed (R8: 42 passed, no skip), and both office rules are gone.
+- **Why:** only the owner's PC is left. `docs/gcp_aroh.md` §5 holds the Tailscale and IAP access.
+- **Do this:** add `aroh-dev-1` to `~/.ssh/config` on the PC. Point `CI_HOME` at `ci@aroh-dev-1` when the CI lane moves there.
+- **Check:** on the PC, `ssh dev@aroh-dev-1 'bash ~/Metorite/scripts/home_server/dev_verify.sh; tail -2 ~/dev-verify.log'` prints `FAILED: none` → DONE. Delete this entry then.
+- **Added:** 2026-11-19 · branch `gcp-aroh-record` · trimmed 2026-11-22, task 3899
+
+### H-446 · Ask the Google Cloud admin for four roles that the dev box needs · [OWNER]
+- **Metorite:** no task yet, so the full entry is here.
+- **Why:** our account cannot change IAM in `metorite-513907`. Without these roles, IAP SSH fails with `4033: not authorized`, and the box sends no logs or metrics.
+- **Ask for:** IAP-secured Tunnel User (`roles/iap.tunnelResourceAccessor`) for the account that runs `gcloud` on the PC. Logs Writer (`roles/logging.logWriter`) and Monitoring Metric Writer (`roles/monitoring.metricWriter`) for `sa-aroh-dev@metorite-513907.iam.gserviceaccount.com`. Storage Admin and Logs Viewer for the account, for backups and logs later.
+- **Check:** `testIamPermissions` for `iap.tunnelInstances.accessViaIAP`, as `docs/gcp_aroh.md` §2 shows. An empty `{}` → STILL PENDING. One permission per call, and HTTP 429 means "ask again later", not "no".
+- **Added:** 2026-11-19 · branch `gcp-aroh-record`
+
+### H-447 · Ask the admin about `metorite-vpc` and its two subnets, and the project display name · [OWNER]
+- **Metorite:** no task yet, so the full entry is here.
+- **Why:** the Google team made `metorite-vpc`, `metorite-app-subnet` (`10.0.1.0/24`) and `metorite-dev-subnet` (`10.0.2.0/24`) on 2026-11-19. They are empty, they break the aroh name of D229, and `10.0.x` is the range most likely to clash with a VPN. The display name of the project is still "Metorite".
+- **Recommend:** delete the VPC and both subnets, and rename the project display name to "aroh". An agent must not delete them, because the admin made them.
+- **Check:** `gcloud compute networks list --project=metorite-513907 --format='value(name)' | grep -c metorite-vpc` → 1 means STILL PENDING.
+- **Added:** 2026-11-19 · branch `gcp-aroh-record`
+
+### H-448 · Decide where the production database runs on Google Cloud, then test the migration ladder on Cloud SQL · [OWNER]
+- **Metorite:** no task yet, so the full entry is here.
+- **Why:** production will move to Google Cloud. The data is small, about 200 MB (`specs/backup_and_restore.md`). Supabase also gives Storage for files and backups, and Auth for operator sign-in, so both need a replacement.
+- **Recommend:** Cloud SQL for PostgreSQL 16, apart from the app box, as Supabase is apart today. It gives point-in-time restore, and our migrations only roll forward (R6). Start small and single-zone. The risk to test first: 18 migrations rely on a migration role that bypasses RLS, and Cloud SQL gives no true superuser. Run the whole ladder and the R8 suites on a small instance before any cutover. Supabase is decision D34, so the owner decides.
+- **Check:** `grep -c -E '^### D[0-9]+ .*(Cloud SQL|production database)' project-docs/work_plan.md` → 0 means STILL PENDING.
+- **Added:** 2026-11-19 · branch `gcp-aroh-record`
+
+### H-449 · Give the AI Router a way to call Gemini 4 Argon on Vertex · [AGENT]
+- **Metorite:** no task yet, so the full entry is here.
+- **Why:** Google blocks Argon on the Gemini API key route. Vertex serves it, also in the OpenAI shape, but Vertex wants a Google OAuth token, not a fixed key. The Router keeps one fixed secret per provider. `docs/gcp_aroh.md` §7 holds the tests.
+- **Do this:** first ask the Google team two questions. Can a Vertex API key bound to a service account work on the OpenAI endpoint? Or can they open Argon on the Gemini API route for the paid project? A yes to either needs no code. Otherwise, when the app box runs on Google Cloud, add a `vertex_ai` provider that passes the project and the location, and add `google-auth`. The attached service account then signs each call.
+- **Check:** `grep -rc 'vertex_ai/' apps/services/customer_console/customer_console/*.py | grep -v ':0' | wc -l` → 0 means STILL PENDING, unless the Google team's answer removed the need. Record that answer here.
+- **Added:** 2026-11-19 · branch `gcp-aroh-record`
+
+### H-444 · Close five gaps before the `PROJECTS_AGENT_DISPATCH` flip · [AGENT]
+- **Metorite:** no task yet, so the full entry is here. The parent is #688 (H-240).
+- **Why:** H-240 gives a dispatched run the member who assigned the task. The flag stays OFF, because five gaps stay open:
+  1. Nothing limits how many dispatched runs are live. Each run spends the credits of the organization.
+  2. A workflow node that assigns an agent no longer waits for the run. The sink starts the run and returns.
+  3. A `skill-projects` write shows a card. A dispatched run has no chat, so each of those cards denies. Other writes need no card. The `task-manager` agent calls `my_tasks_delegate`, `my_tasks_update` and `my_tasks_move`, and these send no card. So the run can write in some tools and not in others. No test shows which, because the R8 test approves every card.
+  4. **The run has the full access of the assigner.** Spec §6.4 wants `EffectiveAccess.intersect()` with `agent:<name>`. Text that another member wrote in the task description drives the run. That text can make the run read the assigner's private tasks, and the reply lands on the shared timeline. It can also call `my_tasks_delegate` as the assigner. This is a confused-deputy case. Do not flip the flag before this gap closes.
+  5. A write of a dispatched run shows `created_by=<assigner>` and `meta.via=chat:projects-assistant`. The assigner confirmed nothing and no chat existed. Bind an `agent:<name>` actor and a dispatch `via`. D-PM-9 wants every agent edit attributable.
+- **Do this:** Fix each gap with a fence, or record the owner's answer in `project_management_app.md` §9.12.10. Gap 3 is question 2 there. Gap 4 needs the intersect in code, not an answer.
+- **Check:** `grep -c 'live_run_count() >=' apps/services/gateway/gateway/routes/projects/agent_dispatch.py`. A count of 0 means gap 1 is open. `grep -c 'EffectiveAccess' apps/services/gateway/gateway/routes/projects/agent_dispatch.py` with a count of 0 means gap 4 is open. Gaps 2, 3 and 5 stay open until a PR names their fences here. The cap of gap 1 must hold across gateway workers, because `_LIVE` is per process.
+- **Authority:** `specs/project_management_app.md` §6.4 and §9.12.10.
+- **Added:** 2026-11-07 · H-240, branch `h240-mt-526d36b7`
+
+### H-450 · Finish the WS-24c token follow-ups that slice 2 left out · [AGENT]
+- **Metorite:** #1843. The task holds the slice record. No own task yet, so the full entry is here.
+- **Why:** Slice 2 made one reader of the internal token. Three gaps stay:
+  - The deploy does not copy `GATEWAY_INTERNAL_TOKEN` into `workbench/operator_console/.env.local`. This needs the `deploy-write` grant.
+  - `scripts/setup_secrets.sh` line 65 appends the `EXECUTIVE_EMAILS` comment again on each run.
+  - `env_value` in `setup_secrets.sh` does not handle two token lines, a quoted value or a CRLF line end.
+- **Do this:** Under a `deploy-write` grant, copy the token into the operator console `.env.local` in `scripts/vps_apply.sh`. Make the comment append run once. Make `env_value` take the last line, strip quotes and strip a CR. Fence each change in `tests/unit/test_setup_secrets.py`.
+- **Check:** run each command. Each item has its own pass condition.
+  1. Operator console copy: `grep -c 'operator_console/.env.local' scripts/vps_apply.sh`. The output `0` means OPEN. A count of 1 or more, with a copy step on those lines, means closed.
+  2. `EXECUTIVE_EMAILS`: `grep -cF 'grep -q "^EXECUTIVE_EMAILS=" .env || echo "# EXECUTIVE_EMAILS=' scripts/setup_secrets.sh`. The output `1` means OPEN, because the guard never matches the comment line that it writes. The output `0` means closed.
+  3. `env_value`: `grep -A2 '^env_value()' scripts/setup_secrets.sh | grep -c 'head -1 | cut -d= -f2-$'`. The output `1` means OPEN: the function takes the first line, and keeps quotes and a CR. The output `0` means closed.
+  - When all three are closed, delete this entry.
+- **Added:** 2026-11-07 · WS-24c slice 2, branch `ws24c2-mt-de46e5c8`
+
+### H-442 · Confirm migration 337 and its backup on production after the 2026-11-03 release · [AGENT]
+- **Why:** PZ-33b (merged 952e4315d) adds `chat_message.member_typed` in `infra/postgres/337_chat_message_member_typed.sql`. A migration is one-way (R6), and a deploy once reported success while it shipped nothing (CLAUDE.md §3 rule 8).
+- **Check:** on the box, read the ledger: `SELECT filename, applied_at FROM schema_migrations WHERE filename LIKE '337_%'`. No row means STILL PENDING. With a row, also read the deploy log for the pre-migration backup line of that release, and run `SELECT count(*) FROM information_schema.columns WHERE table_name = 'chat_message' AND column_name = 'member_typed'`. A count of 1 closes the entry.
+- **Authority:** `specs/personalization.md` §15.11 (D-PZ-37). Metorite task 1131.
+- **Added:** 2026-11-03 · PZ-33b merge, recorded on branch `mt-907c0244-cf4b-action-pills`
+
+### H-441 · A restore through the production pooler still builds indexes at 64 MB, and `restore_db.sh` hides a failed restore · [AGENT]
+- **Metorite:** no task yet, so the full entry is here. The parent is #1229 (LD-8c).
+- **Why:** LD-8c sends `maintenance_work_mem=256MB` to each restore through `PGOPTIONS`.
+  - **Measured on production, 2026-10-31:** with the PG names of `/etc/acb/root.env`, the Supabase session pooler (port 5432) takes the connection and ignores the option. `show maintenance_work_mem` reads 64MB with and without it.
+  - So a disaster restore there still fails on a large IVFFlat index (lists = 100, about 9,500 rows or more), such as `email_embeddings` or `wa_message_embeddings`.
+  - Also, `restore_db.sh` ends each `pg_restore` with `| tail -20 || true`. The error prints, and the script goes on as if the restore worked.
+- **Do this:**
+  1. Find a way that reaches the server, and measure it with `show maintenance_work_mem`. Options:
+     - a direct connection, not the pooler
+     - `ALTER ROLE <restore role> SET maintenance_work_mem = '256MB'` for the restore, then `RESET`
+     - a rebuild of each failed index after the restore, in a session that runs `SET maintenance_work_mem`
+  2. In `restore_db.sh`, keep the exit code of `pg_restore`. Print each `pg_restore: error` line, and exit 1 on one. Fence it in `tests/unit/test_backup_deploy_wiring.py`.
+- **Check:** `rg -n 'tail -20 \|\| true' scripts/restore_db.sh`. A hit means part 2 is open. Part 1 stays open until a PR records a `show maintenance_work_mem` of `256MB` through the path that the restore uses.
+- **Authority:** LD-8c review, 2026-10-31, finding 2. `specs/backup_and_restore.md` §2 holds the 256 MB rule.
+- **Added:** 2026-10-31 · LD-8c repair round 1, branch `ld8c-backup-minimise-mt-d6426e98`
+
 ### H-433 · Check the chat prompt for notifications on a real phone, on production · [OWNER]
 - **Metorite:** #600 (OB-8). The task holds the checks and the state.
 - **Check:** task #600 is not Done → still pending. `PUSH_PROMPT_ORGS=*` is set in production since 2026-10-31 (D144, staging retired). The owner checks the three choices on an Android phone and in the iPhone Home Screen app.
@@ -238,13 +322,6 @@ line — never reclaim a number by deleting the other entry.
   A count above 0 means this is open.
 - **Added:** 2026-10-08 · branch `sec-bh1-child-env` (WS-49 BH-1, fix round 1).
 
-### H-280 · A single route param can still move a gateway call to another route under its prefix · [AGENT]
-- **Metorite:** #621. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `rg -n '\$\{(sessionId|subject|agentName|provider|threadId)\}' workbench/control_plane/src/app/api`.
-  A hit that puts the raw param into a gateway URL, with no `refuseUnsafePath([...])`
-  in that handler, means this is open.
-- **Added:** 2026-10-08 · branch `proxy-path-guard`.
-
 ### H-274 · The chat has no batch tool for several new statuses · [AGENT]
 - **Metorite:** #499. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `grep -n "create_statuses" apps/skills/skill-projects/skill_projects/__init__.py`.
@@ -373,12 +450,6 @@ line — never reclaim a number by deleting the other entry.
   this is open.
 - **Added:** 2026-10-06 · WS-46 P6 review round 2
 
-### H-253 · One member can still hold both parse slots of the gateway (EM-T11) · [AGENT]
-- **Metorite:** #659. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `rg -n "EM-T11 slot gap closed" project-docs/specs/email_app_master_plan.md`
-  → no hit means open.
-- **Added:** 2026-10-06 · the EM-T11 session
-
 ### H-252 · Ask a chat to summarise a PDF that came in a mail (EM-T11) · [OWNER]
 - **Metorite:** #658. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "EM-T11 live check passed" project-docs/specs/email_app_master_plan.md`
@@ -398,19 +469,6 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** `rg -n "psycopg.connect\(" packages/acb_common/acb_common/org_settings.py packages/acb_llm/acb_llm/model_config.py packages/acb_llm/acb_llm/key_store.py`.
   A hit means part 1 is open.
 - **Added:** 2026-10-06 · the NS-11 session.
-
-### H-245 · Close the four P3 edges of skill privacy that the PR #635 review left · [AGENT]
-- **Metorite:** #618. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** run these four checks. Each one stays open until its step closes.
-  1. `rg -n "SKILL_UNCLAIMED" packages/acb_skills/acb_skills/tenant_file_store.py`.
-     No hit means step 1 is open.
-  2. `rg -n "acb_memory" packages/acb_skills/acb_skills/agent_paths.py`.
-     No import of the store in `claim_skill` means step 2 is open.
-  3. `rg -n "skill_owner" packages/acb_skills/acb_skills/note_tools.py`.
-     No hit means step 3 is open.
-  4. `rg -n "_odd_name_form" apps/services/gateway/gateway/routes/workspace.py`.
-     Step 4 is open while no hit lies inside `get_workspace_tree`.
-- **Added:** 2026-10-05 · the approval review of PR #635 (four P3s).
 
 ### H-244 · Decide whether an agent may set an env var through a SETUP token · [OWNER]
 - **Metorite:** #769. The task holds the full entry (moved 2026-10-27, D118).
@@ -450,29 +508,11 @@ line — never reclaim a number by deleting the other entry.
   document of an assigned task's run a home (rule 8). So this id now holds
   the count.
 
-### H-242 · Close the three edges of the H-227 new-chat purge · [AGENT]
-- **Metorite:** #689. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** run these three searches.
-  1. `rg -n "room is None or not thread_id" apps/services/gateway/gateway/routes/agent.py`.
-     A hit means step 1 is open.
-  2. `rg -n "_last_write" apps/services/gateway/gateway/routes/workspace.py`.
-     A hit means step 2 is open.
-  3. `rg -n "pg_advisory_xact_lock" apps/services/gateway/gateway/routes/chat.py`.
-     No hit means step 3 is open, unless the run doors insert the row
-     before the run (the second form of Do 3).
-- **Added:** 2026-10-05 · the round 3 review of PR #616 (approved with nits).
-
 ### H-214 · Add a plan-guard rule `ws43-sandbox-flip` for the three WS-43 flags · [OWNER]
 - **Metorite:** #772. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "ws43-sandbox-flip|MAF_CODING_SCOPE|SANDBOX_EGRESS_ENABLED|MAF_NATIVE_SESSIONS" .claude/hooks/plan-guard.mjs`.
   No hit, or a hit with no `MAF_NATIVE_SESSIONS`, means this is open.
 - **Added:** 2026-10-03 · PR #584 fix round 1
-
-### H-211 · Remove `approve_all` from the root `metorite` agent · [AGENT]
-- **Metorite:** #560. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `rg -n "approve_all" agents.py` at the repo root. A hit on the
-  `on_permission_request` line means this is open.
-- **Added:** 2026-10-03 · the WS-43 spec session
 
 ### H-213 · The WS-3 board row says WS-3a and WS-3b shipped, and the code has neither · [AGENT]
 - **Metorite:** #578. The task holds the full entry (moved 2026-10-27, D118).
@@ -600,18 +640,10 @@ line — never reclaim a number by deleting the other entry.
 ### H-170 · A Console migration runs with NO backup of the Console database · [AGENT]
 - **Metorite:** #507. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** on the box, run
-  `for d in $(ls -1t /opt/acb/backups | head -14); do ls /opt/acb/backups/$d; done | grep -ci console`.
+  `for d in $(ls -1t /opt/acb/backups | head -14); do ls /opt/acb/backups/$d; done | grep -cx customer_console.dump`.
   A zero means no backup on the box holds the Console database, and this is
   open.
 - **Added:** 2026-09-23 · the CP-13a deploy check
-
-### H-165 · CP-13 is built through CP-13d. Stop the gateway taking the member from the body, so `decide` serves a shared box · [AGENT]
-- **Metorite:** #559. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `rg -n 'member=None' packages/acb_skills/acb_skills/decide_tools.py`
-  → a hit means the `decide` tool still sends no member, and this is open.
-  CP-13a to CP-13d are BUILT (2026-09-23 and 2026-09-24).
-- **Added:** 2026-09-23 · the Jev planning session · **rewritten 2026-09-24**
-  when CP-13d was built
 
 ### H-163 · My Tasks: a signed-in member checks capture into Projects · [OWNER]
 - **Metorite:** #549. The task holds the full entry (moved 2026-10-27, D118).
@@ -796,13 +828,6 @@ line — never reclaim a number by deleting the other entry.
   `grep -n "pm_tags" apps/services/gateway/gateway/routes/projects/move.py`
   → the code runs `WHERE {vocabulary_scope()}`, a two-arm predicate with a
   correlated subquery. Two different statements.
-- **Added:** 2026-09-20 · found by the round-2 verifier on PR #301.
-
-### H-129 · A hand-supplied field map can still pick its winner by JSONB order · [AGENT]
-- **Metorite:** #496. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `grep -n "claimed" apps/services/gateway/gateway/routes/projects/move.py`
-  → `resolve_field_map` keeps a `claimed` dict. The caller-supplied branch in
-  `_plan` checks `compatible()` for each entry and never checks `claimed`.
 - **Added:** 2026-09-20 · found by the round-2 verifier on PR #301.
 
 ### H-127 · The move has no end-to-end test, and that is where its P0s live · [AGENT]
@@ -1319,12 +1344,6 @@ line — never reclaim a number by deleting the other entry.
   → a hit means the first item is still open.
 - **Added:** 2026-09-22 · the Projects chat S2 session. Minted as H-161, renumbered to H-162 because main took H-161 first
 
-### H-184 · Four small follow-ups from the R2b review of the report visuals · [AGENT]
-- **Metorite:** #497. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `grep -n "current_week_partial\|so far" workbench/control_plane/src/lib/reportEmail.ts`
-  → no hit means item 1 is still open. Check each other item by hand.
-- **Added:** 2026-09-24 · the WS-27bn R2b session
-
 ### H-199 · A lead who left a team cannot remove their old report through the chat · [AGENT]
 - **Metorite:** #497. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `grep -n "refusal=" apps/skills/skill-projects/skill_projects/guarded.py apps/skills/skill-projects/skill_projects/writes.py`
@@ -1333,15 +1352,23 @@ line — never reclaim a number by deleting the other entry.
 
 ### H-201 · Bind the tenant in the other readers that still open an unbound session · [AGENT]
 - **Metorite:** #612. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `grep -rn "with get_session() as" apps/services/gateway/gateway/routes/observability.py apps/services/gateway/gateway/routes/debug.py apps/services/gateway/gateway/routes/integrations_skills.py`.
-  A hit means this is open.
+- **Check:** `grep -rn "with get_session() as" apps/services/gateway/gateway/routes/agent.py packages/acb_skills/acb_skills/loader.py`.
+  A hit means this is open. The Redis activity feeds are task 1718, and the
+  `agent_avatars` key is task 1719.
+- **Part 2:** closed the Postgres reads of `observability.py`, `debug.py`,
+  `integrations_skills.py` and the two plugin routes of `integrations.py` on
+  2026-11-05.
+- **Part 3 (task 1718, H-201c):** keys the Redis feed of `observability.py`
+  for each tenant. Built 2026-11-05 on branch `h201c-mt-dea97a06`, not merged.
+- **Part 4 (task 1748, H-201e):** keys the `/cost` rollup for each tenant
+  (`cc:<org>:cost:{day}`). Built 2026-11-05 on branch `h201e-mt-2e03e787`,
+  not merged.
+- **Part 5 (task 1719, H-201d):** the expand half of the `agent_avatars` key.
+  Migration 354 adds the unique index on `(organization_id, agent_name)`, and
+  `_save_avatar` names it. Merged 2026-11-07. Migration 474 drops the old key
+  (the contract, built 2026-11-22). It merges only after the production ledger
+  holds 354 from an earlier release.
 - **Added:** 2026-09-29 · the WS-27bm S15 session. Part 1 built 2026-09-30.
-
-### H-202 · Two small follow-ups from the Reports UX pass · [AGENT]
-- **Metorite:** #497. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `grep -n '"Project"' workbench/control_plane/src/app/projects/components/ReportsView.tsx`
-  → a hit in `scopeName` means item 2 is still open.
-- **Added:** 2026-09-29 · the WS-27bn R5b-2 and UX pass session
 
 ### H-206 · A browser that blocks storage breaks the whole app · [AGENT]
 - **Metorite:** #685. The task holds the full entry (moved 2026-10-27, D118).
@@ -1397,12 +1424,6 @@ line — never reclaim a number by deleting the other entry.
   → a hit, and no retry of the start-label removal, means the entry is still open.
 - **Added:** 2026-10-03 · WS-43c, the sandbox broker
 
-### H-225 · Take the shell tools from personal agents too, once the sandbox covers them · [AGENT]
-- **Metorite:** #808. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `grep -n 'return instancing == "personal"' apps/services/orchestrator/orchestrator/_tool_injection.py`
-  → a hit means a personal agent still keeps its host shell tools.
-- **Added:** 2026-10-03 · the D85 interim block
-
 ### H-230 · Put the first-party check in front of `spawn_copilot_agent`'s mutation sandbox · [AGENT]
 - **Metorite:** #615. The task holds the full entry (moved 2026-10-28, D118).
 - **Check:** `grep -n "_self_mutation_permitted\|_read_first_party" apps/services/orchestrator/orchestrator/agents.py`
@@ -1413,12 +1434,6 @@ line — never reclaim a number by deleting the other entry.
 - **Metorite:** #686. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** read-only, on the box: `SELECT name FROM dynamic_agents WHERE lower(name)='metorite';`
   → no row means the name is free, and an `agents:manage` holder could register another agent under it.
-- **Added:** 2026-10-04 · fix round 2 of PR #598
-
-### H-232 · Compare the member's organization with the run's in `_first_party_admin_runs` · [AGENT]
-- **Metorite:** #616. The task holds the full entry (moved 2026-10-28, D118).
-- **Check:** `grep -n "member_org\|membership" apps/services/orchestrator/orchestrator/executor.py`
-  → no hit means the gate does not compare the two organizations.
 - **Added:** 2026-10-04 · fix round 2 of PR #598
 
 ### H-233 · Make the refused root agent look absent everywhere · [AGENT]
@@ -1444,12 +1459,6 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** `grep -rn "Content-Security-Policy" workbench/control_plane/next.config.ts workbench/control_plane/src/proxy.ts`
   → no hit means no app-wide CSP is set.
 - **Added:** 2026-10-04 · the chat click-to-load PR
-
-### H-240 · Give a dispatched agent run the member who assigned the task · [AGENT]
-- **Metorite:** #688. The task holds the full entry (moved 2026-10-28, D118).
-- **Check:** `grep -c "session_user" apps/services/gateway/gateway/routes/projects/agent_dispatch.py`
-  → `0` means the gap is open. The sink passes no member to `run_agent`.
-- **Added:** 2026-10-04 · PR #622
 
 ### H-297 · Register Metorite's Zoho OAuth client, and drop its two values · [OWNER]
 - **Metorite:** #736. The task holds the full entry (moved 2026-10-28, D118).
@@ -1520,11 +1529,11 @@ line — never reclaim a number by deleting the other entry.
   A hit means this is open.
 - **Added:** 2026-10-15 · branch `wa-calendar-blocks`
 
-### H-312 · Five reads of a member's settings name no tenant · [AGENT]
-- **Metorite:** #562. The task holds the full entry (moved 2026-10-28, D118).
+### H-312 · Ten statements in the task routes name no tenant (seven reads, three writes), and their tables have no org column · [AGENT]
+- **Metorite:** #1646. It waits on H-104 (#608). The five `user_settings` reads of the first entry closed on 2026-11-04 (#562).
 - **Check:** `git grep -n -A2 "WHERE user_id = :uid" -- apps/services/gateway/gateway/routes/tasks`.
   A statement that names no `organization_id` means this entry stays.
-- **Added:** 2026-10-15 · MD-3c review
+- **Added:** 2026-10-15 · MD-3c review · narrowed 2026-11-04
 
 ### H-313 · An operator viewer can reach the tenant org purge · [AGENT]
 - **Metorite:** #523. The task holds the full entry (moved 2026-10-28, D118).
@@ -1582,6 +1591,13 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** `git grep -n "await _get_db()" -- apps/services/gateway/gateway/routes/workflows/`.
   Each hit is an unbound read or write on a FORCE RLS table. This entry is
   open until the only hits left are tenant-discovery reads.
+- **State (2026-11-12):** Parts (a), (b) and (c) are built. Each door binds an org, and the list `WORKFLOW_UNATTENDED_ORGS` ships empty.
+  The hook door reads the token in each listed org. The event door uses the tenant that the emitter bound. The manual door uses the org of the row.
+  A replayed webhook delivery starts no second run (migration 420). The list stays empty, and only the owner flips it (OWNER-GATE `enforcement-flip`).
+  A run with no member has no billing member, so an agent node fails, and five failures disable the workflow.
+  Before the owner lists an org, read two lists for that org: its published workflows with an agent node, and its paused waits of a kind other than schedule, webhook and event.
+  Four `await _get_db()` hits stay in `service.py`. `_organization_ids` and `_workflow_billing_member` are discovery reads.
+  `_resolve_workflow_organization` and `_run_session(None)` serve only a run with no org, and no door starts one now. Remove them in a later slice, then close this entry.
 - **Added:** 2026-10-15 · PR #1052 review round 1
 
 ### H-320 · An unticked checkbox has no visible edge · [AGENT]
@@ -1636,12 +1652,6 @@ line — never reclaim a number by deleting the other entry.
   this is open.
 - **Added:** 2026-10-16 · WS-27bm §14.10.9 B3 review
 
-### H-334 · The email owner check names no tenant by default · [AGENT]
-- **Metorite:** #563. The task holds the full entry (moved 2026-10-28, D118).
-- **Check:** `git grep -n "this_tenant: bool = False" -- apps/services/gateway/gateway/routes/email/core.py`.
-  A hit means this entry stays.
-- **Added:** 2026-10-15 · MD-3d build · rewritten 2026-10-16, MD-3d review
-
 ### H-336 · W10: the chat's unmount save can copy mail into Mem0, so WS-7 keeps Mem0 off · [AGENT]
 - **Metorite:** #694. The task holds the full entry (moved 2026-10-28, D118).
 - **Check:** run the two commands. Either one closes this entry.
@@ -1677,13 +1687,6 @@ line — never reclaim a number by deleting the other entry.
   If a route passes that field to SQL without `resolve_account_filter`,
   this is open.
 - **Added:** 2026-10-18 · PR #1128 and its review
-
-### H-367 · No R8 test drives a connection with no slug through branch 0 · [AGENT]
-- **Metorite:** #695. The task holds the full entry (moved 2026-10-28, D118).
-- **Check:** `grep -n "slugless\|no_slug" tests/unit/test_agent_client_stamp.py`.
-  When an R8 test there signs a call for a DCR connection row and gets 200,
-  delete this entry.
-- **Added:** 2026-10-20 · PR #1184 review, P3
 
 ### H-409 · Harden EA-14a: a task that closes, and two small gaps · [AGENT]
 - **Metorite:** #748. The task holds the full entry (moved 2026-10-28, D118).
@@ -1917,12 +1920,3 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** `git grep -n "no-offset\|without an offset" origin/main -- apps/services/gateway/gateway/routes/projects/due.py` prints nothing.
 - **Added:** 2026-10-27 · WS-64 session
 
-### H-437 · Give a web chat run the credential filter of its member · [AGENT] · security
-- **Metorite:** #1120. The task holds the full entry.
-- **Check:** in `apps/services/orchestrator/orchestrator/executor.py`, `async def _integration_authorizer` takes only `event_payload` and `thread_id`, and reads the member from the payload → still open. That one read sets two things: the credential filter, and the memory permission gate through `_set_memory_permission`.
-- **Added:** 2026-10-30 · H-337 session
-
-### H-438 · Take the /pull member from the session before Mem0 turns on · [AGENT] · security
-- **Metorite:** #1127. The task holds the full entry.
-- **Check:** `grep -n "req.user_email or" apps/services/gateway/gateway/main.py`. A hit in the `/pull` handler (2026-10-30: `user_id: str = req.user_email or ...`) means still open.
-- **Added:** 2026-10-30 · H-337 session

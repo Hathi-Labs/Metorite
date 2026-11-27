@@ -1,0 +1,1490 @@
+{
+ "_comment": "CL-7 clarify eval. Free: a stub model returns the scripted answer. Each case holds the capture, the scripted model answer, and the expected [P#] resolution, disposition, clarified_by and fallback_reason. Add a case when clarify goes wrong in production.",
+ "tree": {
+  "spaces": [
+   {
+    "id": "s-eng",
+    "name": "Engineering",
+    "folders": [
+     {
+      "id": "f-hw",
+      "name": "Hardware"
+     }
+    ]
+   },
+   {
+    "id": "s-sales",
+    "name": "Sales",
+    "folders": [
+     {
+      "id": "f-key",
+      "name": "Key accounts"
+     }
+    ]
+   },
+   {
+    "id": "s-ops",
+    "name": "Operations",
+    "folders": []
+   }
+  ],
+  "projects": [
+   {
+    "id": "p-fw",
+    "outcome": "Ship the v2 firmware release",
+    "status": "ACTIVE",
+    "home": "Engineering > Hardware"
+   },
+   {
+    "id": "p-acme",
+    "outcome": "Close the Acme Robotics quote",
+    "status": "ACTIVE",
+    "home": "Sales > Key accounts"
+   },
+   {
+    "id": "p-audit",
+    "outcome": "Quarterly vendor audit and compliance review",
+    "status": "ACTIVE",
+    "home": "Operations"
+   },
+   {
+    "id": "p-hire",
+    "outcome": "Hire two mechanical engineers",
+    "status": "ACTIVE",
+    "home": "Operations"
+   },
+   {
+    "id": "p-onb",
+    "outcome": "Redesign the customer onboarding flow",
+    "status": "ACTIVE",
+    "home": "Engineering"
+   },
+   {
+    "id": "p-health",
+    "outcome": "Health and fitness routine",
+    "status": "ACTIVE",
+    "home": "Personal > Area: Health"
+   },
+   {
+    "id": "p-home",
+    "outcome": "Home renovation kitchen remodel",
+    "status": "ACTIVE",
+    "home": "Personal > Area: Home"
+   },
+   {
+    "id": "p-expo",
+    "outcome": "Old trade show plan",
+    "status": "SOMEDAY",
+    "home": "Sales"
+   }
+  ]
+ },
+ "cases": [
+  {
+   "id": "good-quote-email",
+   "kind": "good",
+   "capture": {
+    "title": "Email Acme the revised quote",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Email Acme the revised quote",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "[P1]",
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": "p-acme",
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "good-firmware",
+   "kind": "good",
+   "capture": {
+    "title": "Fix the boot loop in firmware",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Reproduce the boot loop on the bench",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "[P0]",
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": "p-fw",
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "good-project-converts",
+   "kind": "good",
+   "capture": {
+    "title": "Redo the onboarding screens",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "PROJECT",
+     "next_action": "List the current onboarding steps",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "[P4]",
+     "complexity": "project",
+     "outcome": "A shorter onboarding"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": "p-onb",
+    "disposition": "PROJECT",
+    "clarified_by": "llm",
+    "fallback_reason": null,
+    "final_disposition": "NEXT"
+   }
+  },
+  {
+   "id": "good-no-match-null",
+   "kind": "good",
+   "capture": {
+    "title": "Buy printer paper",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Order two reams of paper",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": null,
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "good-no-match-none-word",
+   "kind": "good",
+   "capture": {
+    "title": "Renew the office lease",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Read the lease renewal terms",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "none",
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "good-bare-p-token",
+   "kind": "good",
+   "capture": {
+    "title": "Chase the vendor audit pack",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Ask the vendor for the audit pack",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "P2",
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": "p-audit",
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "good-lowercase-token",
+   "kind": "good",
+   "capture": {
+    "title": "Book interviews for the CAD role",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Book three interview slots",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "[p3]",
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": "p-hire",
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "good-someday",
+   "kind": "good",
+   "capture": {
+    "title": "Learn KiCad one day",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "SOMEDAY",
+     "next_action": "",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": null,
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "SOMEDAY",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "good-reference",
+   "kind": "good",
+   "capture": {
+    "title": "Receipt from the Pune flight",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "REFERENCE",
+     "next_action": "",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": null,
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "REFERENCE",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "good-trash",
+   "kind": "good",
+   "capture": {
+    "title": "Spam about a prize",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "TRASH",
+     "next_action": "",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": null,
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "TRASH",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "good-calendar-due",
+   "kind": "good",
+   "capture": {
+    "title": "Vendor audit call on 2026-12-03",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "CALENDAR",
+     "next_action": "Join the audit call",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "[P2]",
+     "complexity": "single",
+     "due_date": "2026-12-03"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": "p-audit",
+    "disposition": "CALENDAR",
+    "clarified_by": "llm",
+    "fallback_reason": null,
+    "due_date": "2026-12-03"
+   }
+  },
+  {
+   "id": "good-bad-due-dropped",
+   "kind": "good",
+   "capture": {
+    "title": "Send the quote soon",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Send the quote",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "[P1]",
+     "complexity": "single",
+     "due_date": "next friday"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": "p-acme",
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null,
+    "due_date": null
+   }
+  },
+  {
+   "id": "good-personal-area-health",
+   "kind": "good",
+   "capture": {
+    "title": "Book a physio session",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Call the physio clinic",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "[P5]",
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": "p-health",
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "good-personal-area-home",
+   "kind": "good",
+   "capture": {
+    "title": "Get three tile samples",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Visit the tile shop",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "[P6]",
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": "p-home",
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "good-waiting",
+   "kind": "good",
+   "capture": {
+    "title": "Wait for Acme to sign",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "WAITING",
+     "next_action": "Check the Acme reply on Monday",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "[P1]",
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": "p-acme",
+    "disposition": "WAITING",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "good-lowercase-disposition",
+   "kind": "good",
+   "capture": {
+    "title": "Draft the audit agenda",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": " next ",
+     "next_action": "Draft the agenda",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "[P2]",
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": "p-audit",
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "good-subtasks-cap",
+   "kind": "good",
+   "capture": {
+    "title": "Plan the kitchen remodel",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "List the rooms",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "[P6]",
+     "complexity": "subtasks",
+     "subtasks": [
+      "Step 0",
+      "Step 1",
+      "Step 2",
+      "Step 3",
+      "Step 4",
+      "Step 5",
+      "Step 6",
+      "Step 7",
+      "Step 8",
+      "Step 9",
+      "Step 10",
+      "Step 11"
+     ]
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": "p-home",
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null,
+    "subtasks_len": 8
+   }
+  },
+  {
+   "id": "good-extra-prose-around-json",
+   "kind": "good",
+   "capture": {
+    "title": "Call the supplier",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": "Here you go:\n{\"disposition\": \"NEXT\", \"next_action\": \"Call the supplier\", \"confidence\": \"high\", \"rationale\": \"Because.\", \"project_match\": null, \"complexity\": \"single\"}\nDone.",
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "pin-fuzzy-full-outcome",
+   "kind": "pin-fuzzy",
+   "capture": {
+    "title": "Quote for Acme",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Send the quote",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "Close the Acme Robotics quote",
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": "p-acme",
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "pin-fuzzy-two-word-loose",
+   "kind": "pin-fuzzy",
+   "capture": {
+    "title": "Find engineers",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Post the job",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "Hire engineers",
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": "p-hire",
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "pin-fuzzy-one-word-none",
+   "kind": "pin-fuzzy",
+   "capture": {
+    "title": "Marketing task",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Draft a post",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "Marketing",
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "bad-p-out-of-range",
+   "kind": "bad-token",
+   "capture": {
+    "title": "Do something",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Do the first step",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "[P99]",
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "bad-p-parked-project",
+   "kind": "bad-token",
+   "capture": {
+    "title": "Plan the trade show",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Do the first step",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "[P7]",
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "bad-p-negative",
+   "kind": "bad-token",
+   "capture": {
+    "title": "Do something else",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Do the first step",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "[P-1]",
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "bad-p-letters",
+   "kind": "bad-token",
+   "capture": {
+    "title": "Do a third thing",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Do the first step",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "[Pabc]",
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "bad-p-empty-brackets",
+   "kind": "bad-token",
+   "capture": {
+    "title": "Do a fourth thing",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Do the first step",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "[]",
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "bad-p-number-not-string",
+   "kind": "bad-token",
+   "capture": {
+    "title": "Do a fifth thing",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Do the first step",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": 1,
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "outside-unknown-project-name",
+   "kind": "outside-list",
+   "capture": {
+    "title": "Plan the rover launch",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Do the first step",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "Launch the Mars rover program",
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "outside-parked-project-name",
+   "kind": "outside-list",
+   "capture": {
+    "title": "Trade show booth",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Do the first step",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "Old trade show plan",
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "never-folder-token",
+   "kind": "space-folder",
+   "capture": {
+    "title": "Hardware bench setup",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Do the first step",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "[D2]",
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "never-space-token",
+   "kind": "space-folder",
+   "capture": {
+    "title": "Engineering offsite",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Do the first step",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "[D1]",
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "never-space-name",
+   "kind": "space-folder",
+   "capture": {
+    "title": "Engineering offsite two",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Do the first step",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "Engineering",
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "never-folder-name",
+   "kind": "space-folder",
+   "capture": {
+    "title": "Hardware shelf",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Do the first step",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "Hardware",
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "never-space-folder-path",
+   "kind": "space-folder",
+   "capture": {
+    "title": "Sales key accounts review",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Do the first step",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "Sales > Key accounts",
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null
+   }
+  },
+  {
+   "id": "confidence-low",
+   "kind": "confidence",
+   "capture": {
+    "title": "Call the supplier about lead time",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Call the supplier",
+     "confidence": "low",
+     "rationale": "Because.",
+     "project_match": null,
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null,
+    "confidence": "low"
+   }
+  },
+  {
+   "id": "confidence-medium",
+   "kind": "confidence",
+   "capture": {
+    "title": "Call the supplier about lead time",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Call the supplier",
+     "confidence": "medium",
+     "rationale": "Because.",
+     "project_match": null,
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null,
+    "confidence": "medium"
+   }
+  },
+  {
+   "id": "confidence-high",
+   "kind": "confidence",
+   "capture": {
+    "title": "Call the supplier about lead time",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Call the supplier",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": null,
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null,
+    "confidence": "high"
+   }
+  },
+  {
+   "id": "confidence-certain",
+   "kind": "confidence",
+   "capture": {
+    "title": "Call the supplier about lead time",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Call the supplier",
+     "confidence": "certain",
+     "rationale": "Because.",
+     "project_match": null,
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null,
+    "confidence": "medium"
+   }
+  },
+  {
+   "id": "confidence-missing",
+   "kind": "confidence",
+   "capture": {
+    "title": "Call the supplier again",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "Call the supplier",
+     "rationale": "Because.",
+     "project_match": null,
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "llm",
+    "fallback_reason": null,
+    "confidence": "medium"
+   }
+  },
+  {
+   "id": "fail-truncated-length",
+   "kind": "fallback",
+   "capture": {
+    "title": "Email Acme the quote",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": "{\"disposition\": \"NEXT\", \"next_action\": \"Email Acme\", \"confid",
+    "finish_reason": "length",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "heuristic",
+    "fallback_reason": "truncated"
+   }
+  },
+  {
+   "id": "fail-truncated-but-stop",
+   "kind": "fallback",
+   "capture": {
+    "title": "Email Acme the quote again",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": "{\"disposition\": \"NEXT\", \"next_action\": \"Email Acme\", \"confid",
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "heuristic",
+    "fallback_reason": "bad_json"
+   }
+  },
+  {
+   "id": "fail-empty-content",
+   "kind": "fallback",
+   "capture": {
+    "title": "Email Acme a note",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": "",
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "heuristic",
+    "fallback_reason": "bad_json"
+   }
+  },
+  {
+   "id": "fail-empty-content-length",
+   "kind": "fallback",
+   "capture": {
+    "title": "Email Acme a long note",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": "",
+    "finish_reason": "length",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "heuristic",
+    "fallback_reason": "truncated"
+   }
+  },
+  {
+   "id": "fail-prose-only",
+   "kind": "fallback",
+   "capture": {
+    "title": "Email Acme a card",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": "Sorry, I cannot help with that.",
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "heuristic",
+    "fallback_reason": "bad_json"
+   }
+  },
+  {
+   "id": "fail-json-array",
+   "kind": "fallback",
+   "capture": {
+    "title": "Email Acme a list",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": "[1, 2, 3]",
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "heuristic",
+    "fallback_reason": "bad_json"
+   }
+  },
+  {
+   "id": "fail-unknown-disposition",
+   "kind": "fallback",
+   "capture": {
+    "title": "Email Acme a file",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "ARCHIVE",
+     "next_action": "Archive it",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "[P1]",
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "heuristic",
+    "fallback_reason": "unknown_disposition"
+   }
+  },
+  {
+   "id": "fail-missing-disposition",
+   "kind": "fallback",
+   "capture": {
+    "title": "Email Acme a form",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "next_action": "Do it"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "heuristic",
+    "fallback_reason": "unknown_disposition"
+   }
+  },
+  {
+   "id": "fail-empty-next-action-next",
+   "kind": "fallback",
+   "capture": {
+    "title": "Email Acme a doc",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "NEXT",
+     "next_action": "",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "[P1]",
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "heuristic",
+    "fallback_reason": "empty_next_action"
+   }
+  },
+  {
+   "id": "fail-blank-next-action-project",
+   "kind": "fallback",
+   "capture": {
+    "title": "Email Acme a deck",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": {
+     "disposition": "PROJECT",
+     "next_action": "   ",
+     "confidence": "high",
+     "rationale": "Because.",
+     "project_match": "[P1]",
+     "complexity": "single"
+    },
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "heuristic",
+    "fallback_reason": "empty_next_action"
+   }
+  },
+  {
+   "id": "fail-timeout",
+   "kind": "fallback",
+   "capture": {
+    "title": "Email Acme a link",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": "",
+    "finish_reason": "stop",
+    "raises": "timeout"
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "heuristic",
+    "fallback_reason": "timeout"
+   }
+  },
+  {
+   "id": "fail-provider-error",
+   "kind": "fallback",
+   "capture": {
+    "title": "Email Acme a photo",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": "",
+    "finish_reason": "stop",
+    "raises": "error"
+   },
+   "llm_on": true,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "heuristic",
+    "fallback_reason": "error"
+   }
+  },
+  {
+   "id": "llm-off-no-reason",
+   "kind": "fallback",
+   "capture": {
+    "title": "Email Acme a chart",
+    "description": ""
+   },
+   "tree": "company",
+   "model": {
+    "content": "",
+    "finish_reason": "stop",
+    "raises": null
+   },
+   "llm_on": false,
+   "expect": {
+    "project": null,
+    "disposition": "NEXT",
+    "clarified_by": "heuristic",
+    "fallback_reason": null
+   }
+  }
+ ]
+}

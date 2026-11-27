@@ -105,18 +105,9 @@ def world():
         pytest.skip("TENANT_LADDER_DATABASE_URL unset")
     admin_url = make_url(w._URL)
     dedicated = f"{admin_url.database}_deldefault"
-    w._drop_database(admin_url, dedicated)
-    with create_engine(admin_url, isolation_level="AUTOCOMMIT").connect() as c:
-        c.execute(text(f'CREATE DATABASE "{dedicated}"'))
+    w._clone_promoted_database(admin_url, dedicated)
     ded_admin_url = admin_url.set(database=dedicated)
     eng = create_engine(ded_admin_url, future=True)
-    with eng.begin() as conn:
-        apply_ladder(conn)
-    for phase in ("01_add_columns.sql", "02_backfill.sql", "03_constraints.sql",
-                  "04_policies.sql"):
-        with eng.begin() as conn, open(os.path.join(w._GENERATED, phase),
-                                       encoding="utf-8") as fh:
-            w._exec_sql_file(conn, fh.read())
     with create_engine(ded_admin_url, isolation_level="AUTOCOMMIT").connect() as c:
         for role, pw in ((_APP_ROLE, _APP_PW), (_OWNER_ROLE, _OWNER_PW)):
             c.execute(text(

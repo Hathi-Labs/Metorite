@@ -6,6 +6,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
+import { refuseUnsafePath } from "@/lib/gatewayPath";
 
 export const dynamic = "force-dynamic";
 
@@ -17,10 +18,22 @@ export async function POST(
   if (me instanceof NextResponse) return me;
   try {
     const { sessionId } = await params;
+    const refused = refuseUnsafePath([sessionId]);
+    if (refused) return refused;
 
     // Forward the multipart body to the gateway
     const upstream = `${GATEWAY_URL}/agent/workspace/${sessionId}/upload`;
-    const formData = await req.formData();
+    // A body the proxy cut (or a broken multipart) makes formData() throw.
+    // Say so plainly: never forward a half body (task 3811).
+    let formData: FormData;
+    try {
+      formData = await req.formData();
+    } catch {
+      return NextResponse.json(
+        { error: "The file is too large or the upload was cut. Try a smaller file." },
+        { status: 413 },
+      );
+    }
 
     const upstreamHeaders = await gatewayHeaders();
     // Don't set Content-Type — fetch will set it with boundary for multipart

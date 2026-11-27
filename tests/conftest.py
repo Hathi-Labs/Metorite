@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import signal
 
 import pytest
 
@@ -77,6 +78,29 @@ def _isolate_write_artifact_context():
         yield
     finally:
         reset_artifact_context(token)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_the_run_binding():
+    """Start every test with NO run binding, and restore it after.
+
+    The run binding (``acb_common.bind_run_context``: the member, its
+    ``member_verified`` flag, the run and the agent) lives in structlog's
+    ContextVars. A synchronous test that binds it binds it on the main
+    thread's context, which every later test shares. Since MCP-C3 the
+    integration filter of a run that names nobody reads that binding
+    (``executor._bound_run_member``). So a member that one test left bound
+    would filter the credentials of a later test that expects none, and the
+    failure would depend on the order of the tests.
+    """
+    try:
+        from acb_common import clear_run_context, run_context_scope
+    except ImportError:  # acb_common unavailable — nothing to isolate
+        yield
+        return
+    with run_context_scope():
+        clear_run_context()
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -308,6 +332,110 @@ def _sweep_scratch_organizations():
         print(f"\nH-91 sweep could not run: {exc!r}")
     finally:
         eng.dispose()
+
+
+@pytest.fixture(autouse=True)
+def _reset_the_access_tables_latch():
+    """Start and end every test with the access-tables latch OFF.
+
+    ``acb_auth.access._tables_missing`` is a process-wide latch. The first
+    ``resolve_access`` that fails with "does not exist" sets it, and from
+    then on every member in the process resolves to ``is_active=False``
+    without a query.
+
+    Measured 2026-11-01 (task 1332, pr-check run 41305223510, shard 4, and
+    a replay of that shard in the metorite-ci distro).
+    ``test_delegated_artifact_card.py`` ran an agent run whose access read
+    met a dropped database ("database acb_tenant_h3rls does not exist"), and
+    it left the latch set. Four admit tests in
+    ``test_h3_rls_promotion_rehearsal.py`` and ``test_h6_identity_shadow.py``
+    failed later in the shard, and passed alone. Nineteen suites guarded the
+    latch one by one. This guard covers every test.
+
+    ``sys.modules`` and not an import, so a test that never loads
+    ``acb_auth`` pays nothing. Fence:
+    ``tests/unit/test_cross_test_state_guards.py``.
+    """
+    import sys
+
+    access = sys.modules.get("acb_auth.access")
+    if access is not None:
+        access._tables_missing = False
+    yield
+    access = sys.modules.get("acb_auth.access")
+    if access is not None:
+        access._tables_missing = False
+
+
+@pytest.fixture(autouse=True)
+def _restore_the_database_url():
+    """End every test with the DATABASE_URL it started with.
+
+    ``tests/unit/_tenant_ladder.py::tenant_engine_scope`` points the shared
+    engine at a DSN through DATABASE_URL, and writes the old value back on
+    exit. Two scopes open in two concurrent tasks write back in the order
+    they finish. In the same replay (task 1332),
+    ``test_crm_z10d_modules_r8.py`` left DATABASE_URL naming its dedicated
+    database, and the module then dropped that database. Each later scope
+    saved and restored the stale value, so every later engine in the process
+    pointed at a database that did not exist.
+
+    The value at the start of a test already holds what a module or session
+    fixture set, so a fixture of a wider scope keeps its DSN. Fence:
+    ``tests/unit/test_cross_test_state_guards.py``.
+    """
+    before = os.environ.get("DATABASE_URL")
+    yield
+    if before is None:
+        os.environ.pop("DATABASE_URL", None)
+    else:
+        os.environ["DATABASE_URL"] = before
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config):
+    # CIV-15b (task 2187). pyproject.toml sets ``timeout_method = "signal"``,
+    # and Windows has no SIGALRM, so pytest-timeout stopped every run with an
+    # INTERNALERROR before the first test. The command line option wins over
+    # the ini value, so a platform with no SIGALRM takes ``thread``. Linux and
+    # CI keep ``signal``. Fence: tests/unit/test_pytest_timeout_platform.py.
+    if config.getoption("timeout_method", None) is None and not hasattr(signal, "SIGALRM"):
+        config.option.timeout_method = "thread"
+    config.addinivalue_line(
+        "markers",
+        "direct_arm_guard: the test runs the real guard of the direct AI arm "
+        "(task 3554), so _allow_the_direct_ai_arm does not replace it",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _allow_the_direct_ai_arm(request, monkeypatch):
+    """Let a unit test take the direct AI arm (local litellm), as before task 3554.
+
+    ``acb_llm.routed.refuse_direct_arm`` closes the direct arm outside
+    ``ACB_ENV=dev``, and the suite runs as production. Many tests stub
+    litellm with routing off and pin the direct arm, so this fixture replaces
+    ``direct_arm_allowed`` with an allow. It does NOT set ``ACB_ENV=dev``,
+    because dev also opens the fail-closed auth rule of ``acb_auth.deps``.
+
+    A test that proves the refusal carries the ``direct_arm_guard`` marker,
+    and runs the real guard. Fence: the classes that ``refuse_direct_arm``
+    names in ``tests/unit/test_internal_ai_is_routed.py``.
+
+    The fixture imports the guard module itself, so a test that imports
+    ``acb_llm`` only in its body still gets the allow. ``acb_llm`` loads
+    litellm, once for each process. A tree with no ``acb_llm`` skips.
+    """
+    if request.node.get_closest_marker("direct_arm_guard") is not None:
+        yield
+        return
+    try:
+        from acb_llm import routed
+    except ImportError:  # acb_llm unavailable: no direct arm to allow
+        yield
+        return
+    monkeypatch.setattr(routed, "direct_arm_allowed", lambda: True)
+    yield
 
 
 @pytest.fixture(autouse=True)

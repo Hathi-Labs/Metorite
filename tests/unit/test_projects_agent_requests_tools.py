@@ -8,7 +8,7 @@ What this file holds:
 
 * ``waiting_agent_requests`` is a read. It asks for the ``awaiting`` runs, shows
   the task number and title, the agent, the request in plain words, its age and
-  the link to the task card. It keeps the order of the route (newest first);
+  the link to the task card. It keeps the order of the route (oldest first);
 * text that an agent or a person wrote is fenced as data;
 * it writes nothing and shows no card;
 * THE FENCE. No tool of the skill calls the archive approval or the answer
@@ -95,7 +95,7 @@ async def test_it_lists_each_request_with_task_agent_age_and_card_link(monkeypat
     assert writes(calls) == []
 
 
-async def test_it_keeps_the_order_of_the_route_newest_first(monkeypatch) -> None:
+async def test_it_keeps_the_order_of_the_route_oldest_first(monkeypatch) -> None:
     _gateway(monkeypatch, [_run(T1, ago=timedelta(minutes=1)), _run(T2, ago=timedelta(days=3))])
     out = await skill_projects.waiting_agent_requests()
     assert out.index(T1) < out.index(T2)
@@ -108,6 +108,7 @@ async def test_it_asks_for_the_awaiting_runs_only(monkeypatch) -> None:
     out = await skill_projects.waiting_agent_requests()
     ask = [c for c in calls if c["path"] == "/projects/agent-runs"]
     assert len(ask) == 1 and ask[0]["params"]["status"] == "awaiting"
+    assert ask[0]["params"]["order"] == "oldest"
     assert T1 in out and T2 not in out, "a finished run is not a request"
 
 
@@ -161,21 +162,82 @@ async def test_agent_runs_switched_off_get_a_plain_answer(monkeypatch) -> None:
 #: ``/projects/agent-runs`` with no trailing slash, so it is not matched.
 ANSWER_PATHS = ("archive-approval", "agent-runs/")
 
+#: A tool whose name says "answer" and that answers no agent request.
+#: `answer_decision` (WS-ALN ALN-2a) answers a decision row on
+#: `/projects/decisions/{id}/answer`. A person confirms its card, and
+#: `no_person_present()` refuses a run with no person first. The tests
+#: `test_answer_decision_*` in `test_decisions_tool.py` hold both facts.
+#: SW-43c (agent_coordination.md §3.9): `change_agent_answer` takes back or
+#: changes the member's OWN answer, before an agent reads it. It needs a live
+#: answer, so it answers no question that waits. It refuses the answer to an
+#: archive request (D-OP-13) and a run with no person, before any read.
+#: `test_agent_answer_tools.py` holds it.
+NAMED_ANSWER_TOOLS = frozenset({
+    "answer_decision", "change_agent_answer", "answer_agent_question"})
+
+#: SW-43c. The run paths that ONE module may name, each whole: the read of one
+#: run, which names the question and the answer on the card, and the two
+#: routes of the member's own answer. The activity post, the approval and
+#: every other path under a run stay unnamed in every module.
+NAMED_RUN_PATHS: dict[str, frozenset[str]] = {
+    "guarded.py": frozenset({
+        "agent-runs/{rid}",
+        "agent-runs/{rid}/answer/withdraw",
+        "agent-runs/{rid}/answer/replace",
+    }),
+    # WS-55 EA-18d (spec §12.8): `answer_agent_question` reads one run and posts
+    # ONE `prompt` to its activities, after a card. The server decides who may
+    # answer (`may_answer_run`). It never names `archive-approval`.
+    "question_answers.py": frozenset({"agent-runs/{rid}", "agent-runs/{rid}/activities"}),
+}
+
+ACTIVITIES_MODULE = "question_answers.py"
+
+#: The whole path at a hit, up to the end of its string.
+_RUN_PATH = re.compile(r"agent-runs/[^\"'\s`]*")
+
+
+def _offenders(name: str, text: str) -> list[str]:
+    """Each answer path that the text of module *name* names and may not."""
+    found: list[str] = []
+    for word in ANSWER_PATHS:
+        for hit in re.finditer(re.escape(word), text):
+            whole = _RUN_PATH.match(text, hit.start())
+            if whole and whole.group(0) in NAMED_RUN_PATHS.get(name, frozenset()):
+                continue
+            line = text.count("\n", 0, hit.start()) + 1
+            found.append(f"{name}:{line} names {whole.group(0) if whole else word}")
+    return found
+
 
 def test_no_tool_of_the_skill_calls_an_answer_route() -> None:
-    """The source of every module of the skill names neither answer route."""
+    """The source of every module of the skill names no answer route, but the
+    three whole paths of :data:`NAMED_RUN_PATHS` in their one module."""
     offenders: list[str] = []
     for path in sorted(SKILL_DIR.glob("*.py")):
         if path.name == "manifest.py":
             continue
-        text = path.read_text(encoding="utf-8")
-        for word in ANSWER_PATHS:
-            for hit in re.finditer(re.escape(word), text):
-                line = text.count("\n", 0, hit.start()) + 1
-                offenders.append(f"{path.name}:{line} names {word}")
+        offenders += _offenders(path.name, path.read_text(encoding="utf-8"))
     assert not offenders, "a chat tool reaches an answer route (EA3-40, D-OP-13):\n  " + "\n  ".join(
         offenders
     )
+
+
+def test_the_named_run_paths_admit_nothing_more() -> None:
+    """SW-43c. The exception is exact: another path under a run, the same
+    path in another module, and the approval still fail. Mutation: match the
+    paths by a prefix -> the activity post passes -> red."""
+    post = 'post(f"/projects/agent-runs/{rid}/activities", body)'
+    assert _offenders("guarded.py", post) == ["guarded.py:1 names agent-runs/{rid}/activities"]
+    read = 'get(f"/projects/agent-runs/{rid}")'
+    assert _offenders("guarded.py", read) == []
+    assert _offenders("reads.py", read) == ["reads.py:1 names agent-runs/{rid}"]
+    approve = 'post(f"/projects/agent-runs/{rid}/archive-approval")'
+    assert len(_offenders("guarded.py", approve)) == 2
+    # Each named path is in the module, so a stale name cannot hide a new one.
+    text = (SKILL_DIR / "guarded.py").read_text(encoding="utf-8")
+    for whole in NAMED_RUN_PATHS["guarded.py"]:
+        assert f'/projects/{whole}"' in text, whole
 
 
 def test_the_answer_routes_belong_to_no_tool() -> None:
@@ -184,7 +246,12 @@ def test_the_answer_routes_belong_to_no_tool() -> None:
     assert "EA3-40" in approval.reason and "D-OP-13" in approval.reason
     post = m.route_for("POST", "/projects/agent-runs/{run_id}/activities")
     assert post is not None and post.tool not in set(skill_projects.__all__)
-    assert not {n for n in skill_projects.__all__ if "approve" in n or "answer" in n}
+    assert not {
+        n for n in skill_projects.__all__
+        if ("approve" in n or "answer" in n) and n not in NAMED_ANSWER_TOOLS
+    }
+    # Each named tool still exists, so a stale name cannot hide a new one.
+    assert NAMED_ANSWER_TOOLS <= set(skill_projects.__all__)
 
 
 def test_the_list_is_a_read_the_agent_offers_and_the_instructions_never_claim_to_approve() -> None:
@@ -199,3 +266,16 @@ def test_the_list_is_a_read_the_agent_offers_and_the_instructions_never_claim_to
     text = (agent / "instructions.md").read_text(encoding="utf-8")
     assert "waiting_agent_requests" in text
     assert "No tool of yours can" in text and "Give the link" in text
+
+
+def test_the_one_module_that_posts_an_answer_reaches_two_routes_only() -> None:
+    """EA-18d. `question_answers.py` reads one run and posts to its activities,
+    and it never names the archive approval."""
+    lines = (SKILL_DIR / ACTIVITIES_MODULE).read_text(encoding="utf-8").splitlines()
+    assert not [ln for ln in lines if "archive-approval" in ln]
+    code = [ln for ln in lines if "agent-runs/" in ln and ('f"' in ln)]
+    assert code, "the module no longer reaches a run"
+    for ln in code:
+        assert "agent-runs/{rid}" in ln, ln
+        assert ln.strip().startswith(
+            ("payload = (await get(", "again = ((await get(", "written = await post(")), ln

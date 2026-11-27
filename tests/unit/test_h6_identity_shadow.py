@@ -68,6 +68,7 @@ from acb_auth.access import (
 from gateway.routes.admin._common import _PROVISION_MEMBER_SQL
 from sqlalchemy import create_engine, text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._tenant_ladder import apply_ladder, tenant_engine_scope
 
 _SNAPSHOT = os.environ.get("_ACB_TENANT_LADDER_URL_AT_LAUNCH")
@@ -325,9 +326,7 @@ class TestTheDualWriteShape:
     def test_this_suite_is_named_in_the_ci_skip_guard(self):
         """The hand-list discovers NOTHING (pr-check.yml's own warning): an R8
         suite absent from it skips silently and leaves the job green."""
-        workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(
-            encoding="utf-8")
-        assert "tests/unit/test_h6_identity_shadow.py" in workflow
+        assert "tests/unit/test_h6_identity_shadow.py" in r8_lists.must_run()
 
     def test_the_owning_spec_names_this_suite(self):
         spec = (_ROOT / "project-docs/specs/saas_multitenancy_handover.md").read_text(
@@ -646,7 +645,7 @@ class TestTheReadCutoverFlag:
 
     def test_the_flag_defaults_off_and_reads_the_env_idiom(self, monkeypatch):
         """UNSET = OFF, fail-closed, and only the truthy tokens flip it on — the
-        same idiom as `deps._refuse_llm_key_identity`."""
+        same idiom as `deps._trust_unverified_sso_headers`."""
         from acb_auth.access import identity_cutover_enabled
 
         monkeypatch.delenv("IDENTITY_CUTOVER", raising=False)
@@ -1457,6 +1456,22 @@ def _reset_identity_read_flag():
     token = access_mod._identity_read_failed.set(False)
     yield
     access_mod._identity_read_failed.reset(token)
+
+
+@pytest.fixture(autouse=True)
+def _access_tables_present(monkeypatch):
+    """Every test here starts with ``access._tables_missing`` OFF.
+
+    The latch is process-wide. An earlier suite that resolved access against a
+    database with no access tables sets it, and then ``resolve_access`` returns
+    ``is_active=False`` with no query. ``TestFlagOnAndFlagOffAgree`` then
+    reads "the OFF path did not admit the member" (task 1332, pr-check run
+    41305223510). ``tests/conftest.py`` clears it for every test too. This
+    suite states its own precondition all the same.
+    """
+    import acb_auth.access as access_mod
+
+    monkeypatch.setattr(access_mod, "_tables_missing", False)
 
 
 class TestAFailedReadIsNotNoMembership:

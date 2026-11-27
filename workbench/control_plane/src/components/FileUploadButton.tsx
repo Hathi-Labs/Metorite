@@ -40,6 +40,12 @@ type UploadState =
 interface Props {
   sessionId: string;
   onUploadComplete?: (files: FileEntry[]) => void;
+  /**
+   * The chat composer's way (projects_ai_chat §30.4, IMG-1). The picked files
+   * go to the caller, which draws a chip and starts the upload. The button
+   * uploads nothing itself.
+   */
+  onPick?: (files: File[]) => void;
   className?: string;
   /** If true, renders as a full drop-zone instead of just an icon button. */
   dropZone?: boolean;
@@ -53,6 +59,7 @@ class UploadRefused extends Error {}
 export default function FileUploadButton({
   sessionId,
   onUploadComplete,
+  onPick,
   className = "",
   dropZone = false,
   children,
@@ -120,7 +127,10 @@ export default function FileUploadButton({
       accept={CHAT_UPLOAD_ACCEPT_ATTR}
       className="hidden"
       onChange={(e) => {
-        if (e.target.files) handleFiles(e.target.files);
+        if (e.target.files) {
+          if (onPick) onPick(Array.from(e.target.files));
+          else handleFiles(e.target.files);
+        }
         e.target.value = "";
       }}
     />
@@ -132,18 +142,21 @@ export default function FileUploadButton({
       <>
         {fileInput}
         <button
+          type="button"
           onClick={handleClick}
           disabled={state.phase === "uploading"}
           title={state.phase === "error" ? state.message : "Attach files"}
           aria-label="Attach files"
-          className={`rounded-lg p-2 transition-colors ${className} ${
+          // GL-6: in glass, Attach is a round icon button on the secondary fill.
+          // It matches the round Send beside it. The size comes from `className`.
+          className={`rounded-lg p-2 transition-colors glass:rounded-full glass:p-0 glass:bg-secondary glass:glass-press ${className} ${
             state.phase === "uploading"
               ? "text-warning cursor-wait"
               : state.phase === "success"
                 ? "text-success"
                 : state.phase === "error"
                   ? "text-destructive"
-                  : "text-muted-foreground hover:text-foreground hover:bg-secondary"
+                  : "text-muted-foreground hover:text-foreground hover:bg-secondary glass:text-foreground glass:hover:bg-muted"
           }`}
         >
           {state.phase === "uploading" ? (
@@ -164,7 +177,7 @@ export default function FileUploadButton({
 
   return (
     <div
-      className={`relative rounded-lg border-2 border-dashed transition-colors ${
+      className={`relative rounded-lg border-2 border-dashed transition-colors glass:rounded-[16px] ${
         dragOver
           ? "border-primary bg-primary/10"
           : state.phase === "error"

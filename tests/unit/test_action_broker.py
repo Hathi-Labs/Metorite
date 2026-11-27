@@ -190,6 +190,41 @@ def test_execute_runs_registered_handler():
     assert len(seen) == 1
 
 
+def test_execute_reports_a_refusal_of_the_handler_as_a_failure():
+    """H-328 part (b): the handler of ``workflow.resume_run`` answers
+    ``{"ok": False, "error": ...}`` for a run that it will not resume. That is a
+    refusal. ``execute`` used to wrap every answer as ``ok: True``, so the
+    approver saw a success when nothing ran."""
+
+    async def _handler(p: ActionProposal):
+        return {"ok": False, "error": "This run stopped at its gate."}
+
+    register_action_handler("clickup.comment", _handler)
+    res = asyncio.run(execute(_mk("clickup.comment", Disposition.AUTO_APPLY)))
+    assert res["ok"] is False
+    assert res["error"] == "This run stopped at its gate."
+    assert res["result"] == {"ok": False, "error": "This run stopped at its gate."}
+
+
+def test_execute_keeps_a_handler_answer_without_ok_false_as_a_success():
+    """Only an explicit ``ok: False`` is a refusal. The other handlers return
+    a result with no ``ok`` key, or ``ok: True``, and both stay a success."""
+
+    async def _handler(p: ActionProposal):
+        return {"sent": 0, "failed": 0, "total": 0}
+
+    register_action_handler("clickup.comment", _handler)
+    res = asyncio.run(execute(_mk("clickup.comment", Disposition.AUTO_APPLY)))
+    assert res == {"ok": True, "result": {"sent": 0, "failed": 0, "total": 0}}
+
+    async def _handler_ok(p: ActionProposal):
+        return {"ok": True, "pushed": 1}
+
+    register_action_handler("clickup.comment", _handler_ok)
+    res = asyncio.run(execute(_mk("clickup.comment", Disposition.AUTO_APPLY)))
+    assert res["ok"] is True and res["result"] == {"ok": True, "pushed": 1}
+
+
 # ── Approval queue: enqueue / submit routing / approve / reject ───────────────
 
 def _pending_row(action: str = "clickup.comment") -> dict:
@@ -275,6 +310,25 @@ def test_approve_runs_handler_and_marks_applied(_fake_db):
     # last status write transitions the row to 'applied'
     updates = _fake_db.statements("UPDATE")
     assert any(p and p.get("status") == "applied" for p in updates)
+
+
+def test_approve_shows_the_approver_a_refusal_of_the_handler(_fake_db):
+    """H-328 part (b), the approval door. A paused run that the resume refuses
+    ran nothing. The approver must read that, and the row must not say
+    ``applied``."""
+    row = _pending_row()
+    _fake_db.select_rows = [row]
+
+    async def _h(p):
+        return {"ok": False, "error": "This run stopped at its gate."}
+
+    register_action_handler("clickup.comment", _h)
+    res = asyncio.run(approve(str(row["id"]), "user:vijay"))
+    assert res["ok"] is False and res["status"] == "failed"
+    assert res["error"] == "This run stopped at its gate."
+    updates = _fake_db.statements("UPDATE")
+    assert any(p and p.get("status") == "failed" for p in updates)
+    assert not any(p and p.get("status") == "applied" for p in updates)
 
 
 def test_approve_non_pending_is_refused(_fake_db):

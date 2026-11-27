@@ -9,6 +9,8 @@ broker handler — no Postgres, no LLM.
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from typing import Any, ClassVar
 
 from gateway.routes.workflows import broker_handlers, service
@@ -270,10 +272,21 @@ def test_reconcile_orphaned_runs_fails_running_only(monkeypatch) -> None:
     paused runs must survive restarts (resume rebuilds from the snapshot)."""
     fake = _FakeReconcileDb(rowcount=3)
 
-    async def fake_get_db() -> Any:
-        return fake
+    async def fake_orgs() -> list[str]:
+        return ["org-1"]
 
-    monkeypatch.setattr(service, "_get_db", fake_get_db)
+    @asynccontextmanager
+    async def fake_tenant_session(org: str | None = None) -> Any:
+        yield fake
+        await fake.commit()
+
+    # H-328 part (b): the sweep binds each LISTED org. "org-1" is listed.
+    monkeypatch.setattr(service, "_organization_ids", fake_orgs)
+    monkeypatch.setattr(service, "_tenant_session", fake_tenant_session)
+    monkeypatch.setattr(
+        service.unattended, "get_settings",
+        lambda: SimpleNamespace(workflow_unattended_orgs="org-1"),
+    )
     assert asyncio.run(service.reconcile_orphaned_runs()) == 3
     assert fake.committed
     sql = " ".join(fake.statements)

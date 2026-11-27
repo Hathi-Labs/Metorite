@@ -68,6 +68,8 @@ import {
 } from "./mockData";
 import { isInToday } from "./today";
 import { browserTimeZone, isCalendarItem, isTickled, localDate } from "./utils";
+import { rememberMemberZone } from "@/lib/shell/memberZone";
+import { zoneToSave } from "@/lib/shell/saveZone";
 import {
   clarifyChangesSharedTask,
   clarifyQueue,
@@ -116,7 +118,6 @@ import {
   fetchPeople,
   fetchUntriaged,
   fetchOrgPeople,
-  createPerson,
   updatePerson,
   uploadResume,
   fetchProjects,
@@ -957,7 +958,16 @@ interface TaskState {
    *  `focusedItemId` (the task-detail modal). */
   focusSessionId: string | null;
   focusMinimized: boolean;
-  enterFocusSession: (id: string) => void;
+  /** `minimized` starts the session as the dock, for a start from My Day,
+   *  where the Now card shows the timer (CC-4). */
+  enterFocusSession: (id: string, opts?: { minimized?: boolean }) => void;
+  /** Put one task row into `items`, or replace the row it already holds. A
+   *  session started where the store never hydrated (My Day, a Projects
+   *  panel) reads its task by id and adopts it here (CC-4). */
+  adoptItem: (item: MyTask) => void;
+  /** Hydrate once when the store still holds the demo rows, so a write from a
+   *  page that never hydrated reaches the gateway (CC-4). */
+  ensureLive: () => Promise<void>;
   minimizeFocusSession: () => void;
   expandFocusSession: () => void;
   /** Remove the session UI. The component stops the remote timer (actualEnd)
@@ -992,6 +1002,8 @@ interface TaskState {
   quickCaptureSeed: string;
   /** The seed came from the AI, so the box says "Filled by AI" (§6.4 rule 2). */
   quickCaptureSeedFromAI: boolean;
+  /** The box opens on the AI split's review of the seed (My Day, CC-1). */
+  quickCaptureReview: boolean;
   /** the focused clarify overlay (keyboard-driven inbox processing). */
   clarifyModalOpen: boolean;
   // ⚠️ `workspacesModalOpen` / `openWorkspaces` / `closeWorkspaces` were
@@ -1410,9 +1422,9 @@ interface TaskState {
   confirmStagePrompt: (statusId: string) => void;
   /** Escape or a click outside: the card goes back, and nothing is written. */
   cancelStagePrompt: () => void;
-  /** People view: lazy roster load + create/edit + résumé ingestion. */
+  /** People view: lazy roster load + edit + résumé ingestion. A person enters only through Organisation (owner directive 2026-09-21), so there is no create. */
   loadPeople: (opts?: { q?: string; includeInactive?: boolean }) => Promise<void>;
-  savePerson: (id: string | null, body: OrgPersonWrite) => Promise<OrgPerson>;
+  savePerson: (id: string, body: OrgPersonWrite) => Promise<OrgPerson>;
   uploadPersonResume: (
     id: string,
     file: File
@@ -1466,13 +1478,16 @@ interface TaskState {
   /** Per-user task-manager settings (AI tiers + toggles). Defaults render
    *  immediately; hydrate() refreshes from the gateway. */
   settings: TaskSettings;
+  /** True once `hydrate` read the saved settings. Before that, `settings.timezone` is the
+   *  placeholder "UTC", and no client may judge the saved zone by it (RX-7). */
+  settingsLoaded: boolean;
   /** Patch settings (optimistic; persisted via PUT /tasks/settings). */
   updateSettings: (patch: Partial<TaskSettings>) => Promise<void>;
   settingsModalOpen: boolean;
   openSettings: () => void;
   closeSettings: () => void;
   /** `seed` types words into the box first, for a member to check (NS-4b). */
-  openQuickCapture: (mode: "single" | "sweep", seed?: string, fromAI?: boolean) => void;
+  openQuickCapture: (mode: "single" | "sweep", seed?: string, fromAI?: boolean, review?: boolean) => void;
   closeQuickCapture: () => void;
   /** Open/close the clarify overlay for an item. */
   openClarify: (id: string) => void;
@@ -1520,6 +1535,9 @@ function applySelection(next: SelectionState): Pick<
     selectMode: selected.size > 0,
   };
 }
+
+/** The one in-flight `ensureLive` hydrate, shared by every caller. */
+let liveBoot: Promise<void> | null = null;
 
 export const useTaskStore = create<TaskState>((set, get) => ({
   // Start EMPTY + loading. hydrate() fills from the gateway (live) or, only if
@@ -1587,8 +1605,27 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   focusMinimized: false,
   // Entering the room also closes the task-detail modal (z-[80], which would
   // otherwise sit ON TOP of the z-[70] room it just launched).
-  enterFocusSession: (id) =>
-    set({ focusSessionId: id, focusMinimized: false, focusedItemId: null }),
+  enterFocusSession: (id, opts) =>
+    set({
+      focusSessionId: id,
+      focusMinimized: opts?.minimized ?? false,
+      focusedItemId: null,
+    }),
+  adoptItem: (item) =>
+    set((s) => ({
+      items: s.items.some((i) => i.id === item.id)
+        ? s.items.map((i) => (i.id === item.id ? item : i))
+        : [...s.items, item],
+    })),
+  ensureLive: async () => {
+    if (get().backend === "live") return;
+    liveBoot ??= get()
+      .hydrate()
+      .finally(() => {
+        liveBoot = null;
+      });
+    await liveBoot;
+  },
   minimizeFocusSession: () => set({ focusMinimized: true }),
   expandFocusSession: () => set({ focusMinimized: false }),
   clearFocusSession: () => set({ focusSessionId: null, focusMinimized: false }),
@@ -1682,7 +1719,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     set((s) => {
       const counted = s.clarifiedThisSession.has(id);
       const clarifiedThisSession = new Set(s.clarifiedThisSession).add(id);
-      const nextInbox = clarifyQueue(s.items, s.fromProjectIds, clarifiedThisSession)[0];
+      const nextInbox = clarifyQueue(s.items, clarifiedThisSession)[0];
       return {
         clarifiedThisSession,
         selectedItemId: nextInbox?.id ?? null,
@@ -1855,6 +1892,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   quickCaptureMode: "single",
   quickCaptureSeed: "",
   quickCaptureSeedFromAI: false,
+  quickCaptureReview: false,
   clarifyModalOpen: false,
   processedThisSession: 0,
   clarifiedThisSession: new Set(),
@@ -2166,8 +2204,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }
   },
 
-  openQuickCapture: (mode, seed = "", fromAI = false) =>
+  openQuickCapture: (mode, seed = "", fromAI = false, review = false) =>
     set({
+      quickCaptureReview: review && seed.trim() !== "",
       quickCaptureOpen: true,
       quickCaptureMode: mode,
       quickCaptureSeed: seed.slice(0, 500),
@@ -2335,7 +2374,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       }
       const clarifiedThisSession = new Set(s.clarifiedThisSession).add(id);
       // advance to the OLDEST remaining item of the walk — GTD processes FIFO
-      const nextInbox = clarifyQueue(items, s.fromProjectIds, clarifiedThisSession)[0];
+      const nextInbox = clarifyQueue(items, clarifiedThisSession)[0];
       return {
         items,
         projects,
@@ -2431,11 +2470,12 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   /** LIVE member refresh for one workspace (delegate-picker freshness). */
   skipToNextInbox: () =>
     set((s) => {
-      // The same walk Clarify advances through: captures and untriaged
-      // "From Projects" rows together, oldest first.
-      const inbox = clarifyQueue(s.items, s.fromProjectIds, s.clarifiedThisSession);
-      if (inbox.length <= 1) return s; // nothing else to move to
+      // The same walk Clarify advances through: the captures, oldest first
+      // (D170, INB-1). A row opened from My tasks is off the walk, so skip
+      // moves to the first capture.
+      const inbox = clarifyQueue(s.items, s.clarifiedThisSession);
       const idx = inbox.findIndex((i) => i.id === s.selectedItemId);
+      if (inbox.length === 0 || (idx >= 0 && inbox.length === 1)) return s; // nothing else to move to
       const next = inbox[(idx + 1) % inbox.length];
       return { selectedItemId: next.id };
     }),
@@ -3176,7 +3216,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   savePerson: async (id, body) => {
-    const saved = id ? await updatePerson(id, body) : await createPerson(body);
+    const saved = await updatePerson(id, body);
     set((s) => {
       const exists = s.orgPeople.some((p) => p.id === saved.id);
       return {
@@ -3961,13 +4001,19 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       void get().loadLedProjects();
       // Settings load in parallel — defaults already render, so the panes are
       // usable before they arrive.
-      const settings = await fetchTaskSettings().catch(() => get().settings);
-      set({ settings });
+      let read = true;
+      const settings = await fetchTaskSettings().catch(() => {
+        read = false;
+        return get().settings;
+      });
+      set({ settings, settingsLoaded: read });
       // F5 — the gateway reads "today" for the start-date rule in the zone
-      // stored here. Store this browser's zone when it differs, as
-      // `CalendarView` does, so the inbox and `isTickled` agree on the date.
-      const zone = browserTimeZone();
-      if (zone && zone !== settings.timezone) void get().updateSettings({ timezone: zone });
+      // stored here. RX-7: store this browser's zone only when the saved zone is
+      // unset or the "UTC" default (`zoneToSave`, the shell's one rule), so a
+      // zone the member chose in the Calendar settings is never overwritten on
+      // an open. A failed read judges nothing.
+      const zone = read ? zoneToSave(settings.timezone, browserTimeZone()) : null;
+      if (zone) void get().updateSettings({ timezone: zone });
       // ⚠️ The auto-sync-on-open fire was REMOVED 2026-08-25 (D52, WS-39 S1
       // repair round 1). It ran `syncNow()` whenever any `task_accounts` row
       // survived — which, after the retirement, is the ONLY state it could be
@@ -3992,6 +4038,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }
   },
 
+  settingsLoaded: false,
   settings: {
     chatModel: "tier-powerful",
     clarifyModel: "tier-balanced",
@@ -4025,6 +4072,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     if (get().backend !== "live") return;
     try {
       set({ settings: await updateTaskSettings(patch) });
+      // The page's one memory of the saved zone follows (`memberZone.ts`, RX-7).
+      if (patch.timezone) rememberMemberZone(patch.timezone);
     } catch {
       /* next hydrate reconciles */
     }

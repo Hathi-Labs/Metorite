@@ -1,10 +1,10 @@
-"""The fake gateway for the CRM and Projects turns of the measure (WS-67 OA-8e).
+"""The fake gateway for the CRM, Projects and Studio turns of the measure (WS-67 OA-8e, TS-5a).
 
 The email turns have their own fake (:mod:`.mailbox`). It replaces the verbs
 of the email module. The CRM tools and the Projects tools reach the gateway
 through ``httpx``, so this fake sits one level lower: it answers at the
-transport. A request to the gateway URL for ``/crm/...`` or ``/projects/...``
-gets an answer from the fixtures below. Every other request goes on to the
+transport. A request to the gateway URL for ``/crm/...``, ``/projects/...`` or
+``/studio/...`` gets an answer from the fixtures below. Every other request goes on to the
 transport that the harness installed first (the scripted trap, or the live
 allow-list), so a stray send still fails the run.
 
@@ -28,9 +28,11 @@ __all__ = [
     "CRM_DEALS",
     "CRM_STAGES",
     "NODE_WEB",
+    "STUDIO_SKILLS",
     "WorkGateway",
     "cid",
     "pid",
+    "sid",
 ]
 
 
@@ -102,6 +104,36 @@ CRM_TIMELINE: dict[str, list[dict[str, Any]]] = {
 _CRM_TABLES = {"leads": CRM_LEADS, "deals": CRM_DEALS, "contacts": CRM_CONTACTS,
                "organizations": CRM_ORGS}
 
+# ── Studio (TS-5a) ───────────────────────────────────────────────────────────
+
+
+def sid(n: int) -> str:
+    """A fixed Studio id (a skill or a package). The tools refuse an id that is not a UUID."""
+    return f"7a5e0000-0000-4000-8000-{n:012d}"
+
+
+#: Three skills of the member: two drafts and one that is live.
+STUDIO_SKILLS: tuple[dict[str, Any], ...] = (
+    {"id": sid(1), "name": "Weekly digest writer", "slug": "weekly-digest-writer",
+     "state": "draft", "current_version": 2, "updated_at": "2026-11-10T09:00:00Z"},
+    {"id": sid(2), "name": "Quote follow-up", "slug": "quote-follow-up",
+     "state": "published", "current_version": 3, "updated_at": "2026-11-08T09:00:00Z"},
+    {"id": sid(3), "name": "Meeting notes tidy", "slug": "meeting-notes-tidy",
+     "state": "draft", "current_version": 1, "updated_at": "2026-11-12T09:00:00Z"},
+)
+STUDIO_PACKAGES: tuple[dict[str, Any], ...] = (
+    {"id": sid(11), "manifest_id": "expense-tracker", "name": "Expense tracker",
+     "status": "published", "live_version": 1},
+)
+STUDIO_TEMPLATES: tuple[dict[str, Any], ...] = (
+    {"id": "visitor-log", "name": "Visitor log", "purpose": "Sign visitors in and out."},
+)
+#: The actions that a Studio read of the catalog lists. Class A is a plain record action.
+STUDIO_ACTIONS: tuple[dict[str, Any], ...] = (
+    {"id": "records.create", "class": "A", "source": "catalog"},
+    {"id": "records.update", "class": "A", "source": "catalog"},
+)
+
 # ── Projects ─────────────────────────────────────────────────────────────────
 
 NODE_SPACE = pid(1)
@@ -170,8 +202,23 @@ NODES = {NODE_SPACE: _node(NODE_SPACE, _SPACE_NAME),
          NODE_MOBILE: _node(NODE_MOBILE, "Mobile App", NODE_SPACE)}
 
 
+#: The route of ``resolve_person`` (``acb_skills.profile_tools.ROUTE``) and its prefix.
+PROFILE_PREFIX = "/auth/me/assistant-profile/"
+PROFILE_RESOLVE_ROUTE = "/auth/me/assistant-profile/resolve-person"
+
+#: The People directory of the synthetic org, for ``resolve_person``: the members that
+#: the owners list of the fake names (``Member`` is the caller, so it is left out).
+DIRECTORY: tuple[tuple[str, str], ...] = (("Kiran", KIRAN),)
+
+
+#: The reads that the run makes for the context of a turn when the production flags are on
+#: (``--mirror-prod``): the Knowledge index (``knowledge_tools.index_block``) and the CRM facts
+#: (``org_facts_tools.crm_facts_for_run``). The synthetic org has no space and no fact.
+TURN_READS: dict[str, Any] = {"/knowledge/spaces": {"spaces": []}, "/org/facts": {"facts": []}}
+
+
 class WorkGateway:
-    """Answers the ``/crm`` and ``/projects`` routes of the measure's chats."""
+    """Answers the ``/crm``, ``/projects`` and ``/studio`` routes of the measure's chats."""
 
     def __init__(self, *, mode: str = "native") -> None:
         #: ``native`` or ``mirror`` (CRM Mirror mode, where Zoho owns the records).
@@ -187,7 +234,7 @@ class WorkGateway:
         return os.environ.get("GATEWAY_URL", "http://localhost:8080").rstrip("/")
 
     def install(self, mp: Any) -> None:
-        """Answer the gateway's ``/crm`` and ``/projects`` at the transport.
+        """Answer the gateway's ``/crm``, ``/projects`` and ``/studio`` at the transport.
 
         The harness installed a transport guard first. A request that is not
         for the fake goes to that guard, so a stray send still fails."""
@@ -198,7 +245,7 @@ class WorkGateway:
             url = str(request.url)
             if url.startswith(fake.base() + "/"):
                 path = request.url.path
-                if path.startswith(("/crm/", "/projects/")):
+                if path.startswith(("/crm/", "/projects/", "/studio/", PROFILE_PREFIX, *TURN_READS)):
                     return fake.answer(request, path)
             return await previous(transport, request)
 
@@ -232,7 +279,66 @@ class WorkGateway:
     def route(self, method: str, path: str, params: dict[str, Any], body: Any) -> Any:
         if path.startswith("/crm/"):
             return self._crm(method, path, params, body)
+        if path.startswith("/studio/"):
+            return self._studio(method, path, params)
+        if path.startswith(PROFILE_PREFIX):
+            return self._profile(method, path, params)
+        if method == "GET" and path in TURN_READS:
+            return TURN_READS[path]
         return self._projects(method, path, params, body)
+
+    @staticmethod
+    def _profile(method: str, path: str, params: dict[str, Any] | None = None) -> Any:
+        """``GET /auth/me/assistant-profile/resolve-person`` (task 2874, cases 1 and 6).
+
+        The People directory of the synthetic org holds :data:`DIRECTORY`. A name that
+        equals a person's first name or full name (any case) matches that member, as the
+        gateway's member arm does. Any other name, such as "Vineeta" of case 6, matches
+        nobody. The shapes are the gateway's (``profile_tools.format_answer``). Before the
+        pilot of 2026-11-18 the fake said nobody for EVERY name, so the forward of case 1
+        asked who Kiran is: a harness fault, not a product fault."""
+        if method != "GET" or path != PROFILE_RESOLVE_ROUTE:
+            return None
+        asked = str((params or {}).get("name") or "").strip().lower()
+        hits = [{"name": name, "email": email} for name, email in DIRECTORY
+                if asked and asked in (name.lower(), name.split()[0].lower())]
+        if len(hits) == 1:
+            return {"matches": hits, "total": 1, "source": "member", "directory": True,
+                    "mail_searched": True, "truncated": False}
+        return {"matches": [], "total": 0, "directory": True, "mail_searched": True,
+                "truncated": False}
+
+    @staticmethod
+    def _studio(method: str, path: str, params: dict[str, Any]) -> Any:
+        """The Studio READ routes that the chat tools call (TS-5a). A write has
+        no fixture on purpose: no Studio chat of the measure writes, so a write
+        route answers 404 and shows in ``unknown``."""
+        rest = path[len("/studio/"):].strip("/").split("/")
+        if method != "GET":
+            return None
+        if rest == ["skills"]:
+            return {"skills": list(STUDIO_SKILLS)}
+        if rest[0] == "skills" and len(rest) == 2:
+            skill = next((r for r in STUDIO_SKILLS if r["id"] == rest[1]), None)
+            if skill is None:
+                return 404, {"detail": "not found"}
+            return {"skill": skill, "version": {
+                "version": skill["current_version"], "content_hash": "0" * 64,
+                "body": {"description": f"{skill['name']} (synthetic)",
+                         "instructions": "Do the task.", "actions": []}}}
+        if rest == ["packages"]:
+            return {"packages": list(STUDIO_PACKAGES), **(
+                {"admin": False} if params.get("scope") == "org" else {})}
+        if rest[0] == "packages" and len(rest) == 2:
+            package = next((r for r in STUDIO_PACKAGES if r["id"] == rest[1]), None)
+            if package is None:
+                return 404, {"detail": "not found"}
+            return {"package": package, "objects": [], "actions": []}
+        if rest == ["templates"]:
+            return {"templates": list(STUDIO_TEMPLATES)}
+        if rest == ["actions"]:
+            return {"actions": list(STUDIO_ACTIONS)}
+        return None
 
     def _crm(self, method: str, path: str, params: dict[str, Any], body: Any) -> Any:
         rest = path[len("/crm/"):].strip("/").split("/")
@@ -437,7 +543,7 @@ class WorkGateway:
         if rest == "my/inbox":
             rows = [t for t in TASKS if ME in t["assignees"] and not t.get("completed_at")]
             return {"rows": rows, "total": len(rows)}
-        if rest in ("my/reminders", "intake"):
+        if rest in ("my/reminders", "intake", "reports"):
             return {"rows": [], "total": 0}
         if rest == "my/areas":
             return {"rows": []}
@@ -448,10 +554,15 @@ class WorkGateway:
                 {"name": "Kiran", "assignee": KIRAN, "load": {"open": 0}}], "agents": []}
         if rest == "people/names":
             return {"names": {ANANYA: "Ananya", ME: "Member", KIRAN: "Kiran"}}
+        if rest == "people/reach":
+            return {"not_reachable": []}  # task 3636: each fake person can open a task
         if rest == "needs-attention":
             return {"rows": [], "total": 0, "counts": {}}
         if rest == "agent-runs":
             return {"rows": []}
+        if rest == "plan/order":
+            # SW-68a: no epic in the fake, so the plan keeps the input order.
+            return {"order": [], "plan": {}}
         return None
 
     def _node_read(self, parts: list[str]) -> Any:
@@ -467,6 +578,16 @@ class WorkGateway:
             return self._summary(parts[1])
         if tail in (["types"], ["tags"], ["fields"]):
             return {"rows": []}
+        if tail == ["vocabulary", "reach"]:
+            # HRD-9a: one root space, and one project in it. N of 1 gives no reach
+            # line on a card, so no scripted answer changes.
+            return {"root_id": NODE_SPACE, "root_name": _SPACE_NAME, "projects": 1}
+        if tail == ["cycles"]:
+            # WS-39 SP-5a: no cycle is planned in the fake.
+            return {"project_id": parts[1], "cycles": []}
+        if tail == ["authorities"]:
+            # WS-ALN ALN-4: no page is pinned in the fake.
+            return {"rows": [], "total": 0}
         return None
 
     @staticmethod
@@ -487,6 +608,20 @@ class WorkGateway:
 
     @staticmethod
     def _list(params: dict[str, Any]) -> dict[str, Any]:
+        # H-254: the subtask count asks for `parent_task_id` + `include_descendants`.
+        # The route returns the tasks UNDER the parent (never the parent, never the
+        # whole list). This dataset has no task with a parent, so the walk finds none.
+        if params.get("include_descendants") and params.get("parent_task_id"):
+            parent, under, rows = str(params["parent_task_id"]), set(), []
+            grew = True
+            while grew:
+                grew = False
+                for t in TASKS:
+                    if t["id"] not in under and t.get("parent_task_id") in ({parent} | under):
+                        under.add(t["id"])
+                        rows.append(t)
+                        grew = True
+            return {"rows": rows, "total": len(rows)}
         rows = list(TASKS)
         if params.get("project_id") and params["project_id"] != NODE_SPACE:
             rows = [t for t in rows if t["project_id"] == params["project_id"]]

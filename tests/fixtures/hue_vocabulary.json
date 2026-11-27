@@ -1,0 +1,66 @@
+{
+ "_note": "PJP-1 parity fixture. tests/unit/test_hues.py and statusAccent.test.ts both compare their tables with it.",
+ "gray_saturation": 0.3,
+ "bands": [
+  [
+   "red",
+   345,
+   15
+  ],
+  [
+   "amber",
+   15,
+   65
+  ],
+  [
+   "green",
+   65,
+   170
+  ],
+  [
+   "blue",
+   170,
+   250
+  ],
+  [
+   "violet",
+   250,
+   345
+  ]
+ ],
+ "aliases": {
+  "grey": "gray",
+  "gray": "gray",
+  "red": "red",
+  "amber": "amber",
+  "orange": "amber",
+  "yellow": "amber",
+  "green": "green",
+  "blue": "blue",
+  "violet": "violet",
+  "purple": "violet",
+  "slate": "gray",
+  "sky": "blue",
+  "cyan": "blue",
+  "emerald": "green",
+  "teal": "green",
+  "rose": "red",
+  "pink": "violet"
+ },
+ "hex": {
+  "#EAB308": "amber",
+  "#6366F1": "blue",
+  "#F97316": "amber",
+  "#94A3B8": "gray",
+  "#CBD5E1": "gray",
+  "#16A34A": "green",
+  "#EC4899": "violet",
+  "#abc": "gray",
+  "#f00": "red",
+  "#0f0": "green",
+  "#00f": "blue",
+  "#f0f": "violet",
+  "#00ae91": "blue",
+  "#004237": "blue"
+ }
+}

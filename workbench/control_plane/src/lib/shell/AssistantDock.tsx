@@ -9,7 +9,8 @@
  * `full` covers the page column, with the session list at the left and the
  * chat's files at the right. The element changes its classes, not its
  * place in the tree, so `AgentChat` never remounts on a switch: a running
- * reply, the draft and the scroll stay. On a phone it is a full-screen sheet.
+ * reply, the draft and the scroll stay. On a phone it is a full-height sheet
+ * that ends at the bottom bar's top edge (MOB-9), so the tabs stay in reach.
  *
  * **The peek strip** (CF-1, `chat_first_surface.md` §4.1, flag
  * `NEXT_PUBLIC_CHAT_FIRST`). On a phone the sheet can drop to a 56 px strip
@@ -39,9 +40,9 @@
  *
  * **The app switch** (owner, 2026-10-12). When the live run of the open chat
  * calls the specialist of another app the member holds, the page moves to
- * that app, once per run and per app. A full view on a desktop becomes the
- * side panel for that moment, so the member sees the app. A toast offers
- * the way back.
+ * that app, once per run and per app. Only beside the side panel, and with
+ * no toast (owner, 2026-11-01, `runMovesPage`): the full view and a phone
+ * keep the chat as it is, since the chat reaches the whole app from there.
  *
  * Fences (R7): `assistant.test.ts`, `chatHistory.test.ts`, `seams.test.ts`.
  */
@@ -59,7 +60,6 @@ import { useSteadyRunView } from "@/components/RunStatusRow";
 import Button from "@/components/ui/Button";
 import { PillNavigateContext } from "@/components/ui/EntityPill";
 import { Input } from "@/components/ui/Input";
-import { useToast } from "@/components/ui/Toast";
 import type { ArtifactEntry } from "@/hooks/useAgentChat";
 import { useThreadNeedsInput } from "@/hooks/useActiveSessions";
 import { useChatMemories } from "@/hooks/useChatMemories";
@@ -71,6 +71,7 @@ import {
   formDurationMs,
   isMoving,
   isShown,
+  morphAskBox,
   pickFocusReturn,
   swapPanelForm,
   usePanelPhase,
@@ -78,8 +79,10 @@ import {
 } from "@/lib/panelMotion";
 import { SidePanelFitContext } from "@/lib/sidePanelFit";
 import {
+  MadeChats,
   NO_PICK,
   carriedText,
+  chatToShow,
   findSession,
   recoverRefused,
   recoveredNotice,
@@ -88,18 +91,27 @@ import {
 } from "@/lib/railSessions";
 import { CHAT_GONE_NOTICE } from "@/lib/runActivity";
 import { IDLE_RUN, runViewText, type RunStatus } from "@/lib/runStatus";
+import type { ContinueOpened } from "@/lib/chatContinue";
 import {
   boundChatScope,
+  createSession,
   deleteSession,
   enrichSession,
   fetchAndMergeSessionsFromDb,
   getSessions,
   renameSession,
   setSessionArchived,
+  setSessionPinned,
+  setSessionTopic,
+  upsertSession,
   type ChatSession,
+  type SessionTopic,
 } from "@/lib/sessions";
 
 import { requestBrief } from "./briefTurn";
+import { claimHello, opensHello, requestHello, takeBeforeHello } from "./buddyHello";
+import GuideOffer from "./GuideOffer";
+import { offerGuide, startGuide, useGuideAllowed } from "./guide";
 import { chatFirstOn } from "./chatFlag";
 import {
   REMINDER_HOLD_MS,
@@ -112,13 +124,17 @@ import {
   requestReminderOpen,
   useKnownReminder,
 } from "./reminderOpen";
-import { markChatFirstMessage } from "./shellPrefs";
+import { markBuddyHello, markChatFirstMessage, setHelloPending, useChatPinOn, useChatTopicsOn } from "./shellPrefs";
+import TopicChip from "./TopicChip";
+import { chipLabel, topicMenuIsOpen, topicMoveFailed } from "./chatTopics";
 import {
   dockFloats,
+  dockFoldsNav,
   ASSISTANT_AGENT,
   ASSISTANT_NAME,
   ASSISTANT_PERSONA,
   CHAT_FIRST_PERSONA_LINE,
+  GUIDE_PERSONA_LINE,
   BRIEF_HOLD_MS,
   DOCK_MAX,
   DOCK_MIN,
@@ -128,10 +144,13 @@ import {
   holdsForBrief,
   consumeAsk,
   consumeDraft,
+  consumeHello,
+  draftFor,
   consumeReminder,
   effectiveMode,
   focusAssistant,
   markBriefAsked,
+  guideAct,
   navigateAct,
   onChatLink,
   runMovesPage,
@@ -144,6 +163,7 @@ import {
   setAssistantSession,
   setDockWidth,
   barMayJoin,
+  joinOnlyTakes,
   stripText,
   surfaceContext,
   switchTarget,
@@ -155,8 +175,15 @@ import {
   type AssistantMode,
 } from "./assistant";
 import { surfaceOfPane } from "./surface";
-import { chatFilesHref, mergeFileEntry, sessionTitle } from "./chatHistory";
+import { chatFilesHref, isPinned, mergeFileEntry, sessionTitle } from "./chatHistory";
 import { SessionPicker } from "./SessionPicker";
+import { ContinuedMark } from "./ContinuedMark";
+import { useDocumentLook } from "@/lib/theme/glassTokens";
+import { useOptionalSidebarFold } from "@/components/SidebarFold";
+import { LAYER_CLASS } from "@/lib/layers";
+
+/** The gap round a glass card on the grouped frame: `FULL_MAIN`'s 8 px margins. */
+const GLASS_CARD_INSET = 8;
 
 /** How long a first visit waits for the server's list before it starts a chat. */
 const MERGE_WAIT_MS = 3_000;
@@ -187,13 +214,39 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
   // From 0, not from the store: a `/chat?do=new-chat` that asked for a new
   // chat before this mounted must still be honoured (review of 2026-10-12).
   const handledFresh = useRef(0);
-  const refresh = useCallback(() => setSessions(getSessions()), []);
+  // The chats this page made. A second tab of the member shares the stored
+  // list and can drop one in a racing save, so this page puts it back
+  // (`MadeChats.keep`). Without it the chat has no row, and the panel waits.
+  const madeHere = useRef(new MadeChats());
+  // Each look also keeps the newest stored copy of this page's chats, so a
+  // put-back has their latest title and count (task 2459).
+  const refresh = useCallback(() => {
+    const list = getSessions();
+    madeHere.current.note(list);
+    setSessions(list);
+  }, []);
+  // The newest chat this page made, for the render. A full storage can refuse
+  // the list write, and then `sessions` never holds the chat. The dock shows
+  // this object and never waits for storage (production bug, 2026-11-06).
+  const [lastMade, setLastMade] = useState<ChatSession | null>(null);
+  const makeFresh = useCallback(() => {
+    const pick = startFresh(ASSISTANT_AGENT);
+    madeHere.current.set(pick.session.id, { ...pick.session });
+    setLastMade({ ...pick.session });
+    return pick;
+  }, []);
+  const keepMine = useCallback((id: string) => madeHere.current.keep(id), []);
 
   /* eslint-disable react-hooks/set-state-in-effect */
-  // A new member or org: nothing carries over.
+  // A new member or org: nothing carries over. Only a real change counts. In
+  // development React runs this effect two times on a mount, and a reset on
+  // the second run forgot the chat that the effect below made (task 2459).
   useEffect(() => {
-    setRestoredId(null);
-    setNotice(null);
+    if (madeHere.current.bind(scope)) {
+      setRestoredId(null);
+      setNotice(null);
+      setLastMade(null);
+    }
     refresh();
   }, [scope, refresh]);
 
@@ -202,7 +255,11 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
     if (!scope || !open) return;
     let cancelled = false;
     fetchAndMergeSessionsFromDb()
-      .then((merged) => { if (!cancelled) setSessions(merged); })
+      .then((merged) => {
+        if (cancelled) return;
+        madeHere.current.note(merged);
+        setSessions(merged);
+      })
       .catch(() => {});
     return () => { cancelled = true; };
   }, [scope, open]);
@@ -212,7 +269,7 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
     if (!scope || !open) return;
     if (st.freshSeq !== handledFresh.current) {
       handledFresh.current = st.freshSeq;
-      const pick = startFresh(ASSISTANT_AGENT);
+      const pick = makeFresh();
       setRestoredId(null);
       setNotice(null);
       setAssistantSession(pick.activeId);
@@ -233,7 +290,7 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
         setAssistantSession(last.id);
       } else {
         setRestoredId(null);
-        setAssistantSession(startFresh(ASSISTANT_AGENT).activeId);
+        setAssistantSession(makeFresh().activeId);
       }
       refresh();
     };
@@ -248,6 +305,22 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
     return () => { cancelled = true; };
   }, [scope, open, st.sessionId, st.freshSeq, refresh]);
 
+  // Keep this page's own chat in the stored list (see `madeHere`). A save
+  // from another tab can drop it at any time, so the storage event asks for
+  // a fresh look, and every look puts the chat back.
+  useEffect(() => {
+    if (!scope || !open) return;
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === null || e.key.endsWith("::sessions")) refresh();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [scope, open, refresh]);
+  useEffect(() => {
+    if (!scope || !open || !st.sessionId || sessions.some((s) => s.id === st.sessionId)) return;
+    if (keepMine(st.sessionId)) refresh();
+  }, [scope, open, st.sessionId, sessions, keepMine, refresh]);
+
   // The bar's words join the open chat only while it is recent. Each ask is
   // decided once, and `AgentChat` gets the words only for the chat the
   // decision named, so an old chat never sends them before the switch.
@@ -260,7 +333,17 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
     // the old chat. A decision for it is lost when the new chat mounts, so
     // the next render decides (owner report, 2026-10-26).
     if (assistantState().sessionId !== st.sessionId) return;
-    const cur = getSessions().find((s) => s.id === st.sessionId);
+    // A chat this page made counts, also when a full storage lost its row.
+    const cur = getSessions().find((s) => s.id === st.sessionId) ?? madeHere.current.get(st.sessionId);
+    // STU-B2c-2c fix round 1: the answer of an approval card goes into the
+    // card's own chat or into no chat. It never opens a fresh chat, because a
+    // new chat lacks the turn that asked. The card then says that the words
+    // did not reach the chat.
+    if (ask.joinOnly) {
+      if (joinOnlyTakes(cur)) setDecided({ seq: ask.seq, sessionId: st.sessionId });
+      else consumeAsk(ask.seq, "lost");
+      return;
+    }
     // An empty chat of the member's own takes the words. Any other chat
     // takes them only if the bar may join it: never a room, never an
     // archived chat, never a stale one.
@@ -281,6 +364,9 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
   useEffect(() => {
     const id = st.sessionId;
     if (!scope || !open || !id || getSessions().some((s) => s.id === id)) return;
+    // This page made the chat. The server may not list it yet, and a full
+    // storage may not hold it, so a look would only find "gone" by mistake.
+    if (madeHere.current.has(id)) return;
     let cancelled = false;
     void findSession(id).then((found) => {
       if (cancelled) return;
@@ -295,7 +381,7 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
   }, [scope, open, st.sessionId, refresh]);
 
   const activeIdForBrief = st.sessionId ?? "";
-  const activeCount = sessions.find((s) => s.id === activeIdForBrief)?.messageCount;
+  const activeCount = chatToShow(sessions, activeIdForBrief, lastMade)?.messageCount;
 
   // A reminder link (WS-66 RM-4, §5.7). `/chat?reminder=<id>` asked for a
   // fresh chat AND the reminder, so the open waits until the effect above
@@ -346,6 +432,64 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
       });
   }, [scope, open, st.reminder, st.freshSeq, activeIdForBrief, activeCount, refresh]);
 
+  // The hello (WS-BUD BUD-1, D177). The landing asked for a fresh chat AND
+  // the hello, so the open waits until that chat exists: the two fresh counts
+  // agree. Then it asks the server once (`claimHello`). The server claims the
+  // stamp first and writes the row only when it won, so a second tab gets a
+  // 204 and an ordinary empty chat. The hold works as for the reminder, so
+  // the chat's first load reads the row. This effect comes before the
+  // brief's: the brief never lands in the hello's chat.
+  useLayoutEffect(() => {
+    if (!scope || !open || !st.hello || !activeIdForBrief || activeCount === undefined) return;
+    if (handledFresh.current !== st.freshSeq) return;
+    const id = activeIdForBrief;
+    consumeHello();
+    if (!claimHello(id)) {
+      setHelloPending(false);
+      return;
+    }
+    setBriefHold(id);
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      setBriefHold((held) => (held === id ? null : held));
+      refresh();
+    };
+    const timer = setTimeout(release, REMINDER_HOLD_MS);
+    // A hello that leaves no row puts the panel back as the landing found it
+    // (BUD-1): closed, on the chat it showed before, and with no empty chat
+    // of its own left in the list.
+    const undoHello = (helloId: string) => {
+      const prior = takeBeforeHello();
+      const own = getSessions().find((s) => s.id === helloId);
+      closeAssistant();
+      madeHere.current.delete(helloId);
+      setLastMade((made) => (made?.id === helloId ? null : made));
+      if (assistantState().sessionId === helloId) setAssistantSession(prior);
+      if (own && !own.messageCount && !own.hasUserMessage) deleteSession(helloId);
+      refresh();
+    };
+    void requestHello(id)
+      .then((posted) => {
+        if (!posted) {
+          // The hello left no row: no open panel and no empty chat stays.
+          // A late answer, after the hold ended, leaves a panel the member
+          // may already use, so it is left as it is.
+          if (!released) undoHello(id);
+          return;
+        }
+        markBuddyHello();
+        keepMine(id);
+        enrichSession(id, { title: posted.title, messageCount: 1, lastPreview: posted.preview });
+      })
+      .finally(() => {
+        clearTimeout(timer);
+        setHelloPending(false);
+        release();
+      });
+  }, [scope, open, st.hello, st.freshSeq, activeIdForBrief, activeCount, refresh, keepMine]);
+
   // The brief as the first turn (CF-5). Asked once per page per day, and
   // only through the rule. The server decides whether a brief exists and
   // writes the row (D-PM-39); a 204 or a fault opens the chat empty.
@@ -357,6 +501,8 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
   useLayoutEffect(() => {
     if (!scope || !open || !activeIdForBrief || activeCount === undefined) return;
     if (st.reminder || opensReminder(activeIdForBrief)) return;
+    // The hello takes the brief's place on its visit (BUD-1).
+    if (st.hello || opensHello(activeIdForBrief)) return;
     if (!wantsBrief({
       chatFirst: surface.chatFirst, phone: surface.phone,
       messageCount: activeCount, askedFor: briefAskedToday(),
@@ -388,7 +534,7 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
         clearTimeout(timer);
         release();
       });
-  }, [scope, open, st.reminder, activeIdForBrief, activeCount, surface.chatFirst, surface.phone, refresh]);
+  }, [scope, open, st.reminder, st.hello, activeIdForBrief, activeCount, surface.chatFirst, surface.phone, refresh]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   // The reminder's context block (RM-4, §5.7 item 4). While its chat is on
@@ -422,9 +568,10 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
   );
   const onSessionRefused = useRestoredSessionGuard(activeId, restoredId, recover);
 
+  // The stored row, or the chat this page made when storage lost it.
   const active = useMemo(
-    () => sessions.find((s) => s.id === activeId) ?? null,
-    [sessions, activeId],
+    () => chatToShow(sessions, activeId, lastMade),
+    [sessions, activeId, lastMade],
   );
 
   const sendable =
@@ -447,6 +594,28 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
     notice: notice ? { text: notice, onDismiss: () => setNotice(null) } : null,
     recoveredInput,
     consumeRecoveredInput: () => setRecoveredInput(undefined),
+    /**
+     * WT-2: open the fresh chat that the pill made. The server made the chat
+     * and chose the words. They go into the composer through the same slot as
+     * a recovered message, so nothing is sent: the member presses Send.
+     */
+    openContinued: (opened: ContinueOpened) => {
+      upsertSession({ ...createSession(ASSISTANT_AGENT), id: opened.sessionId });
+      setRestoredId(null);
+      setNotice(null);
+      setRecoveredInput(opened.text);
+      setAssistantSession(opened.sessionId);
+      refresh();
+      // CO-13: the row made above holds no link. The server's list does, so
+      // merge it now and the "Continued from" line shows at once. A failed
+      // fetch stays silent, as in the effect above.
+      void fetchAndMergeSessionsFromDb()
+        .then((merged) => {
+          madeHere.current.note(merged);
+          setSessions(merged);
+        })
+        .catch(() => {});
+    },
     /** Open a chat the member chose: a refusal of it is an error they see. */
     select: (id: string) => {
       setRestoredId(null);
@@ -455,6 +624,8 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
     },
     remove: (id: string) => {
       deleteSession(id);
+      madeHere.current.delete(id);
+      setLastMade((made) => (made?.id === id ? null : made));
       if (id === activeId) setAssistantSession(null);
       refresh();
     },
@@ -470,6 +641,29 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
       if (!setSessionArchived(id, archived)) return;
       if (archived && id === activeId) openAssistant({ fresh: true });
       refresh();
+    },
+    /**
+     * CO-11: pin a chat for this member, or unpin it. The list draws the
+     * mark at once. A refusal of the server puts it back and draws again.
+     */
+    pin: (id: string, pinned: boolean) => {
+      if (setSessionPinned(id, pinned, refresh)) refresh();
+    },
+    /**
+     * CO-2b: move a chat into a topic for this member, or to "No topic". The
+     * list draws the move at once. A refusal of the server, or a lost
+     * connection, puts it back, and reads the topics again
+     * (`topicMoveFailed`). The words go in the notice line of the chat, never
+     * in a toast (owner, 2026-11-01), and only while that chat is on screen.
+     */
+    move: (id: string, topic: SessionTopic | null) => {
+      const failed = () => {
+        refresh();
+        topicMoveFailed((words) => {
+          if (assistantState().sessionId === id) setNotice(words);
+        });
+      };
+      if (setSessionTopic(id, topic, failed)) refresh();
     },
     activity: (info: { firstUserMessage?: string; lastPreview?: string; messageCount: number }) => {
       if (!activeId) return;
@@ -490,6 +684,47 @@ function ChatTitle({ session }: { session: ChatSession | null }) {
   return (
     <h2 className="min-w-0 flex-1 truncate px-1 text-sm font-semibold text-foreground" title={title}>
       {title}
+    </h2>
+  );
+}
+
+/**
+ * The title as the chat switcher (owner, 2026-11-01): the chat's name with a
+ * chevron, as ChatGPT and Claude draw it. A press opens the list of chats.
+ * It says what it does, where a clock icon did not.
+ */
+function ChatSwitcher({
+  session,
+  open,
+  onToggle,
+  className = "",
+}: {
+  session: ChatSession | null;
+  open: boolean;
+  onToggle: () => void;
+  className?: string;
+}) {
+  const title = session ? sessionTitle(session) : ASSISTANT_NAME;
+  return (
+    <h2 className="min-w-0 flex-1">
+      <Button
+        variant="ghost"
+        size="sm"
+        layout="flex items-center"
+        aria-label={open ? "Hide your chats" : `Your chats. This one: ${title}`}
+        aria-expanded={open}
+        title="Switch chat"
+        data-chat-switcher=""
+        onClick={onToggle}
+        className={`max-w-full min-w-0 gap-1 px-2 text-sm font-semibold text-foreground ${className}`}
+      >
+        <span className="min-w-0 truncate text-foreground">{title}</span>
+        <Icon
+          name="ChevronDown"
+          size={14}
+          className={`shrink-0 text-muted-foreground tech-transition ${open ? "rotate-180" : ""}`}
+        />
+      </Button>
     </h2>
   );
 }
@@ -681,15 +916,32 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   const form: AssistantMode = effectiveMode(st.mode, vw, phone);
   // Read once, as the other shell flags are. Off, a phone has no strip.
   const [chatFirst] = useState(() => chatFirstOn());
+  // CO-11: the shell read says whether the member may pin a chat.
+  const pinsOn = useChatPinOn();
+  // CO-2b: the shell read says whether the chats sort into topics.
+  const topicsOn = useChatTopicsOn();
+  // CO-2b: the phone's "…" control opens the topic menu, and the menu hangs
+  // from that control. It opens FOR one chat (`topicMenuIsOpen`), so a
+  // change of chat closes it, and it never opens again on its own.
+  const [topicMenuFor, setTopicMenuFor] = useState<string | null>(null);
+  const [topicAnchor, setTopicAnchor] = useState<HTMLElement | null>(null);
   const strip = phone && form === "peek";
   // Every desktop has the side panel. Below the floor it floats over the
   // page instead of sitting beside it (owner, 2026-10-14).
   const canDock = !phone;
   const floats = dockFloats(vw, phone);
+  // A tight window gives the page its room: the side panel opens beside it,
+  // and the app sidebar folds to its rail (owner, 2026-11-01). Once per
+  // opening, so the member's own toggle wins after it.
+  const fold = useOptionalSidebarFold();
+  const docked = st.open && form === "dock" && !floats;
+  useEffect(() => {
+    if (docked && dockFoldsNav(vw, phone) && fold && !fold.collapsed) fold.foldForWork();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only when the panel docks
+  }, [docked]);
   const chat = useAssistantChat(st.open, { phone, chatFirst });
   const pathname = usePathname();
   const router = useRouter();
-  const toast = useToast();
   const { access, loading } = useAccess();
   const sections = useMemo(
     () => visibleSections(loading ? null : access.features, access.is_admin),
@@ -704,6 +956,8 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   const [listOpen, setListOpen] = useState(true);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
+  // The full view's chat draws its Share here: one header row (CO-0).
+  const [headSlot, setHeadSlot] = useState<HTMLElement | null>(null);
   const [viewerEntry, setViewerEntry] = useState<FileEntry | null>(null);
   const [fileUpdates, setFileUpdates] = useState<FileEntry[]>([]);
   const rootRef = useRef<HTMLElement>(null);
@@ -714,12 +968,21 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   const moving = isMoving(phase);
 
   const active = chat.active;
+  // CO-2b (review P2-1): a change of chat closes the topic menu. It takes no
+  // focus as it closes, so the composer keeps the focus.
+  const activeChatId = active?.id ?? null;
+  useEffect(() => {
+    setTopicMenuFor(null);
+  }, [activeChatId]);
   const agent = active?.agentName ?? ASSISTANT_AGENT;
   const context = surfaceContext(here, facts);
   // WS-67 OA-7d: the app slug of the pane, sent as `surface` (a hint for the tool packs).
   const surface = surfaceOfPane(here);
   // WS-62 CF-3: the page line joins only with the chat-first flag on.
-  const personaText = chatFirstOn() ? `${ASSISTANT_PERSONA} ${CHAT_FIRST_PERSONA_LINE}` : ASSISTANT_PERSONA;
+  // WS-OB GD-7: the guide line joins only when `guide` of the shell prefs is on.
+  const guideOn = useGuideAllowed();
+  const basePersona = chatFirstOn() ? `${ASSISTANT_PERSONA} ${CHAT_FIRST_PERSONA_LINE}` : ASSISTANT_PERSONA;
+  const personaText = guideOn ? `${basePersona} ${GUIDE_PERSONA_LINE}` : basePersona;
   const persona = agent === ASSISTANT_AGENT ? `${personaText}\n\n${context}` : context;
 
   // A new chat's files start empty.
@@ -824,13 +1087,6 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   const raise = useCallback(() => setAssistantMode("full"), []);
 
   // ── The app switch ──────────────────────────────────────────────────────
-  // A tap on a phone toast's Open: the page, as a tapped link opens one.
-  const openFromPhone = (href: string) => {
-    router.push(href);
-    const how = onChatLink({ phone: true, chatFirst: liveRef.current.chatFirst });
-    if (how === "peek") setAssistantMode("peek");
-    else if (how === "close") closeAssistant();
-  };
   const movedRef = useRef<Set<string>>(new Set());
   const liveRef = useRef({ open: st.open, activeId: chat.activeId, pathname, sections, form, canDock, phone, chatFirst });
   useEffect(() => {
@@ -849,32 +1105,22 @@ function AssistantSurface({ phone }: { phone: boolean }) {
       const target = switchTarget({ name, pathname: live.pathname, sections: live.sections, done: movedRef.current });
       if (!target) return;
       movedRef.current.add(target.href);
-      const back = live.pathname ?? "/";
-      // On a phone the chat stays open, and the toast offers the app
-      // (owner report, 2026-10-22, `runMovesPage`).
-      if (!runMovesPage(live)) {
-        toast.show({
-          key: `assistant-switch-${target.href}`,
-          variant: "success",
-          title: `${ASSISTANT_NAME} is working in ${target.label}`,
-          action: { label: `Open ${target.label}`, onClick: () => openFromPhone(target.href) },
-        });
-        return;
-      }
+      // Only beside the side panel, and with no toast (owner, 2026-11-01,
+      // `runMovesPage`). The full view and a phone keep the chat as it is.
+      if (!runMovesPage(live)) return;
       router.push(target.href);
-      // A full view hides the app it just opened.
-      if (live.form === "full" && live.canDock) setAssistantMode("dock");
-      toast.show({
-        key: `assistant-switch-${target.href}`,
-        variant: "success",
-        title: `Opened ${target.label}`,
-        description: `${ASSISTANT_NAME} is working in ${target.label}.`,
-        action: { label: "Go back", onClick: () => router.push(back) },
-      });
+    },
+    // WS-OB GD-4: the run named a guide. It starts where the page may move
+    // (`guideAct`), and elsewhere the member taps the chip. The store checks the id.
+    onGuide: ({ guideId, threadId }) => {
+      const live = liveRef.current;
+      const act = guideAct({ open: live.open, threadId, activeId: live.activeId, guideId, phone, form: live.form });
+      if (act === "start" && guideId) startGuide(guideId, "agent");
+      else if (act === "offer" && guideId) offerGuide(guideId);
     },
     // WS-62 CF-3: the run opened a page with show_in_app. Once per turn is
     // the server's rule. The client checks the path again and acts.
-    onNavigate: ({ path, why, threadId }) => {
+    onNavigate: ({ path, threadId }) => {
       // Dark until the chat-first flag is on (review of #1197, P1).
       if (!chatFirstOn()) return;
       const live = liveRef.current;
@@ -882,31 +1128,11 @@ function AssistantSurface({ phone }: { phone: boolean }) {
         open: live.open, threadId, activeId: live.activeId, path, sections: live.sections,
         phone, chatFirst: live.chatFirst, form: live.form, canDock: live.canDock,
       });
-      if (!path) return;
-      const label = act.pane?.label;
-      if (act.offer) {
-        // A phone keeps the chat open. The member opens the page from the
-        // toast, if they want it (owner report, 2026-10-22).
-        toast.show({
-          key: `assistant-open-${path}`,
-          variant: "success",
-          title: label ? `${label} is ready` : "A page is ready",
-          description: why || undefined,
-          action: { label: label ? `Open ${label}` : "Open", onClick: () => openFromPhone(path) },
-        });
-        return;
-      }
-      if (!act.push) return;
-      const back = live.pathname ?? "/";
+      // Only beside the side panel, and with no toast (owner, 2026-11-01):
+      // "Opened X" covered the chat and confused. The page itself moving
+      // beside the chat says it.
+      if (!path || !act.push) return;
       router.push(path);
-      if (act.dock) setAssistantMode("dock");
-      toast.show({
-        key: `assistant-open-${path}`,
-        variant: "success",
-        title: label ? `Opened ${label}` : "Opened a page",
-        description: why || undefined,
-        action: { label: "Go back", onClick: () => router.push(back) },
-      });
     },
   });
 
@@ -921,15 +1147,27 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   const shape = phone
     ? strip
       ? // The strip: a row on the bottom nav. The sheet's body stays under it.
-        "assistant-peek-bottom fixed inset-x-0 z-40 overflow-hidden border-t border-border bg-card"
-      : "fixed inset-0 z-50 flex flex-col bg-background glass:bg-card pt-safe pb-safe"
+        `assistant-peek-bottom fixed inset-x-0 ${LAYER_CLASS.peekStrip} overflow-hidden border-t border-border bg-card`
+      : `fixed inset-0 ${LAYER_CLASS.assistantSheet} flex flex-col bg-background glass:bg-card pt-safe`
     : form === "full"
-      ? "absolute inset-0 z-20 flex flex-col bg-background glass:bg-card"
+      ? // In glass the full view is the page's content card (`AppShell`'s
+        // FULL_MAIN): the same 8 px inset, corners and shadow. It takes the
+        // chat's own surface, so its header and the chat are one block. It clips to
+        // its corners, since the chat inside paints a square surface (owner,
+        // 2026-10-31: the bottom of the panel had no edge).
+        `absolute inset-0 ${LAYER_CLASS.assistantDock} flex flex-col bg-background glass:top-2 glass:right-2 glass:bottom-2 glass:rounded-2xl glass:bg-card glass:shadow-card glass:overflow-hidden`
       : floats
         ? // A narrow desktop: the same panel, over the right of the page.
-          "absolute inset-y-0 right-0 z-20 flex max-w-[90%] flex-col border-l border-border bg-card shadow-xl glass:glass-menu-flat glass:border-transparent"
+          // In glass it is a card too, 8 px in from the window's edge.
+          `absolute inset-y-0 right-0 ${LAYER_CLASS.assistantDock} flex max-w-[90%] flex-col border-l border-border bg-card shadow-xl glass:glass-menu-flat glass:border-transparent glass:top-2 glass:right-2 glass:bottom-2 glass:rounded-2xl glass:overflow-hidden`
         : // A wide desktop: the panel sits over the spacer, beside the page.
-          "absolute inset-y-0 right-0 z-20 flex flex-col border-l border-border bg-card glass:border-transparent glass:glass-surface";
+          // In glass it is a second card, 8 px in from the window's edge,
+          // clipped to its corners as the full view is.
+          `absolute inset-y-0 right-0 ${LAYER_CLASS.assistantDock} flex flex-col border-l border-border bg-card glass:border-transparent glass:glass-surface glass:top-2 glass:right-2 glass:bottom-2 glass:rounded-2xl glass:shadow-card glass:overflow-hidden`;
+  // The glass card is 8 px narrower than the spacer, so its left edge stays
+  // where the spacer begins and the gap to the page card is 8 px too.
+  const glassLook = useDocumentLook() === "glass";
+  const dockWidth = glassLook && !floats ? st.width - GLASS_CARD_INSET : st.width;
 
   // ⚠️ The spacer is what the page reflows around, as it does for the
   // sidebar's fold. It keeps the side panel's width under the full view too,
@@ -948,20 +1186,56 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   // at 390 px, and six would leave 90, so Files moves into the chat's "…"
   // control (`chat_first_surface.md` §4.8).
   const phoneChrome = phone && chatFirst;
-  const phoneTap = phoneChrome ? "h-11 w-11" : "";
+  const phoneTap = phoneChrome ? "h-11 w-11 glass:h-11 glass:w-11 glass:pointer-coarse:h-11 glass:pointer-coarse:w-11" : "";
+  // The switcher shows a title, so it keeps the 44 px height and lets the width follow the title (task 1717).
+  const phoneTapTall = phoneChrome ? "h-11 glass:h-11 glass:pointer-coarse:h-11" : "";
+  // CO-11: the chat on screen may take a pin when the server holds it (it
+  // has a message) and it is not archived. An archive takes it out of Pinned.
+  const pinnable = pinsOn && active != null && active.messageCount > 0 && !active.archivedAt;
+  const activePinned = active != null && isPinned(active);
+  // CO-2b: the chat on screen may take a topic when the server holds it (it
+  // has a message) and it is not archived, the rule of the pin. The move is
+  // the member's own.
+  const topicable = topicsOn && active != null && active.messageCount > 0 && !active.archivedAt;
+  const moveActive = (topic: SessionTopic | null) => chat.move(chat.activeId, topic);
+  const topicMenuOpen = topicMenuIsOpen(topicMenuFor, active?.id);
   const moreActs = useMemo(
     () =>
       phoneChrome && chat.activeId
-        ? [{
-            icon: "FolderOpen",
-            label: "This chat's files",
-            onClick: () => {
-              closeAssistant();
-              router.push(chatFilesHref(chat.activeId));
+        ? [
+            {
+              icon: "FolderOpen",
+              label: "This chat's files",
+              onClick: () => {
+                closeAssistant();
+                router.push(chatFilesHref(chat.activeId));
+              },
             },
-          }]
+            // CO-11: the phone's header has no room for a sixth control, so
+            // the pin sits here, beside the files (CF-8).
+            ...(pinnable
+              ? [{
+                  icon: activePinned ? "PinOff" : "Pin",
+                  label: activePinned ? "Unpin this chat" : "Pin this chat",
+                  onClick: () => chat.pin(chat.activeId, !activePinned),
+                }]
+              : []),
+            // CO-2b: the topic menu, for the same reason as the pin. It hangs
+            // from the "…" control of this panel (`data-chat-more`), which
+            // is also the place Escape gives the focus back to.
+            ...(topicable
+              ? [{
+                  icon: "Tag",
+                  label: `Topic: ${chipLabel(active)}`,
+                  onClick: () => {
+                    setTopicAnchor(rootRef.current?.querySelector<HTMLElement>("[data-chat-more]") ?? null);
+                    setTopicMenuFor(chat.activeId);
+                  },
+                }]
+              : []),
+          ]
         : [],
-    [phoneChrome, chat.activeId, router],
+    [phoneChrome, chat, router, pinnable, activePinned, topicable, active],
   );
   const pickerProps = {
     sessions: chat.sessions,
@@ -973,6 +1247,9 @@ function AssistantSurface({ phone }: { phone: boolean }) {
     onRename: chat.rename,
     onArchive: chat.archive,
     onRemove: chat.remove,
+    onPin: chat.pin,
+    pinsOn,
+    topicsOn,
   };
 
   return (
@@ -995,6 +1272,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
     ) : null}
     <section
       ref={rootRef}
+      data-guide="chat.panel"
       data-assistant={st.open ? form : "closed"}
       data-panel-form={motionForm}
       data-panel-phase={phase}
@@ -1003,7 +1281,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
       aria-label={`${ASSISTANT_NAME} assistant`}
       inert={phase === "closed"}
       className={`assistant-panel ${shape}`}
-      style={form === "dock" && !phone ? { width: st.width } : undefined}
+      style={form === "dock" && !phone ? { width: dockWidth } : undefined}
       onTransitionEnd={(e) => {
         if (e.target === e.currentTarget && (e.propertyName === "transform" || e.propertyName === "opacity")) {
           settle();
@@ -1025,43 +1303,54 @@ function AssistantSurface({ phone }: { phone: boolean }) {
         className={strip ? "assistant-peek-body invisible absolute inset-x-0 flex flex-col" : "flex min-h-0 flex-1 flex-col"}
       >
       {phone && chatFirst ? <SheetHandle onPeek={toPeek} /> : null}
+      {/* The header says what each control does (owner, 2026-11-01): the
+          title switches chats, "New" starts one, Files shows this chat's
+          files, and the window controls sit apart, after a rule. */}
       <header className="flex h-11 shrink-0 items-center gap-1 border-b border-border glass:border-transparent px-2">
+        {columnForm ? (
+          // The full view lists the chats in a column: this shows or hides it.
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            icon="PanelLeft"
+            aria-label={pickerShown ? "Hide your chats" : "Your chats"}
+            aria-expanded={pickerShown}
+            title={pickerShown ? "Hide your chats" : "Show your chats"}
+            onClick={() => setListOpen((o) => !o)}
+          />
+        ) : null}
+        {columnForm ? (
+          <ChatTitle session={active} />
+        ) : (
+          <ChatSwitcher session={active} open={pickerShown} onToggle={() => setPickerOpen((o) => !o)} className={phoneTapTall} />
+        )}
         <Button
-          variant="ghost"
-          size="icon-sm"
-          icon="History"
-          aria-label={pickerShown ? "Hide your chats" : "Your chats"}
-          aria-expanded={pickerShown}
-          title="Your chats"
-          className={phoneTap}
-          onClick={() => {
-            if (columnForm) setListOpen((o) => !o);
-            else setPickerOpen((o) => !o);
-          }}
-        />
-        <ChatTitle session={active} />
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          icon="SquarePen"
+          variant="secondary"
+          size={phone ? "icon-sm" : "sm"}
+          icon="Plus"
           aria-label="New chat"
-          title="New chat"
+          title="Start a new chat"
+          data-chat-new=""
           className={phoneTap}
           onClick={() => {
             setPickerOpen(false);
             openAssistant({ fresh: true });
           }}
-        />
+        >
+          {phone ? null : "New"}
+        </Button>
         {columnForm ? (
           <Button
             variant="ghost"
-            size="icon-sm"
-            icon="FolderOpen"
+            size="sm"
+            icon="Files"
             aria-label={filesOpen ? "Hide this chat's files" : "Show this chat's files"}
             aria-pressed={filesOpen}
-            title="Files"
+            title={filesOpen ? "Hide files in this chat" : "Files in this chat"}
             onClick={() => setFilesOpen((o) => !o)}
-          />
+          >
+            Files
+          </Button>
         ) : chat.activeId && !phoneChrome ? (
           // The side panel and the phone have no room for a files column. The
           // chat's files open in Artifacts, and on a desktop the chat stays
@@ -1069,23 +1358,67 @@ function AssistantSurface({ phone }: { phone: boolean }) {
           // on, the phone offers it in the chat's "…" control (CF-8).
           <Button
             variant="ghost"
-            size="icon-sm"
-            icon="FolderOpen"
+            size={phone ? "icon-sm" : "sm"}
+            icon="Files"
             aria-label="Open this chat's files in Artifacts"
-            title="Files"
+            title="Files in this chat"
             onClick={() => {
               if (phone) closeAssistant();
               router.push(chatFilesHref(chat.activeId));
             }}
+          >
+            {phone ? null : "Files"}
+          </Button>
+        ) : null}
+        {topicable && !phoneChrome ? (
+          // CO-2b: the topic of the chat on screen, for this member. A press
+          // opens the menu that moves it. The full view shows the name. The
+          // side panel and a phone have no room for it beside the title, so
+          // they show the icon, whose name says the topic. The chat-first
+          // phone offers it in the chat's "…" control (CF-8).
+          <TopicChip
+            key={active.id}
+            session={active}
+            onMove={moveActive}
+            trigger={columnForm ? "chip" : "icon"}
+            phone={phone}
           />
         ) : null}
+        {topicable && phoneChrome ? (
+          <TopicChip
+            key={active.id}
+            session={active}
+            onMove={moveActive}
+            trigger="none"
+            phone
+            open={topicMenuOpen}
+            onOpenChange={(open) => setTopicMenuFor(open ? chat.activeId : null)}
+            anchor={topicAnchor}
+          />
+        ) : null}
+        {pinnable && !phone ? (
+          // CO-11: the member's own pin of the chat on screen. The phone
+          // offers it in the chat's "…" control (CF-8).
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            icon={activePinned ? "PinOff" : "Pin"}
+            aria-label={activePinned ? "Unpin this chat" : "Pin this chat"}
+            title={activePinned ? "Unpin" : "Pin to the top of your chats"}
+            data-chat-pin={activePinned ? "on" : "off"}
+            onClick={() => chat.pin(chat.activeId, !activePinned)}
+          />
+        ) : null}
+        {columnForm ? <span ref={setHeadSlot} data-dock-head-slot="" className="flex shrink-0 items-center" /> : null}
+        {/* The window controls, apart from the chat's own. */}
+        <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-border" />
         {canDock ? (
           <Button
             variant="ghost"
             size="icon-sm"
             icon={form === "full" ? "Minimize2" : "Maximize2"}
             aria-label={form === "full" ? "Show as a side panel" : "Show full screen"}
-            title={form === "full" ? "Side panel" : "Full screen"}
+            title={form === "full" ? "Back to the side panel" : "Full screen"}
             onClick={() => {
               setPickerOpen(false);
               const next = form === "full" ? "dock" : "full";
@@ -1114,9 +1447,12 @@ function AssistantSurface({ phone }: { phone: boolean }) {
           aria-label={`Close ${ASSISTANT_NAME}`}
           title="Close"
           className={phoneTap}
-          onClick={closeAssistant}
+          // The composer goes back into the Ask bar, where the page has one.
+          onClick={() => morphAskBox("into-bar", closeAssistant)}
         />
       </header>
+      {/* CO-13: which chat this one continues. A row of its own, under the header. */}
+      <ContinuedMark mark={active?.continuedFrom} onOpen={pickerProps.onSelect} />
 
       <div className="relative flex min-h-0 flex-1">
         {columnForm && listOpen ? (
@@ -1164,6 +1500,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
                 sessionId={active.id}
                 visible={st.open}
                 compact={form === "dock"}
+                headSlot={columnForm ? headSlot : null}
                 // CF-8: the sheet's one header row is this dock's. With the
                 // flag on, the chat draws no agent row and no Share row, and
                 // its composer is one field, Attach, "…" and Send. The
@@ -1171,6 +1508,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
                 // the way (`chat_first_surface.md` §4.8).
                 phoneChrome={phoneChrome}
                 moreActs={moreActs}
+                aboveComposer={<GuideOffer />}
                 persona={persona}
                 surface={surface}
                 memories={memories}
@@ -1179,8 +1517,10 @@ function AssistantSurface({ phone }: { phone: boolean }) {
                 onActivity={chat.activity}
                 onArtifact={onArtifact}
                 onSessionRefused={chat.onSessionRefused}
+                onContinueHeld={chat.openContinued}
                 notice={chat.notice}
-                pendingInput={chat.recoveredInput ?? st.draft?.text}
+                pendingInput={chat.recoveredInput ?? draftFor(st.draft, active.id)?.text}
+                pendingInputTyped={!chat.recoveredInput && draftFor(st.draft, active.id)?.typed === true}
                 onPendingInputConsumed={() => {
                   chat.consumeRecoveredInput();
                   consumeDraft();

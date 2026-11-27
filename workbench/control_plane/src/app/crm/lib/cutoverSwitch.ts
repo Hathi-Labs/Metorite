@@ -188,6 +188,17 @@ export const SWITCH_FAILED =
 export const START_FAILED =
   "Metorite did not get an answer. The final sync may run now. Wait a minute, then try again.";
 
+/**
+ * A status read that the browser dropped (an abort when the page loads its
+ * data again, or a network blip) says nothing about the sync. The run goes on,
+ * and the next press waits for it.
+ */
+export const STATUS_LOST =
+  "Metorite lost touch with the final sync. It may still run. Press the button again to wait for it.";
+
+/** A dropped status read is tried this many times before the dialog gives up. */
+export const STATUS_TRIES = 3;
+
 /** The newest run is not the final run any more, so it is not the final sync. */
 export const OTHER_RUN =
   "Another sync started after the final sync. Nothing changed. Press the button again.";
@@ -197,7 +208,7 @@ const SYNC_STOPPED: Record<string, string> = {
   budget: "The final sync stopped, because Zoho's daily credit limit is used up. Try again tomorrow.",
   needs_reconnect: "The final sync stopped, because Zoho asks you to connect again. Reconnect Zoho, then try again.",
   mode_changed: "The CRM changed while the final sync ran. Load the page again.",
-  shutdown: "The final sync stopped, because the server restarted. Try again.",
+  shutdown: "The final sync paused for an update. Try again.",
   stale: "The final sync stopped answering. Try again.",
 };
 
@@ -297,6 +308,20 @@ async function keptRun(
   return now.state === "running" ? { runId: kept, ready: false } : null;
 }
 
+/** One status read, tried up to :data:`STATUS_TRIES` times. It throws the last failure. */
+async function readStatus(deps: SwitchDeps): Promise<CutoverStatus> {
+  let last: unknown;
+  for (let attempt = 0; attempt < STATUS_TRIES; attempt++) {
+    try {
+      return await deps.status();
+    } catch (err) {
+      last = err;
+      if (attempt < STATUS_TRIES - 1) await deps.wait(POLL_MS);
+    }
+  }
+  throw last;
+}
+
 /**
  * Step 4: start the final sync, read the status every 3 seconds until it is
  * ready, then switch with the run that the start began. Returns the result,
@@ -337,7 +362,7 @@ export async function runSwitch(
     let ready = false;
     for (let read = 0; read < POLL_LIMIT && !ready; read++) {
       await deps.wait(POLL_MS);
-      const status = await deps.status();
+      const status = await readStatus(deps);
       if (status.state === "done") ready = true;
       else if (status.run_id !== runId) return { error: OTHER_RUN };
       else if (status.state === "ready") ready = true;
@@ -346,7 +371,7 @@ export async function runSwitch(
     }
     if (!ready) return { error: SYNC_TOO_LONG, runId };
   } catch (err) {
-    return { error: wordsOf(err, syncStoppedWords(null)), runId };
+    return { error: wordsOf(err, STATUS_LOST), runId };
   }
   return commitStep({ ...body, run_id: runId }, deps);
 }

@@ -7,6 +7,10 @@ import { describe, expect, it } from "vitest";
 import {
   MY_NOTES,
   MY_NOTES_CHOICE,
+  PENDING_ME_ID,
+  isPendingMe,
+  realSpaces,
+  withPendingMe,
   REASON_LABELS,
   canWriteIn,
   createBody,
@@ -167,5 +171,33 @@ describe("the publish confirm", () => {
     const words = publishBody({ kind: "me", name: "My notes" });
     expect(words).not.toContain("Every reader");
     expect(words).toContain("Only you");
+  });
+});
+
+describe("KB-2s: My notes from the first open", () => {
+  it("adds a stand-in me space last when the member has none", () => {
+    const company = space("c", { kind: "company", name: "Company" });
+    const out = withPendingMe([company]);
+    expect(out.map((s) => s.name)).toEqual(["Company", "My notes"]);
+    expect(isPendingMe(out[1].id)).toBe(true);
+    expect(out[1].kind).toBe("me");
+  });
+  it("adds nothing when the me space exists", () => {
+    const me = space("m", { kind: "me", name: "My notes", level: "manage" });
+    expect(withPendingMe([me])).toEqual([me]);
+  });
+  it("sends no space_id for the stand-in, so the first write makes the row", () => {
+    expect(createBody({ space: PENDING_ME_ID, title: " Hi " })).toEqual({ title: "Hi" });
+  });
+  it("starts a new page in the stand-in when the space on screen is read only", () => {
+    const ro = space("c", { kind: "company", name: "Company", level: "read" });
+    expect(defaultSpaceChoice(withPendingMe([ro]), "c")).toBe(PENDING_ME_ID);
+  });
+});
+
+describe("KB-2s: the stand-in never reaches a read by space id", () => {
+  it("realSpaces drops the stand-in and keeps the rest", () => {
+    const company = space("c", { kind: "company", name: "Company" });
+    expect(realSpaces(withPendingMe([company]))).toEqual([company]);
   });
 });

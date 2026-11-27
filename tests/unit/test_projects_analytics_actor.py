@@ -277,6 +277,7 @@ class _FakeDb:
             rows = _SPLIT_ROWS if "fh.worked" in body else _HOLDER_ROWS
         return SimpleNamespace(
             fetchall=lambda: rows,
+            fetchone=lambda: None,  # no settings row: the reader's zone is UTC
             scalar=lambda: 0,
             one=lambda: SimpleNamespace(
                 completed=7, cancelled=0, measured=0, no_start=0,
@@ -326,7 +327,8 @@ def test_finished_returns_the_actor_split(fake_routes: None) -> None:
 
 def test_load_body_returns_the_holder_split(fake_routes: None) -> None:
     body = asyncio.run(ana.load_body(
-        _FakeDb(), SimpleNamespace(params={}), project_id=None, include_subtree=True,
+        _FakeDb(), SimpleNamespace(params={}, email="reader@x.test"), project_id=None,
+        include_subtree=True,
     ))
     assert body["holder_split"] == {"agent": 1, "person": 0, "none": 5}
     assert body["total_tasks"] == 0

@@ -37,10 +37,13 @@ const MOTION_EXEMPT: Record<string, string> = {
   "chat-pulse-dot": "status",
   // A status loop. The three dots say the agent is working.
   "chat-typing-dot": "status",
-  // `swapPanelForm` in `lib/panelMotion.ts` starts no view transition under
-  // reduced motion, so these two never run for that member.
+  // `swapPanelForm` and `morphAskBox` in `lib/panelMotion.ts` start no view
+  // transition under reduced motion, so these two never run for that member.
   "panel-swap-out": "gated in panelMotion.ts",
   "panel-swap-in": "gated in panelMotion.ts",
+  // `morphAskBox` again: the side panel's picture while the Ask bar's box
+  // flies into it.
+  "ask-panel-in": "gated in panelMotion.ts",
 };
 
 interface Block {
@@ -167,6 +170,7 @@ const RAW_MOTION = /cubic-bezier\(|duration-\[\d/g;
 const RAW_MOTION_EXEMPT: Record<string, string> = {
   "lib/panelMotion.ts": "the script mirror of --panel-easing. panelMotion.test.ts holds it to globals.css",
   "lib/theme/themes.ts": "the data mirror of globals.css. themes.test.ts holds it",
+  "lib/theme/glassTokens.ts": "the sandbox mirror of the glass --motion-easing. glassTokens.test.ts holds it to globals.css",
 };
 
 const RAW_MOTION_DEBT: Record<string, number> = {
@@ -187,19 +191,22 @@ const LAYOUT_MOTION = new RegExp(
 );
 
 /**
- * The two panels of `DESIGN_SYSTEM.md` §4. Each one animates `width` on
+ * The side panels of `DESIGN_SYSTEM.md` §4. Each one animates `width` on
  * purpose, so that the page beside it moves with it. Keyed by its selector in
  * `globals.css`. Do not add a surface that does not push the page.
  */
 const LAYOUT_MOTION_EXEMPT: Record<string, string> = {
   ".sidebar-rail": "the sidebar fold. The page beside the rail reflows with it (navigation_shell.md §3.2)",
   ".assistant-spacer[data-moving]": "the assistant's spacer. The page beside the dock reflows with it, and only while it moves",
+  // Task 7 (owner, 2026-11-22): one motion for every docked side panel.
+  ".side-panel[data-moving]":
+    "the frame of a docked side panel (SidePanelMotion), the assistant's dock form. The page beside it reflows with it, and only while it moves",
 };
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const exemptBlock = (selector: string) => new RegExp(`${escapeRe(selector)}\\s*\\{[^}]*\\}`, "g");
 
-/** A file's text, with the two exempt panel rules taken out of `globals.css`. */
+/** A file's text, with the exempt panel rules taken out of `globals.css`. */
 function withoutPanelRules(file: string): string {
   const text = readSource(file);
   if (file !== "app/globals.css") return text;
@@ -256,7 +263,7 @@ const BARE_LOOP_DEBT: Record<string, number> = {
   "app/page.tsx": 1,
   "app/tasks/components/FocusMode.tsx": 3,
   "app/workflows/components/WorkflowNode.tsx": 2,
-  "app/workflows/page.tsx": 1,
+  "app/studio/components/WorkflowsGallery.tsx": 1,
   "components/AgentChat.tsx": 3,
   "components/AppShell.tsx": 2,
   "components/ArtifactViewerModal.tsx": 2,

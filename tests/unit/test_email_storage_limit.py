@@ -65,6 +65,40 @@ The fences of review round 1 (2026-10-04, §10.4.7 EM-T6c):
 * ``email-storage-rr1-orphans``: the two orphan deletes take only the
   threads that the removal emptied, in the mailbox of the removal (R8).
 
+The fences of EM-T6f (2026-11-04), the resume of an import at the limit:
+
+* ``email-storage-t6f-rule``: ``storage.import_resumes`` is true only in the
+  phase ``limit``, with a meter, under the limit and with
+  ``import_reached_at``. ``storage.resume_import`` writes nothing otherwise.
+* ``email-storage-t6f-resume``: a loop cycle of such a mailbox runs the
+  import with ``until = import_reached_at`` and the count that it reached.
+  It reads no newer mail again (R8).
+* ``email-storage-t6f-stays``: a mailbox at or over the limit, with no
+  meter, with no point, or in another phase keeps its row, and its loop
+  cycle runs no import (R8).
+* ``email-storage-t6f-once``: the conditional write fires once, also for two
+  writers at the same time, and never for a changed meter or another
+  organization (R8).
+* ``email-storage-t6f-no-flap``: after a resume, the import stops at the
+  limit again, and the next loop cycle does not resume it (R8).
+* ``email-storage-t6f-pace``: one mailbox resumes in each
+  ``STORAGE_RESUME_GAP_SECS`` of a process, and a write that finds no row
+  gives the turn back.
+
+The fences of EM-T6f review round 1 (2026-11-04):
+
+* ``email-storage-t6f-meter-bound`` (P1): a run of the import makes at most
+  ``storage.IMPORT_FULL_METERS`` full meters, and a cycle at most one more.
+  Each other batch adds the growth of its rows, and that sum equals the
+  full meter on a real database (R8).
+* ``email-storage-t6f-cap`` (P2): an import that goes on from a point reads
+  at most ``RESUME_CYCLE_MAILS`` in a cycle. It pauses, the sweep of the
+  cycle writes the new mail, and the next cycle goes on (R8). The first
+  import of a new mailbox reads to the end as before.
+* ``email-storage-t6f-margin`` (P3a): a resume needs the meter under the
+  limit by ``storage.resume_margin_bytes()``. One byte under the limit
+  stays stopped (R8).
+
 The R8 tests run as the non-privileged role ``acb_app_h3rls`` (NOSUPERUSER,
 NOBYPASSRLS) on the phase-4-promoted two-org catalog of
 ``test_h3_rls_promotion_rehearsal``.
@@ -80,6 +114,7 @@ import ast
 import asyncio
 import base64
 import inspect
+import logging
 import os
 import re
 import uuid
@@ -137,6 +172,8 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
                         raising=False)
     monkeypatch.setattr(get_settings(), "email_mailbox_storage_limit_mb", 500,
                         raising=False)
+    # EM-T6f: each test starts with no resume in this process.
+    monkeypatch.setattr(sched, "_storage_resume_at", None)
 
 
 def _now() -> datetime:
@@ -156,8 +193,9 @@ def _random_b64(chars: int) -> str:
 # ── 1. The setting and the limit (hermetic) ─────────────────────────────────
 
 
-def test_the_setting_is_500_mb() -> None:
-    assert Settings.model_fields["email_mailbox_storage_limit_mb"].default == 500
+def test_the_setting_is_2048_mb() -> None:
+    # 2 GB for each mailbox: the owner's word of 2026-11-04 (D-EM-14).
+    assert Settings.model_fields["email_mailbox_storage_limit_mb"].default == 2048
     assert storage.BYTES_PER_MB == _MB
 
 
@@ -177,15 +215,20 @@ def test_at_the_limit_means_at_or_over_it(monkeypatch) -> None:
 # ── 2. The SQL of the meter (hermetic) ──────────────────────────────────────
 
 
-@pytest.mark.parametrize("stmt", [storage._MEASURE, storage._PREVIEW],
-                         ids=["meter", "preview"])
+@pytest.mark.parametrize("stmt", [storage._MEASURE, storage._PREVIEW,
+                                  storage._BATCH_BYTES,
+                                  storage._ADD_BATCH_GROWTH],
+                         ids=["meter", "preview", "batch", "batch_growth"])
 def test_the_sql_sums_pg_column_size_of_each_column_only(stmt) -> None:
     """R7 fence ``email-storage-meter`` (items 2 and 3). Each column is inside
     its own ``pg_column_size``. Nothing takes the size of a whole row, and
-    nothing reads a value with ``octet_length``."""
-    # The draft filter of the preview reads ``em.folder`` on purpose (G1). It
-    # is a short WHERE test, never a size, so the check leaves it out.
-    sql = _flat(stmt).replace(storage.KEPT_FOLDERS_SQL, "")
+    nothing reads a value with ``octet_length``. The two sums of one import
+    batch (EM-T6f review P1) use the same columns."""
+    # The draft filter of the preview reads ``em.folder`` on purpose (G1), and
+    # the batch filter reads ``em.provider_message_id``. Each is a short WHERE
+    # test, never a size, so the check leaves them out.
+    sql = (_flat(stmt).replace(storage.KEPT_FOLDERS_SQL, "")
+           .replace(storage.BATCH_ROWS_SQL, ""))
     for alias, cols in (("em", storage.MESSAGE_COLUMNS),
                         ("ea", storage.ATTACHMENT_COLUMNS),
                         ("ee", storage.EMBEDDING_COLUMNS)):
@@ -510,7 +553,9 @@ async def test_a_deep_sync_at_the_limit_stops_and_skips_its_reconcile(
     assert provider.fetched == 1
     assert res.get("limit") is True, res
     assert core_run.reconciles == [], "a stopped import ran the reconcile"
-    assert not any("import_phase" in s for s in log)
+    # Phase (a) reads ``import_phase`` for the resume of EM-T6f. No UPDATE
+    # writes it.
+    assert not any(s.startswith("UPDATE") and "import_phase" in s for s in log)
 
 
 async def test_under_the_limit_the_result_has_no_limit_key(core_run) -> None:
@@ -2170,3 +2215,889 @@ class TestReviewRoundOneOnARealDatabase:
         finally:
             release_tenant(token)
             _wipe(p.admin_engine, [a, b, c])
+
+
+# ── 12. EM-T6f: the resume of an import at the limit (hermetic) ─────────────
+
+_REACHED = datetime(2026, 10, 1, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(("phase", "stored", "reached", "resumes"), [
+    ("limit", 10, _REACHED, True),
+    ("limit", 0, _REACHED, True),
+    ("limit", 899, _REACHED, True),
+    ("limit", 900, _REACHED, False),
+    ("limit", 999, _REACHED, False),
+    ("limit", 1000, _REACHED, False),
+    ("limit", 5000, _REACHED, False),
+    ("limit", None, _REACHED, False),
+    ("limit", 10, None, False),
+    ("done", 10, _REACHED, False),
+    ("importing", 10, _REACHED, False),
+    ("counting", 10, _REACHED, False),
+    ("resyncing", 10, _REACHED, False),
+    ("awaiting_range", 10, _REACHED, False),
+    (None, 10, _REACHED, False),
+], ids=["under", "empty", "margin_edge_under", "margin_edge", "just_under",
+        "at_limit", "over", "no_meter", "no_point", "done", "importing",
+        "counting", "resyncing", "awaiting_range", "no_phase"])
+def test_the_resume_rule(monkeypatch, phase, stored, reached, resumes) -> None:
+    """R7 fences ``email-storage-t6f-rule`` and ``email-storage-t6f-margin``
+    (EM-T6f, review P3a). The import goes on only in the phase ``limit``,
+    with a meter, under the limit by the margin, and with a point to go on
+    from. At a limit of 1,000 bytes the margin is a tenth, 100 bytes, so 899
+    resumes and 900 does not. ``at_limit(None)`` is false, so the null test
+    is its own test. Each refused case is otherwise one that resumes."""
+    monkeypatch.setattr(storage, "storage_limit_bytes", lambda: 1000)
+    assert storage.resume_margin_bytes() == 100
+    assert storage.import_resumes(phase, stored, reached) is resumes
+
+
+@pytest.mark.parametrize(("limit", "margin"), [
+    (2048 * _MB, 2048 * _MB // 100),
+    (500 * _MB, 20 * _MB),
+    (100 * _MB, 10 * _MB),
+    (1000, 100),
+], ids=["2_gb", "500_mb", "100_mb", "1000_bytes"])
+def test_the_margin_of_a_resume(monkeypatch, limit, margin) -> None:
+    """R7 fence ``email-storage-t6f-margin`` (review P3a). The margin is the
+    larger of 20 MB and 1% of the limit, and never more than a tenth of the
+    limit. At 2 GB it is 20.48 MB."""
+    monkeypatch.setattr(storage, "storage_limit_bytes", lambda: limit)
+    assert storage.RESUME_MARGIN_MIN_BYTES == 20 * _MB
+    assert storage.resume_margin_bytes() == margin
+
+
+class _WriteDb:
+    """A session that records each statement. ``rowcount`` is what each
+    write reports. ``pause`` yields to the loop inside the write, so two
+    callers can meet."""
+
+    def __init__(self, rowcount: int = 1, *, pause: bool = False,
+                 fail: bool = False) -> None:
+        self.calls: list[tuple[str, dict | None]] = []
+        self.rowcount = rowcount
+        self.pause = pause
+        self.fail = fail
+
+    async def execute(self, stmt, params=None, *_a, **_k):
+        self.calls.append((_flat(stmt), params))
+        if self.pause:
+            await asyncio.sleep(0)
+        if self.fail:
+            raise RuntimeError("the database went away")
+        return SimpleNamespace(rowcount=self.rowcount)
+
+
+async def test_resume_import_writes_only_when_the_rule_says_yes(monkeypatch) -> None:
+    """R7 fence ``email-storage-t6f-rule``. A refused case sends no
+    statement. A yes sends the one conditional UPDATE with the meter that it
+    judged, and a write that finds no row returns False."""
+    monkeypatch.setattr(storage, "storage_limit_bytes", lambda: 1000)
+    refused = [dict(phase="done", stored_bytes=10, reached_at=_REACHED),
+               dict(phase="limit", stored_bytes=1000, reached_at=_REACHED),
+               dict(phase="limit", stored_bytes=None, reached_at=_REACHED),
+               dict(phase="limit", stored_bytes=10, reached_at=None)]
+    for kwargs in refused:
+        db = _WriteDb()
+        assert await storage.resume_import(db, "acc-1", **kwargs) is False
+        assert db.calls == [], kwargs
+    db = _WriteDb()
+    assert await storage.resume_import(db, "acc-1", phase="limit",
+                                       stored_bytes=10, reached_at=_REACHED)
+    assert db.calls == [(_flat(storage._RESUME_IMPORT),
+                         {"aid": "acc-1", "stored": 10})]
+    assert await storage.resume_import(_WriteDb(rowcount=0), "acc-1",
+                                       phase="limit", stored_bytes=10,
+                                       reached_at=_REACHED) is False
+
+
+def test_the_resume_write_is_conditional_and_keeps_the_point() -> None:
+    """R7 fence ``email-storage-t6f-rule``. The UPDATE writes the two columns
+    that make ``_run_import`` go on. It keeps ``import_reached_at`` and
+    ``import_count``, so the import resumes at the point that it reached and
+    not from now. Its ``WHERE`` names the phase and the meter."""
+    sql = _flat(storage._RESUME_IMPORT)
+    sets, where = sql.split(" WHERE ")
+    assert "initial_sync_done = false" in sets
+    assert "import_phase = 'importing'" in sets
+    assert "import_reached_at" not in sql and "import_count" not in sql
+    assert "id = :aid" in where
+    assert "import_phase = 'limit'" in where
+    assert "stored_bytes = :stored" in where
+
+
+def _resume_sessions(row, log: list, *, meter):
+    """A ``tenant_session`` stand-in that keeps the state of one account
+    row. The resume UPDATE changes ``row`` as Postgres would, so the second
+    read of phase (a) sees it. ``meter`` is the value that the meter
+    returns."""
+
+    @asynccontextmanager
+    async def _ts(org=None):
+        class _Db:
+            async def execute(self, stmt, params=None, *_a, **_k):
+                sql = _flat(stmt)
+                log.append((sql, params))
+                if "SET initial_sync_done = false" in sql:
+                    hit = (row.import_phase == "limit"
+                           and row.stored_bytes == params["stored"])
+                    if hit:
+                        row.initial_sync_done = False
+                        row.import_phase = "importing"
+                    return SimpleNamespace(rowcount=1 if hit else 0)
+                if "SET stored_bytes" in sql:
+                    return _Res(value=meter)
+                return _Res(row=row)
+
+        yield _Db()
+    return _ts
+
+
+class _AskedProvider(_Provider):
+    """``_Provider``, and it records the window of each import."""
+
+    def __init__(self, *a, **k) -> None:
+        super().__init__(*a, **k)
+        self.asked: list[dict] = []
+
+    async def import_batches(self, *, since, until=None, size=100,
+                             on_estimate=None):
+        self.asked.append({"since": since, "until": until})
+        async for batch in super().import_batches(
+                since=since, until=until, size=size, on_estimate=on_estimate):
+            yield batch
+
+
+def _limit_row(**over) -> SimpleNamespace:
+    base = dict(import_phase="limit", stored_bytes=400,
+                import_reached_at=_now() - timedelta(days=10), import_count=70)
+    base.update(over)
+    return _account_row(**base)
+
+
+@pytest.mark.parametrize("from_loop", [True, False], ids=["loop", "not_loop"])
+async def test_a_loop_cycle_resumes_at_the_point_it_reached(
+    core_run, monkeypatch, caplog, from_loop,
+) -> None:
+    """R7 fence ``email-storage-t6f-resume``, on the core. A loop cycle of a
+    mailbox in the phase ``limit`` under the limit writes the resume in
+    phase (a) and reads the row again. Its import then asks for
+    ``until = import_reached_at`` and starts its count at the count that it
+    reached. The log says ``sync.storage_resume``. A cycle that is not the
+    loop (the manual sync, the webhook) resumes nothing."""
+    row = _limit_row()
+    reached = row.import_reached_at
+    provider = _AskedProvider([[_msg("r1", reached - timedelta(hours=1)),
+                                _msg("r2", reached - timedelta(hours=2))]])
+    log: list = []
+    monkeypatch.setattr(sched, "build_provider", lambda name, creds: provider)
+    monkeypatch.setattr(sched, "tenant_session",
+                        _resume_sessions(row, log, meter=500))
+    with caplog.at_level(logging.INFO, logger=sched.logger.name):
+        res = await sched._sync_account("acc-1", organization_id=_ORG,
+                                        from_loop=from_loop)
+    assert "error" not in res, res
+    sqls = [s for s, _ in log]
+    lines = [r.getMessage() for r in caplog.records]
+    if not from_loop:
+        assert provider.asked == [], "a cycle that is not the loop resumed"
+        assert not any("SET initial_sync_done = false" in s for s in sqls)
+        assert not any("sync.storage_resume" in m for m in lines)
+        return
+    resume = [i for i, s in enumerate(sqls) if "SET initial_sync_done = false" in s]
+    syncing = [i for i, s in enumerate(sqls) if "SET sync_status = 'syncing'" in s]
+    assert len(resume) == 1 and syncing and resume[0] < syncing[0], (
+        "the resume did not run in phase (a), before the syncing status")
+    reads = [i for i, s in enumerate(sqls)
+             if s.startswith("SELECT id, provider, credentials_encrypted")]
+    assert len(reads) == 2 and reads[0] < resume[0] < reads[1], (
+        "phase (a) did not read the row again after the resume")
+    assert [a["until"] for a in provider.asked] == [reached], (
+        "the import did not go on from import_reached_at")
+    counting = [p for s, p in log if "SET import_phase = 'counting'" in s]
+    assert counting == [{"id": "acc-1", "count": 70}], (
+        "the import did not keep the count that it reached")
+    assert any("import_phase = 'done'" in s for s in sqls)
+    assert "sync.storage_resume account=acc-1 stored=400 limit=1000" in lines
+
+
+async def test_a_deep_sync_from_the_loop_resumes_nothing(core_run, monkeypatch) -> None:
+    """The resume is for the plain loop cycle only. A deep sync imports to
+    the floor with no progress, so it writes no resume."""
+    row = _limit_row()
+    provider = _AskedProvider([])
+    log: list = []
+    monkeypatch.setattr(sched, "build_provider", lambda name, creds: provider)
+    monkeypatch.setattr(sched, "tenant_session",
+                        _resume_sessions(row, log, meter=500))
+    res = await sched._sync_account("acc-1", organization_id=_ORG,
+                                    from_loop=True, deep=True)
+    assert "error" not in res, res
+    assert not any("SET initial_sync_done = false" in s for s, _ in log)
+    assert row.import_phase == "limit" and row.initial_sync_done is True
+
+
+def _resumable(**over) -> SimpleNamespace:
+    base = dict(import_phase="limit", stored_bytes=10, import_reached_at=_REACHED)
+    base.update(over)
+    return SimpleNamespace(**base)
+
+
+async def test_one_mailbox_resumes_in_each_gap(monkeypatch) -> None:
+    """R7 fence ``email-storage-t6f-pace`` (load). The first mailbox takes
+    the turn. A second one in the same gap writes nothing, and it goes on
+    once the gap has passed. A refused rule takes no turn."""
+    monkeypatch.setattr(storage, "storage_limit_bytes", lambda: 1000)
+    first, second = _WriteDb(), _WriteDb()
+    assert await sched._resume_at_storage_limit(first, "a", _resumable())
+    taken = sched._storage_resume_at
+    assert taken is not None
+    assert not await sched._resume_at_storage_limit(second, "b", _resumable())
+    assert second.calls == [], "a second mailbox resumed inside the gap"
+    assert not await sched._resume_at_storage_limit(
+        _WriteDb(), "c", _resumable(import_phase="done"))
+    assert sched._storage_resume_at == taken, "a refused rule took the turn"
+    monkeypatch.setattr(sched, "_storage_resume_at",
+                        taken - sched.STORAGE_RESUME_GAP_SECS - 1)
+    assert await sched._resume_at_storage_limit(second, "b", _resumable())
+    assert len(second.calls) == 1
+
+
+async def test_a_write_that_finds_no_row_gives_the_turn_back(monkeypatch) -> None:
+    """R7 fence ``email-storage-t6f-pace``. A conditional write that finds no
+    row, or that raises, takes no turn. So the next mailbox does not wait a
+    gap for a resume that did not happen."""
+    monkeypatch.setattr(storage, "storage_limit_bytes", lambda: 1000)
+    assert not await sched._resume_at_storage_limit(
+        _WriteDb(rowcount=0), "a", _resumable())
+    assert sched._storage_resume_at is None
+    with pytest.raises(RuntimeError):
+        await sched._resume_at_storage_limit(_WriteDb(fail=True), "a",
+                                             _resumable())
+    assert sched._storage_resume_at is None
+    assert await sched._resume_at_storage_limit(_WriteDb(), "b", _resumable())
+
+
+async def test_two_loops_at_once_take_one_turn(monkeypatch) -> None:
+    """R7 fence ``email-storage-t6f-pace``. After a release, each loop runs
+    its first cycle at the same time. Each write yields to the loop, and
+    still only one of two mailboxes resumes."""
+    monkeypatch.setattr(storage, "storage_limit_bytes", lambda: 1000)
+    a, b = _WriteDb(pause=True), _WriteDb(pause=True)
+    got = await asyncio.gather(
+        sched._resume_at_storage_limit(a, "a", _resumable()),
+        sched._resume_at_storage_limit(b, "b", _resumable()))
+    assert sorted(got) == [False, True]
+    assert len(a.calls) + len(b.calls) == 1
+
+
+# ── 13. EM-T6f, on a real database ──────────────────────────────────────────
+
+
+class _AskedOffers(_Offers):
+    """``_Offers``, and it records the window of each import and each
+    message that the import gave."""
+
+    def __init__(self, *a, **k) -> None:
+        super().__init__(*a, **k)
+        self.asked: list[tuple] = []
+        self.given: list[EmailMessage] = []
+
+    async def import_batches(self, *, since, until=None, size=100,
+                             on_estimate=None):
+        self.asked.append((since, until))
+        async for batch in super().import_batches(
+                since=since, until=until, size=size, on_estimate=on_estimate):
+            self.given.extend(batch)
+            yield batch
+
+
+def _import_state(admin, account_id: str) -> dict:
+    row = _one(admin, "SELECT import_phase, initial_sync_done, import_count, "
+               "import_reached_at, stored_bytes FROM email_accounts "
+               "WHERE id = CAST(:a AS uuid)", a=account_id)
+    return dict(row._mapping)
+
+
+def _stopped_mailbox(admin, *, org: str, owner: str, now: datetime,
+                     reached: datetime, count: int = 3) -> str:
+    """A mailbox whose first import stopped at the limit at ``reached``. It
+    holds ``count`` messages at or newer than that point, as the import left
+    them."""
+    x = _seed_account(admin, org=org, owner=owner)
+    _set(admin, x, import_since=now - timedelta(days=30), initial_sync_done=True,
+         import_phase="limit", import_reached_at=reached, import_count=count,
+         last_synced_at=now - timedelta(minutes=5))
+    for k in range(count):
+        _seed_msg(admin, account_id=x, org=org,
+                  received_at=reached + timedelta(hours=k), body="kept",
+                  pid=f"pm-kept-{x[:8]}-{k}")
+    return x
+
+
+def _loop_env(monkeypatch, provider) -> None:
+    from acb_llm import key_store
+
+    monkeypatch.setattr(key_store, "get_key_store", lambda: _Store())
+    monkeypatch.setattr(sched, "build_provider", lambda name, creds: provider)
+
+
+@_DB_GATE
+class TestTheResumeOnARealDatabase:
+
+    async def test_a_stopped_import_under_the_limit_goes_on_from_its_point(
+        self, promoted, app_engine, monkeypatch, caplog,  # noqa: F811
+    ):
+        """R7 fence ``email-storage-t6f-resume`` (EM-T6f, acceptance 1). A
+        loop cycle of a mailbox in the phase ``limit`` under the limit
+        resumes its import. The import asks for ``until`` at
+        ``import_reached_at``, and it gives no message newer than that
+        point. It writes the older mail, adds to the count that it reached,
+        and ends ``done``. The mail that the first import wrote is not
+        written again."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        now = _now()
+        reached = now - timedelta(days=10)
+        x = _stopped_mailbox(p.admin_engine, org=p.org_b,
+                             owner=f"t6f-{uuid.uuid4().hex[:6]}@em-t6f.test",
+                             now=now, reached=reached)
+        tag = uuid.uuid4().hex[:6]
+        older = [_msg(f"old-{tag}-{k}", reached - timedelta(days=k + 1))
+                 for k in range(6)]
+        # Newer than the point. The point itself is read again by design
+        # (the upsert makes that overlap harmless), so none sits on it.
+        newer = [_msg(f"new-{tag}-{k}", reached + timedelta(hours=k + 1))
+                 for k in range(3)]
+        provider = _AskedOffers([*older, *newer])
+        _loop_env(monkeypatch, provider)
+        token = clear_tenant()
+        try:
+            async with tenant_engine_scope(_dsn(p)):
+                stored = await _measure(x, p.org_b)
+                monkeypatch.setattr(storage, "storage_limit_bytes",
+                                    lambda: stored + 10 * _MB)
+                with caplog.at_level(logging.INFO, logger=sched.logger.name):
+                    res = await sched._sync_account(
+                        x, organization_id=p.org_b, from_loop=True)
+            assert "error" not in res, res
+            assert len(provider.asked) == 1
+            since, until = provider.asked[0]
+            assert until == reached, "the import did not go on from its point"
+            assert since == now - timedelta(days=30)
+            assert all(m.received_at <= reached for m in provider.given), (
+                "the import read mail newer than the point it reached")
+            assert {m.provider_message_id for m in provider.given} == {
+                m.provider_message_id for m in older}
+            state = _import_state(p.admin_engine, x)
+            assert state["import_phase"] == "done"
+            assert state["initial_sync_done"] is True
+            assert state["import_count"] == 3 + 6, state
+            assert state["import_reached_at"] == older[-1].received_at
+            ids = _column(p.admin_engine, "SELECT provider_message_id FROM "
+                          "email_messages WHERE account_id = CAST(:a AS uuid)",
+                          a=x)
+            assert len(ids) == 9 and not any(i.startswith("new-") for i in ids)
+            lines = [r.getMessage() for r in caplog.records]
+            assert (f"sync.storage_resume account={x} stored={stored} "
+                    f"limit={stored + 10 * _MB}") in lines
+        finally:
+            release_tenant(token)
+            _wipe(p.admin_engine, [x])
+
+    @pytest.mark.parametrize("case", ["at_limit", "over", "just_under",
+                                      "no_meter", "phase_done", "no_point"])
+    async def test_a_mailbox_that_must_not_resume_keeps_its_row(
+        self, promoted, app_engine, monkeypatch, case,  # noqa: F811
+    ):
+        """R7 fences ``email-storage-t6f-stays`` (acceptance 3) and
+        ``email-storage-t6f-margin`` (review P3a). A meter at the limit or
+        over it, a meter one byte under it (inside the margin), a meter that
+        never ran, another phase, or no point to go on from: the loop cycle
+        writes no resume and runs no import. The recurring sweep still
+        runs."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        now = _now()
+        reached = now - timedelta(days=10)
+        x = _stopped_mailbox(p.admin_engine, org=p.org_b,
+                             owner=f"t6s-{uuid.uuid4().hex[:6]}@em-t6f.test",
+                             now=now, reached=reached)
+        if case == "phase_done":
+            _set(p.admin_engine, x, import_phase="done")
+        if case == "no_point":
+            _set(p.admin_engine, x, import_reached_at=None)
+        provider = _AskedOffers([_msg(f"old-{uuid.uuid4().hex[:6]}",
+                                      reached - timedelta(days=1))])
+        _loop_env(monkeypatch, provider)
+        token = clear_tenant()
+        try:
+            async with tenant_engine_scope(_dsn(p)):
+                stored = None if case == "no_meter" else await _measure(x, p.org_b)
+                limit = {"at_limit": stored, "over": (stored or 0) - 1,
+                         "just_under": (stored or 0) + 1}.get(case, 100 * _MB)
+                monkeypatch.setattr(storage, "storage_limit_bytes", lambda: limit)
+                before = _import_state(p.admin_engine, x)
+                assert before["stored_bytes"] == stored
+                res = await sched._sync_account(
+                    x, organization_id=p.org_b, from_loop=True)
+            assert "error" not in res, res
+            assert provider.asked == [], f"{case}: the loop cycle ran an import"
+            after = _import_state(p.admin_engine, x)
+            for col in ("import_phase", "initial_sync_done", "import_count",
+                        "import_reached_at"):
+                assert after[col] == before[col], (case, col)
+            assert sched._storage_resume_at is None, f"{case} took a turn"
+        finally:
+            release_tenant(token)
+            _wipe(p.admin_engine, [x])
+
+    async def test_the_conditional_write_fires_once(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        """R7 fence ``email-storage-t6f-once`` (acceptance 4). Two writers
+        with the same read at the same time, on two connections: one
+        writes, and the other finds no row. A third with the same old read
+        finds no row. A writer whose read of the meter is old finds no row.
+        A writer bound to another organization finds no row (R5)."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        now = _now()
+        reached = now - timedelta(days=10)
+        x = _stopped_mailbox(p.admin_engine, org=p.org_b,
+                             owner=f"t6o-{uuid.uuid4().hex[:6]}@em-t6f.test",
+                             now=now, reached=reached)
+        _set(p.admin_engine, x, stored_bytes=100)
+        seen = dict(phase="limit", stored_bytes=100, reached_at=reached)
+
+        async def _write(org: str, **over) -> bool:
+            async with tenant_session(org) as db:
+                return await storage.resume_import(db, x, **{**seen, **over})
+
+        token = clear_tenant()
+        try:
+            async with tenant_engine_scope(_dsn(p)):
+                with pytest.MonkeyPatch.context() as mp:
+                    mp.setattr(storage, "storage_limit_bytes", lambda: 1000)
+                    from_a = await _write(p.org_a)
+                    assert _import_state(p.admin_engine, x)["import_phase"] == "limit"
+                    both = await asyncio.gather(_write(p.org_b), _write(p.org_b))
+                    third = await _write(p.org_b)
+                    _set(p.admin_engine, x, import_phase="limit",
+                         initial_sync_done=True, stored_bytes=200)
+                    stale = await _write(p.org_b)
+            assert from_a is False, "org A resumed a mailbox of org B"
+            assert sorted(both) == [False, True], both
+            assert third is False, "a second write with an old read fired"
+            assert stale is False, "a write with an old meter fired"
+            state = _import_state(p.admin_engine, x)
+            assert (state["import_phase"], state["initial_sync_done"]) == (
+                "limit", True)
+        finally:
+            release_tenant(token)
+            _wipe(p.admin_engine, [x])
+
+    async def test_a_resumed_import_stops_at_the_limit_and_stays_stopped(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """R7 fence ``email-storage-t6f-no-flap`` (acceptance 5). The resumed
+        import stops at the batch that takes the meter to the limit, and it
+        writes ``import_phase = 'limit'`` again. The next loop cycle, with
+        the turn free, writes no resume and runs no import."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        now = _now()
+        reached = now - timedelta(days=10)
+        x = _stopped_mailbox(p.admin_engine, org=p.org_b,
+                             owner=f"t6n-{uuid.uuid4().hex[:6]}@em-t6f.test",
+                             now=now, reached=reached)
+        tag = uuid.uuid4().hex[:6]
+        older = [_msg(f"big-{tag}-{k:02d}", reached - timedelta(hours=k + 1),
+                      body=_random_b64(4096)) for k in range(30)]
+        provider = _AskedOffers(older)
+        _loop_env(monkeypatch, provider)
+        monkeypatch.setattr(sched, "IMPORT_BATCH_SIZE", 5)
+        token = clear_tenant()
+        try:
+            async with tenant_engine_scope(_dsn(p)):
+                stored = await _measure(x, p.org_b)
+                limit = stored + 30 * 1024
+                monkeypatch.setattr(storage, "storage_limit_bytes", lambda: limit)
+                first = await sched._sync_account(
+                    x, organization_id=p.org_b, from_loop=True)
+                stopped = _import_state(p.admin_engine, x)
+                monkeypatch.setattr(sched, "_storage_resume_at", None)
+                second = await sched._sync_account(
+                    x, organization_id=p.org_b, from_loop=True)
+            assert "error" not in first and "error" not in second
+            assert first.get("limit") is True, first
+            assert stopped["import_phase"] == "limit"
+            assert stopped["initial_sync_done"] is True
+            assert stopped["stored_bytes"] >= limit
+            assert 3 < stopped["import_count"] < 3 + 30
+            assert len(provider.asked) == 1, (
+                "the next loop cycle resumed a mailbox at the limit")
+            assert sched._storage_resume_at is None
+            assert _import_state(p.admin_engine, x)["import_phase"] == "limit"
+        finally:
+            release_tenant(token)
+            _wipe(p.admin_engine, [x])
+
+
+# ── 14. EM-T6f review P1: the bound of the full meters ──────────────────────
+
+
+class _MeterDb:
+    """A session for ``ImportMeter``. ``full`` and ``adds`` are the values
+    that the full meter and the growth UPDATE return, in turn. The last one
+    of each repeats. It counts each kind of statement."""
+
+    def __init__(self, *, full=(10,), adds=(10,), batch=7) -> None:
+        self.full = list(full)
+        self.adds = list(adds)
+        self.batch = batch
+        self.kinds: list[str] = []
+        self.params: list[dict | None] = []
+
+    async def execute(self, stmt, params=None, *_a, **_k):
+        sql = _flat(stmt)
+        self.params.append(params)
+        if "stored_bytes_at = now()" in sql:
+            self.kinds.append("full")
+            return _Res(value=self.full.pop(0) if len(self.full) > 1 else self.full[0])
+        if "SET stored_bytes = COALESCE(stored_bytes, 0)" in sql:
+            self.kinds.append("add")
+            return _Res(value=self.adds.pop(0) if len(self.adds) > 1 else self.adds[0])
+        if sql.startswith("WITH scope AS") and "SELECT bytes FROM total" in sql:
+            self.kinds.append("batch")
+            return _Res(value=self.batch)
+        raise AssertionError(f"an unexpected statement: {sql[:80]}")
+
+
+async def test_the_import_meter_runs_the_full_meter_after_the_first_batch_only(
+    monkeypatch,
+) -> None:
+    """R7 fence ``email-storage-t6f-meter-bound`` (EM-T6f review P1). Under
+    the limit, a run of 30 batches makes ONE full meter, after its first
+    batch. Each later batch reads its own rows before its write and adds
+    the growth after it. The full meter used to run after each batch."""
+    monkeypatch.setattr(storage, "storage_limit_bytes", lambda: 10_000)
+    db = _MeterDb(full=[100], adds=[200], batch=7)
+    meter = storage.ImportMeter("acc-1")
+    for _ in range(30):
+        await meter.before_write(db, ["p1", "p2"])
+        await meter.after_write(db, ["p1", "p2"])
+    assert db.kinds.count("full") == 1 == meter.full_meters
+    assert db.kinds[:1] == ["full"], "the first batch did not end with the full meter"
+    assert db.kinds.count("batch") == 29 and db.kinds.count("add") == 29
+    adds = [p for k, p in zip(db.kinds, db.params, strict=True) if k == "add"]
+    assert all(p["before"] == 7 and p["pids"] == ["p1", "p2"] for p in adds)
+
+
+async def test_near_the_limit_the_full_meter_decides_up_to_its_bound(
+    monkeypatch,
+) -> None:
+    """R7 fence ``email-storage-t6f-meter-bound``. When the sum reaches the
+    limit, the full meter runs and its value decides. A run makes at most
+    ``IMPORT_FULL_METERS`` full meters. After that, the sum decides, so a sum
+    that stays over the true value stops the import early, never late."""
+    monkeypatch.setattr(storage, "storage_limit_bytes", lambda: 1000)
+    # The full meter says 900 each time. The sum says 1000 each time.
+    db = _MeterDb(full=[900], adds=[1000])
+    meter = storage.ImportMeter("acc-1")
+    got = []
+    for _ in range(6):
+        await meter.before_write(db, ["p"])
+        got.append(await meter.after_write(db, ["p"]))
+    assert meter.full_meters == storage.IMPORT_FULL_METERS == 3
+    assert db.kinds.count("full") == 3
+    assert got[:3] == [900, 900, 900], "the full meter did not decide"
+    assert got[3:] == [1000, 1000, 1000], "after the bound, the sum must decide"
+
+
+async def test_a_run_with_no_pids_reads_nothing_for_its_batch() -> None:
+    db = _MeterDb()
+    assert await storage.batch_bytes(db, "acc-1", []) == 0
+    assert db.kinds == []
+
+
+def _counting_sessions(row, counts: dict, *, full, adds):
+    """``_resume_sessions``, and it counts the full meters and the growth
+    UPDATEs of one cycle."""
+    inner = _resume_sessions(row, [], meter=None)
+    fulls, growth = list(full), list(adds)
+
+    @asynccontextmanager
+    async def _ts(org=None):
+        async with inner(org) as base:
+            class _Db:
+                async def execute(self, stmt, params=None, *a, **k):
+                    sql = _flat(stmt)
+                    if "stored_bytes_at = now()" in sql:
+                        counts["full"] = counts.get("full", 0) + 1
+                        return _Res(value=fulls.pop(0) if len(fulls) > 1 else fulls[0])
+                    if "SET stored_bytes = COALESCE(stored_bytes, 0)" in sql:
+                        counts["add"] = counts.get("add", 0) + 1
+                        return _Res(value=growth.pop(0) if len(growth) > 1 else growth[0])
+                    if sql.startswith("WITH scope AS"):
+                        return _Res(value=0)
+                    return await base.execute(stmt, params, *a, **k)
+
+            yield _Db()
+    return _ts
+
+
+async def test_a_resumed_cycle_makes_at_most_four_full_meters(
+    core_run, monkeypatch,
+) -> None:
+    """R7 fence ``email-storage-t6f-meter-bound``, on the core. A resumed
+    loop cycle that imports 20 batches under the limit makes two full
+    meters: one after the first batch and one in phase (d). The bound for a
+    cycle is ``IMPORT_FULL_METERS`` plus phase (d), so four."""
+    row = _limit_row()
+    reached = row.import_reached_at
+    batches = [[_msg(f"b{b}-{i}", reached - timedelta(hours=b * 3 + i))
+                for i in range(2)] for b in range(1, 21)]
+    provider = _AskedProvider(batches)
+    counts: dict = {}
+    monkeypatch.setattr(sched, "build_provider", lambda name, creds: provider)
+    monkeypatch.setattr(sched, "tenant_session", _counting_sessions(
+        row, counts, full=[400], adds=[500]))
+    res = await sched._sync_account("acc-1", organization_id=_ORG, from_loop=True)
+    assert "error" not in res, res
+    assert provider.fetched == 20
+    assert counts["full"] == 2, counts
+    assert counts["full"] <= storage.IMPORT_FULL_METERS + 1
+    assert counts["add"] == 19, counts
+
+
+@_DB_GATE
+class TestTheImportMeterOnARealDatabase:
+
+    async def test_the_sum_of_the_batches_equals_the_full_meter(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        """R7 fence ``email-storage-t6f-meter-bound``, R8 half. Three batches
+        go through the real write of the import: new mail, a larger body for
+        a stored message, and new mail with a body of 20 KB. After each one,
+        the sum of the meter equals the full meter of the mailbox, so the
+        bound costs no accuracy."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        now = _now()
+        x = _seed_account(p.admin_engine, org=p.org_b,
+                          owner=f"t6m-{uuid.uuid4().hex[:6]}@em-t6f.test")
+        _seed_msg(p.admin_engine, account_id=x, org=p.org_b,
+                  received_at=now - timedelta(days=1), body="kept")
+        tag = uuid.uuid4().hex[:6]
+        first = [_msg(f"m-{tag}-{k}", now - timedelta(hours=k + 2),
+                      body=_random_b64(1000)) for k in range(4)]
+        grown = [_msg(first[0].provider_message_id, first[0].received_at,
+                      body=_random_b64(5000)),
+                 _msg(f"m-{tag}-new", now - timedelta(hours=9),
+                      body=_random_b64(300))]
+        large = [_msg(f"m-{tag}-big", now - timedelta(hours=10),
+                      body=_random_b64(20_000))]
+        floor = now - timedelta(days=30)
+        meter = storage.ImportMeter(x)
+        sums, fulls = [], []
+        token = clear_tenant()
+        try:
+            async with tenant_engine_scope(_dsn(p)):
+                for batch in (first, grown, large):
+                    pids = [m.provider_message_id for m in batch]
+                    async with tenant_session(p.org_b) as db:
+                        await meter.before_write(db, pids)
+                        await sched._write_messages(db, x, batch, floor)
+                        sums.append(await meter.after_write(db, pids))
+                    fulls.append(await _measure(x, p.org_b))
+            assert meter.full_meters == 1, "a batch under the limit ran the full meter"
+            assert sums == fulls, (sums, fulls)
+            assert sums[1] - sums[0] >= 4000 and sums[2] - sums[1] >= 20_000
+        finally:
+            release_tenant(token)
+            _wipe(p.admin_engine, [x])
+
+    async def test_a_resumed_cycle_counts_its_full_meters(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """R7 fence ``email-storage-t6f-meter-bound``, R8 half. A resumed loop
+        cycle imports eight batches of five under the limit. It makes two
+        full meters, one after its first batch and one in phase (d). The old
+        rule made nine."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        now = _now()
+        reached = now - timedelta(days=10)
+        x = _stopped_mailbox(p.admin_engine, org=p.org_b,
+                             owner=f"t6c-{uuid.uuid4().hex[:6]}@em-t6f.test",
+                             now=now, reached=reached)
+        tag = uuid.uuid4().hex[:6]
+        older = [_msg(f"old-{tag}-{k:02d}", reached - timedelta(hours=k + 1))
+                 for k in range(40)]
+        provider = _AskedOffers(older)
+        _loop_env(monkeypatch, provider)
+        monkeypatch.setattr(sched, "IMPORT_BATCH_SIZE", 5)
+        real = storage.measure_stored_bytes
+        calls: list[str] = []
+
+        async def _counted(db, account_id):
+            calls.append(account_id)
+            return await real(db, account_id)
+
+        token = clear_tenant()
+        try:
+            async with tenant_engine_scope(_dsn(p)):
+                stored = await _full_measure(real, x, p.org_b)
+                monkeypatch.setattr(storage, "storage_limit_bytes",
+                                    lambda: stored + 10 * _MB)
+                monkeypatch.setattr(storage, "measure_stored_bytes", _counted)
+                res = await sched._sync_account(
+                    x, organization_id=p.org_b, from_loop=True)
+            assert "error" not in res, res
+            assert provider.fetched == 8
+            assert len(calls) == 2, calls
+            assert len(calls) <= storage.IMPORT_FULL_METERS + 1
+            assert _import_state(p.admin_engine, x)["import_phase"] == "done"
+        finally:
+            release_tenant(token)
+            _wipe(p.admin_engine, [x])
+
+
+async def _full_measure(fn, account_id: str, org: str) -> int | None:
+    """The full meter, through ``fn``, in its own block."""
+    async with tenant_session(org) as db:
+        return await fn(db, account_id)
+
+
+# ── 15. EM-T6f review P2: the cap of mails for each cycle ───────────────────
+
+
+class _Capped(_AskedProvider):
+    """``_AskedProvider`` with the cap of Gmail."""
+
+    IMPORT_CYCLE_MAILS = 400
+
+
+@pytest.mark.parametrize(("provider", "progress", "goes_on", "cap"), [
+    (_AskedProvider(), True, True, 1000),
+    (_AskedProvider(), True, False, None),
+    (_AskedProvider(), False, True, None),
+    (_Capped(), True, True, 400),
+    (_Capped(), True, False, 400),
+], ids=["outlook_goes_on", "outlook_from_now", "deep_sync", "gmail_goes_on",
+        "gmail_from_now"])
+def test_the_cap_of_each_cycle(provider, progress, goes_on, cap) -> None:
+    """R7 fence ``email-storage-t6f-cap`` (EM-T6f review P2). An import that
+    goes on from a point reads at most ``RESUME_CYCLE_MAILS`` in a cycle, for
+    each provider, and a smaller cap of the provider wins. A first import
+    from now keeps the cap of its provider, and a deep sync reads to the
+    end."""
+    assert sched.RESUME_CYCLE_MAILS == 1000
+    assert sched._cycle_mails(provider, progress=progress, goes_on=goes_on) == cap
+
+
+@pytest.mark.parametrize("goes_on", [True, False], ids=["resumed", "new_mailbox"])
+async def test_a_resumed_outlook_cycle_pauses_at_the_cap_and_the_sweep_runs(
+    core_run, monkeypatch, goes_on,
+) -> None:
+    """R7 fence ``email-storage-t6f-cap``, on the core. A resumed Outlook
+    import (no cap of its own) reads up to the cap, pauses, and the
+    recurring sweep of the same cycle runs. The result says
+    ``resume_soon``, so the loop comes back after ``SYNC_RESUME_SECS``. The
+    first import of a new mailbox (no ``import_reached_at``) reads to the
+    end as before."""
+    monkeypatch.setattr(sched, "RESUME_CYCLE_MAILS", 4)
+    now = _now()
+    if goes_on:
+        row = _limit_row()
+        top = row.import_reached_at
+    else:
+        row = _account_row(initial_sync_done=False, import_reached_at=None)
+        top = now
+    batches = [[_msg(f"c{b}-{i}", top - timedelta(hours=b * 3 + i))
+                for i in range(2)] for b in range(1, 6)]
+    provider = _AskedProvider(batches, recurring=[_msg("fresh", now)])
+    log: list = []
+    monkeypatch.setattr(sched, "build_provider", lambda name, creds: provider)
+    monkeypatch.setattr(sched, "tenant_session",
+                        _resume_sessions(row, log, meter=500))
+    res = await sched._sync_account("acc-1", organization_id=_ORG, from_loop=True)
+    assert "error" not in res, res
+    assert provider.sweeps == 1, "the sweep did not run in the cycle (Q2)"
+    sqls = [s for s, _ in log]
+    if goes_on:
+        assert provider.fetched == 2, "the resumed import read past the cap"
+        assert res.get("resume_soon") is True, res
+        assert not any("import_phase = 'done'" in s for s in sqls)
+    else:
+        assert provider.fetched == 5, "the first import of a new mailbox paused"
+        assert "resume_soon" not in res
+        assert any("import_phase = 'done'" in s for s in sqls)
+
+
+@_DB_GATE
+class TestTheCapOnARealDatabase:
+
+    async def test_a_resumed_cycle_stops_at_the_cap_and_new_mail_lands(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """R7 fence ``email-storage-t6f-cap``, R8 half (EM-T6f review P2,
+        owner answer Q2). With a cap of 10 and batches of 5, the resumed
+        cycle writes 10 older mails, pauses, and the sweep writes the new
+        mail of the same cycle. The phase stays ``importing``, and the next
+        loop cycle goes on from the new ``import_reached_at``, with no
+        second resume."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        now = _now()
+        reached = now - timedelta(days=10)
+        x = _stopped_mailbox(p.admin_engine, org=p.org_b,
+                             owner=f"t6p-{uuid.uuid4().hex[:6]}@em-t6f.test",
+                             now=now, reached=reached)
+        tag = uuid.uuid4().hex[:6]
+        older = [_msg(f"old-{tag}-{k:02d}", reached - timedelta(hours=k + 1))
+                 for k in range(30)]
+        fresh = _msg(f"fresh-{tag}", now)
+        provider = _AskedOffers(older, recurring=[fresh])
+        _loop_env(monkeypatch, provider)
+        monkeypatch.setattr(sched, "IMPORT_BATCH_SIZE", 5)
+        monkeypatch.setattr(sched, "RESUME_CYCLE_MAILS", 10)
+        token = clear_tenant()
+        try:
+            async with tenant_engine_scope(_dsn(p)):
+                stored = await _measure(x, p.org_b)
+                monkeypatch.setattr(storage, "storage_limit_bytes",
+                                    lambda: stored + 10 * _MB)
+                first = await sched._sync_account(
+                    x, organization_id=p.org_b, from_loop=True)
+                paused = _import_state(p.admin_engine, x)
+                landed = _scalar(p.admin_engine,
+                                 "SELECT count(*) FROM email_messages WHERE "
+                                 "account_id = CAST(:a AS uuid) AND "
+                                 "provider_message_id = :p",
+                                 a=x, p=fresh.provider_message_id)
+                monkeypatch.setattr(sched, "_storage_resume_at", None)
+                second = await sched._sync_account(
+                    x, organization_id=p.org_b, from_loop=True)
+            assert "error" not in first and "error" not in second
+            assert first.get("resume_soon") is True, first
+            assert landed == 1, "the new mail waited for the import (Q2)"
+            assert (paused["import_phase"], paused["initial_sync_done"]) == (
+                "importing", False)
+            assert paused["import_count"] == 3 + 10
+            assert paused["import_reached_at"] == older[9].received_at
+            assert len(provider.asked) == 2
+            assert provider.asked[1][1] == older[9].received_at, (
+                "the next cycle did not go on from the point of the pause")
+            after = _import_state(p.admin_engine, x)
+            assert after["import_reached_at"] == older[18].received_at
+            # Each share reads the point of the pause again (by design), and
+            # the upsert keeps one row for it. The count holds it twice.
+            assert after["import_count"] == 3 + 10 + 10
+            assert sched._storage_resume_at is None, (
+                "the second cycle wrote a second resume")
+        finally:
+            release_tenant(token)
+            _wipe(p.admin_engine, [x])

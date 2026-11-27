@@ -12,6 +12,7 @@ import {
   fmtRange,
   layoutBlocks,
   leftText,
+  openConflicts,
   plannerCandidates,
   reservedWindowsForDay,
 } from "./shared";
@@ -66,6 +67,45 @@ describe("layoutBlocks", () => {
     expect(a.length).toBe(b.length);
     expect(a.every((o) => o.lanes === 2)).toBe(true);
     expect(b.every((o) => o.lanes === 2)).toBe(true);
+  });
+});
+
+describe("openConflicts — the Overlaps mark (owner, 2026-11-03)", () => {
+  const at = (h: number) => new Date(2099, 5, 15, ...hm(h), 0);
+  const done = (b: Block): Block => ({ ...b, item: { ...b.item, disposition: "DONE" } });
+
+  it("marks two open blocks that clash ahead of now", () => {
+    const out = openConflicts([block("a", 10, 11), block("b", 10.5, 12)], at(9));
+    expect([...out].sort()).toEqual(["a", "b"]);
+  });
+
+  it("marks nothing when one of the pair is done", () => {
+    // The owner's case: a 15-minute call beside a finished two-hour meeting.
+    const out = openConflicts([block("call", 10, 10.25), done(block("meet", 10, 12))], at(9));
+    expect(out.size).toBe(0);
+  });
+
+  it("marks nothing when the clash ended before now", () => {
+    const out = openConflicts([block("a", 9, 10), block("b", 9.5, 11)], at(10.5));
+    expect(out.size).toBe(0);
+  });
+
+  it("still marks a clash that runs past now", () => {
+    const out = openConflicts([block("a", 9, 11), block("b", 10, 12)], at(10.5));
+    expect([...out].sort()).toEqual(["a", "b"]);
+  });
+
+  it("marks only the pair that clashes, not every block of the lane group", () => {
+    // b overlaps a and c, which do not overlap each other. a is done.
+    const out = openConflicts(
+      [done(block("a", 9, 11)), block("b", 10, 13), block("c", 11.5, 14)],
+      at(8),
+    );
+    expect([...out].sort()).toEqual(["b", "c"]);
+  });
+
+  it("does not count back-to-back blocks", () => {
+    expect(openConflicts([block("a", 9, 10), block("b", 10, 11)], at(8)).size).toBe(0);
   });
 });
 

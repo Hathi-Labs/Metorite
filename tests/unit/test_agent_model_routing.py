@@ -1,4 +1,9 @@
-"""Sonnet does the work, Opus takes the hard cases (owner directive, 2026-10-19).
+"""Route each dispatch to the model that fits the job (D218, 2026-11-12).
+
+D218 replaced "Sonnet does the work, Opus takes the hard cases" (2026-10-19).
+The defaults below did not change: Sonnet builds and verifies by default, and
+a dispatch passes ``model`` for Haiku, Opus or Fable. ``ci_velocity.md`` §8.6
+owns the table.
 
 R7 — the rule names its fence. The routing lives in three places, and each
 one fails silently when it drifts:
@@ -77,4 +82,20 @@ def test_the_supervisor_carries_the_table():
 
 def test_claude_md_states_the_rule():
     text = (_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
-    assert "Sonnet does the work. Opus takes the hard cases." in text
+    assert "Route each dispatch to the model that fits the job." in text
+    # The rule D218 replaced must not come back beside it.
+    assert "Sonnet does the work. Opus takes the hard cases." not in text
+
+
+def test_each_model_has_its_jobs():
+    """D218: the four models each name their jobs in CLAUDE.md and step 1c."""
+    claude = (_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    for model in ("Haiku", "Sonnet", "Opus", "Fable"):
+        assert f"**{model}:**" in claude, f"CLAUDE.md names no jobs for {model}"
+    step = (_ROOT / ".claude" / "commands" / "next-ticket.md").read_text(encoding="utf-8")
+    step = step[step.index("**1c — Pick the model"):step.index("**1d — Build or harden.**")]
+    assert "**Fable, once a feature**" in step
+    # A STANDARD slice that edits a shared seam or list builds on Opus.
+    assert "**opus** when the slice edits a shared seam or list" in step
+    assert '`model: "haiku"`' in step
+    assert "**Effort.**" in step

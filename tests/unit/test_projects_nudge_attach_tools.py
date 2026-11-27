@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from acb_skills.ask_tools import CARD_DECLINED, card_outcome_text
 
 pytest.importorskip("skill_projects", reason="skill-projects not installed")
 
@@ -107,7 +108,7 @@ async def test_the_nudge_card_names_the_person_and_the_task(monkeypatch) -> None
 async def test_a_declined_nudge_writes_nothing(monkeypatch) -> None:
     deny(monkeypatch)
     calls = fake_gateway(monkeypatch, tw.responder)
-    assert await skill_projects.nudge_task(WAITER) == tw.W.CANCELLED
+    assert await skill_projects.nudge_task(WAITER) == card_outcome_text(CARD_DECLINED)
     assert writes(calls) == []
 
 
@@ -358,7 +359,7 @@ async def test_the_attach_card_names_the_file_its_size_and_the_task(monkeypatch)
 async def test_a_declined_attach_writes_nothing(monkeypatch) -> None:
     deny(monkeypatch)
     calls = fake_gateway(monkeypatch, tw.responder)
-    assert await skill_projects.attach_to_task(UUID, "brief.pdf") == tw.W.CANCELLED
+    assert await skill_projects.attach_to_task(UUID, "brief.pdf") == card_outcome_text(CARD_DECLINED)
     assert writes(calls) == []
 
 

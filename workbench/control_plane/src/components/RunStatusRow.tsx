@@ -33,7 +33,8 @@ const TONE_ICON: Record<RunTone, string> = {
   working: "LoaderCircle",
   finishing: "LoaderCircle",
   waiting: "MessageCircleQuestion",
-  parked: "CirclePause",
+  // D-RES-6: a parked card looks the same as a live wait.
+  parked: "MessageCircleQuestion",
   done: "CircleCheck",
   stopped: "CircleStop",
 };
@@ -115,7 +116,7 @@ export default function RunStatusRow({
       data-run-status={placement}
       data-run-tone={view.tone}
       title={text}
-      className="flex min-w-0 items-center gap-2 text-[11px]"
+      className="flex min-w-0 items-center gap-2 text-[11px] glass:text-caption"
     >
       <Icon
         name={TONE_ICON[view.tone]}

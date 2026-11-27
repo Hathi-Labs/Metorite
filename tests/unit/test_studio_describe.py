@@ -1,0 +1,251 @@
+"""The studio_describe tool (STU-G1b, ``ai_studio.md`` section 14).
+
+Hermetic. The tool reads code, so the tests make no network or DB call and set
+no member. Mutations (run, then restored):
+
+* hand-edit the schema in the tool -> the manifest test is red;
+* drop a field type in ``_describe_fields`` -> the fields test is red;
+* add a token to ``_describe_blocks`` -> the blocks test is red;
+* lower ``MAX_MANIFEST_CHARS`` -> the cap test is red.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+from pathlib import Path
+
+import httpx
+import pytest
+from acb_common import studio_fields as sfl
+from acb_common.studio_manifest import (
+    BLOCKS,
+    OBJECT_OPS,
+    RESERVED_BLOCKS,
+    Manifest,
+    validate_manifest,
+)
+from acb_skills import studio_tools as st
+
+REPO = Path(__file__).resolve().parents[2]
+SCHEMA_FILE = REPO / "packages/acb_common/acb_common/studio_manifest.schema.json"
+
+
+def run(part: str | None = None) -> dict:
+    return asyncio.run(st.studio_describe() if part is None else st.studio_describe(part))
+
+
+def test_manifest_part_equals_the_live_export_and_the_committed_schema() -> None:
+    out = run("manifest")
+    committed = json.loads(SCHEMA_FILE.read_text(encoding="utf-8"))
+    assert out["ok"] is True and out["part"] == "manifest"
+    assert out["schema"] == Manifest.model_json_schema() == committed
+
+
+def test_the_default_part_is_the_manifest() -> None:
+    assert run() == run("manifest")
+
+
+def test_fields_part_equals_the_field_module() -> None:
+    f = run("fields")["fields"]
+    assert f["types"] == list(sfl.FIELD_TYPES) and len(f["types"]) == len(sfl.FIELD_TYPES)
+    assert f["hot_types"] == list(sfl.HOT_TYPES)
+    assert f["name_pattern"] == sfl.NAME_PATTERN
+    assert f["limits"] == {
+        "max_fields_per_object": sfl.MAX_FIELDS_PER_OBJECT,
+        "max_options": sfl.MAX_OPTIONS,
+        "max_option_chars": sfl.MAX_OPTION_CHARS,
+        "max_label_chars": sfl.MAX_LABEL_CHARS,
+        "max_many_items": sfl.MAX_MANY_ITEMS,
+        "max_text_chars": sfl.MAX_TEXT_CHARS,
+    }
+
+
+def test_blocks_part_equals_the_block_list() -> None:
+    b = run("blocks")["blocks"]
+    assert b["tokens"] == list(BLOCKS) and len(b["tokens"]) == 14
+    assert b["reserved"] == list(RESERVED_BLOCKS)
+    assert b["object_ops"] == list(OBJECT_OPS)
+    assert not set(b["tokens"]) & set(b["reserved"])
+
+
+def test_runtime_part_serves_the_four_kinds_and_the_rules() -> None:
+    r = run("runtime")["runtime"]
+    assert list(r["kinds"]) == ["none", "browser", "sandbox", "packages"]
+    assert all(v.count(". ") == 0 and v.endswith(".") for v in r["kinds"].values())
+    assert any("means kind `none`" in x for x in r["rules"])
+    assert any("lowest kind" in x for x in r["rules"])
+    assert "pandas" in r["lock_packages"]
+    assert "hosts" not in r["kinds"]
+
+
+@pytest.mark.parametrize("part", st.DESCRIBE_PARTS)
+def test_every_result_is_under_the_cap(part: str) -> None:
+    out = run(part)
+    assert len(json.dumps(out, ensure_ascii=False, separators=(",", ":"))) <= st.MAX_MANIFEST_CHARS
+
+
+def test_a_part_over_the_cap_is_refused_in_a_sentence(monkeypatch) -> None:
+    monkeypatch.setattr(st, "MAX_MANIFEST_CHARS", 100)
+    out = run("manifest")
+    assert out["ok"] is False and "schema" not in out
+    assert "over the limit of 100" in out["errors"][0]["message"]
+
+
+@pytest.mark.parametrize("bad", ["", "nope", "MANIFEST", None, 5])
+def test_a_bad_part_is_a_sentence_and_does_not_raise(bad) -> None:
+    out = asyncio.run(st.studio_describe(bad))
+    assert out["ok"] is False
+    msg = out["errors"][0]["message"]
+    assert all(p in msg for p in st.DESCRIBE_PARTS)
+
+
+def test_it_needs_no_member_and_no_network(monkeypatch) -> None:
+    def boom(*a, **k):
+        raise AssertionError("network used")
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", boom)
+    monkeypatch.setattr(st, "_current_user_email", lambda: "")
+    assert run("manifest")["ok"] is True
+
+
+def _doc(block: str) -> dict:
+    return {
+        "studio": 1, "id": "demo", "name": "Demo", "purpose": "Test.",
+        "connections": [], "objects": [], "actions": [], "workflows": [],
+        "views": [{"id": "v1", "title": "V", "block": block}],
+    }
+
+
+def test_the_block_enum_equals_what_the_validator_accepts() -> None:
+    """The schema enum, the tool tokens and the validator agree."""
+    schema = json.dumps(run("manifest")["schema"])
+    for token in BLOCKS:
+        assert f'"{token}"' in schema
+        errs = [e for e in validate_manifest(_doc(token)) if e.path.endswith("block")]
+        assert not errs, (token, errs)
+    for token in [*RESERVED_BLOCKS, "nope"]:
+        errs = [e for e in validate_manifest(_doc(token)) if e.path.endswith("block")]
+        assert errs, token
+        assert token not in run("blocks")["blocks"]["tokens"]
+
+
+def test_fields_part_names_the_computed_fields_and_the_formula_grammar() -> None:
+    """C7a: a formula target is computed and read-only, so a Form sends no key for it."""
+    from acb_common import studio_expr, studio_rules
+
+    c = run("fields")["fields"]["computed"]
+    assert c["rule"] == "formula" and c["read_only"] is True
+    assert c["target_types"] == list(studio_rules.FORMULA_TARGET_TYPES)
+    assert c["target_types"] == ["number", "money", "text", "checkbox", "date"]
+    assert c["functions"] == list(studio_expr.FUNCTIONS)
+    assert c["roundings"] == ["half_up", "half_even", "down", "up"]
+    assert c["limits"] == {
+        "max_depth": 8, "max_nodes": 64, "max_args": 4, "max_steps": 256,
+        "max_formula_rules": 8, "max_scale": 4, "max_places": 8, "max_text_literal_chars": 200,
+    }
+
+
+def test_the_object_description_marks_each_formula_target_computed() -> None:
+    from acb_common import studio_rules
+    from gateway.studio import objects_store as store
+
+    fields = tuple(sfl.FieldSpec(key=k, type="number") for k in ("qty", "total", "other"))
+    rules = studio_rules.parse_rules([
+        {"name": "t", "kind": "formula", "target": "total", "rounding": "up",
+         "expr": {"fn": "add", "args": [{"ref": "qty"}, {"num": "1"}]}},
+        {"name": "o", "kind": "formula", "target": "other", "rounding": "up",
+         "expr": {"fn": "add", "args": [{"ref": "qty"}, {"num": "2"}]}},
+    ])
+    obj = store.StudioObject("i", "p", "o", None, "a", None, None, fields, rules)  # type: ignore[arg-type]
+    assert obj.computed == ("total", "other")
+
+
+def test_fields_part_names_the_rollup_rule_and_its_limits() -> None:
+    """C7b: a roll-up target is computed too, so a Form marks it read-only."""
+    from acb_common import studio_rules
+
+    r = run("fields")["fields"]["computed"]["rollup"]
+    assert r["rule"] == "rollup" and r["read_only"] is True
+    assert r["aggs"] == ["sum", "count", "min", "max"]
+    assert r["field_types"] == {"sum": ["number", "money"], "min": ["number", "money", "date"],
+                                "max": ["number", "money", "date"]}
+    assert r["limits"] == {"max_where": 2, "max_parents_per_batch": 100,
+                           "max_aggregates_per_batch": 100}
+    assert r["limits"]["max_where"] == studio_rules.MAX_ROLLUP_WHERE
+    assert "relation" in run("fields")["fields"]["hot_types"]
+
+
+def test_the_object_description_marks_each_rollup_target_computed_too() -> None:
+    from acb_common import studio_rules
+    from gateway.studio import objects_store as store
+
+    fields = tuple(sfl.FieldSpec(key=k, type="number") for k in ("qty", "total", "count"))
+    rules = studio_rules.parse_rules([
+        {"name": "t", "kind": "formula", "target": "total", "rounding": "up",
+         "expr": {"fn": "add", "args": [{"ref": "qty"}, {"num": "1"}]}},
+        {"name": "c", "kind": "rollup", "target": "count", "source": "entry", "via": "account",
+         "agg": "count"},
+    ])
+    obj = store.StudioObject("i", "p", "o", None, "a", None, None, fields, rules)  # type: ignore[arg-type]
+    assert obj.computed == ("total", "count")
+
+
+def test_fields_part_gives_one_value_shape_for_each_new_type() -> None:
+    """STU-C14: a model that reads this sends basis points for a percent.
+
+    Mutation: drop the `percent` line of `VALUE_SHAPES`. This test turns red.
+    """
+    f = run("fields")["fields"]
+    new = ["richText", "rating", "duration", "quantity", "percent", "barcode", "autonumber"]
+    assert list(f["value_shapes"]) == new
+    assert "15% is 1500" in f["value_shapes"]["percent"]
+    assert "unit" in f["value_shapes"]["quantity"]
+    assert "FV-0042" in f["value_shapes"]["autonumber"]
+    assert f["spec_parts"] == {
+        "rating": ["min", "max"], "barcode": ["format"],
+        "quantity": ["units", "normal", "critical", "conversions"],  # C24a
+        "autonumber": ["prefix", "pad", "reset"],  # C15a
+    }
+    assert "computed" in f["value_shapes"]["quantity"]
+
+
+def test_a_package_read_keeps_the_parts_of_the_new_field_types() -> None:
+    objects = [{"name": "visit", "label": "Visit", "rules": [], "fields": [
+        {"key": "load", "type": "quantity", "units": ["kg", "t"]},
+        {"key": "score", "type": "rating", "min": 0, "max": 10},
+        {"key": "serial", "type": "barcode", "format": "ean13"},
+        {"key": "title", "type": "text"},
+    ]}]
+    got = {f["key"]: f for f in st._package_objects(objects)[0]["fields"]}
+    assert got["load"]["units"] == ["«kg»", "«t»"]
+    assert (got["score"]["min"], got["score"]["max"]) == (0, 10)
+    assert got["serial"]["format"] == "ean13"
+    assert "units" not in got["title"] and "format" not in got["title"]
+
+
+def test_the_quantity_refusal_names_the_units() -> None:
+    from acb_common import studio_fields as sf
+
+    field = sf.parse_field_spec({"key": "load", "type": "quantity", "units": ["kg", "t"]})
+    with pytest.raises(sf.FieldError) as refused:
+        sf.check_value(field, {"value": "1", "unit": "lb"})
+    assert "kg, t" in refused.value.message
+
+
+def test_blocks_part_teaches_the_tree_and_aggregate_actions_with_an_example_that_validates() -> None:
+    """STU-D18-3: a tree view needs ``object:<name>.tree`` declared, and nothing adds it."""
+    oa = run("blocks")["blocks"]["object_actions"]
+    assert oa["declare_yourself"] == ["aggregate", "tree"]
+    assert set(oa["declare_yourself"]) <= set(OBJECT_OPS)
+    assert not set(oa["declare_yourself"]) & set(oa["added_for_you"])
+    assert "tree" in oa["rule"] and "aggregate" in oa["rule"]
+    manifest = {
+        "studio": 1, "id": "sites", "name": "Sites", "purpose": "Sites in a tree.",
+        "connections": [], "views": [], "workflows": [],
+        "objects": [{"name": "site", "fields": [{"key": "name", "type": "text"},
+                                                {"key": "parent", "type": "relation",
+                                                 "to": "sites.site", "hot": True}]}],
+        "actions": [oa["example"]],
+    }
+    from acb_common.studio_manifest import validate_manifest
+    assert validate_manifest(manifest) == []

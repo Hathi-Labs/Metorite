@@ -6,9 +6,10 @@
  *
  * - a task row is `- #<n> «title» · <facts>` and the NEXT line is
  *   `  full_id: <uuid>`;
- * - a write that HAPPENED carries a `full_id:` line, a declined card starts
- *   with the `CANCELLED` sentinel, and anything else is a refusal the tool
- *   reported in prose. The S2 verifier found refusals painted green.
+ * - a write that HAPPENED carries a `full_id:` line, a card that did nothing
+ *   starts with a lead of the one table of card outcomes (HRD-7,
+ *   `lib/cardOutcomes.ts`), and anything else is a refusal the tool reported
+ *   in prose. The S2 verifier found refusals painted green.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -18,7 +19,7 @@ import { unfenced } from "@/lib/fencedText";
 
 import {
   VIEW_TOOLS,
-  CANCELLED,
+  LEGACY_CANCELLED,
   GUARDED_TOOLS,
   toneFor,
   FRESH_RECEIPT_MS,
@@ -126,6 +127,27 @@ describe("classifyActionResult", () => {
     );
   });
 
+  it("is partial when plan_cycle stopped after one task, and refused when none went in (SP-5a)", () => {
+    const id = "d4d9fad5-d9cb-469f-a165-70867728950e";
+    const stopped = [
+      "«Sprint 7»: 1 of 3 task changes made.",
+      'stopped: #9 «Task ab12» refused (409): «This task is in the cycle "Sprint 5".».',
+      "added: #8 «Task 0f3c»",
+      "not tried: #10 «Task cd34»",
+      `  cycle_id: ${id}`,
+    ].join("\n");
+    expect(classifyActionResult(stopped, "done", "plan_cycle")).toBe("partial");
+    const none = [
+      "«Sprint 7»: 0 of 3 task changes made.",
+      "stopped: #8 «Task 0f3c» refused (409): «x».",
+      "not tried: #9 «Task ab12»",
+      "Nothing was changed in the cycle.",
+    ].join("\n");
+    expect(classifyActionResult(none, "done", "plan_cycle")).toBe("refused");
+    const all = ["«Sprint 7»: 2 of 2 task changes made.", "added: #8 «Task 0f3c»", `  cycle_id: ${id}`].join("\n");
+    expect(classifyActionResult(all, "done", "plan_cycle")).toBe("done");
+  });
+
   it("is partial when a plan stopped part way, and never done (S7d rule 9)", () => {
     const text = [
       "Created project «Steps» under «Ops».",
@@ -142,8 +164,26 @@ describe("classifyActionResult", () => {
     expect(classifyActionResult(fine, "done", "propose_plan")).toBe("done");
   });
 
-  it("is cancelled when the member declined the card", () => {
-    expect(classifyActionResult(CANCELLED, "done")).toBe("cancelled");
+  it("is cancelled for each card outcome that did nothing (HRD-7)", () => {
+    // The chip of before stays for each one (D200). Mutation: drop the
+    // `NOT_DONE_AT_CARD` rule of `cancelledAtCard` → red.
+    for (const lead of ["Declined", "Timed out", "Not shown", "Answered by another member", "Changed since the card"]) {
+      expect(classifyActionResult(`${lead}: nothing was done. Tell the member.`, "done"), lead).toBe("cancelled");
+    }
+    // A stored chat of before HRD-7 still draws its cancel.
+    expect(classifyActionResult(LEGACY_CANCELLED, "done")).toBe("cancelled");
+  });
+
+  it("keeps a card that the member's message closed as Not done, never Cancelled", () => {
+    // It is no decline (task 2494), so it keeps the receipt it drew before.
+    const closed = "Closed by your message: the member wrote in the chat while the card was open, and nothing was done.";
+    expect(classifyActionResult(closed, "done")).toBe("refused");
+  });
+
+  it("never draws a parked card as Cancelled: it still waits", () => {
+    // Mutation: put `parked` back in `NOT_DONE_AT_CARD` → red.
+    const parked = "Parked: the card waits in the chat for the member's answer, and nothing was done yet.";
+    expect(classifyActionResult(parked, "done")).toBe("refused");
   });
 
   it("is refused for a prose refusal, never done", () => {
@@ -165,15 +205,18 @@ describe("classifyActionResult", () => {
     );
   });
 
-  it("uses the same cancel sentinel the skill prints", () => {
-    // Two copies of one wire token, held equal by reading the Python source.
-    // Editing either side alone would paint a declined write as a success.
+  it("reads the words of a card that did nothing from the one table", () => {
+    // HRD-7: the skill writes no cancel text of its own. It answers
+    // `_not_confirmed()`, which reads `ask_tools.card_not_done_text`, so a
+    // declined write never paints as a success. `lib/cardOutcomes.test.ts`
+    // holds the leads equal to the Python table.
     const source = fs.readFileSync(
       path.join(__dirname, "../../../../../apps/skills/skill-projects/skill_projects/writes.py"),
       "utf8",
     );
-    const m = source.match(/^CANCELLED = "(.+)"$/m);
-    expect(m?.[1]).toBe(CANCELLED);
+    expect(source).not.toMatch(/^CANCELLED = /m);
+    expect(source).not.toContain(LEGACY_CANCELLED);
+    expect(source).toContain("card_not_done_text");
   });
 });
 
@@ -431,5 +474,13 @@ describe("the one-card batches of writes.py (2026-10-18)", () => {
     ].join(NL);
     expect(batchNotes(linked)).toEqual([]);
     expect(classifyActionResult(linked, "done", "link_tasks_batch")).toBe("done");
+    // WS-PJP PJP-4: the line of update_tasks is for the model too.
+    const changed = [
+      "Changed 1 of 1 task:",
+      "- #11 «Fix the login» · unassigned · in «Website»",
+      `  full_id: ${ID2}`,
+      "The 1 task listed above changed. Do not change them again. To retry a row that was not changed, fix it and call update_tasks with that row only.",
+    ].join(NL);
+    expect(batchNotes(changed)).toEqual([]);
   });
 });

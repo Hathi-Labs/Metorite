@@ -42,10 +42,11 @@
  * our React (trusted, templated) vs. their DOM/JS (untrusted, sandboxed).
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { buildIconMap } from "@/lib/iconSvg";
 import { appTokenMap } from "@/lib/theme/app-tokens";
+import { useDocumentLook } from "@/lib/theme/glassTokens";
 import { BRIDGE, buildSrcDoc } from "@/lib/theme/sandbox-frame";
 import { THEME } from "@/lib/theme/themes";
 import { useMode } from "@/lib/theme/surfaces";
@@ -68,6 +69,9 @@ interface SandboxedHtmlProps {
    *  (no "Generated UI / sandboxed" header, no card frame, fills its container).
    *  Inline chat cards keep the default framed chrome. */
   chromeless?: boolean;
+  /** Receives the `<iframe>` element, for a broker that must know which
+   *  window is THIS frame (the Custom App bridge, task 2433). */
+  iframeRef?: RefObject<HTMLIFrameElement | null>;
 }
 
 function describeSubmit(payload: unknown): string {
@@ -99,15 +103,28 @@ export default function SandboxedHtml({
   onAction,
   iconNames,
   chromeless = false,
+  iframeRef,
 }: SandboxedHtmlProps): React.ReactElement {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const [autoHeight, setAutoHeight] = useState<number>(height ?? 120);
+  // One element, two holders: our own effects, and the caller's broker.
+  const attachFrame = useCallback(
+    (el: HTMLIFrameElement | null) => {
+      frameRef.current = el;
+      if (iframeRef) iframeRef.current = el;
+    },
+    [iframeRef],
+  );
 
   // Read live rather than taking a prop. Every call site used to derive the
   // colour mode with the identical two lines and thread it down (in
   // GenerativeUINode, through the whole node tree) purely to reach this
   // component — five copies of one expression.
   const mode = useMode();
+  // The look (D143, GL-10a): a glass page hands the frame the glass `--cc-*`
+  // values. Read from `<html data-look>`, as the stylesheet reads it. A change
+  // of look patches the open frame, as a change of mode does.
+  const look = useDocumentLook();
 
   // One pack, in the bundle, resolved synchronously — so this no longer waits
   // on an Iconify collection or re-runs when one arrives (the theming engine
@@ -120,7 +137,7 @@ export default function SandboxedHtml({
   // paint reads them here; every change after that arrives as a patch in the
   // effect below.
   const srcDoc = useMemo(
-    () => buildSrcDoc(html, THEME, mode, icons),
+    () => buildSrcDoc(html, THEME, mode, icons, look),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [html],
   );
@@ -134,10 +151,10 @@ export default function SandboxedHtml({
     // Safe here: the payload is CSS variable values, and the frame is the only
     // recipient (we hold its window handle directly).
     win.postMessage(
-      { __cc: true, kind: "theme", mode, vars: appTokenMap(THEME, mode), icons },
+      { __cc: true, kind: "theme", mode, vars: appTokenMap(THEME, mode, look), icons },
       "*",
     );
-  }, [mode, icons, srcDoc]);
+  }, [mode, look, icons, srcDoc]);
 
   useEffect(() => {
     function onMessage(ev: MessageEvent) {
@@ -172,7 +189,7 @@ export default function SandboxedHtml({
   if (chromeless) {
     return (
       <iframe
-        ref={frameRef}
+        ref={attachFrame}
         sandbox="allow-scripts"
         allow=""
         referrerPolicy="no-referrer"
@@ -192,7 +209,7 @@ export default function SandboxedHtml({
         <span className="ml-auto text-[9px] text-muted-foreground/60">sandboxed</span>
       </div>
       <iframe
-        ref={frameRef}
+        ref={attachFrame}
         // allow-scripts ONLY — no allow-same-origin (opaque origin, no ambient authority).
         sandbox="allow-scripts"
         // Belt-and-suspenders: also block by feature policy.

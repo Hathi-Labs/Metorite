@@ -514,9 +514,10 @@ def _site(host: str) -> list[str]:
 
 
 def test_the_mcp_site_holds_the_pinned_lines() -> None:
+    # CIV-14b: 6MiB, the cap of one `upload_task_image` call at the edge.
     assert _site("mcp.metorite.com") == [
         "request_body {",
-        "max_size 1MiB",
+        "max_size 6MiB",
         "}",
         f"reverse_proxy 127.0.0.1:{PORT} {{",
         "lb_try_duration 30s",
@@ -536,11 +537,14 @@ def _caddy_bytes(value: str) -> int:
 
 def test_the_body_cap_equals_the_cap_of_the_edge() -> None:
     """Caddy's cap must not refuse a body that the edge accepts, so the edge
-    answers its own 413 with a JSON-RPC body (spec §9.6)."""
+    answers its own 413 with a JSON-RPC body (spec §9.6). CIV-14b: the edge
+    reads up to 6 MiB for one call of ``upload_task_image``, and keeps 1 MiB
+    for every other call, so Caddy holds the larger cap."""
     from agent_edge import mcp
 
     (line,) = [ln for ln in _site("mcp.metorite.com") if ln.startswith("max_size ")]
-    assert _caddy_bytes(line.split()[1]) == mcp.MAX_BODY_BYTES == 1024 * 1024
+    assert _caddy_bytes(line.split()[1]) == mcp.MAX_UPLOAD_BODY_BYTES == 6 * 1024 * 1024
+    assert mcp.MAX_BODY_BYTES == 1024 * 1024
 
 
 def test_the_caddy_upstream_is_the_port_of_the_unit() -> None:

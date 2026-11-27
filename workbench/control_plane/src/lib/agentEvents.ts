@@ -43,6 +43,8 @@ export interface AgentEventPayload {
   path?: string;
   /** The one sentence the member reads for it. */
   why?: string;
+  /** The guide a `guide` event names (WS-OB GD-4). The store checks it against its table. */
+  guideId?: string;
   /**
    * Session/thread this event belongs to.  The subscriber registry is global
    * (a single process-wide list), so when more than one session is streaming
@@ -58,6 +60,12 @@ export interface AgentSubscriber {
   onRunStarted?: (payload: AgentEventPayload) => void;
   /** Agent execution completed (RUN_FINISHED or stream ended). */
   onRunFinalized?: (payload: AgentEventPayload) => void;
+  /**
+   * The run rests, by any end: a `done` on either stream, a Stop, a failure,
+   * or a run the server stopped listing. A blocking card stays as it is on
+   * this event: only a slot of a redraft ends (§18.11 step 7).
+   */
+  onRunRested?: (payload: AgentEventPayload) => void;
   /** Agent state changed (STATE_SNAPSHOT / STATE_DELTA). */
   onStateChanged?: (payload: AgentEventPayload) => void;
   /** Messages were added or modified. */
@@ -86,6 +94,12 @@ export interface AgentSubscriber {
    * refresh moves no page.
    */
   onNavigate?: (payload: AgentEventPayload) => void;
+  /**
+   * The live run named a guide (WS-OB GD-4, `assistant_guide.md` §3 G1): `guideId`.
+   * The one assistant starts it where it may move the page, and leaves a "Show
+   * me" chip elsewhere. Never emitted on a reconnect replay.
+   */
+  onGuide?: (payload: AgentEventPayload) => void;
 }
 
 // ── Global subscriber registry ─────────────────────────────────────────────

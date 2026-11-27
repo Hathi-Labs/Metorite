@@ -263,14 +263,14 @@ export default function ArtifactCard({
       role={isDoc ? "button" : undefined}
       tabIndex={isDoc ? 0 : undefined}
       aria-label={isDoc ? `Open ${artifact.name}` : undefined}
-      className={`@container mt-3 rounded-lg border border-border bg-card/40 px-2.5 py-2 flex items-center gap-2.5 group/card transition-colors hover:border-primary/30 glass:rounded-[22px] glass:border-transparent glass:glass-surface glass:p-3 glass:hover:border-transparent ${
+      className={`@container mt-3 rounded-lg border border-border bg-card/40 px-2.5 py-2 flex items-center gap-2.5 group/card transition-colors hover:border-primary/30 glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3 glass:hover:border-transparent ${
         isDoc
           ? "cursor-pointer hover:bg-card focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           : ""
       }`}
     >
       {/* Icon */}
-      <div className="shrink-0 w-8 h-8 rounded-md bg-secondary flex items-center justify-center glass:size-10 glass:rounded-[12px] glass:bg-system-blue">
+      <div className="shrink-0 w-8 h-8 rounded-md bg-secondary flex items-center justify-center glass:size-10 glass:rounded-[10px] glass:bg-system-blue">
         {fileIcon(artifact)}
       </div>
 

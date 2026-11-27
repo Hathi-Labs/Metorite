@@ -221,6 +221,28 @@ def _cases() -> list[tuple[str, str, dict]]:
         ("access._ORG_OWNER_SQL", A._ORG_OWNER_SQL, {"slug": "no-such-org"}),
         ("access._MEMBERSHIP_SQL", A._MEMBERSHIP_SQL, {"email": WHO}),
         ("access._MEMBERSHIP_IDENTITY_SQL", A._MEMBERSHIP_IDENTITY_SQL, {"email": WHO}),
+        # H-232b — the (email, org) reads of the run gates. `org` is a str
+        # that the statement CASTs, as `is_active_member` binds it.
+        (
+            "access._MEMBER_OF_ORG_IDENTITY_SQL",
+            A._MEMBER_OF_ORG_IDENTITY_SQL,
+            {"email": WHO, "org": ORG},
+        ),
+        (
+            "access._MEMBER_OF_ORG_APP_USER_SQL",
+            A._MEMBER_OF_ORG_APP_USER_SQL,
+            {"email": WHO, "org": ORG},
+        ),
+        ("access._ACCESS_IN_ORG_SQL", A._ACCESS_IN_ORG_SQL, {"email": WHO, "org": ORG}),
+        (
+            # ACC-1. Every resolve runs it after the access row, so a bind
+            # fault here would refuse integrations to every member who is not
+            # an admin. Both ids are text, as `read_integration_rules` binds
+            # them from the access row.
+            "access._INTEGRATION_RULES_SQL",
+            A._INTEGRATION_RULES_SQL,
+            {"org": ORG, "uid": UID},
+        ),
         ("access._PARTICIPANT_SQL", A._PARTICIPANT_SQL, {"sid": NOWHERE}),
         (
             "access._GROUP_MEMBER_SQL",

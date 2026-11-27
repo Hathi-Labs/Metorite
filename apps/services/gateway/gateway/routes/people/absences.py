@@ -278,6 +278,23 @@ _AWAY_ON_SQL = (
 )
 
 
+def _addresses(emails: list[str]) -> list[str]:
+    """The distinct real addresses of *emails*, in lower case."""
+    return sorted({str(e).strip().lower() for e in emails if e and "@" in str(e)})
+
+
+async def away_rows(db: Any, emails: list[str], day: date) -> dict[str, dict[str, Any]]:
+    """The read of :func:`away_on`, on the caller's session of the bound tenant.
+
+    ⚠️ It makes no HR check. Only a background unit that keeps quiet on a leave
+    day reads it (``reach.due_push``). No answer of it goes to a member."""
+    wanted = _addresses(emails)
+    if not wanted:
+        return {}
+    rows = (await db.execute(text(_AWAY_ON_SQL), {"emails": wanted, "day": day})).fetchall()
+    return {str(r.email): {"name": r.name, "kind": r.kind} for r in rows}
+
+
 async def away_on(user: Any, emails: list[str], day: date) -> dict[str, dict[str, Any]]:
     """Who of ``emails`` is away all day on ``day``, by lower-case address,
     as ``{"name": ..., "kind": "away" | "holiday"}`` (WS-58 MD-3f,
@@ -296,13 +313,11 @@ async def away_on(user: Any, emails: list[str], day: date) -> dict[str, dict[str
         raise HTTPException(
             status_code=403,
             detail="Seeing when somebody is away needs admin:members:read.")
-    wanted = sorted({str(e).strip().lower() for e in emails if e and "@" in str(e)})
+    wanted = _addresses(emails)
     if not wanted:
         return {}
     async with _tenant_session() as db:
-        rows = (await db.execute(text(_AWAY_ON_SQL),
-                                 {"emails": wanted, "day": day})).fetchall()
-    return {str(r.email): {"name": r.name, "kind": r.kind} for r in rows}
+        return await away_rows(db, wanted, day)
 
 
 async def away_today(db: Any, person_ids: list[str]) -> dict[str, dict[str, Any]]:

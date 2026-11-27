@@ -18,6 +18,10 @@ from orchestrator.copilot_agent import MetoriteCopilotAgent
 class _FakeCopilotClient:
     """Records the keywords, then proves the REAL SDK client accepts them.
 
+    It binds them to the real signature and builds no client. A real client
+    resolves the CLI binary, and on a box with no cached CLI that downloads it
+    over the network. An earlier test used to warm that cache by accident.
+
     SDK 1.0 (H-181) takes keyword arguments, and ``cli_url`` became
     ``connection=RuntimeConnection.for_uri(...)``. Building a real client
     from the same keywords fails the test if the SDK signature drifts again.
@@ -26,9 +30,12 @@ class _FakeCopilotClient:
     instances: ClassVar[list[_FakeCopilotClient]] = []
 
     def __init__(self, **options):
+        import inspect
+
         from copilot import CopilotClient
 
-        CopilotClient(**options)  # raises TypeError on an unknown keyword
+        # raises TypeError on an unknown keyword, with no CLI download
+        inspect.signature(CopilotClient.__init__).bind(None, **options)
         self.options = options
         _FakeCopilotClient.instances.append(self)
 

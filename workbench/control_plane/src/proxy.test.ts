@@ -120,6 +120,8 @@ describe("proxy — the admin-consent return (EM-T3c)", () => {
       "/icon-maskable-512.png",
       "/favicon-needs.png",
       "/favicon-reply.png",
+      "/favicon-needs.svg",
+      "/favicon-reply.svg",
     ]) {
       const res = await proxy(request(path));
       expect(passed(res), path).toBe(true);

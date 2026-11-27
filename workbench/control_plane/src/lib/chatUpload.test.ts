@@ -18,6 +18,8 @@ import {
   refuseUpload,
   uploadErrorMessage,
   uploadNote,
+  parseUploadNote,
+  wordsOfMessage,
 } from "./chatUpload";
 
 const REPO = join(process.cwd(), "..", "..");
@@ -176,5 +178,47 @@ describe("the default agent's aliases", () => {
     const block = src.slice(at, src.indexOf("})", at));
     const py = new Set(Array.from(block.matchAll(/"([^"]*)"/g), (m) => m[1]));
     expect(py).toEqual(new Set(DEFAULT_AGENT_NAMES));
+  });
+});
+
+describe("parseUploadNote (IMG-1)", () => {
+  const one = [{ name: "my shot.png", path: "inputs/chat-1/my shot.png" }];
+  const three = [
+    { name: "a.png", path: "inputs/chat-1/a.png" },
+    { name: "Q3 plan.pdf", path: "inputs/chat-1/Q3 plan.pdf" },
+    { name: "notes.txt", path: "inputs/chat-1/notes.txt" },
+  ];
+
+  it("reads back what uploadNote wrote, for 1 and 3 files", () => {
+    expect(parseUploadNote(uploadNote(one))).toEqual({ words: "", files: one });
+    expect(parseUploadNote(uploadNote(three))).toEqual({ words: "", files: three });
+  });
+
+  it("returns the words that come before the note", () => {
+    const text = `Add this task.\n\nUse the shot.\n\n${uploadNote(one)}`;
+    expect(parseUploadNote(text)).toEqual({ words: "Add this task.\n\nUse the shot.", files: one });
+  });
+
+  it("leaves a changed or partial note as text", () => {
+    const note = uploadNote(three);
+    expect(parseUploadNote(note.replace("3 file(s)", "2 file(s)"))).toBeNull();
+    expect(parseUploadNote(note.replace("a.png,", "b.png,"))).toBeNull();
+    expect(parseUploadNote(note.replace("Read them with read_attachment.", "Read them."))).toBeNull();
+    expect(parseUploadNote(note.split("\n\n").slice(0, 2).join("\n\n"))).toBeNull();
+    expect(parseUploadNote(`${note}\n\nMore words.`)).toBeNull();
+    expect(parseUploadNote("Just words.")).toBeNull();
+  });
+
+  it("gives a preview and a copy that never show a half note", () => {
+    expect(wordsOfMessage(`Hello\n\n${uploadNote(one)}`)).toBe("Hello");
+    expect(wordsOfMessage(uploadNote(one))).toBe("📎 my shot.png");
+    expect(wordsOfMessage(uploadNote(three))).toBe("📎 3 files");
+    expect(wordsOfMessage("plain")).toBe("plain");
+  });
+
+  it("keeps the note byte for byte (the model contract)", () => {
+    expect(uploadNote(one)).toBe(
+      "📎 Uploaded 1 file(s): my shot.png\n\nPaths: `inputs/chat-1/my shot.png`\n\nRead them with read_attachment.",
+    );
   });
 });

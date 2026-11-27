@@ -46,9 +46,10 @@ class AgentScope:
 
     Branch 0 of ``deps.get_current_user`` attaches it LAST, after the member's
     access resolved, and only for a signed request of a live connection. The
-    Projects visibility seam reads it: the pins, the personal opt-out and the
-    seal narrow both arms of its clauses. ``None`` on ``UserContext.agent``
-    means a human request, and every clause is then byte-identical to before.
+    Projects visibility seam reads it: the pins, the left-out list, the
+    personal opt-out and the seal narrow both arms of its clauses. ``None``
+    on ``UserContext.agent`` means a human request, and every clause is then
+    byte-identical to before.
 
     Every field comes from the ``agent_connection`` row, never from a header,
     with one exception: ``session_key`` (SW-7) comes from the SIGNED
@@ -61,6 +62,10 @@ class AgentScope:
     pinned_projects: tuple[str, ...] = ()
     #: D-EA-4. False hides every personal project.
     include_personal: bool = False
+    #: D-EA-12 (spec §10.8, EA-17a). Project ids that the reach stops at: the
+    #: project and every project beneath it stay out, unless a pin beneath
+    #: it starts a reach of its own. Empty leaves nothing out.
+    left_out_projects: tuple[str, ...] = ()
     client_origin: str = ""
     #: The stamp ``mcp:<host>:<slug>`` (EA-13a), the value of
     #: ``agent_oauth.actor_via_for(client_origin, client_id=...)`` for the
@@ -70,6 +75,26 @@ class AgentScope:
     #: ``X-Agent-Session`` header and never from a body. ``None`` when the
     #: edge served the call outside an MCP session.
     session_key: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class SandboxScope:
+    """The run of a sandbox call (SBX-2, ``agent_sandbox.md`` §12.2 step 11).
+
+    The sandbox sibling of branch 0 in ``deps.get_current_user`` attaches it
+    LAST, after the member's access resolved, and only for a live capability
+    of the ``sandbox_capabilities`` table. Every field comes from that row,
+    never from a header. It never holds the token or its hash.
+    """
+
+    run_id: str
+    thread_id: str
+    #: ``build``, ``smoke`` or ``run``.
+    phase: str
+    #: The Studio package and its version (D187). ``None`` during a build.
+    app_id: str | None = None
+    version: int | None = None
+    read_scopes: tuple[str, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)
@@ -96,6 +121,10 @@ class UserContext:
     #: that is not a signed agent request. Only branch 0 of
     #: ``deps.get_current_user`` sets it, with ``dataclasses.replace``.
     agent: AgentScope | None = None
+    #: The sandbox run of the call (SBX-2). ``None`` for every request that
+    #: is not a sandbox call. Only the sandbox sibling of branch 0 sets it,
+    #: with ``dataclasses.replace``.
+    sandbox: SandboxScope | None = None
 
     # ── Legacy coarse role ──────────────────────────────────────────────────
 

@@ -154,6 +154,7 @@ def drive_native(
     request_model: str | None = None,
     on_event: Callable[[dict[str, Any]], None] | None = None,
     shows_cards: bool = True,
+    session_user: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[Any]]:
     """Run agent *name* (built from *rel_dir*) through ``run_agent_stream``.
 
@@ -167,6 +168,9 @@ def drive_native(
     a confirmation card the way ``POST /agent/respond-input`` does.
     *shows_cards* is what the chat route declares (True): this harness stands
     for the web chat, whose client draws each card.
+    *session_user* is the member that the route takes from the session
+    (MCP-C1). The stream route removes the body's ``user_email`` (H-337), so
+    a test of the real route sends the member here, not in the body.
     """
     executor = pytest.importorskip(
         "orchestrator.executor", reason="orchestrator not installed",
@@ -226,6 +230,7 @@ def drive_native(
             think_mode=think_mode or "auto",
             model=request_model,
             shows_cards=shows_cards,
+            session_user=session_user,
         ):
             lines.append(line)
             if on_event is not None:

@@ -38,19 +38,78 @@ parity: identical updates must translate identically on every path.
 """
 from __future__ import annotations
 
+import contextvars
 import json
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Callable
 from uuid import uuid4
 
 from acb_common import get_logger
 from acb_common.tool_refusals import is_refusal
+from acb_llm.message_hygiene import PlaceholderStreamFilter, strip_placeholder_lines
 
 _log = get_logger("orchestrator.event_translator")
 
 RESULT_CAP = 2000       # chars of tool result forwarded to the stream
 PARTIAL_CAP = 2000      # chars of live partial tool output per frame
 PROGRESS_CAP = 200      # chars of a progress header line
+
+
+#: Bidi marks and zero-width characters never reach a label.
+_INVISIBLE_RE = re.compile("[​-‏‪-‮⁠-⁤﻿]")
+
+#: CSY-10 (``chat_connected_systems.md`` §3.8): the registry labels of the
+#: servers that THIS run attached, ``{server name: label}``. The injection
+#: replaces it in each run (:func:`set_mcp_labels`), from the rows it already
+#: read and only for a server that attached, so no label of an older run stays.
+MCP_LABELS: contextvars.ContextVar[Mapping[str, str]] = contextvars.ContextVar(
+    "acb_mcp_labels", default=MappingProxyType({}),
+)
+#: The names of first-party tools of the run. A tool of this set is never an MCP
+#: tool, whatever server name prefixes it.
+MCP_RESERVED: contextvars.ContextVar[frozenset[str]] = contextvars.ContextVar(
+    "acb_mcp_reserved", default=frozenset(),
+)
+
+
+def set_mcp_labels(labels: Mapping[str, str], reserved: frozenset[str] | set[str] = frozenset()) -> None:
+    """Replace the labels of this run. A server whose ``<name>_`` prefix starts
+    a name of *reserved* (a first-party tool) is dropped, so it never relabels
+    a platform tool such as ``web_search`` or ``call_agent``."""
+    kept = {
+        str(name): str(label) for name, label in labels.items()
+        if name and label and not any(r.startswith(f"{name}_") for r in reserved)
+    }
+    MCP_LABELS.set(MappingProxyType(kept))
+    MCP_RESERVED.set(frozenset(reserved))
+
+
+def mcp_server_of(
+    name: Any, labels: Mapping[str, str] | None, reserved: frozenset[str] | set[str] = frozenset(),
+) -> tuple[str, str, str] | None:
+    """``(server, label, tool words)`` for an MCP tool NAME, else None.
+
+    The wire name is exactly ``<server.name>_<tool>``. MAF builds it from
+    ``tool_name_prefix=server.name`` (``_maf_mcp.attach_mcp_tools``), and a
+    registry name holds only ``a-z``, ``0-9`` and ``-``, which MAF keeps. So
+    the full name is matched against the exact server names, with no change of
+    case, ``-`` or a lead ``mcp_``. The longest server name wins. A name in
+    *reserved* is first-party and never matches. Only the NAME is read.
+    """
+    if not labels or not isinstance(name, str) or name in reserved:
+        return None
+    best: str | None = None
+    for server in labels:
+        longer = best is None or len(server) > len(best)
+        if server and longer and name.startswith(f"{server}_") and len(name) > len(server) + 1:
+            best = server
+    if best is None:
+        return None
+    words = " ".join(p for p in re.split(r"[_.:-]+", name[len(best) + 1:]) if p)
+    return (best, labels[best], words) if words else None
 
 
 @dataclass
@@ -90,8 +149,13 @@ class TranslationState:
     # mint the same one), we must force a FRESH id — AG-UI requires distinct
     # message ids for distinct logical streams, and the client dedups by id.
     used_message_ids: set[str] = None  # type: ignore[assignment]
+    # Holds back a line that may be litellm's empty-text placeholder, so the
+    # member never sees it (task 1787). One per open text message.
+    placeholder_filter: PlaceholderStreamFilter = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
+        if self.placeholder_filter is None:
+            self.placeholder_filter = PlaceholderStreamFilter()
         if self.fc is None:
             self.fc = ToolCallStreamState(self.run_id)
         if self.used_message_ids is None:
@@ -177,9 +241,52 @@ def function_call_events(
         "type": "TOOL_CALL_START",
         "toolCallId": cid, "toolCallName": name, "args": delta,
     }]
+    # CSY-10: an MCP tool names its server. The stamp holds the registry name
+    # and label only, never an argument or a result.
+    found = mcp_server_of(name, MCP_LABELS.get(), MCP_RESERVED.get())
+    if found:
+        label = _INVISIBLE_RE.sub("", str(found[1]))[:80]
+        out[0]["mcp"] = {"server": found[0], "label": label}
     if delta:
         out.append({"type": "TOOL_CALL_ARGS", "toolCallId": cid, "delta": delta})
     return out
+
+
+def tool_result_fields(content: Any) -> tuple[str, bool]:
+    """``(text, success)`` of one ``function_result``: the ONE mapping of a
+    tool result for the member. The text is whole, and the caller caps it.
+
+    :func:`translate_update` uses it for the stream, and
+    ``executor._tool_calls_of`` for the calls of a batch run, so the two
+    cannot differ. The exception wins over the result payload. A refused call
+    returns "Refused: ..." so the model reads it, and it is still no success:
+    a card must never draw it as a done act ("Email sent"). ``is_refusal`` is
+    the one test.
+
+    Task 3599 (``chat_failure_modes.md`` B1, HRD-1): a call of a tool that the
+    run did not hold gets MAF's own "not found" text. The trail showed it to
+    the member. That one result shows ``unknown_tool.MEMBER_LINE`` in its
+    place, and stays a failed step. Every other result maps as before.
+    """
+    exc = getattr(content, "exception", None)
+    result = getattr(content, "result", "") or ""
+    try:
+        from acb_skills.unknown_tool import MEMBER_LINE, unknown_call_name
+
+        if unknown_call_name(content):
+            return MEMBER_LINE, False
+    except Exception:  # the mapping of before, never a lost result
+        _log.warning("event_translator.unknown_call_check_failed", exc_info=True)
+    text = str(exc) if exc else str(result)
+    if not exc and "usable as input of compute_run]" in text:
+        # SBX-19: the marker line is for the model. The member never sees it.
+        try:
+            from acb_skills.tool_result_spill import strip_compute_marker
+
+            text = strip_compute_marker(text)
+        except Exception:  # the text as it is, never a lost result
+            _log.warning("event_translator.marker_strip_failed", exc_info=True)
+    return text, exc is None and not is_refusal(result)
 
 
 def _partial_tool_call_id(update: Any) -> str:
@@ -259,14 +366,18 @@ def translate_update(
             # Message-id-native segmentation (Phase 3a): runtimes mint a new
             # message id per assistant segment (text between tool rounds).
             # A changed id is a REAL message boundary — close the open
-            # segment and start the next, so downstream never has to infer
-            # narration-vs-answer from tool positions.
+            # segment (and flush the placeholder filter) BEFORE this delta is
+            # filtered, so the start of the next segment is not held back
+            # behind the end of the last one.
             if (
                 state.text_started
                 and update_msg_id
                 and update_msg_id != state.message_id
             ):
                 events.extend(close_text_message(state))
+            delta = state.placeholder_filter.feed(delta)
+            if not delta:
+                continue
             if not state.text_started:
                 state.text_started = True
                 # Pick the segment id: prefer the runtime's, but if it's absent
@@ -333,16 +444,13 @@ def translate_update(
 
         elif ctype == "function_result":
             tc_id = getattr(content, "call_id", None) or ""
-            exc = getattr(content, "exception", None)
-            result = getattr(content, "result", "") or ""
+            # The one mapping of a result, also for a batch run (task 3599).
+            text, success = tool_result_fields(content)
             events.append({
                 "type": "TOOL_CALL_RESULT",
                 "toolCallId": tc_id,
-                "content": (str(exc) if exc else str(result))[:RESULT_CAP],
-                # A refused call returns "Refused: ..." so the model reads
-                # it, and it is still no success: a card must never draw it
-                # as a done act ("Email sent"). `is_refusal` is the one test.
-                "success": exc is None and not is_refusal(result),
+                "content": text[:RESULT_CAP],
+                "success": success,
             })
             if hooks and hooks.on_function_result:
                 try:
@@ -358,7 +466,21 @@ def close_text_message(state: TranslationState) -> list[dict[str, Any]]:
     """TEXT_MESSAGE_END for the open message, if any (idempotent)."""
     if state.text_started and state.message_id:
         state.text_started = False
-        return [{"type": "TEXT_MESSAGE_END", "messageId": state.message_id}]
+        events: list[dict[str, Any]] = []
+        held = state.placeholder_filter.flush()
+        if held:
+            events.append({
+                "type": "TEXT_MESSAGE_CONTENT",
+                "messageId": state.message_id,
+                "delta": held,
+            })
+        events.append({"type": "TEXT_MESSAGE_END", "messageId": state.message_id})
+        return events
+    held = state.placeholder_filter.flush()
+    if held:
+        # Text the filter kept back (for example a lone "[") before any
+        # message opened. It is real text, so it gets a message of its own.
+        return text_message_events(held, words_per_chunk=10**6)
     return []
 
 
@@ -371,6 +493,7 @@ def text_message_events(
     fallback tier speaks the message-id-native protocol.
     """
     msg_id = message_id or str(uuid4())
+    text = strip_placeholder_lines(text)
     events: list[dict[str, Any]] = [{
         "type": "TEXT_MESSAGE_START", "messageId": msg_id, "role": "assistant",
     }]

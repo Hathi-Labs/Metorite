@@ -38,7 +38,8 @@ MCP_VIA_PREFIX = "mcp:"
 #: cannot drift. ``LIKE 'mcp:%'`` holds no ``_``, so no character of the prefix
 #: is a wildcard. ``created_at < :aw_before`` keeps an act after the merge out.
 _RUN_WHERE = (
-    "aw_r.task_id = CAST(:aw_task AS uuid) "
+    "aw_r.task_id IS NOT NULL "
+    "AND aw_r.task_id = CAST(:aw_task AS uuid) "
     "AND aw_r.created_at < CAST(:aw_before AS timestamptz)"
 )
 _MCP_WHERE = (

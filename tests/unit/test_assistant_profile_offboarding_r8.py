@@ -240,6 +240,7 @@ async def test_p2_a_member_invited_again_starts_empty(db) -> None:
             after = await ap.get_assistant_profile(user=_user(a))
     # PZ-25: ``enabled`` is an answer, not part of the stored profile.
     first.pop("enabled")
+    first.pop("summaries_enabled")
     first.pop("apps")  # the app settings at their defaults (BR-2a-1)
     assert first == empty_profile()
     assert [f["text"] for f in after["facts"]] == ["New start"]
@@ -343,6 +344,7 @@ async def test_p4_a_member_who_returns_finds_the_profile_empty(db) -> None:
         with _tenant(db.org_a):
             back = await ap.get_assistant_profile(user=_user(a))
     back.pop("enabled")
+    back.pop("summaries_enabled")
     assert back.pop("apps")["brief"]["enabled"] is True  # a removal forgets them too
     assert back == empty_profile()
 
@@ -433,7 +435,7 @@ async def test_e1_the_json_and_the_text_of_a_stored_profile(db) -> None:
         as_json = await _export(db.org_a, a)
         as_text = await _export(db.org_a, a, "text")
     body = json.loads(as_json.body)
-    assert set(body) == {"exported_at", "member", "profile", "text"}
+    assert set(body) == {"exported_at", "member", "profile", "summaries", "more", "text"}
     assert body["member"] == a
     assert body["profile"] == stored_profile(_PROFILE)
     assert body["profile"]["facts"][0]["source"] == "chat"

@@ -74,6 +74,7 @@ from gateway.routes.projects.core import (
     STARTED_CATEGORY,
     _tenant_session,
     actor,
+    reader_day_start,
     resolve_visibility,
     router,
     task_visibility_clause,
@@ -402,7 +403,7 @@ def state_params(state: str, vis: Any, project_id: str | None) -> dict[str, Any]
 
 
 def filter_clauses(
-    query: DatasetQuery, viewer: str,
+    query: DatasetQuery, viewer: str, day_start: datetime | None = None,
 ) -> tuple[list[str], dict[str, Any]]:
     """The filter fragments: ``build_task_filters``, plus the three dates.
 
@@ -419,6 +420,7 @@ def filter_clauses(
         assignees=f.get("assignees"),
         unassigned=bool(f.get("unassigned")),
         overdue=bool(f.get("overdue")),
+        day_start=day_start,
         due_before=f.get("due_before"),
         importance_gte=f.get("importance_gte"),
         q=f.get("q"),
@@ -683,7 +685,10 @@ async def dataset_body(
     history = history_where(scope_sql, vis)
     where_parts = [state_where(query.state, scope_sql, vis)]
     params = state_params(query.state, vis, query.project_id)
-    extra, extra_params = filter_clauses(query, viewer)
+    extra, extra_params = filter_clauses(
+        query, viewer,
+        await reader_day_start(db, viewer) if query.filters.get("overdue") else None,
+    )
     where_parts.extend(extra)
     params.update(extra_params)
     where = " AND ".join(f"({part})" for part in where_parts)

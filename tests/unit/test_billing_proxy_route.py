@@ -17,10 +17,11 @@ from __future__ import annotations
 
 import ast
 import json
-import re
 from pathlib import Path
 
 import pytest
+
+from tests.unit import _r8_lists as r8_lists
 
 pytest.importorskip("fastapi")
 
@@ -156,15 +157,9 @@ def _recording_console(monkeypatch, status=200, body=None) -> list[dict]:
 
 class TestThisFenceIsRegistered:
     def test_named_in_the_ci_no_db_fence_guard(self):
-        workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(
-            encoding="utf-8")
-        assert "tests/unit/test_billing_proxy_route.py" in workflow
-        # The no-skip list is the `--never-skip` argument of
-        # scripts/ci_unit_guard.py, and it ends where `--must-run` starts.
-        never_skip = re.search(
-            r"--never-skip \\\n(.*?)--must-run \\\n", workflow, re.S)
-        assert never_skip, "the --never-skip argument is gone"
-        assert "tests/unit/test_billing_proxy_route.py" in never_skip.group(1), (
+        # Both lists are the `r8` key of tests/fences.json (CIV-33c-2).
+        assert "tests/unit/test_billing_proxy_route.py" in r8_lists.must_run()
+        assert "tests/unit/test_billing_proxy_route.py" in r8_lists.never_skip(), (
             "named in the file list but not in the no-skip list"
         )
 
