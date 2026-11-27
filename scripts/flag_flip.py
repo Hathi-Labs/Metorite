@@ -226,16 +226,17 @@ def rewrite(path: Path, key: str, value: str) -> bytes:
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     out: list[str] = []
     done = False
-    inside = False  # inside a multi-line double-quoted value, such as a PEM
+    inside = ""  # the quote of a multi-line value that is open, such as a PEM
     for line in lines:
-        quotes = len(re.findall(r'(?<!\\)"', line))
         if inside:
             out.append(line)
-            inside = quotes % 2 == 0
+            if len(re.findall(rf"(?<!\\){inside}", line)) % 2 == 1:
+                inside = ""  # this line closes the value
             continue
-        if re.match(r'^[ \t]*(?:export[ \t]+)?[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*"', line) and quotes % 2 == 1:
+        opener = re.match(r'^[ \t]*(?:export[ \t]+)?[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*(["\'])', line)
+        if opener and len(re.findall(rf"(?<!\\){opener.group(1)}", line)) % 2 == 1:
             out.append(line)
-            inside = True
+            inside = opener.group(1)
             continue
         if pat.match(line):
             if not done:
@@ -289,12 +290,19 @@ def backup(path: Path, stamp: str, task: str) -> Path:
 
 
 def run(argv: list[str], timeout: float = 60) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
+    """Run one command. A timeout becomes a RuntimeError, so each caller handles one kind."""
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"{argv[0]} {' '.join(argv[1:3])} timed out after {timeout:.0f} s") from None
 
 
 def gateway_reloads() -> bool:
     """True when /version reports ``flag_reload: true``."""
-    res = run(["curl", "-s", "-m", "5", VERSION_URL], timeout=15)
+    try:
+        res = run(["curl", "-s", "-m", "5", VERSION_URL], timeout=15)
+    except RuntimeError:
+        return False
     try:
         return json.loads(res.stdout or "{}").get("flag_reload") is True
     except ValueError:
@@ -324,8 +332,9 @@ def reload_gateway(key: str, cursor: str, expect_applied: bool = True) -> str:
     there fails the flip. When the root .env changed (*expect_applied*), the
     proof is a ``flags.reloaded`` line whose ``applied=[...]`` names *key*.
     When it did not change, any ``flags.reloaded`` line proves it: the reload
-    compares the file with the values that the gateway runs, so a line that
-    does not name the key says that the gateway already runs the file value.
+    compares the file with the file values that the gateway loaded last (at
+    start or at its last reload), so a line that does not name the key says
+    that the gateway loaded this value.
     """
     res = run(["sudo", "systemctl", "kill", "-s", "HUP", "--kill-whom=main", GATEWAY])
     if res.returncode != 0:
@@ -371,10 +380,17 @@ def smoke_on(app: Path) -> bool:
     return read_key(app / ROOT_ENV, "SMOKE_CHAT_TURN") == "1" and (app / "deploy/smoke_chat.sh").is_file()
 
 
-def run_smoke(app: Path) -> bool:
-    res = subprocess.run(["bash", "deploy/smoke_chat.sh", "--turn-only"], cwd=app, timeout=SMOKE_TIMEOUT_S,
-                         check=False)
-    return res.returncode == 0
+#: The exit code of smoke_chat.sh when a deploy holds the lock.
+SMOKE_BUSY = 75
+
+
+def run_smoke(app: Path) -> int:
+    """The exit code of the chat-turn smoke. A timeout reads as 1."""
+    try:
+        return subprocess.run(["bash", "deploy/smoke_chat.sh", "--turn-only"], cwd=app, timeout=SMOKE_TIMEOUT_S,
+                              check=False).returncode
+    except subprocess.TimeoutExpired:
+        return 1
 
 
 # ── The flip ────────────────────────────────────────────────────────────────
@@ -422,14 +438,18 @@ def flip(a: argparse.Namespace) -> int:
     # The deploy lock: a release (vps_pull, vps_apply) also writes .env. While
     # a flip holds it, the deploy timer finds it busy and retries.
     lock = Path(os.environ.get("FLAG_FLIP_DEPLOY_LOCK", str(app.parent / "acb-deploy.lock")))
-    if not lock.exists():
-        lock.touch(mode=0o644)
-    lock_fd = os.open(lock, os.O_RDONLY)
+    try:
+        if not lock.exists():
+            lock.touch(mode=0o644)
+        lock_fd = os.open(lock, os.O_RDONLY)
+    except OSError as exc:
+        raise Refused(f"cannot open the deploy lock {lock} ({exc})") from None
     try:
         deadline = time.monotonic() + LOCK_WAIT_S
         while True:
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                _write_holder(lock, a.task)
                 break
             except BlockingIOError:
                 if time.monotonic() >= deadline:
@@ -443,6 +463,18 @@ def flip(a: argparse.Namespace) -> int:
     if code == 0 and getattr(a, "_flipped", False):
         return _smoke_after(a, app)
     return code
+
+
+def _write_holder(lock: Path, task: str) -> None:
+    """The holder line that vps_pull.sh and vps_apply.sh print for a busy lock."""
+    holder = lock.with_name(lock.name + ".holder")
+    tmp = holder.with_name(f"{holder.name}.{os.getpid()}")
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    try:
+        tmp.write_text(f"{os.getpid()} {stamp} flag_flip-task-{task}\n", encoding="utf-8")
+        os.replace(tmp, holder)
+    except OSError:
+        tmp.unlink(missing_ok=True)
 
 
 def target_files(app: Path, key: str) -> list[Path]:
@@ -507,19 +539,9 @@ def _flip_locked(a: argparse.Namespace, key: str, app: Path, root: Path) -> int:
         for bak in baks.values():
             bak.unlink(missing_ok=True)
         raise Refused(f"the backup failed ({exc})") from None
-    try:
-        for f in changed:
-            write_in_place(f, plan[f])
-    except (OSError, RuntimeError) as exc:
-        print(f"flag_flip: WRITE FAILED: {exc}. The tool puts each file back from its backup.", file=sys.stderr)
-        restored = True
-        for f, bak in baks.items():
-            try:
-                write_in_place(f, bak.read_bytes())
-            except (OSError, RuntimeError):
-                restored = False
-                print(f"  restore by hand: cat {bak} > {f}", file=sys.stderr)
-        _record(app, t0, a, key, old_raw, new_raw, changed, "write failed" + ("" if restored else ", not restored"))
+    failed = _write_all(changed, plan, key, new_raw, baks)
+    if failed is not None:
+        _record(app, t0, a, key, old_raw, new_raw, changed, failed)
         return 3
 
     edge_used = edge in files
@@ -544,6 +566,27 @@ def _flip_locked(a: argparse.Namespace, key: str, app: Path, root: Path) -> int:
     return 0
 
 
+def _write_all(changed: list[Path], plan: dict[Path, bytes], key: str, new_raw: str,
+               baks: dict[Path, Path]) -> str | None:
+    """Write each changed file and read it back. On a failure put each file back. None is success."""
+    try:
+        for f in changed:
+            write_in_place(f, plan[f])
+            if read_key(f, key) != new_raw:  # read back as the gateway reads it
+                raise RuntimeError(f"{f} does not read back {key}={new_raw!r}")
+    except (OSError, RuntimeError) as exc:
+        print(f"flag_flip: WRITE FAILED: {exc}. The tool puts each file back from its backup.", file=sys.stderr)
+        restored = True
+        for f, bak in baks.items():
+            try:
+                write_in_place(f, bak.read_bytes())
+            except (OSError, RuntimeError):
+                restored = False
+                print(f"  restore by hand: cat {bak} > {f}", file=sys.stderr)
+        return "write failed" + ("" if restored else ", not restored")
+    return None
+
+
 def _record(app: Path, t0: float, a: argparse.Namespace, key: str, old_raw: str, new_raw: str,
             files: list[Path], result: str) -> None:
     """Append one audit line, outside the checkout."""
@@ -553,8 +596,11 @@ def _record(app: Path, t0: float, a: argparse.Namespace, key: str, old_raw: str,
         a.owner_approved or "-",
     ])
     audit_log = Path(os.environ.get("FLAG_FLIP_AUDIT_LOG", str(app.parent / "acb-flag-flips.log")))
-    with open(audit_log, "a", encoding="utf-8") as fh:
-        fh.write(audit + "\n")
+    try:
+        with open(audit_log, "a", encoding="utf-8") as fh:
+            fh.write(audit + "\n")
+    except OSError as exc:
+        print(f"flag_flip: WARNING: the audit line was not written ({exc}): {audit}", file=sys.stderr)
 
 
 def _print_report(evidence: list[str], baks: dict[Path, Path], edge_changed: bool) -> None:
@@ -571,7 +617,12 @@ def _print_report(evidence: list[str], baks: dict[Path, Path], edge_changed: boo
 def _smoke_after(a: argparse.Namespace, app: Path) -> int:
     if not a.no_smoke and smoke_on(app):
         print("flag_flip: the chat-turn smoke runs (task 4061).")
-        if not run_smoke(app):
+        rc = run_smoke(app)
+        if rc == SMOKE_BUSY:
+            print("flag_flip: SMOKE NOT RUN: a deploy holds the lock. Run deploy/smoke_chat.sh --turn-only later.",
+                  file=sys.stderr)
+            return 4
+        if rc != 0:
             print("flag_flip: SMOKE FAILED after the flip. Read the smoke output, and roll back when the flip caused it.",
                   file=sys.stderr)
             return 4

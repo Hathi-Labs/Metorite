@@ -265,7 +265,7 @@ def test_duplicate_key_lines_become_one(tmp_path):
 
 def test_the_smoke_runs_only_when_it_is_on(box, monkeypatch):
     ran = []
-    monkeypatch.setattr(ff, "run_smoke", lambda app: ran.append(app) or False)
+    monkeypatch.setattr(ff, "run_smoke", lambda app: ran.append(app) or 1)
     (box.app / "deploy").mkdir()
     (box.app / "deploy/smoke_chat.sh").write_text("exit 0\n")
     box.reload_line("flags.reloaded applied=['TOOL_PACKS_ORGS']")
@@ -511,7 +511,7 @@ def test_the_smoke_runs_after_the_deploy_lock_is_free(box, monkeypatch):
             seen.append("busy")
         finally:
             os.close(fd)
-        return True
+        return 0
 
     monkeypatch.setattr(ff, "run_smoke", smoke)
     (box.app / "deploy").mkdir()
@@ -558,3 +558,61 @@ def test_an_owner_only_flag_can_be_removed_with_no_answer(box):
     box.reload_line("flags.reloaded applied=['CRM_DIGEST_ORGS']")
     assert flip("CRM_DIGEST_ORGS", "--remove", ORG1, "--task", "1", "--no-smoke") == 0
     assert flip("CRM_DIGEST_ORGS", "--add", ORG1, "--task", "1") == 2
+
+
+def test_a_key_line_inside_a_single_quoted_multi_line_value_is_kept(tmp_path):
+    p = tmp_path / ".env"
+    p.write_text("PEM='l1\nTOOL_PACKS_ORGS=x\nl3'\nTOOL_PACKS_ORGS=a\n")
+    assert ff.rewrite(p, "TOOL_PACKS_ORGS", "b").decode() == "PEM='l1\nTOOL_PACKS_ORGS=x\nl3'\nTOOL_PACKS_ORGS=b\n"
+
+
+def test_a_write_that_does_not_read_back_is_put_back(box, monkeypatch):
+    monkeypatch.setattr(ff, "rewrite", lambda path, key, value: b"X=1\n")  # drops the key
+    before = box.root.read_bytes()
+    assert flip("TOOL_PACKS_ORGS", "--add", ORG2, "--task", "1", "--no-smoke") == 3
+    assert box.root.read_bytes() == before and "HUP" not in box.calls()
+
+
+def test_a_timeout_is_exit_3_with_an_audit_line(box, monkeypatch):
+    real = ff.subprocess.run
+
+    def slow(argv, **kw):
+        if "kill" in argv:
+            raise ff.subprocess.TimeoutExpired(argv, kw.get("timeout", 1))
+        return real(argv, **kw)
+
+    monkeypatch.setattr(ff.subprocess, "run", slow)
+    assert flip("TOOL_PACKS_ORGS", "--add", ORG2, "--task", "1", "--no-smoke") == 3
+    assert "\tnot proved\t" in (box.app.parent / "acb-flag-flips.log").read_text()
+
+
+def test_a_busy_smoke_says_so(box, monkeypatch, capsys):
+    monkeypatch.setattr(ff, "run_smoke", lambda app: ff.SMOKE_BUSY)
+    (box.app / "deploy").mkdir()
+    (box.app / "deploy/smoke_chat.sh").write_text("exit 0\n")
+    box.root.write_text(box.root.read_text() + "SMOKE_CHAT_TURN=1\n")
+    box.reload_line("flags.reloaded applied=['TOOL_PACKS_ORGS']")
+    assert flip("TOOL_PACKS_ORGS", "--add", ORG2, "--task", "1") == 4
+    assert "SMOKE NOT RUN" in capsys.readouterr().err
+
+
+def test_the_flip_writes_the_lock_holder_line(box):
+    box.reload_line("flags.reloaded applied=['TOOL_PACKS_ORGS']")
+    assert flip("TOOL_PACKS_ORGS", "--add", ORG2, "--task", "4086", "--no-smoke") == 0
+    pid, _stamp, who = (box.app.parent / "acb-deploy.lock.holder").read_text().split()
+    assert int(pid) == os.getpid() and who == "flag_flip-task-4086"
+
+
+def test_an_empty_means_all_flag_held_only_by_the_edge_file_is_not_emptied(box):
+    (box.app / EDGE).write_text((box.app / EDGE).read_text() + f"ASSISTANT_PROFILE_ORGS={ORG2}\n")
+    assert flip("ASSISTANT_PROFILE_ORGS", "--set", "", "--task", "1") == 2
+
+
+def test_the_owner_only_names_are_one_string_so_no_reader_fence_counts_them():
+    import ast
+
+    tree = ast.parse((REPO / "packages/acb_common/acb_common/flag_registry.py").read_text(encoding="utf-8"))
+    from acb_common import flag_registry as fr
+
+    consts = {n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+    assert not consts & set(fr.OWNER_ONLY_FLAGS)

@@ -1512,48 +1512,51 @@ class FlagRegistry(BaseSettings):
 #: here. Fence:
 #: tests/unit/test_flag_flip.py scans those comments and fails on a flag that
 #: is missing here.
-OWNER_ONLY_FLAGS: frozenset[str] = frozenset({
-    "agent_access_orgs",
-    "agent_change_access_orgs",
-    "ai_turn_kind_nowait_orgs",
-    "app_owner_root_orgs",
-    "app_requests_orgs",
-    "assistant_chat_summary_orgs",
-    "chat_continue_orgs",
-    "chat_packs_batch_orgs",
-    "chat_paste_frame_orgs",
-    "chat_pin_tool_orgs",
-    "chat_voice_orgs",
-    "crm_cutover_orgs",
-    "crm_decide_orgs",
-    "crm_digest_orgs",
-    "crm_module_reread_orgs",
-    "crm_note_search_orgs",
-    "decide_feature_modes",
-    "due_push_orgs",
-    "github_app_orgs",
-    "headless_turn_orgs",
-    "held_class_c_orgs",
-    "home_tools_orgs",
-    "image_analysis_orgs",
-    "integration_access_orgs",
-    "mcp_mail_precedence_orgs",
-    "module_run_orgs",
-    "my_day_decide_orgs",
-    "outlook_all_mail_webhook_orgs",
-    "proactive_kind_modes",
-    "project_rules_orgs",
-    "projects_decide_orgs",
-    "projects_sprints_orgs",
-    "projects_templates_orgs",
-    "provider_alert_orgs",
-    "spawn_subagents_orgs",
-    "studio_residency_orgs",
-    "studio_skill_repair_orgs",
-    "studio_skill_tests_orgs",
-    "today_rule_orgs",
-    "tool_search_orgs",
-    "whatsapp_assistant_orgs",
-    "whatsapp_assistant_writes_orgs",
-    "workflow_unattended_orgs",
-})
+#: The names sit in ONE string on purpose. Each "only reader" fence (such as
+#: test_headless_turn.py) counts a string constant that equals its flag name,
+#: and this list reads no flag.
+OWNER_ONLY_FLAGS: frozenset[str] = frozenset("""
+    agent_access_orgs
+    agent_change_access_orgs
+    ai_turn_kind_nowait_orgs
+    app_owner_root_orgs
+    app_requests_orgs
+    assistant_chat_summary_orgs
+    chat_continue_orgs
+    chat_packs_batch_orgs
+    chat_paste_frame_orgs
+    chat_pin_tool_orgs
+    chat_voice_orgs
+    crm_cutover_orgs
+    crm_decide_orgs
+    crm_digest_orgs
+    crm_module_reread_orgs
+    crm_note_search_orgs
+    decide_feature_modes
+    due_push_orgs
+    github_app_orgs
+    headless_turn_orgs
+    held_class_c_orgs
+    home_tools_orgs
+    image_analysis_orgs
+    integration_access_orgs
+    mcp_mail_precedence_orgs
+    module_run_orgs
+    my_day_decide_orgs
+    outlook_all_mail_webhook_orgs
+    proactive_kind_modes
+    project_rules_orgs
+    projects_decide_orgs
+    projects_sprints_orgs
+    projects_templates_orgs
+    provider_alert_orgs
+    spawn_subagents_orgs
+    studio_residency_orgs
+    studio_skill_repair_orgs
+    studio_skill_tests_orgs
+    today_rule_orgs
+    tool_search_orgs
+    whatsapp_assistant_orgs
+    whatsapp_assistant_writes_orgs
+    workflow_unattended_orgs
+""".split())  # noqa: SIM905 (one string on purpose, see above)

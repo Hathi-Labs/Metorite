@@ -900,7 +900,7 @@ because the edge reads only that file.
 Then the tool sends the SIGHUP above, and reads the gateway log after that
 point. When the root `.env` changed, the `flags.reloaded` line must name the
 key. When it did not change, a line that applies nothing proves that the
-gateway already runs the file value. For an edge flag, the tool restarts
+gateway loaded this value, at its start or at its last reload. For an edge flag, the tool restarts
 `acb-agent-edge` when its process runs another value, and checks the new
 process.
 
