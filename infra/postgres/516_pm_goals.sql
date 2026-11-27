@@ -6,9 +6,9 @@
 --   · D199.6 · R1 · R5 · R6.
 --
 -- R1: built as 405 on 2026-11-11. On 2026-11-27 origin/main held 513 as its
---   highest file, and the box ledger booked 514 for task 984. The file must
---   sort after 491, which makes `pm_same_org_ref`. Check the number again at
---   merge (scripts/premerge.sh).
+--   highest file, and the box ledger booked 514 for task 984. Main then took
+--   515, so the merge gate renumbered the file to 516. The file must sort
+--   after 491, which makes `pm_same_org_ref`.
 --
 -- What: two columns.
 --   pm_task_types.is_goal  BOOLEAN NOT NULL DEFAULT false. A task of this
