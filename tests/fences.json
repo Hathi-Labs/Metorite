@@ -346,6 +346,7 @@
       "tests/unit/test_focus_session_rls_r8.py",
       "tests/unit/test_focus_sessions_r8.py",
       "tests/unit/test_goal_record_r8.py",
+      "tests/unit/test_goal_rollup_r8.py",
       "tests/unit/test_h3_rls_promotion_rehearsal.py",
       "tests/unit/test_h6_identity_shadow.py",
       "tests/unit/test_h6_rbac_rekey.py",
