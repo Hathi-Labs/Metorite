@@ -122,8 +122,10 @@ async def test_a_stage_delete_names_the_row_and_sends_one_delete(monkeypatch) ->
     text = _card_text(cards[0])
     assert cards[0]["title"] == "Delete the deal stage Proposal?"
     assert "no deal sits in it now" in text
-    assert "it leaves each pipeline that lists it" in text
-    assert "no Undo" in text and "a pipeline holds it" in text
+    assert ("it leaves each pipeline that lists it. If an open change of a "
+            "pipeline still needs it, the CRM refuses the delete") in text
+    assert "a pipeline holds it" not in text
+    assert "no Undo" in text
     assert cards[0]["close_on_steer"] is True
     assert "non_interactive_default" not in cards[0]
     assert out.startswith("Deleted the deal stage Proposal.") and "no Undo" in out

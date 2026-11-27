@@ -2966,8 +2966,7 @@ _RECORDS_OF_KIND: dict[str, str] = {"deal": "/crm/deals", "lead": "/crm/leads"}
 #: The first line of the card of the delete of a stage or a lead status.
 _DELETE_STATUS_NOTE = (
     "This deletes a row of the set-up of the whole CRM. Change history keeps "
-    "no row of a delete, so it has no Undo. The CRM refuses the delete while "
-    "a record sits in it or a pipeline holds it, and then nothing changes."
+    "no row of a delete, so it has no Undo."
 )
 
 #: The first line of the card of the delete of a lost reason.
@@ -3026,8 +3025,9 @@ async def crm_delete_status(kind: str, name: str) -> str:
 
     ``kind`` is "deal" for a deal stage or "lead" for a lead status. ``name``
     is the stage as it reads on the board. The CRM refuses the delete while a
-    deal or a lead sits in it, or while a pipeline holds it. Move those
-    records first. A stage can also be hidden with crm_edit_status
+    deal or a lead sits in it. Move those records first. The stage leaves
+    each pipeline that lists it, but the CRM refuses the delete while an open
+    change of a pipeline still needs it. A stage can also be hidden with crm_edit_status
     (hidden=true), so that no picker offers it. There is no Undo."""
     slug = _status_kind(kind)
     noun = "deal stage" if slug == "deal" else "lead status"
@@ -3058,7 +3058,11 @@ async def crm_delete_status(kind: str, name: str) -> str:
         context=await _held_fields_block({
             "kind": noun, "name": title,
             "field Records": f"no {'deal' if slug == 'deal' else 'lead'} sits in it now",
-            "field Pipelines": "it leaves each pipeline that lists it",
+            "field Pipelines": (
+                "it leaves each pipeline that lists it. If an open change of a "
+                "pipeline still needs it, the CRM refuses the delete, and "
+                "nothing changes"
+            ),
         }, note=_DELETE_STATUS_NOTE),
     )
     if not answer:
