@@ -371,6 +371,7 @@ export default function SeatsTab({
               key={row.email}
               row={row}
               canManage={canManage}
+              plan={plan}
               busy={busy === row.email}
               onAssign={() => void act(row, "assign")}
               onRelease={() => void act(row, "release")}
@@ -385,12 +386,14 @@ export default function SeatsTab({
 function SeatRowCard({
   row,
   canManage,
+  plan,
   busy,
   onAssign,
   onRelease,
 }: {
   row: SeatRow;
   canManage: boolean;
+  plan: string;
   busy: boolean;
   onAssign: () => void;
   onRelease: () => void;
@@ -427,7 +430,7 @@ function SeatRowCard({
         {seated ? "Seated" : "Unassigned"}
       </span>
 
-      {canManage && canOfferSeat(row) ? (
+      {canManage && canOfferSeat(row, plan) ? (
         <Button
           size="sm"
           variant={seated ? "secondary" : "primary"}

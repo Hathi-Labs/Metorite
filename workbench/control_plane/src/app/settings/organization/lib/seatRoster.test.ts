@@ -27,6 +27,7 @@ import type { SeatPlan } from "@/app/settings/billing/lib/seats";
 import {
   buildSeatRows,
   canOfferSeat,
+  isCorePlan,
   interpretOverviewRead,
   isSeated,
   readSeatOverview,
@@ -437,5 +438,24 @@ describe("the hops name no tenant and hold no credential (R11)", () => {
     // surface's "unconfigured" state keeps meaning what it says instead of
     // flipping to the red error banner.
     expect(OVERVIEW_ROUTE).toContain("status: 503");
+  });
+});
+
+describe("the Core seat has no assign and no release control", () => {
+  it("hides both for a seated Core row and an unassigned row on the Core plan", () => {
+    const seated = buildSeatRows([member()], [billed("priya@fracktal.in", ["core"])])[0];
+    const free = buildSeatRows([member()], [billed("priya@fracktal.in", [])])[0];
+    expect(canOfferSeat(seated, "core")).toBe(false);
+    expect(canOfferSeat(free, "core")).toBe(false);
+    expect(canOfferSeat(free)).toBe(true);
+    expect(isCorePlan(" Core ")).toBe(true);
+  });
+
+  it("keeps both for a non-Core plan", () => {
+    const seated = buildSeatRows([member()], [billed("priya@fracktal.in", ["pro"])])[0];
+    const free = buildSeatRows([member()], [billed("priya@fracktal.in", [])])[0];
+    expect(canOfferSeat(seated, "pro")).toBe(true);
+    expect(canOfferSeat(free, "pro")).toBe(true);
+    expect(isCorePlan("pro")).toBe(false);
   });
 });
