@@ -76,6 +76,42 @@ def _events(logs, name):
     return [e for e in logs if e.get("event") == name]
 
 
+class _Recorder:
+    """Records the log calls of one module, as ``capture_logs`` would."""
+
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+
+    def _add(self, level: str, event: str, **kw) -> None:
+        self.events.append({"event": event, "log_level": level, **kw})
+
+    def warning(self, event: str, **kw) -> None:
+        self._add("warning", event, **kw)
+
+    def info(self, event: str, **kw) -> None:
+        self._add("info", event, **kw)
+
+    def error(self, event: str, **kw) -> None:
+        self._add("error", event, **kw)
+
+
+@pytest.fixture
+def edge_log(monkeypatch):
+    """The log lines of the startup check that the EDGE app calls.
+
+    Main went red on 2026-11-27 (batch 46053188388): in the full run,
+    ``capture_logs`` saw no ``secrets.unusable`` line, though the check raised
+    with the key name. The file passes alone. So this fixture does not rely on
+    the global structlog state that other tests change. It swaps ``_log`` in the
+    globals of the very function that ``agent_edge.app`` calls.
+    """
+    from agent_edge import app as edge_app
+
+    rec = _Recorder()
+    monkeypatch.setitem(edge_app.check_startup_secrets.__globals__, "_log", rec)
+    return rec.events
+
+
 # ── The gap: before task 574 a service started with no secret, silently ──────
 
 
@@ -95,29 +131,28 @@ def edge_env(monkeypatch):
     get_settings.cache_clear()
 
 
-def test_the_edge_refuses_to_start_under_enforce_with_no_signing_key(edge_env):
+def test_the_edge_refuses_to_start_under_enforce_with_no_signing_key(edge_env, edge_log):
     """RED before task 574: the edge started and logged nothing."""
     from agent_edge.app import create_app
     from fastapi.testclient import TestClient
 
     app = create_app()
-    with (structlog.testing.capture_logs() as logs, pytest.raises(Exception) as caught,
-          TestClient(app)):
+    with pytest.raises(Exception) as caught, TestClient(app):
         pass
     assert "agent_edge_signing_key" in str(caught.value)
-    assert _events(logs, "secrets.unusable")
+    assert _events(edge_log, "secrets.unusable")
 
 
-def test_the_edge_starts_under_shadow_and_names_the_setting(edge_env):
+def test_the_edge_starts_under_shadow_and_names_the_setting(edge_env, edge_log):
     from acb_common import get_settings  # the real one, not the fixture's
     from agent_edge.app import create_app
     from fastapi.testclient import TestClient
 
     edge_env.setenv("SECRET_STARTUP_CHECK", "shadow")
     get_settings.cache_clear()
-    with structlog.testing.capture_logs() as logs, TestClient(create_app()):
+    with TestClient(create_app()):
         pass
-    named = [e["setting"] for e in _events(logs, "secrets.unusable")]
+    named = [e["setting"] for e in _events(edge_log, "secrets.unusable")]
     assert named == ["agent_edge_signing_key"]
 
 
