@@ -11,6 +11,7 @@ mounts, because one function builds the mounts for every start.
 """
 from __future__ import annotations
 
+import dataclasses
 import os
 import re
 from pathlib import Path
@@ -427,12 +428,13 @@ async def test_no_image_starts_nothing(
 # ── WS-43g1: the egress flags (§7.3, task 4009) ──────────────────────────────
 
 
-def _egress_grant(org: str = ORG) -> sb.EgressGrant:
-    return sb.EgressGrant(
+def _egress_grant(org: str = ORG, name: str = "") -> sb.EgressGrant:
+    """A grant on the network of *name*, the container of the run (WS-43g2a)."""
+    grant = sb.EgressGrant(
         token="tok-" + "q" * 40, org=org, run="run-1", agent="agent-x",
-        approver="member@example.com", hosts=("pypi.org",), expires_at=0.0,
-        network=sb.egress_network_name(org),
+        approver="member@example.com", hosts=("pypi.org",), expires_at=0.0, network="",
     )
+    return dataclasses.replace(grant, network=sb.egress_network_name(org, name, grant.key))
 
 
 def _argv_for(handle: sb.SandboxHandle, broker: sb.SandboxBroker, **extra: Any) -> list[str]:
@@ -455,10 +457,10 @@ async def test_a_grant_changes_only_the_network_and_the_proxy_settings(
         (ws / ".git").mkdir()
         handle = await broker.acquire()
     plain = _argv_for(handle, broker)
-    grant = _egress_grant()
+    grant = _egress_grant(name=handle.name)
     env_file = broker.state_dir() / "egress" / "env" / ("0" * 32 + ".env")
     granted = _argv_for(handle, broker, egress=grant, egress_env_file=env_file)
-    assert flag_values(granted, "--network") == [sb.egress_network_name(ORG)]
+    assert flag_values(granted, "--network") == [grant.network]
     assert mounts_of(granted) == mounts_of(plain)
     assert any(m.endswith("target=/workspace/.git,readonly") for m in mounts_of(granted))
     # The 4 proxy variables come from ONE --env-file in the broker's state
@@ -505,7 +507,14 @@ async def test_an_egress_grant_is_refused_where_no_grant_may_go(
     with bound_run(ORG):
         handle = await broker.acquire()
     with pytest.raises(sb.SandboxRefused, match="egress"):
-        _argv_for(handle, broker, egress=_egress_grant("another-org"))
+        _argv_for(handle, broker, egress=_egress_grant("another-org", handle.name))
+    # WS-43g2a: the network of another run of the same org.
+    with pytest.raises(sb.SandboxRefused, match="egress"):
+        _argv_for(handle, broker, egress=_egress_grant(ORG, handle.name + "-other"))
+    other = _egress_grant(ORG, handle.name)
+    with pytest.raises(sb.SandboxRefused, match="egress"):
+        _argv_for(handle, broker, egress=dataclasses.replace(other, network="mtr-egress-x"))
+    _argv_for(handle, broker, egress=other)  # its own network passes
     with pytest.raises(sb.SandboxRefused):
         sb.build_run_argv(
             binding=handle.binding, mounts=(), uid=1000, gid=1000, image=PINNED_IMAGE,

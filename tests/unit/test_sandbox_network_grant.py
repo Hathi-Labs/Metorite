@@ -1,12 +1,17 @@
-"""WS43-F9 — the egress grant of the sandbox broker (WS-43g1, task 4009).
+"""WS43-F9 — the egress grant of the sandbox broker (WS-43g1, task 4009, and
+WS-43g2a, task 4070).
 
-Spec ``project-docs/specs/maf_coding_engine.md`` §7.3 ("The grant", "The host
-firewall", "The proxy"), §7.1 rule 5, done-when 3, 7 and 9 of WS-43g, and
-§10 WS43-F9.
+Spec ``project-docs/specs/maf_coding_engine.md`` §7.3 ("The grant", "The
+network of each run", "The address pools", "The door wait", "The host
+firewall", "The proxy"), §7.1 rule 5, done-when 3, 5, 7, 9 and 10 to 13 of
+WS-43g, and §10 WS43-F9.
 
 What breaks this fence: a grant opens the network while egress is off, a
-grant moves the container to a network that is not its own organization's,
-the run's end leaves a grant, the empty read-only cover on
+grant moves the container to a network that is not the network of its own
+grant, two runs share an egress network, a revoke removes the network of
+another run, a grant opens with no free address pool or on a bridge name
+that another network holds, the proxy argv lacks the door read timeout, or a
+proxy with another door read timeout stays up. Or the run's end leaves a grant, the empty read-only cover on
 ``/workspace/.git`` is missing after a grant or after a revoke, the sweep
 leaves the proxy, a network or a grant, ``docker-remote`` takes a grant, or
 the host firewall script stops printing its rule.
@@ -18,7 +23,7 @@ shows that a granted run reaches the door and ``pypi.org``, and that the
 proxy refuses any other host with a log line. Its containers carry the
 ``ws43g1-`` prefix, and its teardown removes only what it made.
 
-Out of this slice (WS-43g2, WS-43g3): a run with no chat, the approval card,
+Out of this slice (WS-43g2b, WS-43g3): a run with no chat, the approval card,
 and the firewall rule applied in CI (done-when 4 to 6 and 8).
 """
 from __future__ import annotations
@@ -63,6 +68,7 @@ class EgressDocker(FakeDocker):
     def __init__(self) -> None:
         super().__init__()
         self.networks: dict[str, dict[str, Any]] = {}
+        self.no_pool = False
         self.proxy_running = False
         self.proxy_runs: list[list[str]] = []
 
@@ -74,7 +80,9 @@ class EgressDocker(FakeDocker):
         if argv[:2] == ["container", "inspect"]:
             self.calls.append(argv)
             if self.proxy_running:
-                return sb.DockerResult(0, "true|proxy\n", "")
+                last = self.proxy_runs[-1] if self.proxy_runs else []
+                cmd = last[last.index("python3"):] if "python3" in last else []
+                return sb.DockerResult(0, f"true|proxy|{json.dumps(cmd)}\n", "")
             return sb.DockerResult(1, "", "Error: No such container: mtr-egress-proxy")
         if argv[0] == "run" and "--env-file" in argv:
             path = Path(flag_values(argv, "--env-file")[0])
@@ -97,12 +105,30 @@ class EgressDocker(FakeDocker):
             net = self.networks.get(argv[-1])
             if net is None:
                 return sb.DockerResult(1, "", f"Error: network {argv[-1]} not found")
-            return sb.DockerResult(0, f"{str(net['internal']).lower()}|{net['org']}\n", "")
+            return sb.DockerResult(
+                0, f"{str(net['internal']).lower()}|{net['org']}|{net.get('run', '')}\n", "",
+            )
         if sub == "create":
+            if self.no_pool:
+                # The words of the Docker daemon when the default pools are full.
+                return sb.DockerResult(1, "", (
+                    "Error response from daemon: could not find an available, "
+                    "non-overlapping IPv4 address pool among the defaults to assign "
+                    "to the network"
+                ))
             labels = dict(v.split("=", 1) for v in flag_values(argv, "--label"))
+            bridge = flag_values(argv, "--opt")[0].split("=", 1)[1]
+            held = [n for n, net in self.networks.items() if net.get("bridge") == bridge]
+            if held:
+                # libnetwork refuses a bridge name that another network holds.
+                return sb.DockerResult(1, "", (
+                    f"Error response from daemon: cannot create network {argv[-1]}: "
+                    f"conflicts with network {held[0]}: networks have same bridge name"
+                ))
             self.networks[argv[-1]] = {
                 "internal": "--internal" in argv, "org": labels.get(sb.LABEL_ORG, ""),
-                "argv": argv,
+                "run": labels.get(sb.LABEL_EGRESS_RUN, ""), "bridge": bridge,
+                "labels": labels, "argv": argv,
             }
         elif sub == "rm":
             for name in argv[2:]:
@@ -170,6 +196,30 @@ def _with_run_id(run_id: str = "run-7") -> None:
     derive_artifact_context(run_id=run_id)
 
 
+def _own_network(handle: sb.SandboxHandle) -> str:
+    """The network name of the live grant of *handle*, derived again."""
+    assert handle.egress is not None
+    return sb.egress_network_name(handle.org, handle.name, handle.egress.key)
+
+
+def _calls_after(docker: EgressDocker, call: list[str]) -> list[list[str]]:
+    """The calls from *call* on. By identity: two proxy runs can be equal."""
+    start = next(i for i, c in enumerate(docker.calls) if c is call)
+    return docker.calls[start:]
+
+
+class _Settings:
+    """The settings, with some values over them. SBX-3a adds the card wait."""
+
+    def __init__(self, base: Any, **over: Any) -> None:
+        self._base, self._over = base, over
+
+    def __getattr__(self, name: str) -> Any:
+        if name in self._over:
+            return self._over[name]
+        return getattr(self._base, name)
+
+
 # ── done-when 3: dark by default ─────────────────────────────────────────────
 
 
@@ -213,7 +263,7 @@ async def test_with_egress_off_no_proxy_and_no_egress_network_exists(
 # ── the grant (§7.3, "The grant") ────────────────────────────────────────────
 
 
-async def test_a_grant_recreates_the_container_on_its_own_org_network(
+async def test_a_grant_recreates_the_container_on_its_own_run_network(
     broker: sb.SandboxBroker, docker: EgressDocker, egress_on: dict[str, Any], wall: Wall,
 ) -> None:
     with bound_run(ORG, member=MEMBER) as ws:
@@ -222,7 +272,9 @@ async def test_a_grant_recreates_the_container_on_its_own_org_network(
         handle = await broker.acquire()
         grant = await broker.grant_egress(handle, "pip install", ["pypi.org"])
     first, second = docker.sandbox_runs()
-    network = sb.egress_network_name(ORG)
+    network = sb.egress_network_name(ORG, handle.name, grant.key)
+    assert grant.network == network and network.startswith(sb.EGRESS_NET_PREFIX)
+    assert grant.token not in network
     assert flag_values(first, "--network") == ["none"]
     assert flag_values(second, "--network") == [network]
     assert handle.network == network and handle.egress is grant
@@ -252,13 +304,15 @@ async def test_a_grant_recreates_the_container_on_its_own_org_network(
     assert list(doc["grants"]) == [grant.key]
     assert doc["grants"][grant.key]["approver"] == MEMBER
     assert grant.token not in json.dumps(doc)
-    # The network: internal, labelled with the org, on an mtr-eg- bridge.
+    # The network: internal, with the three labels, on an mtr-eg- bridge.
     made = docker.networks[network]["argv"]
     assert "--internal" in made
-    assert f"{sb.LABEL_ORG}={ORG}" in flag_values(made, "--label")
-    assert flag_values(made, "--opt") == [
-        f"com.docker.network.bridge.name={sb.egress_bridge_name(ORG)}"
-    ]
+    assert docker.networks[network]["labels"] == {
+        sb.LABEL_EGRESS: "1", sb.LABEL_ORG: ORG, sb.LABEL_EGRESS_RUN: "run-7",
+    }
+    bridge = sb.egress_bridge_name(ORG, handle.name, grant.key)
+    assert flag_values(made, "--opt") == [f"com.docker.network.bridge.name={bridge}"]
+    assert len(bridge) == 15 and bridge[len(sb.EGRESS_BRIDGE_PREFIX):] in network
     assert ["network", "connect", network, sb.EGRESS_PROXY_NAME] in docker.calls
 
 
@@ -296,7 +350,7 @@ async def test_the_proxy_runs_as_nobody_with_no_capability_and_no_port(
     assert oct((broker.state_dir() / "egress").stat().st_mode & 0o777) == "0o700"
 
 
-async def test_a_second_grant_reuses_the_proxy_and_the_network(
+async def test_a_second_grant_reuses_the_proxy_and_makes_its_own_network(
     broker: sb.SandboxBroker, docker: EgressDocker, egress_on: dict[str, Any],
 ) -> None:
     with bound_run(ORG, member=MEMBER):
@@ -304,9 +358,12 @@ async def test_a_second_grant_reuses_the_proxy_and_the_network(
         first = await broker.grant_egress(handle, "pip", ["pypi.org"])
         second = await broker.grant_egress(handle, "pip", ["files.pythonhosted.org"])
     assert len(docker.proxy_runs) == 1
-    assert len(docker.network_calls("create")) == 1
+    assert len(docker.network_calls("create")) == 2
+    assert first.network != second.network
     assert list(_grants_file(broker)["grants"]) == [second.key], "the old token is dead"
     assert first.token != second.token
+    assert flag_values(docker.sandbox_runs()[-1], "--network") == [second.network]
+    assert set(docker.networks) == {second.network}, "the old grant's network goes"
 
 
 async def test_two_orgs_never_share_an_egress_network(
@@ -319,22 +376,188 @@ async def test_two_orgs_never_share_an_egress_network(
         b = await broker.acquire()
         await broker.grant_egress(b, "pip", ["pypi.org"])
     assert a.network != b.network
-    assert a.network == sb.egress_network_name(ORG) and b.network == sb.egress_network_name(ORG_B)
-    assert {n["org"] for n in docker.networks.values()} == {ORG, ORG_B}
-    assert len(sb.egress_bridge_name(ORG)) <= 15
+    assert a.network == _own_network(a) and b.network == _own_network(b)
+    assert sorted(n["org"] for n in docker.networks.values()) == sorted([ORG, ORG_B])
+    assert set(docker.networks) == {a.network, b.network}, "one network for each grant"
+    assert len(sb.egress_bridge_name(ORG, a.name, "k")) <= 15
 
 
-async def test_a_network_of_another_org_or_not_internal_is_refused(
+async def test_a_network_of_another_org_or_run_or_not_internal_is_refused(
     broker: sb.SandboxBroker, docker: EgressDocker, egress_on: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    name = sb.egress_network_name(ORG)
-    for planted in ({"internal": True, "org": ORG_B}, {"internal": False, "org": ORG}):
-        docker.networks[name] = planted
+    token = "p" * 43
+    monkeypatch.setattr(sb.secrets, "token_urlsafe", lambda _n=32: token)
+    key = sb.EgressGrant(
+        token=token, org=ORG, run="", agent="", approver="", hosts=(), expires_at=0.0,
+        network="",
+    ).key
+    for planted in (
+        {"internal": True, "org": ORG_B, "run": "run-7"},
+        {"internal": False, "org": ORG, "run": "run-7"},
+        {"internal": True, "org": ORG, "run": "run-of-another-member"},
+    ):
         with bound_run(ORG, member=MEMBER):
+            _with_run_id()
             handle = await broker.acquire()
+            docker.networks[sb.egress_network_name(ORG, handle.name, key)] = planted
             with pytest.raises(sb.SandboxRefused, match="not its own internal"):
                 await broker.grant_egress(handle, "pip", ["pypi.org"])
         assert handle.egress is None and not broker._grants
+        assert flag_values(docker.sandbox_runs()[-1], "--network") == ["none"]
+        docker.networks.clear()
+
+
+# ── WS-43g2a: the network of each run (§7.3, task 4070) ─────────────────────
+
+
+async def test_two_runs_of_one_org_get_two_networks(
+    broker: sb.SandboxBroker, docker: EgressDocker, egress_on: dict[str, Any],
+) -> None:
+    """Done-when 10: two members of one org never share an egress bridge."""
+    with bound_run(ORG, member=MEMBER, thread="ta"):
+        _with_run_id("run-a")
+        a = await broker.acquire()
+        ga = await broker.grant_egress(a, "pip", ["pypi.org"])
+    with bound_run(ORG, member="other@example.com", thread="tb"):
+        _with_run_id("run-b")
+        b = await broker.acquire()
+        gb = await broker.grant_egress(b, "pip", ["pypi.org"])
+    assert a.org == b.org and a.name != b.name
+    assert ga.network != gb.network
+    assert ga.network == sb.egress_network_name(ORG, a.name, ga.key)
+    assert gb.network == sb.egress_network_name(ORG, b.name, gb.key)
+    assert flag_values(docker.sandbox_runs()[1], "--network") == [ga.network]
+    assert flag_values(docker.sandbox_runs()[-1], "--network") == [gb.network]
+    assert {n: (v["org"], v["run"]) for n, v in docker.networks.items()} == {
+        ga.network: (ORG, "run-a"), gb.network: (ORG, "run-b"),
+    }
+    bridges = {v["bridge"] for v in docker.networks.values()}
+    assert len(bridges) == 2 and all(len(x) == 15 for x in bridges)
+    joined = [c[2] for c in docker.calls if c[:2] == ["network", "connect"]]
+    assert sorted(joined) == sorted([ga.network, gb.network])
+
+
+async def test_a_revoke_removes_only_its_own_runs_network(
+    broker: sb.SandboxBroker, docker: EgressDocker, egress_on: dict[str, Any],
+) -> None:
+    """Done-when 11: a revoke removes its own network on each revoke, and
+    another run of the org keeps its grant and its network."""
+    with bound_run(ORG, member=MEMBER, thread="ta"):
+        a = await broker.acquire()
+        ga = await broker.grant_egress(a, "pip", ["pypi.org"])
+    with bound_run(ORG, member=MEMBER, thread="tb"):
+        b = await broker.acquire()
+        gb = await broker.grant_egress(b, "pip", ["pypi.org"])
+    assert await broker.revoke_egress(a) is True
+    assert ["network", "disconnect", "-f", ga.network, sb.EGRESS_PROXY_NAME] in docker.calls
+    assert ["network", "rm", ga.network] in docker.calls
+    assert set(docker.networks) == {gb.network}
+    assert b.egress is gb and list(_grants_file(broker)["grants"]) == [gb.key]
+    assert not any(gb.network in c for c in docker.network_calls("rm"))
+    assert not any(gb.network in c for c in docker.network_calls("disconnect"))
+    assert await broker.revoke_egress(b) is True
+    assert docker.networks == {}
+
+
+async def test_no_free_address_pool_refuses_the_grant(
+    broker: sb.SandboxBroker, docker: EgressDocker, egress_on: dict[str, Any],
+) -> None:
+    """Done-when 12: the default pools are full, so the grant refuses."""
+    with bound_run(ORG, member=MEMBER):
+        handle = await broker.acquire()
+        docker.no_pool = True
+        with pytest.raises(sb.SandboxUnavailable, match="address pool"):
+            await broker.grant_egress(handle, "pip", ["pypi.org"])
+    assert handle.egress is None and not broker._grants
+    assert len(docker.sandbox_runs()) == 1, "no recreate"
+    assert flag_values(docker.sandbox_runs()[-1], "--network") == ["none"]
+    assert handle.network == "none" and docker.networks == {}
+    assert not broker._grants_path().exists() or _grants_file(broker)["grants"] == {}
+
+
+async def test_a_bridge_name_collision_fails_closed(
+    broker: sb.SandboxBroker, docker: EgressDocker, egress_on: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Done-when 12: two live grants with the same 8 hex digits. The second
+    ``network create`` fails, and the second container stays on ``none``."""
+    monkeypatch.setattr(sb, "egress_bridge_name", lambda *_a: "mtr-eg-deadbeef")
+    with bound_run(ORG, member=MEMBER, thread="ta"):
+        a = await broker.acquire()
+        ga = await broker.grant_egress(a, "pip", ["pypi.org"])
+    with bound_run(ORG, member=MEMBER, thread="tb"):
+        b = await broker.acquire()
+        with pytest.raises(sb.SandboxUnavailable):
+            await broker.grant_egress(b, "pip", ["pypi.org"])
+    assert b.egress is None and b.network == "none"
+    assert flag_values(docker.sandbox_runs()[-1], "--network") == ["none"]
+    assert a.egress is ga and set(docker.networks) == {ga.network}
+    assert list(_grants_file(broker)["grants"]) == [ga.key]
+
+
+# ── WS-43g2a: the door wait (§7.3, task 4070) ───────────────────────────────
+
+
+@pytest.mark.parametrize(("wait", "expected"), [(300, 330), (600, 630), (60, 90)])
+def test_the_proxy_argv_carries_the_door_read_timeout(
+    tmp_path: Path, wait: int, expected: int,
+) -> None:
+    """Done-when 13: the value is the card wait plus 30, after ``--grants``."""
+    settings = _Settings(object(), sandbox_approval_timeout_seconds=wait)
+    assert sb.door_read_timeout(settings) == expected
+    assert sb.door_read_timeout(object()) == 330, "the default of 300 until SBX-3a"
+    argv = sb.build_proxy_argv(
+        image="sha256:" + "a" * 64, bin_dir=tmp_path / "bin", grants_dir=tmp_path / "grants",
+        door_read_timeout_s=sb.door_read_timeout(settings),
+    )
+    assert flag_values(argv, "--door-read-timeout") == [str(expected)]
+    cmd = argv[argv.index("python3"):]
+    assert sb.proxy_door_read_timeout(cmd) == str(expected)
+
+
+async def test_a_changed_door_read_timeout_restarts_the_proxy(
+    broker: sb.SandboxBroker, docker: EgressDocker, egress_on: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Done-when 13: a running proxy with another value goes, and the fresh
+    one joins the network of each live grant again."""
+    with bound_run(ORG, member=MEMBER, thread="ta"):
+        a = await broker.acquire()
+        ga = await broker.grant_egress(a, "pip", ["pypi.org"])
+    (first,) = docker.proxy_runs
+    assert flag_values(first, "--door-read-timeout") == ["330"]
+    settings = _Settings(egress_on["settings"], sandbox_approval_timeout_seconds=600)
+    monkeypatch.setattr(broker, "_settings", lambda: settings)
+    with bound_run(ORG, member=MEMBER, thread="tb"):
+        b = await broker.acquire()
+        gb = await broker.grant_egress(b, "pip", ["pypi.org"])
+    assert len(docker.proxy_runs) == 2
+    assert flag_values(docker.proxy_runs[1], "--door-read-timeout") == ["630"]
+    removed = docker.calls.index(["rm", "-f", sb.EGRESS_PROXY_NAME])
+    assert removed < docker.calls.index(docker.proxy_runs[1])
+    after = _calls_after(docker, docker.proxy_runs[1])
+    joined = [c[2] for c in after if c[:2] == ["network", "connect"]]
+    assert sorted(joined) == sorted([ga.network, gb.network])
+    # The same value again: the proxy stays.
+    with bound_run(ORG, member=MEMBER, thread="ta"):
+        await broker.grant_egress(a, "pip", ["pypi.org"])
+    assert len(docker.proxy_runs) == 2
+
+
+async def test_a_card_wait_under_60_opens_no_grant(
+    broker: sb.SandboxBroker, docker: EgressDocker, egress_on: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The proxy refuses a door read below 90, so the broker starts none."""
+    settings = _Settings(egress_on["settings"], sandbox_approval_timeout_seconds=59)
+    monkeypatch.setattr(broker, "_settings", lambda: settings)
+    with bound_run(ORG, member=MEMBER):
+        handle = await broker.acquire()
+        with pytest.raises(sb.SandboxUnavailable, match="door read timeout"):
+            await broker.grant_egress(handle, "pip", ["pypi.org"])
+    assert docker.proxy_runs == [] and handle.egress is None
+    assert docker.networks == {}, "the network of the failed grant goes"
 
 
 # ── the refusals of a grant ──────────────────────────────────────────────────
@@ -460,7 +683,7 @@ async def test_a_revoke_puts_the_container_back_on_none_with_every_mount(
     _assert_back_on_none(docker, granted)
     assert handle.egress is None and handle.network == "none"
     assert _grants_file(broker)["grants"] == {}
-    assert sb.egress_network_name(ORG) not in docker.networks, "the org's network goes too"
+    assert docker.networks == {}, "the grant's network goes too"
 
 
 async def test_the_runs_end_leaves_no_grant(
@@ -516,7 +739,7 @@ async def test_a_restart_keeps_the_grant_and_the_cover(
         )
         assert (await broker.exec(handle, "true", 5)).restarted
     granted, restarted = docker.sandbox_runs()[-2:]
-    assert flag_values(restarted, "--network") == [sb.egress_network_name(ORG)]
+    assert flag_values(restarted, "--network") == [_own_network(handle)]
     assert mounts_of(restarted) == mounts_of(granted)
 
 
@@ -529,10 +752,12 @@ async def test_the_sweep_removes_the_proxy_the_networks_and_every_grant(
     with bound_run(ORG, member=MEMBER):
         handle = await broker.acquire()
         await broker.grant_egress(handle, "pip", ["pypi.org"])
+    network = _own_network(handle)
     docker.ps_ids = [handle.container_id, "proxy-id"]
     await broker.sweep()
     assert "proxy-id" in docker.removals(), "the proxy carries the sandbox label"
-    assert ["network", "rm", sb.egress_network_name(ORG)] in docker.calls
+    assert ["network", "ls", "-q", "--filter", f"label={sb.LABEL_EGRESS}=1"] in docker.calls
+    assert ["network", "rm", network] in docker.calls
     assert docker.networks == {}
     assert not broker._grants and handle.egress is None
     assert _grants_file(broker)["grants"] == {}
@@ -556,7 +781,7 @@ async def test_the_sweep_empties_the_env_folder(
     folder = broker.state_dir() / "egress" / "env"
     grant = sb.EgressGrant(
         token="t" * 43, org=ORG, run="r", agent="agent-x", approver=MEMBER,
-        hosts=("pypi.org",), expires_at=0.0, network=sb.egress_network_name(ORG),
+        hosts=("pypi.org",), expires_at=0.0, network=sb.egress_network_name(ORG, "c", "k"),
     )
     left = sb.write_egress_env_file(folder, "2" * 32, grant)
     await broker.sweep()
@@ -566,6 +791,7 @@ async def test_the_sweep_empties_the_env_folder(
 def test_the_proxy_carries_the_label_that_the_sweep_removes(tmp_path: Path) -> None:
     argv = sb.build_proxy_argv(
         image="sha256:" + "a" * 64, bin_dir=tmp_path / "bin", grants_dir=tmp_path / "grants",
+        door_read_timeout_s=330,
     )
     assert f"{sb.LABEL_SANDBOX}=1" in flag_values(argv, "--label")
 
@@ -584,7 +810,7 @@ def test_the_firewall_script_prints_one_drop_rule_for_each_family() -> None:
     ).stdout.splitlines()
     rule = "-I INPUT -i mtr-eg-+ -m comment --comment metorite-sandbox-egress -j DROP"
     assert out == [f"iptables {rule}", f"ip6tables {rule}"]
-    assert sb.egress_bridge_name(ORG).startswith(sb.EGRESS_BRIDGE_PREFIX)
+    assert sb.egress_bridge_name(ORG, "c", "k").startswith(sb.EGRESS_BRIDGE_PREFIX)
     assert sb.EGRESS_BRIDGE_PREFIX + "+" in rule
 
 
@@ -746,7 +972,11 @@ async def real(
         await broker.stop()
         left = _docker("ps", "-aq", "--filter", f"label=metorite.org={DOCKER_ORG}").stdout.split()
         _docker("rm", "-f", stub, sb.EGRESS_PROXY_NAME, *left)
-        _docker("network", "rm", sb.egress_network_name(DOCKER_ORG))
+        nets = _docker(
+            "network", "ls", "-q", "--filter", f"label=metorite.org={DOCKER_ORG}",
+        ).stdout.split()
+        if nets:
+            _docker("network", "rm", *nets)
 
 
 def _networks_of(name: str) -> set[str]:
@@ -778,8 +1008,8 @@ async def test_docker_a_granted_run_reaches_the_door_and_pypi_and_nothing_else(
         (ws / "probe.py").write_text(_PROBE, encoding="utf-8")
         handle = await broker.acquire()
         assert _networks_of(handle.name) == {"none"}
-        await broker.grant_egress(handle, "the door and pip", [sb.DOOR_HOST, "pypi.org"])
-        assert _networks_of(handle.name) == {sb.egress_network_name(DOCKER_ORG)}
+        grant = await broker.grant_egress(handle, "the door and pip", [sb.DOOR_HOST, "pypi.org"])
+        assert _networks_of(handle.name) == {grant.network}
         result = await broker.exec(handle, "python3 probe.py", 120)
         line = next(
             (x for x in result.output.splitlines() if x.startswith("RESULT ")), "",
@@ -809,7 +1039,7 @@ async def test_docker_a_granted_run_reaches_the_door_and_pypi_and_nothing_else(
     # Done-when 7: the run's end leaves no grant, on --network none, cover on.
     assert after == {"none"}
     assert any(m.get("Destination") == "/workspace/.git" for m in json.loads(mounts or "[]"))
-    assert _docker("network", "inspect", sb.egress_network_name(DOCKER_ORG)).returncode != 0
+    assert _docker("network", "inspect", grant.network).returncode != 0
     grants = json.loads(broker._grants_path().read_text(encoding="utf-8"))
     assert grants["grants"] == {}
     # Recorded for the report: does an --internal network resolve outside names?
@@ -838,21 +1068,105 @@ async def test_docker_a_revoked_token_is_refused_at_the_next_request(
     assert refused and refused[-1]["decision"] == "refuse"
 
 
+_LISTEN = (
+    "import socket\n"
+    "s = socket.socket()\n"
+    "s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n"
+    "s.bind(('0.0.0.0', 9099))\n"
+    "s.listen(8)\n"
+    "while True:\n"
+    "    c, _ = s.accept()\n"
+    "    c.sendall(b'here')\n"
+    "    c.close()\n"
+)
+
+
+def _connect_probe(address: str) -> str:
+    return (
+        "import socket\n"
+        "try:\n"
+        f"    c = socket.create_connection(('{address}', 9099), timeout=5)\n"
+        "    print('connected', c.recv(16).decode())\n"
+        "except OSError as e:\n"
+        "    print('refused', type(e).__name__)\n"
+    )
+
+
+def _address_on(name: str, network: str) -> str:
+    raw = _docker("inspect", "-f", "{{json .NetworkSettings.Networks}}", name).stdout
+    return str(json.loads(raw or "{}").get(network, {}).get("IPAddress") or "")
+
+
+@pytest.mark.sandbox_docker
+async def test_docker_two_runs_of_one_org_cannot_reach_each_other(
+    real: dict[str, Any],
+) -> None:
+    """Done-when 10 on a real daemon (WS-43g2a). Two runs of one org get two
+    networks. A listener in run B answers the proxy, which is on both
+    networks, and never answers run A. A revoke of A leaves B its network."""
+    broker: sb.SandboxBroker = real["broker"]
+    with bound_run(DOCKER_ORG, member=MEMBER, thread="t-run-a"):
+        _with_run_id("run-a")
+        a = await broker.acquire()
+        ga = await broker.grant_egress(a, "pip", ["pypi.org"])
+    with bound_run(DOCKER_ORG, member="other@example.com", thread="t-run-b"):
+        _with_run_id("run-b")
+        b = await broker.acquire()
+        gb = await broker.grant_egress(b, "pip", ["pypi.org"])
+    assert ga.network != gb.network
+    assert _networks_of(a.name) == {ga.network} and _networks_of(b.name) == {gb.network}
+    assert _networks_of(real["proxy"]) >= {ga.network, gb.network}
+    labels = json.loads(_docker(
+        "network", "inspect", "-f", "{{json .Labels}}", gb.network,
+    ).stdout or "{}")
+    assert labels == {
+        sb.LABEL_EGRESS: "1", sb.LABEL_ORG: DOCKER_ORG, sb.LABEL_EGRESS_RUN: "run-b",
+    }
+    b_address = _address_on(b.name, gb.network)
+    assert b_address, "run B has no address on its own network"
+    listening = _docker("exec", "-d", b.name, "python3", "-I", "-c", _LISTEN)
+    assert listening.returncode == 0, listening.stderr
+    # The control: the proxy reaches the listener, so the listener is up.
+    seen = ""
+    for _ in range(20):
+        seen = _docker(
+            "exec", real["proxy"], "python3", "-I", "-c", _connect_probe(b_address), timeout=60,
+        ).stdout
+        if seen.startswith("connected"):
+            break
+        await asyncio.sleep(0.5)
+    assert seen.startswith("connected here"), seen
+    # Run A cannot reach run B.
+    from_a = _docker(
+        "exec", a.name, "python3", "-I", "-c", _connect_probe(b_address), timeout=60,
+    ).stdout
+    assert from_a.startswith("refused"), from_a
+    # A revoke of A removes A's network only. B keeps its grant and network.
+    assert await broker.revoke_egress(a) is True
+    assert _docker("network", "inspect", ga.network).returncode != 0
+    assert _docker("network", "inspect", gb.network).returncode == 0
+    assert b.egress is gb and _networks_of(b.name) == {gb.network}
+    assert await broker.revoke_egress(b) is True
+    assert _docker("network", "inspect", gb.network).returncode != 0
+
+
 async def test_a_fresh_proxy_joins_the_network_of_every_live_grant(
     broker: sb.SandboxBroker, docker: EgressDocker, egress_on: dict[str, Any],
 ) -> None:
-    """Review round 1: a proxy that died and starts again joins each org's network."""
+    """Review round 1: a proxy that died and starts again joins the network of
+    each live grant. WS-43g2a: two grants of one org, so two networks."""
     with bound_run(ORG, member=MEMBER, thread="ta"):
         a = await broker.acquire()
         await broker.grant_egress(a, "pip", ["pypi.org"])
     docker.proxy_running = False  # the proxy died
-    with bound_run(ORG_B, member=MEMBER, thread="tb"):
+    with bound_run(ORG, member=MEMBER, thread="tb"):
         b = await broker.acquire()
         await broker.grant_egress(b, "pip", ["pypi.org"])
     assert len(docker.proxy_runs) == 2
-    after = docker.calls[docker.calls.index(docker.proxy_runs[1]):]
-    joined = {c[2] for c in after if c[:2] == ["network", "connect"]}
-    assert joined == {sb.egress_network_name(ORG), sb.egress_network_name(ORG_B)}
+    after = _calls_after(docker, docker.proxy_runs[1])
+    joined = [c[2] for c in after if c[:2] == ["network", "connect"]]
+    assert sorted(joined) == sorted([_own_network(a), _own_network(b)])
+    assert a.network != b.network
 
 
 async def test_the_env_file_goes_even_when_the_start_fails(
@@ -870,6 +1184,7 @@ async def test_the_env_file_goes_even_when_the_start_fails(
 def test_the_proxy_never_forwards_between_its_networks(tmp_path: Path) -> None:
     argv = sb.build_proxy_argv(
         image="sha256:" + "a" * 64, bin_dir=tmp_path / "bin", grants_dir=tmp_path / "grants",
+        door_read_timeout_s=330,
     )
     assert set(flag_values(argv, "--sysctl")) == {
         "net.ipv4.ip_forward=0", "net.ipv6.conf.all.forwarding=0",
