@@ -1041,7 +1041,8 @@ each slice. Each flip or `on` mode is OWNER-GATE.
 |---|---|---|---|---|---|---|---|
 | 1 | 1 | LBB-2 the claim gate and the `land_your_pr` row | 4041 | HIGH | `CLAIM_GATE_SHADOW_ORGS`, `CLAIM_GATE_ORGS` | §7b.2 | build AGENT-SAFE, flip `enforcement-flip` |
 | 2 | 1 | LBB-4 zero orphans at a stop | 4042 | STANDARD | `STOP_DISPOSITION_PRS` | `.claude/hooks/stop-disposition.mjs`, `~/lanes/winddown.sh` | build AGENT-SAFE, `block` by the owner |
-| 3 | 1 | LBB-3 the landing sweeper | 4043 | HIGH (merge path) | `LANDING_SWEEPER_MODE` | `scripts/home_server/lane_handover.sh`, `merge_bot.sh` | build AGENT-SAFE, `on` and the timer are `deploy` |
+| 3 | 1 | LBB-3a the landing sweeper, a dry report (§7b.5) | 4043 | STANDARD | `LANDING_SWEEPER_MODE=dry` | `scripts/home_server/merge_bot.sh`, `scripts/hand_over.sh`, `scripts/release_freeze.sh` | build AGENT-SAFE, the timer and `dry` are `deploy` |
+| 3b | 1 | LBB-3b the sweeper's actions | (to make) | HIGH (merge path) | `LANDING_SWEEPER_MODE=on` | §7b.5 rules | NO-GO until metorite-78 takes the two decisions of §7b.5 |
 | 4 | 2 | LBB-1 done means live | 4044 | STANDARD | `LIVE_CHECK_MODE` | `GET /version`, the merger steps of `lane-merge.md` | build AGENT-SAFE, `on` is `deploy` |
 | 5 | 2 | LBB-6 built, not live, in My Day and the review | 4045 | STANDARD, UI | `BUILT_NOT_LIVE_ORGS` | `.claude/commands/delivery-review.md`, My Day "Needs you" (WS-58) | build AGENT-SAFE, D145 preview before the flip |
 | 6 | 2 | LBB-5 merge capacity follows build capacity | 4046 | HIGH (merge path) | `PREMERGE_MERGE_TEST=auto` | `scripts/premerge.sh` step 4 | build AGENT-SAFE, the default flip is the owner's |
@@ -1155,6 +1156,132 @@ PYTEST_ADDOPTS="-o timeout_method=thread" uv run pytest -p no:cacheprovider \
 **Gate.** The build is AGENT-SAFE. `warn` and then `block` on the box lanes
 are gate `enforcement-flip` (a dated grant or the owner). `warn` comes first,
 then `block` after one day with no false block.
+
+### 7b.5 LBB-3: the landing sweeper (task 4043)
+
+**Status: LBB-3a built (dry only).** LBB-3b is not built. The audit of 2026-11-27 found that the sweeper's
+actions are unsafe until two decisions are taken, so LBB-3 has two parts.
+- **LBB-3a (this build): a dry report.** The sweeper reads every open PR and
+  writes what it WOULD do to its own file. It calls no GitHub write, writes
+  no queue line, and hands nothing over. Tier STANDARD.
+- **LBB-3b (later, HIGH): the actions.** It waits on two decisions by
+  metorite-78 or the owner:
+  1. Whether `~/lanes/merge-queue.tsv` is the HIGH queue again. The box
+     merger lane reads it today (its lane notes), but `lane-merge.md`,
+     `lane_handover.sh`, `merge_bot.sh` and `docs/home_box.md` say nothing
+     reads it.
+  2. A limit on the GitHub runs that updates may spend.
+  The rules below are the rules that LBB-3b will act on. LBB-3a reports them,
+  so one day of its report shows what LBB-3b would do.
+
+**What runs.** `scripts/home_server/landing_sweeper.py` (Python standard
+library, plus `gh` and `git`). The units
+`scripts/home_server/metorite-landing-sweeper.service` and `.timer` run it
+every 2 hours, in the shape of `metorite-answer-watcher.service`:
+`Type=oneshot`, `EnvironmentFile=-%h/.config/metorite/landing-sweeper.env`,
+`ExecStart=/usr/bin/python3 %h/.local/lib/metorite/landing_sweeper.py` (an
+install copies the script there, as for the answer watcher),
+`TimeoutStartSec=900`. The script keeps its own clone,
+`~/lanes/sweeper-src`, and makes it with `git clone` when it is missing. It
+runs `gh` from that clone.
+
+**The mode.** `LANDING_SWEEPER_MODE` from the env file. A missing file or
+`off` (the default): the script exits 0 and calls nothing. `dry`: it writes
+its report. LBB-3a has no `on`: any other value is read as `off`, and logs
+one line that says so.
+
+**The report.** One line for each open PR in each run, appended to
+`~/lanes/landing-sweeper.tsv` (only the sweeper writes this file, and
+lane-land reads it):
+`<UTC time><TAB><N><TAB><head sha><TAB><would><TAB><reason>`.
+`would` is one of `SKIP`, `UPDATE`, `HANDOVER`, `REQUEUE`, `LAND` or `WAIT`.
+
+**What it reads.**
+- `gh pr list --state open --limit 300 --json number,author,headRefName,headRefOid,baseRefName,isDraft,isCrossRepository,mergeable,title,body,createdAt`.
+- For each PR not skipped by the name rules: the `committedDate` of its last
+  commit (`gh pr view N --json commits`), and its checks (`gh pr checks N`),
+  read with the newest-row rule of `PY_CHECKS` in `merge_bot.sh` and its
+  list of required checks.
+- The box queues: `~/lanes/merge-bot-queue.tsv`, its result log
+  `~/lanes/merge-bot.log`, and `~/lanes/merge-queue.tsv`.
+- Its clone: each run fetches `main` and `refs/pull/N/head` for each PR that
+  rule 5 reaches. A short `<sha>` resolves only from those objects. Else the
+  PR gets `SKIP` with reason `error verify sha`.
+- `scripts/release_freeze.sh` (exit 75 means a freeze window).
+
+**The rules, first match wins.**
+1. `SKIP`: the author is `ishaanpilar`; the head branch starts with `ishaan-`
+   or `auto-revert/`, or matches `PROTECTED_HEAD_RE` of `merge_bot.sh`; a
+   draft; a base other than `main`; a fork; the head is the base of another
+   open PR; `mergeable` is `UNKNOWN`; or the last commit is less than 24 hours
+   old ("pushed" in rule 3 means the `committedDate` of the last commit).
+2. `WAIT`: the PR is held by a merger. That is one of these:
+   - its hand-overs in `~/lanes/merge-bot-queue.tsv` outnumber its DONE and
+     BACK lines in `~/lanes/merge-bot.log`, and it has no DONE (the count rule
+     of `read_script` in `hand_over.sh`);
+   - any `REQUEUE` line for N in `~/lanes/merge-queue.tsv`, while N is open. A
+     real line: `REQUEUE<TAB>2487<TAB>3590<TAB>box-loop<TAB>CI red cause found: ...`
+     (keyword, PR, task, lane, note).
+   Also `WAIT`, for every rule below, while `release_freeze.sh` exits 75 or 1
+   (a freeze, or an answer it cannot read).
+3. `LAND`: `mergeable` is `CONFLICTING`, or a required check is red, and the
+   PR is older than 48 hours. The reason names the conflict or the red checks.
+4. `UPDATE`: the head does not hold main
+   (`git merge-base --is-ancestor origin/main <head>` fails in the clone),
+   and no required check is green on the head. A head that is green but
+   behind is not updated: the merger merges it (lane-merge.md "do not merge
+   main into a green branch").
+5. `HANDOVER` or `REQUEUE`: every required check is green, the body has the
+   line `VERIFY: PASS <sha>` (regex `^VERIFY: PASS ([0-9a-f]{7,40})`, the last
+   such line wins), and the own diff of the head has the same
+   `git patch-id --stable` as the own diff of `<sha>`. The own diff of a
+   commit C is `git diff $(git merge-base origin/main C) C`.
+   - `HANDOVER` only when `~/lanes/merge-bot-queue.tsv` holds an earlier
+     hand-over of this PR by a lane at the same patch-id (so a person's
+     approval step ran once). Else `REQUEUE`, so the merger lane checks the
+     loop.
+   - The tier comes from a body line `Tier: <LOW|STANDARD|HIGH>`, else from
+     the title (`(HIGH`, `(STANDARD` or `(LOW`). With neither, the tier is
+     HIGH, on purpose: most PRs name no tier, and HIGH goes to a person.
+     HIGH is always `REQUEUE`.
+6. `LAND` with reason `no verify sha`: green, older than 48 hours, and no
+   `VERIFY: PASS` line.
+7. Else `SKIP` with reason `nothing to do`.
+
+**Test seams.** `LANDING_SWEEPER_GH` (the `gh` command), `LANDING_SWEEPER_FREEZE_CMD`
+(the freeze check), `LANDING_SWEEPER_LANES` (the folder of the queue files and
+the report) and `LANDING_SWEEPER_SRC` (the clone).
+
+**Fails safe.** A `gh` or `git` call that fails gives that PR a `SKIP` line with
+reason `error <step>`. An answer that does not parse ends the run with exit 0
+and one log line.
+
+**Done when** (each with a test in `tests/unit/test_landing_sweeper.py`, with
+a fake `gh` that records every call, a temp git repo for the ancestry and the
+patch-ids, and temp queue files):
+1. `off`, a missing env file, or any value other than `dry`: no `gh` call.
+2. `dry`: one report line for each open PR, and no `gh` call other than the
+   reads above (no `api -X`, no `pr merge`, no `pr edit`, no `pr comment`),
+   and no write to a queue file.
+3. Each rule above, in its order, with one test for each `would` value and
+   each skip reason.
+4. A freeze (`release_freeze.sh` exit 75, through a fake) turns every action
+   into `WAIT`.
+5. A different patch-id gives no `HANDOVER` or `REQUEUE`.
+6. The units: the timer runs every 2 hours, the service reads the env file
+   with a `-`, and holds no secret.
+
+**Verify with.**
+
+```
+PYTEST_ADDOPTS="-o timeout_method=thread" uv run pytest -p no:cacheprovider \
+  tests/unit/test_landing_sweeper.py
+uv run ruff check scripts/home_server/landing_sweeper.py tests/unit/test_landing_sweeper.py
+```
+
+**Rollout (not in the build).** Install the units on the box and set
+`LANDING_SWEEPER_MODE=dry`: gate `deploy`. Read one day of
+`~/lanes/landing-sweeper.tsv`, then take the two decisions above for LBB-3b.
 
 ### 7b.6 LBB-1: done means live (task 4044)
 
