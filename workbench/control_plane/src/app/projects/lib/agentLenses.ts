@@ -7,7 +7,7 @@
  *
  * ⚠️ It adds no fact. A state, a wait, a dispatch line and a machine all come
  * from the map read. A question text comes from the questions read, joined by
- * run id. A session with no structured wait draws no "waits on" edge.
+ * run id. A session with no structured wait says none.
  *
  * ⚠️ One vocabulary. A state is a key of `AGENT_STATES` (`statusAccent.ts`),
  * its words are those of the board lanes (`AGENT_LANES`), and its card edge is

@@ -899,7 +899,7 @@ This replaces some rules of 2026-11-26. They are the Board, Graph and List switc
 - **The card (G2).** Line 1 holds the name and the age. Line 2 holds the task, or the latest line, and the machine. The foot holds the wait fact and the subagent count. The card keeps the look of `agentCardLook` and `statusAccent`, and adds no colour.
 - **A question of another member (EA3-50).** That session reads "Waiting for" and the member's name. It counts as waiting.
 - **The layout.** A pure function places the nodes (`lib/agentGraph.ts`). `@xyflow/react` pans and zooms.
-- **A stable map (G4).** The viewer comes first, then the people by Needs you, Failed and active counts. Inside a person, the orchestrators come by urgency, then by start. The start is that of the oldest listed run, because the read holds no start of a session. The order changes only when an agent changes its state group. A node moves in 200 ms, and not at all with reduced motion. After the first view, a refresh never moves the viewport.
+- **A stable map (G4).** The viewer comes first, then the people by Needs you, Failed and active counts. Inside a person, the orchestrators come by urgency, then by start. The read holds no start of a session. So the view takes the start of the listed run when it first sees a session, and keeps that value until the page loads again. The order changes only when an agent changes its state group. A node moves in 200 ms, and not at all with reduced motion. After the first view, a refresh never moves the viewport.
 - **Remembered filters (G5).** People and Active or All stay for each member in `localStorage`, inside try and catch (`lib/agentMapPrefs.ts`). An empty store gives the defaults.
 - **The empty state (G6).** Under Active with no active agent, the view reads "No agent works now." and offers "Show all N".
 - **Find.** The map draws the matches, whatever the switch and the folds, with their orchestrator as context. A person with no match does not draw.
@@ -917,7 +917,7 @@ The owner asked on 2026-11-26 that the view of §3.12.8 stays usable with hundre
 - **The bound.** The canvas draws at most 40 agent cards, the orchestrators included. The pure function `planMap` (`lib/agentScale.ts`) holds this rule.
 - **Group by group.** Inside one state, a person's cards fill one group after the other, so an orchestrator keeps its agents on the canvas.
 - **Urgency wins (G3).** While the cap has room, a Needs you or Failed agent never folds. The rest fold in this order: Done, Idle, Waiting, Working. Inside one state, the people with the most agents fold first. A person with no card left draws as their folded card.
-- **The click.** The person that the member opened last takes the room first, after each urgent agent. That person keeps room for at least 12 cards.
+- **The click.** The person that the member opened last takes the room first, after each urgent agent. When the urgent agents leave no room, a click still takes up to 12 slots, so each agent stays reachable. No slot stays empty. A folded orchestrator ranks by the most urgent agent that it holds.
 - **The state nodes.** A person whose agents do not all fit draws one node for each state of the rest, "+N working". A click draws the next agents of that state, and walks on to the next ones. So the member reaches every agent by clicks.
 - **The selection.** The selected agent always draws. A fold that holds it closes the details.
 - **Six states.** Needs you, Failed, Working, Waiting, Idle and Done.

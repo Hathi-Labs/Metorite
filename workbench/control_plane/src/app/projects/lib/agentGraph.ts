@@ -75,7 +75,7 @@ export interface OpenSubs {
 /** The four columns, left to right. They never move, so a refresh keeps each node in place. */
 export const GRAPH_X = { root: 0, person: 166, orch: 388, session: 626 } as const;
 export const GRAPH_W = { root: 142, person: 206, orch: 214, session: 264, sub: 230 } as const;
-export const GRAPH_H = { root: 96, person: 72, card: 130, orch: 76, session: 82, row: 40, sub: 30 } as const;
+export const GRAPH_H = { root: 96, person: 72, card: 130, orch: 96, session: 82, row: 40, sub: 30 } as const;
 export const ROOT_ID = "root";
 /** The space between the agents and the next column. */
 export const COLUMN_GAP = 32;
@@ -124,8 +124,7 @@ type DistributiveOmit<T, K extends keyof never> = T extends unknown ? Omit<T, K>
  * The one map of the Agents view (AMR-5): the scope, each person, their
  * orchestrators, their agents and the sub-agents of the one open agent.
  * `planMap` bounds the cards. A fold, a state node and the "idle or done" node
- * stand for what they hide, so a dispatch line and a "waits on you" line always
- * have an end.
+ * stand for what they hide, so a dispatch line always has an end.
  */
 export function layoutGraph(model: LensModel, options: GraphOptions): Graph {
   const { unit: u, subs, person: scope, folds, find, nameOf } = options;
@@ -178,7 +177,7 @@ export function layoutGraph(model: LensModel, options: GraphOptions): Graph {
     };
 
     if (plan.open) {
-      for (const group of orderGroups(person.groups)) {
+      for (const group of orderGroups(person.groups, options.starts)) {
         const orch = group.orch;
         const lanes = group.sessions.filter((s) => plan.shown.has(s.id));
         if (!orch || !plan.shown.has(orch.id)) {
@@ -304,9 +303,8 @@ export function layoutGraph(model: LensModel, options: GraphOptions): Graph {
 }
 
 /**
- * The chain that a hover lights: the node, everything above it, everything it
- * dispatched, and what those wait on. A "waits on" node lights its sessions
- * and the chain above each.
+ * The chain that a hover lights: the node, everything above it and everything
+ * under it or dispatched by it.
  */
 export function relatedNodes(graph: Graph, id: string): Set<string> {
   const lit = new Set<string>([id]);

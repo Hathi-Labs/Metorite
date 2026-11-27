@@ -129,6 +129,8 @@ export interface PlanOptions extends MapView {
   /** A find shows each match, whatever the switch, and ignores the folds. */
   find: string;
   nameOf: (email: string) => string;
+  /** The starts of `rememberStarts`. Absent: the start of the listed run. */
+  starts?: ReadonlyMap<string, number>;
   /** The address of the viewer. Their column comes first (decision G4). */
   me?: string;
   /** The selected session. It always draws. */
@@ -160,6 +162,11 @@ interface Draft {
   sessions: LensSession[];
   /** What wants a card, the most urgent first. */
   ranked: LensSession[];
+  /**
+   * The state that a card ranks by: its own, and for a folded orchestrator the
+   * most urgent one that it holds, because its card stands for those agents.
+   */
+  rankOf: (s: LensSession) => LensState;
   /** Session id to the orchestrator that must draw with it. */
   holder: Map<string, LensSession>;
   /** How many cards the person needs: the ranked ones and their orchestrators. */
@@ -170,15 +177,33 @@ interface Draft {
 }
 
 /**
+ * When each session started, as the view first saw it, in epoch milliseconds.
+ * The read holds no start of a session, and its one listed run changes when a
+ * new run opens. So the view keeps the first value, and the order holds still.
+ */
+export function rememberStarts(
+  known: ReadonlyMap<string, number>,
+  sessions: readonly LensSession[],
+  nowMs: number,
+): ReadonlyMap<string, number> {
+  const fresh = sessions.filter((s) => !known.has(s.id));
+  if (fresh.length === 0) return known;
+  const next = new Map(known);
+  for (const s of fresh) next.set(s.id, nowMs - s.startedAge * 1000);
+  return next;
+}
+
+/**
  * The groups of a person (decision G4): the orchestrators by urgency, then the
  * oldest first. The agents with no orchestrator come last. Only a change of a
  * state moves a group.
  */
-export function orderGroups(groups: readonly LensGroup[]): LensGroup[] {
+export function orderGroups(groups: readonly LensGroup[], starts?: ReadonlyMap<string, number>): LensGroup[] {
   const urgency = (g: LensGroup) => Math.min(...membersOf(g).map((s) => LENS_STATES.indexOf(s.state)));
+  const start = (s: LensSession) => starts?.get(s.id) ?? -s.startedAge * 1000;
   return [...groups].sort((a, b) => {
     if (!a.orch || !b.orch) return Number(!a.orch) - Number(!b.orch);
-    return urgency(a) - urgency(b) || b.orch.startedAge - a.orch.startedAge || a.key.localeCompare(b.key);
+    return urgency(a) - urgency(b) || start(a.orch) - start(b.orch) || a.key.localeCompare(b.key);
   });
 }
 
@@ -191,15 +216,21 @@ function draftOf(person: LensPerson, options: PlanOptions): Draft | null {
   const everyState = mode === "all" || restOpen.has(person.person);
   const visible = (s: LensSession): boolean => s.id === pin || (q ? matches.includes(s) : everyState || isActive(s));
   const wanted: LensSession[] = [];
+  const held = new Map<string, LensState>();
+  const rankOf = (s: LensSession): LensState => held.get(s.id) ?? s.state;
   const holder = new Map<string, LensSession>();
   const quiet: LensSession[] = [];
   /** The place of each session among the groups of the person (decision G4). */
   const placeOf = new Map<string, number>();
-  for (const [place, group] of orderGroups(person.groups).entries()) {
+  for (const [place, group] of orderGroups(person.groups, options.starts).entries()) {
     for (const s of membersOf(group)) placeOf.set(s.id, place);
     const orch = group.orch;
     const folded = orch !== null && !q && folds.get(sessionNodeId(orch.id)) === false;
     const lanes = group.sessions.filter(visible);
+    if (orch && folded) {
+      const states = membersOf(group).map((s) => s.state);
+      held.set(orch.id, LENS_STATES.find((state) => states.includes(state))!);
+    }
     // The selected session draws even under a folded orchestrator.
     const drawn = folded ? lanes.filter((s) => s.id === pin) : lanes;
     for (const s of drawn) if (orch) holder.set(s.id, orch);
@@ -222,10 +253,11 @@ function draftOf(person: LensPerson, options: PlanOptions): Draft | null {
     // with its agents. Never by the last event, so an activity moves no card.
     ranked: [...wanted].sort(
       (a, b) =>
-        LENS_STATES.indexOf(a.state) - LENS_STATES.indexOf(b.state) ||
+        LENS_STATES.indexOf(rankOf(a)) - LENS_STATES.indexOf(rankOf(b)) ||
         placeOf.get(a.id)! - placeOf.get(b.id)! ||
         compareSessions(a, b),
     ),
+    rankOf,
     holder,
     cards: wanted.length,
     open,
@@ -241,32 +273,48 @@ function takeInto(shown: Set<string>, draft: Draft, s: LensSession, cap: number)
   return true;
 }
 
-/** The cards that a person keeps while one of their state nodes is open. */
-function reducedCards(draft: Draft, quota: number, pin: string | null): Set<string> {
+/**
+ * The cards that a person keeps while the state node of `state` is open: the
+ * selected agent, then the most urgent ones. They leave only the room that the
+ * node needs, so an urgent card folds only when no other room is left.
+ */
+function reducedCards(draft: Draft, quota: number, pin: string | null, state: LensState): Set<string> {
   const shown = new Set<string>();
   const pinned = draft.ranked.find((s) => s.id === pin);
   if (pinned) takeInto(shown, draft, pinned, quota);
-  const base = Math.max(quota - WINDOW_ROOM, 0);
-  draft.ranked.forEach((s) => takeInto(shown, draft, s, base));
+  const need = Math.min(WINDOW_ROOM, draft.ranked.filter((s) => s.state === state).length);
+  draft.ranked.forEach((s) => takeInto(shown, draft, s, Math.max(quota - need, 0)));
   return shown;
+}
+
+/** The sessions of a state that a state node walks: those outside the cards it keeps. */
+function walked(draft: Draft, kept: ReadonlySet<string>, state: LensState): LensSession[] {
+  return draft.ranked.filter((s) => s.state === state && !kept.has(s.id));
 }
 
 /** The person that the member opened, in at most `quota` cards. An open state node walks. */
 function boundLatest(draft: Draft, quota: number, options: PlanOptions): { shown: Set<string>; nexts: Map<LensState, number> } {
-  const reduced = reducedCards(draft, quota, options.pin);
-  const rest = (state: LensState) => draft.ranked.filter((s) => s.state === state && !reduced.has(s.id));
-  const shown = new Set(reduced);
   const nexts = new Map<LensState, number>();
   const window = options.window?.person === draft.person ? options.window : null;
+  let shown: Set<string>;
   if (window) {
-    const list = rest(window.state);
+    shown = reducedCards(draft, quota, options.pin, window.state);
+    const list = walked(draft, shown, window.state);
     let at = window.start < list.length ? window.start : 0;
     while (at < list.length && takeInto(shown, draft, list[at], quota)) at += 1;
     nexts.set(window.state, at < list.length ? at : 0);
   } else {
-    draft.ranked.forEach((s) => takeInto(shown, draft, s, quota));
-    // The first click skips the cards of the state that show already.
-    for (const state of LENS_STATES) nexts.set(state, Math.max(rest(state).findIndex((s) => !shown.has(s.id)), 0));
+    shown = new Set<string>();
+    const pinned = draft.ranked.find((s) => s.id === options.pin);
+    if (pinned) takeInto(shown, draft, pinned, quota);
+  }
+  // Each free slot takes the most urgent card that is left. No room stays empty.
+  draft.ranked.forEach((s) => takeInto(shown, draft, s, quota));
+  for (const state of LENS_STATES) {
+    if (window?.state === state) continue;
+    // A first click skips the cards of the state that show now.
+    const list = walked(draft, reducedCards(draft, quota, options.pin, state), state);
+    nexts.set(state, Math.max(list.findIndex((s) => !shown.has(s.id)), 0));
   }
   return { shown, nexts };
 }
@@ -297,12 +345,12 @@ function share(open: readonly Draft[], options: PlanOptions): Map<string, { show
   }
   /** The room that the click of the member keeps for the person they opened. */
   const kept = latest ? Math.min(WINDOW_ROOM, latest.cards) : 0;
-  if (latest) for (const s of latest.ranked) if (URGENT.includes(s.state)) take(latest, s, CARDS_MAX);
+  if (latest) for (const s of latest.ranked) if (URGENT.includes(latest.rankOf(s))) take(latest, s, CARDS_MAX);
   const own = () => (latest ? cards.get(latest.person)!.size : 0);
   for (const state of URGENT) {
     for (const d of bySize) {
       if (d === latest) continue;
-      for (const s of d.ranked) if (s.state === state) take(d, s, CARDS_MAX - Math.max(kept - own(), 0));
+      for (const s of d.ranked) if (d.rankOf(s) === state) take(d, s, CARDS_MAX - Math.max(kept - own(), 0));
     }
   }
   const nexts = new Map<string, Map<LensState, number>>();
@@ -316,7 +364,7 @@ function share(open: readonly Draft[], options: PlanOptions): Map<string, { show
   for (const state of LENS_STATES) {
     for (const d of bySize) {
       if (d === latest) continue;
-      for (const s of d.ranked) if (s.state === state) take(d, s, CARDS_MAX);
+      for (const s of d.ranked) if (d.rankOf(s) === state) take(d, s, CARDS_MAX);
     }
   }
   // Where a click on a state node of another person starts: after the cards that show now.
@@ -325,14 +373,13 @@ function share(open: readonly Draft[], options: PlanOptions): Map<string, { show
     const mine = cards.get(d.person)!;
     const urgentOfOthers = open
       .filter((o) => o !== d)
-      .reduce((n, o) => n + o.ranked.filter((s) => URGENT.includes(s.state)).length, 0);
+      .reduce((n, o) => n + o.ranked.filter((s) => URGENT.includes(o.rankOf(s))).length, 0);
     const quota = CARDS_MAX - Math.min(urgentOfOthers, CARDS_MAX - Math.min(WINDOW_ROOM, d.cards));
-    const reduced = reducedCards(d, quota, options.pin);
     nexts.set(
       d.person,
       new Map(
         LENS_STATES.map((state) => {
-          const list = d.ranked.filter((s) => s.state === state && !reduced.has(s.id));
+          const list = walked(d, reducedCards(d, quota, options.pin, state), state);
           return [state, Math.max(list.findIndex((s) => !mine.has(s.id)), 0)];
         }),
       ),

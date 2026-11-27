@@ -199,6 +199,16 @@ export function SessionCard({
   );
 }
 
+/** The wait fact of a map card (decision G1), as a chip of its state. */
+export function CardFact({ session, nowMs }: { session: LensSession; nowMs: number }) {
+  const fact = cardFact(session, nowMs);
+  return fact ? (
+    <span data-agent-lens-state={session.state} className={`${STATE_PILL} min-w-0 ${lensChip(session.state)}`}>
+      <span className="truncate">{fact}</span>
+    </span>
+  ) : null;
+}
+
 /**
  * The inside of a map card (decision G2). Line 1: the name and the age. Line 2:
  * what it does now and the machine. The foot: the wait fact and the count of the
@@ -216,7 +226,6 @@ function MapBody({
   /** The count is a button above the card, so the body only keeps its room. */
   holdCount: boolean;
 }) {
-  const fact = cardFact(session, nowMs);
   const subs = session.subs.total > 0;
   return (
     <>
@@ -234,11 +243,7 @@ function MapBody({
         ) : null}
       </span>
       <span className="flex h-5 min-w-0 items-center gap-1.5" data-agent-card-foot="">
-        {fact ? (
-          <span data-agent-lens-state={session.state} className={`${STATE_PILL} min-w-0 ${lensChip(session.state)}`}>
-            <span className="truncate">{fact}</span>
-          </span>
-        ) : null}
+        <CardFact session={session} nowMs={nowMs} />
         {subs ? (
           <span
             className={`${CHIP} ml-auto ${holdCount ? "invisible" : ""}`}

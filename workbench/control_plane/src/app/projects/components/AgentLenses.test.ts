@@ -102,9 +102,13 @@ describe("the map on the canvas", () => {
     expect(lenses({ viewerEmail: "ben@x.test", initialPerson: "me" })).toContain('data-agent-graph=""');
     expect(lenses({ viewerEmail: "", initialPerson: "me" })).toContain(NO_AGENT_OF_YOURS);
   });
+  it("changes no filter of the phone view from the details", () => {
+    const source = readFileSync(new URL("./AgentLenses.tsx", import.meta.url), "utf-8");
+    expect(source).toContain('!phone && next.kind === "session" ? goToSession(next.id)');
+  });
   it("opens a session of the details through the way to its card", () => {
     const source = readFileSync(new URL("./AgentLenses.tsx", import.meta.url), "utf-8");
-    expect(source).toContain('onSelect={(next) => (next.kind === "session" ? goToSession(next.id) : setSelection(next))}');
+    expect(source).toContain('? goToSession(next.id) : setSelection(next))}');
   });
   it("draws untrusted names as text", () => {
     const map = fleet();

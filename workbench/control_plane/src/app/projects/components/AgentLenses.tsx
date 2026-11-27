@@ -41,6 +41,7 @@ import {
   isActive,
   personNodeId,
   questionStops,
+  rememberStarts,
   restView,
   sessionNodeId,
   stepStop,
@@ -277,9 +278,13 @@ export function AgentLenses({
       ? (model?.people.find((p) => p.person.toLowerCase() === mine)?.person ?? (mine || ME_VALUE))
       : choice;
   const selected = selection?.kind === "session" ? selection.id : null;
+  // Decision G4: the order of the orchestrators holds over a new read.
+  const [starts, setStarts] = useState<ReadonlyMap<string, number>>(() => new Map());
+  const seenStarts = model ? rememberStarts(starts, model.sessions, nowMs) : starts;
+  if (seenStarts !== starts) setStarts(seenStarts);
   const options = useMemo(
-    () => ({ ...view, mode, person: scope, find, nameOf, me: mine, pin: selected }),
-    [view, mode, scope, find, nameOf, mine, selected],
+    () => ({ ...view, mode, person: scope, find, nameOf, me: mine, pin: selected, starts: seenStarts }),
+    [view, mode, scope, find, nameOf, mine, selected, seenStarts],
   );
 
   const stops = useMemo(() => (model ? questionStops(model, questions.order) : []), [model, questions.order]);
@@ -403,7 +408,8 @@ export function AgentLenses({
         model={model}
         selection={selection}
         // A session of the details opens the way to its card, so it always draws.
-        onSelect={(next) => (next.kind === "session" ? goToSession(next.id) : setSelection(next))}
+        // The phone has no map, so a click there changes no filter of its view.
+        onSelect={(next) => (!phone && next.kind === "session" ? goToSession(next.id) : setSelection(next))}
         onOpenTask={openTask}
         personLabels={personLabels}
         nameOf={nameOf}
@@ -492,7 +498,8 @@ export function AgentLenses({
               modes={MODES}
               mode={mode}
               onPick={(next) => {
-                keep({ person: choice, mode: next });
+                // The raw choice: a person who left the map for a while stays kept.
+                keep({ person, mode: next });
                 setView((old) => ({ ...old, window: null }));
               }}
               label={MODE_SWITCH_LABEL}
@@ -541,7 +548,7 @@ export function AgentLenses({
         ) : idle ? (
           <div data-agent-lens-idle="" className="flex flex-col items-start gap-2 p-4">
             <p className="text-sm text-foreground">{NO_AGENT_WORKS}</p>
-            <Button variant="secondary" size="sm" onClick={() => keep({ person: choice, mode: "all" })}>
+            <Button variant="secondary" size="sm" onClick={() => keep({ person, mode: "all" })}>
               Show all {inScope.length}
             </Button>
           </div>

@@ -35,6 +35,7 @@ import { useTheme } from "next-themes";
 import Icon from "@/components/Icon";
 import { PersonAvatar } from "@/components/room/Identity";
 import Button from "@/components/ui/Button";
+import { relativeTime } from "@/lib/taskCard";
 
 import {
   type Graph,
@@ -49,15 +50,17 @@ import {
   type LensSession,
   type LensState,
   activeCount,
+  cardFact,
   countStates,
   lensEdge,
   lensWord,
   machineWord,
   subWords,
+  workLine,
 } from "../lib/agentLenses";
 import { NAMES_ONLY_BELOW, subTotals } from "../lib/agentScale";
 import { EVERYONE } from "./AgentDetails";
-import { CARD_FACE, CountLine, SessionCard, pressKeys } from "./AgentSessionCard";
+import { CARD_FACE, CardFact, CountLine, SessionCard, pressKeys } from "./AgentSessionCard";
 import { BucketRow, Square, Squares, TileCounts } from "./AgentSquares";
 
 export const GRAPH_LABEL = "Map of people, orchestrators and agents";
@@ -285,58 +288,67 @@ export function GraphCard({ data }: { data: NodeData }) {
       </div>
     );
   }
-  if (node.kind === "orch") {
-    const s = node.session;
-    const sub = node.folded
-      ? `${node.hidden} ${node.hidden === 1 ? "agent" : "agents"} folded`
-      : `Orchestrator · ${machineWord(s)}${s.model ? ` · ${s.model}` : ""}`;
-    return (
-      <div className="relative h-full">
+  if (node.kind !== "orch") return null;
+  const s = node.session;
+  const place = `${machineWord(s)}${s.model ? ` · ${s.model}` : ""}`;
+  const fact = cardFact(s, nowMs);
+  const folded = `${node.hidden} ${node.hidden === 1 ? "agent" : "agents"} folded`;
+  const age = relativeTime(s.lastAt, nowMs);
+  return (
+    <div className="relative h-full">
+      <div data-agent-edge={lensEdge(s.state) ?? undefined} data-agent-graph-orch={s.state} className={`h-full rounded-lg ${ring(selected)}`}>
         <div
-          data-agent-edge={lensEdge(s.state) ?? undefined}
-          data-agent-graph-orch={s.state}
-          className={`h-full rounded-lg ${ring(selected)}`}
+          role="button"
+          tabIndex={0}
+          aria-pressed={selected}
+          aria-label={`Orchestrator ${s.name}. ${lensWord(s.state)}.${fact ? ` ${fact}.` : ""} ${workLine(s, nowMs)}. Machine ${place}.${node.folded ? ` ${folded}.` : ""}`}
+          onClick={pick}
+          onKeyDown={pressKeys(pick)}
+          className={CARD_FACE}
         >
-          <div
-            role="button"
-            tabIndex={0}
-            aria-pressed={selected}
-            aria-label={`Orchestrator ${s.name}. ${lensWord(s.state)}. ${sub}.`}
-            onClick={pick}
-            onKeyDown={pressKeys(pick)}
-            className={CARD_FACE}
-          >
-            <span className={`flex min-w-0 items-center gap-2 ${s.subs.total > 0 ? "pr-12" : "pr-7"}`}>
-              <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-secondary text-muted-foreground">
-                <Icon name="Bot" size={15} aria-hidden />
+          {/* The room at the right is that of the chevron and the sub-agent button. */}
+          <span className={`flex min-w-0 items-center gap-1.5 ${s.subs.total > 0 ? "pr-14" : "pr-7"}`}>
+            <Icon name="Bot" size={13} className="shrink-0 text-muted-foreground" aria-hidden />
+            <span className={`min-w-0 truncate font-semibold ${namesOnly ? "text-xl" : "text-sm"}`}>{s.name}</span>
+            {age && !namesOnly ? <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">{age}</span> : null}
+          </span>
+          {namesOnly ? null : (
+            <>
+              <span className="flex min-w-0 items-center gap-1.5">
+                <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                  {node.folded ? folded : workLine(s, nowMs)}
+                </span>
+                {s.host ? (
+                  <span className="max-w-[50%] shrink-0 truncate rounded bg-secondary px-1 text-[11px] text-muted-foreground" title={place}>
+                    {s.host}
+                  </span>
+                ) : null}
               </span>
-              <span className="flex min-w-0 flex-col">
-                <span className={`truncate font-semibold ${namesOnly ? "text-xl" : "text-sm"}`}>{s.name}</span>
-                {namesOnly ? null : <span className="truncate text-xs text-muted-foreground">{sub}</span>}
+              <CountLine counts={countStates(node.members)} />
+              <span className="flex h-5 min-w-0 items-center" data-agent-card-foot="">
+                <CardFact session={s} nowMs={nowMs} />
               </span>
-            </span>
-            {namesOnly ? null : <CountLine counts={countStates(node.members)} />}
-          </div>
+            </>
+          )}
         </div>
-        {node.canFold ? <Chevron folded={node.folded} name={s.name} onClick={fold} /> : null}
-        {s.subs.total > 0 && !namesOnly ? (
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            icon="GitFork"
-            selected={subsOpen}
-            aria-expanded={subsOpen}
-            aria-label={`${subsOpen ? "Hide" : "Show"} ${subWords(s.subs)} of ${s.name}`}
-            title={subWords(s.subs)}
-            data-agent-sub-toggle={s.id}
-            onClick={() => onToggleSubs(s.id)}
-            className={`!absolute top-1.5 z-10 ${node.canFold ? "right-8" : "right-1.5"}`}
-          />
-        ) : null}
       </div>
-    );
-  }
-  return null;
+      {node.canFold ? <Chevron folded={node.folded} name={s.name} onClick={fold} /> : null}
+      {s.subs.total > 0 && !namesOnly ? (
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          icon="GitFork"
+          selected={subsOpen}
+          aria-expanded={subsOpen}
+          aria-label={`${subsOpen ? "Hide" : "Show"} ${subWords(s.subs)} of ${s.name}`}
+          title={subWords(s.subs)}
+          data-agent-sub-toggle={s.id}
+          onClick={() => onToggleSubs(s.id)}
+          className={`!absolute top-1.5 z-10 ${node.canFold ? "right-8" : "right-1.5"}`}
+        />
+      ) : null}
+    </div>
+  );
 }
 
 function FlowNode({ data }: NodeProps<Node<NodeData>>) {

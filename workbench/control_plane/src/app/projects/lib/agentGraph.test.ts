@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { type Graph, type GraphNode, type GraphOptions, GRAPH_X, ROOT_ID, layoutGraph, relatedNodes } from "./agentGraph";
 import { type SubRow, buildLensModel } from "./agentLenses";
 import { BEN, fleet, mapOf, run, session, splitFleet, workingFleet } from "./agentLensesFixtures";
-import { CARDS_MAX, NEW_VIEW, SUB_ROWS_MAX, bucketView, foldView, restView } from "./agentScale";
+import { CARDS_MAX, NEW_VIEW, SUB_ROWS_MAX, bucketView, foldView, rememberStarts, restView } from "./agentScale";
 
 const options = (over: Partial<GraphOptions> = {}): GraphOptions => ({
   ...NEW_VIEW,
@@ -368,6 +368,75 @@ describe("urgency wins every fold (decision G3)", () => {
   });
 });
 
+describe("urgency wins after a click too (decision G3)", () => {
+  const fleetOf = (list: Array<[string, number, string]>) =>
+    buildLensModel(
+      mapOf(
+        list.flatMap(([who, n, state]) =>
+          Array.from({ length: n }, (_, i) => session(`${who}-${state}-${i}`, { person: `${who}@x.test`, state })),
+        ),
+      ),
+      new Map(),
+      { email: "ana@x.test" },
+    );
+  const n = (g: Graph, word: string) => cards(g).filter((id) => id.includes(word)).length;
+  const click = (m: ReturnType<typeof fleetOf>, mode: "active" | "all", state: string, who = "ana@x.test") => {
+    const first = layoutGraph(m, options({ mode }));
+    const bucket = kind(first, "bucket").find((b) => b.state === state && b.person === who)!;
+    return layoutGraph(m, options({ mode, ...bucketView(NEW_VIEW, who, bucket.state, bucket.next) }));
+  };
+  it("leaves no slot empty: a click on one Done agent keeps every card that fits", () => {
+    const m = fleetOf([
+      ["ana", 34, "waiting_on_person"],
+      ["ana", 10, "working"],
+      ["ana", 1, "done"],
+    ]);
+    const g = click(m, "all", "done");
+    expect(cards(g)).toHaveLength(CARDS_MAX);
+    expect(n(g, "done")).toBe(1);
+    expect(n(g, "waiting_on_person")).toBe(34);
+  });
+  it("folds an urgent card only for the room that the click needs", () => {
+    const m = fleetOf([
+      ["ana", 35, "waiting_on_person"],
+      ["ana", 20, "working"],
+    ]);
+    const g = click(m, "active", "working");
+    expect(cards(g)).toHaveLength(CARDS_MAX);
+    expect(n(g, "working")).toBe(12);
+    expect(n(g, "waiting_on_person")).toBe(28);
+    // 3 hidden working agents fit beside all 35 urgent ones, so none folds.
+    const few = fleetOf([
+      ["ana", 35, "waiting_on_person"],
+      ["ana", 8, "working"],
+    ]);
+    const after = click(few, "active", "working");
+    expect(n(after, "waiting_on_person")).toBe(35);
+    for (const id of [5, 6, 7]) expect(cards(after)).toContain(`ana-working-${id}`);
+  });
+  it("draws a folded orchestrator that holds an agent that needs you, over a state node click", () => {
+    const m = buildLensModel(
+      mapOf(
+        [
+          ...Array.from({ length: 35 }, (_, i) => session(`w${i}`)),
+          session("aboss", { state: "waiting" }),
+          session("ask", { state: "waiting_on_person" }),
+          ...Array.from({ length: 10 }, (_, i) => session(`z${i}`, { state: "waiting" })),
+        ],
+        [run("r", "ask", { state: "awaiting" })],
+        [{ from: "aboss", to: "ask" }],
+      ),
+      new Map(),
+      { email: "ana@x.test" },
+    );
+    let view = foldView(NEW_VIEW, "s:aboss", false, "ana@x.test");
+    const bucket = kind(layoutGraph(m, options({ ...view })), "bucket").find((b) => b.state === "waiting")!;
+    view = bucketView(view, "ana@x.test", "waiting", bucket.next);
+    const g = layoutGraph(m, options({ ...view }));
+    expect(cards(g)).toContain("aboss");
+  });
+});
+
 describe("a calm, stable map (decision G4)", () => {
   const at = (g: Graph) => g.nodes.map((n) => [n.id, n.x, n.y, n.w, n.h]).sort();
   const base = () => splitFleet();
@@ -398,6 +467,27 @@ describe("a calm, stable map (decision G4)", () => {
     );
     const people = kind(layoutGraph(m, options({ me: "cy@x.test" })), "person").map((n) => n.person.split("@")[0]);
     expect(people).toEqual(["cy", "ben", "ana", "zed"]);
+  });
+  it("keeps the order when a newer run takes the place of the listed one", () => {
+    const read = (age: number) =>
+      buildLensModel(
+        mapOf(
+          [session("o1"), session("o2"), session("a"), session("b")],
+          [run("r1", "o1", { age }), run("r2", "o2", { age: 500 })],
+          [
+            { from: "o1", to: "a" },
+            { from: "o2", to: "b" },
+          ],
+        ),
+      );
+    const NOW = 10_000_000;
+    const starts = rememberStarts(new Map(), read(900).sessions, NOW);
+    const later = rememberStarts(starts, read(10).sessions, NOW + 30_000);
+    expect(later).toBe(starts);
+    const order = (m: ReturnType<typeof read>) =>
+      kind(layoutGraph(m, options({ starts: later })), "orch").sort((a, b) => a.y - b.y).map((x) => x.session.id);
+    expect(order(read(900))).toEqual(["o1", "o2"]);
+    expect(order(read(10))).toEqual(["o1", "o2"]);
   });
   it("orders the orchestrators by urgency, then by their start", () => {
     const m = buildLensModel(
