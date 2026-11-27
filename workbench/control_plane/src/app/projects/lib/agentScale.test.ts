@@ -6,6 +6,7 @@ import { layoutGraph, layoutOrchestrator, ORCH_X, SUB_SHIFT } from "./agentGraph
 import {
   DEFAULT_STATES,
   LENS_STATES,
+  type LensFilters,
   type SubRow,
   buildLensModel,
   lensMark,
@@ -104,11 +105,34 @@ describe("the subagents are a count", () => {
 });
 
 describe("the overview", () => {
-  it("starts past 40 sessions in scope", () => {
-    expect(usesOverview(buildLensModel(bigFleet(OVERVIEW_ABOVE)), "")).toBe(false);
-    expect(usesOverview(buildLensModel(bigFleet(OVERVIEW_ABOVE + 1)), "")).toBe(true);
-    expect(usesOverview(big, "ana@x.test")).toBe(true);
-    expect(usesOverview(buildLensModel(bigFleet(60)), "ana@x.test")).toBe(false);
+  const shown = (over: Partial<LensFilters> = {}): LensFilters => ({ states: ALL_ON, person: "", find: "", ...over });
+  const chips = (over: Partial<LensFilters> = {}) => shown({ states: new Set(DEFAULT_STATES), ...over });
+  const working = (n: number, quiet = 0) =>
+    buildLensModel(
+      mapOf([
+        ...Array.from({ length: n }, (_, i) => session(`w${i}`)),
+        ...Array.from({ length: quiet }, (_, i) => session(`q${i}`, { state: i % 2 ? "done" : "quiet" })),
+      ]),
+    );
+  it("starts past 40 shown sessions in scope", () => {
+    expect(usesOverview(buildLensModel(bigFleet(OVERVIEW_ABOVE)), shown(), nameOf)).toBe(false);
+    expect(usesOverview(buildLensModel(bigFleet(OVERVIEW_ABOVE + 1)), shown(), nameOf)).toBe(true);
+    expect(usesOverview(big, shown({ person: "ana@x.test" }), nameOf)).toBe(true);
+    expect(usesOverview(buildLensModel(bigFleet(60)), shown({ person: "ana@x.test" }), nameOf)).toBe(false);
+  });
+  it("does not count a session that the chips hide (AMR-5a)", () => {
+    // 64 sessions of the owner's view: 4 are not idle or done.
+    expect(usesOverview(working(4, 60), chips(), nameOf)).toBe(false);
+    expect(usesOverview(working(4, 60), shown(), nameOf)).toBe(true);
+  });
+  it("keeps the tiles at 41 shown sessions", () => {
+    expect(usesOverview(working(40, 20), chips(), nameOf)).toBe(false);
+    expect(usesOverview(working(41), chips(), nameOf)).toBe(true);
+    expect(usesOverview(working(41, 20), chips(), nameOf)).toBe(true);
+  });
+  it("counts the matches of a find, whatever their chip", () => {
+    expect(usesOverview(working(4, 60), chips({ find: "q" }), nameOf)).toBe(true);
+    expect(usesOverview(working(41), chips({ find: "w40" }), nameOf)).toBe(false);
   });
   it("gives one tile for each orchestrator, the most attention first, and folds the quiet", () => {
     const people = overviewTiles(big, { person: "", find: "" }, nameOf);

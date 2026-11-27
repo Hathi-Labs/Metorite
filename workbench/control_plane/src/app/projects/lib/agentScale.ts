@@ -10,6 +10,7 @@
  */
 import {
   type LensCounts,
+  type LensFilters,
   type LensGroup,
   type LensModel,
   type LensSession,
@@ -22,7 +23,7 @@ import {
   personSessions,
 } from "./agentLenses";
 
-/** A scope with more sessions than this draws the overview tiles. */
+/** A scope that shows more sessions than this draws the overview tiles. */
 export const OVERVIEW_ABOVE = 40;
 /** The session cards of one orchestrator before a bucket opens. */
 export const SESSION_CARDS_MAX = 12;
@@ -63,9 +64,25 @@ export function scopeSessions(model: LensModel, person: string): LensSession[] {
   return person ? model.sessions.filter((s) => s.person === person) : model.sessions;
 }
 
-/** True when a scope is too large for one card each. */
-export function usesOverview(model: LensModel, person: string): boolean {
-  return scopeSessions(model, person).length > OVERVIEW_ABOVE;
+/**
+ * The sessions of a scope that the state chips and the find box let through. A
+ * find shows each match, whatever its chip (`splitSessions`).
+ */
+export function shownSessions(
+  model: LensModel,
+  { states, person, find }: LensFilters,
+  nameOf: (email: string) => string,
+): LensSession[] {
+  const q = find.trim();
+  return scopeSessions(model, person).filter((s) => (q ? matchesFind(s, q, nameOf(s.person)) : states.has(s.state)));
+}
+
+/**
+ * True when a scope shows too many sessions for one card each (AMR-5a). A
+ * session that a chip or a find hides does not count.
+ */
+export function usesOverview(model: LensModel, filters: LensFilters, nameOf: (email: string) => string): boolean {
+  return shownSessions(model, filters, nameOf).length > OVERVIEW_ABOVE;
 }
 
 export function subTotals(sessions: readonly LensSession[]): SubCounts {

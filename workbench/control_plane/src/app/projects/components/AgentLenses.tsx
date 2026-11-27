@@ -53,9 +53,11 @@ import {
   findGroup,
   groupKeyOf,
   openBucket,
+  OVERVIEW_ABOVE,
   overviewTiles,
   questionStops,
   scopeSessions,
+  shownSessions,
   stepStop,
   subTotals,
   usesOverview,
@@ -259,7 +261,6 @@ export function AgentLenses({
   const title = model && selection ? selectionTitle(model, selection, nameOf) : null;
   // A selection whose node left the map closes at once, and does not come back.
   if (model && selection !== null && title === null) setSelection(null);
-  const openGroup = useCallback((key: string) => setOpened((prev) => new Set(prev).add(key)), []);
   const openTask = useCallback(
     (taskId: string) => {
       // The task panel takes the place of the dock.
@@ -279,7 +280,8 @@ export function AgentLenses({
   const here = model ? findGroup(model, groupKey) : null;
   // An orchestrator that left the map gives its level back.
   if (model && groupKey !== null && here === null) setGroupKey(null);
-  const overview = !phone && model !== null && here === null && lens !== "list" && usesOverview(model, person);
+  const overview =
+    !phone && model !== null && here === null && lens !== "list" && usesOverview(model, filters, nameOf);
   const stops = useMemo(() => (model ? questionStops(model, questions.order) : []), [model, questions.order]);
   const tiles = useMemo(
     () => (model && overview ? overviewTiles(model, { person, find }, nameOf) : []),
@@ -293,6 +295,22 @@ export function AgentLenses({
     setWindows({});
     setSubsOf(null);
   }, []);
+  /**
+   * Opens a fold of idle or done sessions in place. When that would draw more
+   * than the bound of one canvas, the orchestrator opens as its own level,
+   * which is bounded (§3.12.9).
+   */
+  const openGroup = useCallback(
+    (key: string) => {
+      const at = model ? findGroup(model, key) : null;
+      if (model && at && lens !== "list") {
+        const folded = membersOf(at.group).filter((s) => !states.has(s.state)).length;
+        if (shownSessions(model, filters, nameOf).length + folded > OVERVIEW_ABOVE) return openLevel(at.person, key);
+      }
+      setOpened((prev) => new Set(prev).add(key));
+    },
+    [model, lens, states, filters, nameOf, openLevel],
+  );
   /** Opens the orchestrator of a session, selects it and centres its card. */
   const goToSession = useCallback(
     (sessionId: string) => {
@@ -429,7 +447,7 @@ export function AgentLenses({
     setQuestionAt(next);
     if (stops[next]) goToSession(stops[next]);
   };
-  const showCrumbs = here !== null || stops.length > 0 || usesOverview(model, "");
+  const showCrumbs = here !== null || stops.length > 0 || usesOverview(model, { ...filters, person: "" }, nameOf);
   return (
     <div data-agent-lenses={lens} className="flex h-full min-h-0 flex-1">
       <div className="flex min-w-0 flex-1 flex-col">

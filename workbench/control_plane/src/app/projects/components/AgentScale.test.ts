@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -73,6 +75,33 @@ describe("a fleet of 500 sessions", () => {
     lenses();
     // A server render of the markup. The browser time is in the AMR-4 captures.
     expect(performance.now() - from).toBeLessThan(2000);
+  });
+});
+
+describe("everyone's graph with idle sessions hidden (AMR-5a)", () => {
+  /** The owner's view of 2026-11-27: two people, 64 sessions, 4 active. */
+  const split = mapOf(
+    [
+      ...Array.from({ length: 4 }, (_, i) => session(`w${i}`)),
+      ...Array.from({ length: 43 }, (_, i) => session(`a${i}`, { state: i % 2 ? "done" : "quiet" })),
+      ...Array.from({ length: 17 }, (_, i) => session(`b${i}`, { state: "quiet", person: "ben@x.test" })),
+    ],
+    [run("r", "w0")],
+  );
+  it("draws the Graph for Everyone, and no tile", () => {
+    const out = lenses({ read: { kind: "ready", map: split }, initialLens: "graph" });
+    expect(out).toContain('data-agent-graph=""');
+    expect(out).not.toContain("data-agent-overview");
+    expect(out).not.toContain("data-agent-tile=");
+  });
+  it("draws the four cards on the Board", () => {
+    const out = lenses({ read: { kind: "ready", map: split }, initialLens: "board" });
+    expect(count(out, "data-agent-session=")).toBe(4);
+    expect(out).not.toContain("data-agent-overview");
+  });
+  it("opens a large fold as its own bounded level", () => {
+    const source = readFileSync(new URL("./AgentLenses.tsx", import.meta.url), "utf-8");
+    expect(source).toContain("> OVERVIEW_ABOVE) return openLevel(at.person, key);");
   });
 });
 
