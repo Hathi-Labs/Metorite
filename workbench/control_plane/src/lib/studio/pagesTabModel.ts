@@ -6,7 +6,8 @@
  * act calls a function of `frameEdit.ts`, and `applyFrame` sends the result only when it differs.
  */
 import { colsFloor } from "./frameEdit";
-import { MAX_NAV_ROWS, MAX_NAV_SECTIONS, type StudioManifest } from "./manifest";
+import { LAYOUTS, MAX_NAV_ROWS, MAX_NAV_SECTIONS, PRESET_REGIONS, type LayoutName, type StudioManifest } from "./manifest";
+import { PRESET_LABELS, regionChoices } from "./layoutEdit";
 import { cellCapRoom, type Loc } from "./pageLayout";
 import { defaultPages, PAGE_CAPS, readPage, type PageModel } from "./pageModel";
 import { removeCellWhy, removeTabWhy } from "./tabEdit";
@@ -190,7 +191,32 @@ export interface LayoutList {
   tabCanDown: boolean;
   tabWhy: string | null;
 }
+/** One region of a preset page, for the Pages tab (STU-LY-8b). */
+export interface PresetRegionView {
+  name: string;
+  /** The block that the region takes, in words: "table". */
+  block: string;
+  cap: number;
+  required: boolean;
+  /** The views in the region now. A view that is no longer declared keeps its id as its label. */
+  views: { id: string; label: string }[];
+  /** The declared views of the right block that the region does not hold yet. */
+  choices: { id: string; label: string }[];
+  /** True when the region is below its cap. */
+  room: boolean;
+  /** One sentence when a required region has no view. */
+  need: string | null;
+}
+export interface PresetView {
+  layout: LayoutName;
+  label: string;
+  regions: PresetRegionView[];
+}
+export const PRESET_NOTE = "This page uses a preset layout. Choose the view of each region. The app draws the arrangement.";
+
 export interface LayoutView {
+  /** Set for a page with a preset (STU-LY-8b). Such a page is not `broken`, and it has no cell lists. */
+  preset?: PresetView;
   flat: boolean;
   cols: number;
   lists: LayoutList[];
@@ -224,6 +250,24 @@ export function layoutView(
     const flatCells = Array.isArray(page.cells) ? page.cells : [];
     const hasTabs = tabs.length > 0;
     const hasCells = flatCells.length > 0;
+    const presetName = str(page.layout);
+    if ((LAYOUTS as readonly string[]).includes(presetName) && !hasTabs && !hasCells) {
+      const layout = presetName as LayoutName;
+      const raw = isObj(page.regions) ? page.regions : {};
+      const regions: PresetRegionView[] = Object.entries(PRESET_REGIONS[layout]).map(([name, rule]) => {
+        const held = (Array.isArray(raw[name]) ? (raw[name] as unknown[]) : []).map(str).filter(Boolean);
+        const label = (id: string) => labels.get(id) || id;
+        return {
+          name, block: rule.block, cap: rule.cap, required: rule.required,
+          views: held.map((id) => ({ id, label: label(id) })),
+          choices: regionChoices(m, pageId, name).map((id) => ({ id, label: label(id) })),
+          room: held.length < rule.cap,
+          need: rule.required && held.length === 0 ? `Add a ${rule.block} view. The ${name} region needs one.` : null,
+        };
+      });
+      return { flat: false, cols, lists: [], tabCount: 0, tabFull: false, broken: false,
+        preset: { layout, label: PRESET_LABELS[layout], regions } };
+    }
     if (hasTabs === hasCells) {
       return { flat: !hasTabs, cols, lists: [], tabCount: tabs.length, tabFull: tabs.length >= PAGE_CAPS.tabsPerPage, broken: true };
     }

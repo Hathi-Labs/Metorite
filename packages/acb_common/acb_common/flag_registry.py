@@ -205,6 +205,18 @@ class FlagRegistry(BaseSettings):
     # tests/unit/test_api_templates.py.
     api_connections_orgs: str = ""
 
+    # ── The app lead acts on a teammate's run (WS-MCP SW-48) ────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default, and the rule of Release stays as it was. On, a lead of the
+    # project of a run's task, or of an ancestor project, may Release and
+    # Resume the run (agent_coordination.md §3.10.2, Q9). It never lets the
+    # lead answer a question. The one reader is
+    # `gateway.routes.projects.filters.app_lead_runs_allowed`. A SIGHUP reload
+    # applies a change. A flip is OWNER-GATE (`enforcement-flip`).
+    # Fence: tests/unit/test_agent_runs_r8.py.
+    app_lead_runs_orgs: str = ""
+
     # ── The app roots of the app-owner map (WS-MCP SW-44) ───────────────────
     #
     # `org_id=root_project_id` pairs with a comma between pairs. A root is the
@@ -1446,6 +1458,16 @@ class FlagRegistry(BaseSettings):
     # spends credits. Spec: ai_studio_rows/F4.md.
     studio_skill_tests_orgs: str = ""
 
+    # ── The teams of Projects (WS-39 T-1, task 2532) ────────────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, `GET /projects/teams` answers 404, and so does a read
+    # of `/projects` that sends a `team` value. The one reader is
+    # `gateway.routes.projects.team_scope.teams_allowed`. A SIGHUP reload
+    # applies a change (`gateway/flag_reload.py`). Only the owner writes the
+    # value. Fence: tests/unit/test_teams_read_model_r8.py.
+    teams_orgs: str = ""
+
     # ── One Today rule (my_day_command_centre.md §9.2, WS-MDC CC-2) ─────────
     #
     # `today_rule_orgs` lists the organization ids where the Today chip of My
@@ -1589,6 +1611,7 @@ OWNER_ONLY_FLAGS: frozenset[str] = frozenset("""
     studio_residency_orgs
     studio_skill_repair_orgs
     studio_skill_tests_orgs
+    teams_orgs
     today_rule_orgs
     tool_search_orgs
     whatsapp_assistant_orgs

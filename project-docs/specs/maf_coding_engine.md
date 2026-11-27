@@ -524,8 +524,9 @@ broker for a container and for an exec, and never calls `docker` itself.
 `acb_common/settings.py`. Its value is a comma list of `<target>:<org>`
 entries. A target is `code_task`, `app_builder`, `mutation`, `metorite` or
 `projects` (D86, §16.3). WS-43x1 adds the target `email` for email-assistant
-(§16.4). The code holds `code_task`, `app_builder` and `projects` today
-(`MAF_CODING_TARGETS`, `sandbox_broker.py:100`).
+(§16.4). The code holds `code_task`, `app_builder`, `projects`, `compute`
+(SBX-18) and `tools` today (`MAF_CODING_TARGETS`, `sandbox_broker.py:135`).
+SBX-4a adds `tools` inert: `acquire()` refuses it until `build_tool` (SBX-4b).
 
 An org is one organization id, or `*` for every organization. The targets
 `mutation` and `metorite` take `*` only, because they change platform code and
