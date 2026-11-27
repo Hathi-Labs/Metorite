@@ -519,7 +519,7 @@ def test_code_task_in_a_chat_turn_raises_the_network_card(
         out = asyncio.run(turn())
     assert out.startswith("REPORT"), out
     (card,) = cards
-    assert card["detail"] == "Hosts: «pypi.org»" and card["fenced"] is True
+    assert "\n- «pypi.org»\n" in card["context"] and card["fenced"] is True
     assert any("not approved (declined)" in r for r in gateway.tool_results(1))
     assert all(flag_values(r, "--network") == ["none"] for r in maf.docker.runs())
     assert not any(c[0] == "network" for c in maf.docker.calls)

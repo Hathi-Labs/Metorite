@@ -796,7 +796,7 @@ denial before any card. Its no-channel path (`ask_tools.py:3532`) answers
 **The channel of the live tool (WS-43g2b, task 4092).**
 
 - Only the `code_task` MAF session holds `request_network_access`
-  (`sandbox_tools.py:1063`, in `code_task_session_parts`).
+  (`sandbox_tools.py:1242`, in `code_task_session_parts`).
 - The claim: `code_task` runs inside the tool call of a chat turn, through
   `_maf_code_task` (`code_tools.py:407`). `code_session.py` runs the agent
   under `asyncio.wait_for` (lines 167 and 499). That makes a task, and a
@@ -835,6 +835,21 @@ so the card treats each one as untrusted text.
   the allowlist. A tuple that `check_grant_hosts` refuses opens no card.
 - The card shows only the normalized tuple, and `grant_egress` gets the same
   tuple.
+- The card shows each host whole, one line for each host, in the card
+  context. `request_confirmation` cuts the detail at 500 characters and the
+  context at 4,000. If the card text is longer than a limit, the tool refuses
+  before the card. So no card shows a part of the hosts that a grant opens
+  (review P2-1).
+- An allowlist entry with a leading dot, such as `.example.com`, matches each
+  name under it. The card line of that entry says so: «.example.com» and
+  every name under it.
+- The tool refuses before the card on the `docker-remote` backend, because
+  `grant_egress` refuses there.
+- One run has one open network card at a time. A second call of the tool
+  while a card of the same run is open gets a refusal. A second grant would
+  remove the network of the first (WS-43g2a). The first answer would then
+  say that hosts are open when they are not.
+- The `permission.decision` log line names each host of the tuple.
 - The tool fences the reason and each host with
   `acb_common.tool_refusals.data`, and it passes `fenced=True`.
 - An answer counts only when it comes from the member of the run, on the card
@@ -1088,7 +1103,7 @@ answered "network access is off on this platform". WS-43g2b (task 4092)
 makes it live, behind `sandbox_egress_enabled`. With the flag off, it still
 gives that answer.
 
-- Only the `code_task` MAF session holds it (`sandbox_tools.py:1063`).
+- Only the `code_task` MAF session holds it (`sandbox_tools.py:1242`).
 - The card reaches the member because `code_task` runs inside the tool call
   of the chat turn, through `_maf_code_task`. §7.3, "The channel of the live
   tool", gives the path.
@@ -2861,9 +2876,10 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
 7. At the run's end, `revoke_egress()` leaves no grant, and the container is
    back on `--network none`.
    `test_sandbox_network_grant.py::test_the_runs_end_leaves_no_grant`.
-   The card half (a grant that an approved card opened ends with the run)
-   moved to WS-43g3. The tests of done-when 6 prove the card text and the
-   wait, and not the end of a run after an approved card.
+   - The card half moved to WS-43g3. It says that a grant from an approved
+     card ends with the run.
+   - The tests of done-when 6 prove the card text and the wait. They do not
+     prove the end of a run after an approved card.
 8. With the firewall script applied in CI, a sandbox cannot connect to the
    bridge gateway address on port 8080.
 9. The proxy forwards only the exact name `metorite-api.sandbox`, to the
@@ -2938,9 +2954,10 @@ So the container of one member could reach the container of the other.
 **Status, 2026-11-27.** WS-43g1 merged, and it is dark (`d2bffe963`, PR 2887,
 task 4009). WS-43g2a merged dark (`a95d58d09`, PR 2924,
 task 4070). Its tests for done-when 10 to 13 and the network
-half of 5 pass. `sandbox_egress_enabled` stays off. WS-43g2b is built dark
-(task 4092, branch `mt-dba5cb25-ws43g2b`), and it is not merged. WS-43g3 is
-not built.
+half of 5 pass. `sandbox_egress_enabled` stays off.
+
+WS-43g2b is built dark (task 4092, branch `mt-dba5cb25-ws43g2b`), and it is
+not merged. WS-43g3 is not built.
 
 **WS-43g2, the second slice (tasks 4070 and 4092).** HIGH. Two PRs. Each
 ships dark behind `sandbox_egress_enabled`. The rung is 6b of
@@ -2998,7 +3015,7 @@ timeout.** The broker and the proxy only. No card, and no change to a tool.
 
 - In:
   - The live `request_network_access` of §7.3, steps 1 to 5, in
-    `sandbox_tools.py` (line 470). It replaces the stub.
+    `sandbox_tools.py` (line 534). It replaces the stub.
   - The checks before the card (§7.3 step 2): `_code_task_binding`, the
     member of the run, ONE call of `check_grant_hosts`, and `decide()`.
   - The card names each host of the normalized tuple, fenced with
@@ -3014,7 +3031,8 @@ timeout.** The broker and the proxy only. No card, and no change to a tool.
   - WS-43g3, and the pip test through the proxy in Docker.
 - Files (re-verify at dispatch):
   - `packages/acb_skills/acb_skills/sandbox_tools.py`:
-    `request_network_access` and `code_task_session_parts` (line 1034).
+    `request_network_access` (line 534) and `code_task_session_parts` (line
+    1211).
   - `apps/services/orchestrator/orchestrator/code_session.py` (line 237),
     if the session text changes.
   - Tests: `tests/unit/test_run_command_tool.py`,

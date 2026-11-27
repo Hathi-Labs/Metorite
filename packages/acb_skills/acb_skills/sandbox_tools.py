@@ -193,9 +193,14 @@ def _audit_decision(
         return True, "decide_error"
     mode = os.environ.get("AGENT_PERMISSION_MODE", "enforce").strip().lower()
     enforced = (not approved) and mode == "enforce"
+    #: The network tool names each host on the audit line (§7.3 step 2).
+    #: ``build_tool_call_context`` maps no field for it, so the line says it.
+    extra: dict[str, Any] = {}
+    if arguments is not None and "hosts" in arguments:
+        extra["hosts"] = list(arguments["hosts"])
     _log.info(
         "permission.decision", mode=mode, tool=tool_name, approved=not enforced,
-        would_deny=not approved, reason=code, surface="sandbox_tool",
+        would_deny=not approved, reason=code, surface="sandbox_tool", **extra,
     )
     return not enforced, code
 
@@ -480,6 +485,12 @@ async def run_command(command: str, timeout_s: int = _DEFAULT_TIMEOUT_SECONDS) -
 _NETWORK_TOOL = "request_network_access"
 #: The longest reason that the card shows. The model writes the reason.
 _REASON_MAX = 300
+#: The limits of the card text in ``request_confirmation``. It cuts a longer
+#: field, so the tool refuses a card that would not show each host whole.
+_CARD_TITLE_MAX, _CARD_DETAIL_MAX, _CARD_CONTEXT_MAX = 120, 500, 4000
+#: The runs with an open network card, by (org, agent, thread). One at a time
+#: (review P3-3): a second grant removes the network of the first.
+_OPEN_NETWORK_CARDS: set[tuple[str, str, str]] = set()
 #: The answer when no member approved (§7.3 step 4).
 NETWORK_NOT_APPROVED = (
     "Network access was not approved ({why}). The sandbox has no network. "
@@ -496,14 +507,28 @@ def _network_card(reason: str, hosts: tuple[str, ...]) -> tuple[str, str, str]:
     """
     from acb_common.tool_refusals import data
 
+    def line(host: str) -> str:
+        # A leading dot is an allowlist entry for each name under it.
+        if host.startswith("."):
+            return f"- {data(host)} and every name under it"
+        return f"- {data(host)}"
+
     title = "Let this coding task reach the network?"
-    detail = "Hosts: " + ", ".join(data(h) for h in hosts)
+    detail = f"{len(hosts)} host(s). The card lists each one."
     context = (
         f"Reason: {data(reason[:_REASON_MAX])}\n"
+        "Hosts:\n" + "\n".join(line(h) for h in hosts) + "\n"
         "The sandbox of this coding task can then reach only these hosts, "
-        "through the platform proxy, until the run ends. Nothing else changes."
+        "through the platform proxy, until the run ends or the grant time ends, "
+        "whichever comes first. Nothing else changes."
     )
     return title, detail, context
+
+
+def _card_fits(title: str, detail: str, context: str) -> bool:
+    """True when ``request_confirmation`` shows each field whole (review P2-1)."""
+    return (len(title.strip()) <= _CARD_TITLE_MAX and len(detail.strip()) <= _CARD_DETAIL_MAX
+            and len(context.strip()) <= _CARD_CONTEXT_MAX)
 
 
 async def request_network_access(reason: str, hosts: list[str]) -> str:
@@ -546,6 +571,16 @@ async def request_network_access(reason: str, hosts: list[str]) -> str:
             "can approve. The network stays off."
         )
     try:
+        remote = sb.sandbox_backend(settings) == sb.BACKEND_REMOTE
+    except sb.SandboxError as exc:
+        return f"{_NETWORK_TOOL} refused: {exc} No card was shown. The network stays off."
+    if remote:
+        # grant_egress refuses there, so no member is asked for nothing (P3-1).
+        return (
+            f"{_NETWORK_TOOL} refused: the docker-remote sandbox has no network "
+            "access yet. No card was shown. The network stays off."
+        )
+    try:
         names = sb.check_grant_hosts(hosts, settings)
     except sb.SandboxRefused as exc:
         return f"{_NETWORK_TOOL} refused: {exc} No card was shown. The network stays off."
@@ -557,11 +592,37 @@ async def request_network_access(reason: str, hosts: list[str]) -> str:
         return f"[blocked by permission policy: {code}]"
     # Step 3: the card. A fresh request id: no late approval of an older card
     # opens a grant, and only the member of the run can answer it.
+    title, detail, context = _network_card(why, names)
+    if not _card_fits(title, detail, context):
+        return (
+            f"{_NETWORK_TOOL} refused: the card cannot show each host whole. Ask "
+            "for fewer hosts. No card was shown. The network stays off."
+        )
+    run_key = (binding.org, binding.agent, binding.thread)
+    if run_key in _OPEN_NETWORK_CARDS:
+        return (
+            f"{_NETWORK_TOOL} refused: a network card of this run is still open. "
+            "Wait for its answer. No card was shown."
+        )
+    _OPEN_NETWORK_CARDS.add(run_key)
+    try:
+        return await _ask_and_grant(
+            sb, settings, binding, member, why, names, (title, detail, context),
+        )
+    finally:
+        _OPEN_NETWORK_CARDS.discard(run_key)
+
+
+async def _ask_and_grant(
+    sb: Any, settings: Any, binding: Any, member: str, why: str,
+    names: tuple[str, ...], card: tuple[str, str, str],
+) -> str:
+    """§7.3 steps 3 to 5: the card, then the grant of the SAME tuple."""
     import uuid
 
     from acb_skills.ask_tools import last_card_outcome, request_confirmation
 
-    title, detail, context = _network_card(why, names)
+    title, detail, context = card
     approved = await request_confirmation(
         title, detail, context,
         non_interactive_default="deny",
