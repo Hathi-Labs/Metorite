@@ -3920,10 +3920,10 @@ command. The org and the member come from the run binding (R5).
 - It calls `request_confirmation(title, detail, context, rows=…,
   request_id=card_id, with_answer=True, non_interactive_default="deny",
   fenced=True, responder=<the run's member>, timeout_s=<seconds_left>)`.
+  `responder` follows WS-63 PZ-32, as the other callers of a card do.
 - `POST /sandbox/held/card` returns `seconds_left`, the time to the
   deadline of the batch. The watcher passes that value as `timeout_s`, not
   the full wait.
-  `responder` follows WS-63 PZ-32, as the other callers of a card do.
 - A `RowsAnswer` goes to `POST /sandbox/held/act` unchanged. A refusal or
   `None` goes as `refused`.
 - **No chat, no write.** With no channel, `request_confirmation` gives
@@ -4045,8 +4045,8 @@ SBX-3a:
    `projects:write` gets 403 `sandbox_read_only`. A spy shows that the route
    did not run. (SBX-F3: no write runs with no card.)
    `test_sandbox_door_writes.py::test_a_direct_write_never_runs`.
-4. `mint` raises `ValueError` for four write scopes: one in the smoke
-   phase, one in the build phase, `knowledge:write`, and one with no
+4. `mint` raises `ValueError` for four write scopes. They are one in the
+   smoke phase, one in the build phase, `knowledge:write`, and one with no
    `app_id` or `version`.
    `test_sandbox_capability.py::test_mint_refuses_a_bad_write_scope`.
 5. The batch route refuses each case below before it holds anything. The
