@@ -25,9 +25,9 @@ its mutation (R7):
 6. The copies of the gateway rules stay equal to the gateway. Mutation: change a
    default category on one side -> red.
 7. Each card states the real effect (review of cf48ec6e2): one line for each
-   name, the group snooze (task 4011), the wake promise of a Cloud number only,
-   the workflow line of a new task, a second read after Approve, and no wake
-   card from a full snoozed list.
+   name, no warning on a group snooze (task 4011 is fixed), the wake promise of a
+   Cloud number only, the workflow line of a new task, a second read after
+   Approve, and no wake card from a full snoozed list.
 
 Run: ``uv run pytest tests/unit/test_whatsapp_write_tools.py -q``.
 """
@@ -909,26 +909,15 @@ async def test_a_name_with_new_lines_cannot_forge_the_task_card(gw, wa) -> None:
     assert out.startswith("Added the task")
 
 
-@pytest.mark.parametrize(("kind", "shown"), [("group", True), ("dm", False)])
-async def test_only_a_group_snooze_card_says_that_it_can_leave_needs_reply(
-    gw, wa, kind: str, shown: bool,
-) -> None:
+@pytest.mark.parametrize("kind", ["group", "dm"])
+async def test_a_snooze_card_does_not_warn_about_needs_reply(gw, wa, kind: str) -> None:
+    """Task 4011 is fixed: ``recompute_chat_status`` reads the account phone, so a
+    snooze keeps a group mention. A card that still warned would be false. The
+    fix has its own R8 suite, ``test_whatsapp_snooze_mention_r8.py``."""
     gw.messages[CHAT][0]["chat_kind"] = kind
     _out, cards = await _with_card(
         lambda: wa.snooze_whatsapp_chat(CHAT, UNTIL), _reject)
-    line = "This is a group chat. The snooze can take it out of Needs reply."
-    assert (line in cards[0]["context"].splitlines()) is shown
-
-
-def test_the_group_line_is_still_true_of_the_route() -> None:
-    """Task 4011: the snooze route sets the status again with no account number.
-    When the route passes one, this goes red. Then drop ``_GROUP_LINE``."""
-    from gateway.routes.whatsapp.transport import snooze
-
-    tree = ast.parse(Path(snooze.__file__).read_text(encoding="utf-8"))
-    [call] = [c for c in ast.walk(tree) if isinstance(c, ast.Call)
-              and getattr(c.func, "id", "") == "recompute_chat_status"]
-    assert "account_phone" not in {k.arg for k in call.keywords}
+    assert "Needs reply" not in cards[0]["context"]
 
 
 @pytest.mark.parametrize(("number", "provider", "promised"), [

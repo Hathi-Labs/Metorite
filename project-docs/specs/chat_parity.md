@@ -632,8 +632,8 @@ off, each write keeps its card. Fences:
   fails when a new reader appears.
 - **A task from a message** goes to the member's own inbox. The route sends the
   event `pm.task.created`, so a workflow can start. The card says so.
-- **A snooze of a group chat** can take it out of Needs reply (task 4011). The
-  card of a group chat says so.
+- **A snooze of a group chat** keeps its mention in Needs reply since task 4011
+  (merged 2026-11-27). So the card of a group chat carries no warning.
 - **The snooze card promises a wake only for a Cloud number.** The bridge push
   routes bind no organization. So the step that sets the status of a chat cannot
   write for them. This comes from the code, and no test ran it on a database.

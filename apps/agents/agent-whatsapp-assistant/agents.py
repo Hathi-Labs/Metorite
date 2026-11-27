@@ -1238,9 +1238,6 @@ async def _chat_facts(chat_id: str) -> tuple[str, bool, str] | None:
 #: routes bind none, so for them the card makes no such promise.
 _CLOUD_PROVIDERS = ("cloud_api", "cloud")
 _WAKES_LINE = "A new message from them wakes the chat sooner."
-#: Task 4011: the snooze route sets the reply status again with no account
-#: number, so a group chat loses its mention and can become FYI.
-_GROUP_LINE = "This is a group chat. The snooze can take it out of Needs reply."
 
 
 async def _snoozed_chats() -> list[dict[str, Any]]:
@@ -1264,7 +1261,7 @@ async def snooze_whatsapp_chat(chat_id: str, until: str) -> str:
     facts = await _chat_facts(cid)
     if facts is None:
         return f"No chat of yours with that id holds a message. {_NOT_CHANGED}"
-    name, is_group, provider = facts
+    name, _is_group, provider = facts
     utc = when.astimezone(UTC)
     lines = [
         f"Chat: {name}",
@@ -1276,8 +1273,6 @@ async def snooze_whatsapp_chat(chat_id: str, until: str) -> str:
         lines.append(
             f"It is snoozed now until {_shown(was.get('snoozed_until'))}. This "
             "time replaces that one.")
-    if is_group:
-        lines.append(_GROUP_LINE)  # task 4011
     wakes = f"{_WAKES_LINE} " if provider in _CLOUD_PROVIDERS else ""
     lines += ["", f"{wakes}Nothing is sent to them."]
     unchanged = f"The chat \"{name}\" was not snoozed."
