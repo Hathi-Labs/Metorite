@@ -306,21 +306,56 @@ export interface AgentStranded {
   recovered_at?: string | null;
   /** Seconds since the last activity, when the gateway measured it. */
   idle_s?: number | null;
+  /**
+   * Client only. The time of the last word, in ms since the epoch.
+   * `stampStrands` sets it once, when the reply arrives.
+   */
+  last_word_ms?: number | null;
+}
+
+/** The facts of a strand that a task row or the panel draws. */
+export type AgentStrandFacts = Pick<AgentStranded, "nudged_at" | "idle_s" | "last_word_ms">;
+
+/** The keys that carry a strand: the runs wire, and the task row (1045d). */
+const STRAND_KEYS: ReadonlySet<string> = new Set(["stranded", "agent_stranded"]);
+
+/**
+ * Task 1045c. `idle_s` is true only at the moment of the read. So fix the time
+ * of the last word when the reply arrives: `arrivedMs` minus `idle_s`. This
+ * walks a reply and writes `last_word_ms` on each strand, in place. The one
+ * request seam (`call` in `api.ts`) runs it, so a cached row keeps its time.
+ */
+export function stampStrands(body: unknown, arrivedMs: number): void {
+  if (Array.isArray(body)) {
+    for (const item of body) stampStrands(item, arrivedMs);
+    return;
+  }
+  if (!body || typeof body !== "object") return;
+  for (const [key, value] of Object.entries(body)) {
+    if (STRAND_KEYS.has(key) && value && typeof value === "object") {
+      const strand = value as AgentStranded;
+      if (typeof strand.idle_s === "number" && Number.isFinite(strand.idle_s)) {
+        strand.last_word_ms = arrivedMs - strand.idle_s * 1000;
+      }
+    } else {
+      stampStrands(value, arrivedMs);
+    }
+  }
 }
 
 /**
  * Task 1045c. "No word since 14:31" for a stranded run. The time is the last
- * activity (now minus `idle_s`), else the time of the nudge. Local time, HH:MM.
- * Null when the gateway sent neither.
+ * word (`last_word_ms`, from `stampStrands`), else the time of the nudge. It
+ * never reads the clock, so the line does not move as the row ages. Local
+ * time, HH:MM. Null for no strand.
  */
 export function strandedLine(
-  stranded: Pick<AgentStranded, "nudged_at" | "idle_s"> | null | undefined,
-  nowMs: number = Date.now(),
+  stranded: AgentStrandFacts | null | undefined,
 ): string | null {
   if (!stranded) return null;
   let at: number | null = null;
-  if (typeof stranded.idle_s === "number" && Number.isFinite(stranded.idle_s)) {
-    at = nowMs - stranded.idle_s * 1000;
+  if (typeof stranded.last_word_ms === "number" && Number.isFinite(stranded.last_word_ms)) {
+    at = stranded.last_word_ms;
   } else if (stranded.nudged_at) {
     const t = Date.parse(stranded.nudged_at);
     at = Number.isNaN(t) ? null : t;
@@ -644,7 +679,7 @@ export interface AgentPillFacts {
   /** Task 1045a. The wait of a `waiting` run: `agent_waiting` of the row. */
   waiting?: Pick<AgentWaiting, "on" | "until"> | null;
   /** Task 1045c. `agent_stranded` of the row: the open strand of the run. */
-  stranded?: Pick<AgentStranded, "nudged_at" | "idle_s"> | null;
+  stranded?: AgentStrandFacts | null;
   /** SW-32. The plan of the run, as `agent_plan` of the row. */
   plan?: AgentPlanSummary | null;
   /** The clock for the minutes of a wait. Tests pass it. */

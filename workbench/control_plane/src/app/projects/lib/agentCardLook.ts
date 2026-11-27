@@ -89,7 +89,7 @@ export function agentCardLook(
   // SW-7b: "Claude Code (backend-worker-3)" when the session has a label.
   const client = withAgentLabel(clientName(facts.clientVia), facts.agentLabel);
   if (facts.stranded && known !== "failed" && known !== "stopping") {
-    return { edge: "warning", line: strandedLine(facts.stranded, facts.nowMs) };
+    return { edge: "warning", line: strandedLine(facts.stranded) };
   }
   const note = facts.note?.trim() || null;
   switch (known) {

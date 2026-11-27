@@ -1,8 +1,10 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { agentCardLook, agentPlaceLine, splitPlanProgress } from "./agentCardLook";
+import { stampStrands, strandedLine } from "./agentRuns";
+import { agentRunsApi, projectsApi } from "./api";
 
 const css = readFileSync(
   fileURLToPath(new URL("../../globals.css", import.meta.url)),
@@ -100,13 +102,14 @@ describe("agentCardLook", () => {
     const at = new Date(now - 29 * 60 * 1000);
     const hhmm = `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
     const stranded = { idle_s: 29 * 60 };
+    stampStrands({ stranded }, now);
     for (const st of ["working", "answered", "waiting", "stale", "queued", "awaiting"]) {
-      expect(agentCardLook(st, { clientVia: via, stranded, nowMs: now, note: "busy" })).toEqual({
+      expect(agentCardLook(st, { clientVia: via, stranded, note: "busy" })).toEqual({
         edge: "warning",
         line: `No word since ${hhmm}`,
       });
     }
-    // Without idle_s the time of the nudge is the fallback.
+    // Without a stamp the time of the nudge is the fallback.
     const nudged = new Date("2026-11-12T14:31:00");
     expect(
       agentCardLook("working", { stranded: { nudged_at: nudged.toISOString() } }).line,
@@ -114,7 +117,7 @@ describe("agentCardLook", () => {
     expect(agentCardLook("working", { stranded: {} }).line).toBe("No word for a while");
     // SW-32: a plan never hides the strand, and it puts no count on the line.
     const plan = { done: 3, total: 7, step: "Run the tests" };
-    expect(agentCardLook("working", { clientVia: via, stranded, plan, nowMs: now })).toEqual({
+    expect(agentCardLook("working", { clientVia: via, stranded, plan })).toEqual({
       edge: "warning",
       line: `No word since ${hhmm}`,
     });
@@ -141,9 +144,73 @@ describe("the run panel and the strand", () => {
       fileURLToPath(new URL("../components/AgentRunPanel.tsx", import.meta.url)),
       "utf8",
     );
-    expect(src).toContain("agent_stranded: run?.stranded ?");
-    expect(src).toContain("Boolean(task.agent_stranded) === Boolean(next.agent_stranded)");
+    // The polled run's strand wins over the older copy of the row.
+    expect(src).toContain("agent_stranded: run?.stranded ?? null,");
+    expect(src).not.toContain("task.agent_stranded ?? run.stranded");
+    expect(src).toContain(
+      "strandedLine(task.agent_stranded) === strandedLine(next.agent_stranded)",
+    );
     expect(src).toContain("[enabled, state, run?.stranded,");
+  });
+});
+
+describe("the board card and the strand", () => {
+  it("TaskBoard gives the strand of the row to the card look", () => {
+    const src = readFileSync(
+      fileURLToPath(new URL("../components/TaskBoard.tsx", import.meta.url)),
+      "utf8",
+    );
+    const call = src.match(/agentCardLook\(task\.agent_state, \{([\s\S]*?)\}\);/)?.[1] ?? "";
+    expect(call).toContain("stranded: task.agent_stranded,");
+    expect(src).toContain("agentLook.line");
+  });
+});
+
+// Task 1045c. `idle_s` is true only at the read. The time of the last word is
+// fixed when the reply arrives, so it holds while the row ages.
+describe("the time of the last word", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  const read = new Date("2026-11-12T15:00:00");
+  const strand = () => ({ nudged_at: "2026-11-12T14:50:00", idle_s: 29 * 60 });
+  const reply = (body: unknown) =>
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(body))));
+
+  it("a row and a run read the same line hours after the read", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(read);
+
+    reply({ id: "t1", agent_stranded: strand() });
+    const row = await projectsApi.task("t1");
+    reply({ rows: [{ id: "r1", stranded: strand() }] });
+    const runs = await agentRunsApi.list("t1");
+    reply({ run: { id: "r1", stranded: strand() }, activities: [] });
+    const detail = await agentRunsApi.get("r1");
+
+    for (const hours of [0, 3, 27]) {
+      vi.setSystemTime(new Date(read.getTime() + hours * 3_600_000));
+      expect(
+        agentCardLook("working", { stranded: row.agent_stranded }).line,
+      ).toBe("No word since 14:31");
+      expect(strandedLine(runs?.[0]?.stranded)).toBe("No word since 14:31");
+      expect(strandedLine(detail.run.stranded)).toBe("No word since 14:31");
+    }
+  });
+
+  it("stamps each nested strand, and leaves one with no idle_s alone", () => {
+    const body = {
+      groups: [{ rows: [{ agent_stranded: strand() }, { agent_stranded: null }] }],
+      run: { stranded: { nudged_at: "2026-11-12T14:31:00", idle_s: null } },
+    };
+    stampStrands(body, read.getTime());
+    expect(body.groups[0]!.rows[0]!.agent_stranded).toMatchObject({
+      last_word_ms: read.getTime() - 29 * 60_000,
+    });
+    expect(body.run.stranded).not.toHaveProperty("last_word_ms");
+    expect(strandedLine(body.run.stranded)).toBe("No word since 14:31");
   });
 });
 

@@ -266,16 +266,17 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
       agent_member_email: run?.member_email ?? null,
       // SW-7b: the card line names the session too.
       agent_label: run?.agent_label ?? null,
-      // Task 1045c: the card drops or gains the strand with the panel. The row
-      // keeps its own copy while both have one.
-      agent_stranded: run?.stranded ? (task.agent_stranded ?? run.stranded) : null,
+      // Task 1045c: the card drops or gains the strand with the panel. The
+      // polled run is newer than the row, so its strand wins.
+      agent_stranded: run?.stranded ?? null,
     };
     if (
       (task.agent_state ?? null) === next.agent_state &&
       (task.agent_client_via ?? null) === next.agent_client_via &&
       (task.agent_member_email ?? null) === next.agent_member_email &&
       (task.agent_label ?? null) === next.agent_label &&
-      Boolean(task.agent_stranded) === Boolean(next.agent_stranded)
+      // The words, not the object: each poll gives a new stamp.
+      strandedLine(task.agent_stranded) === strandedLine(next.agent_stranded)
     ) {
       return;
     }
