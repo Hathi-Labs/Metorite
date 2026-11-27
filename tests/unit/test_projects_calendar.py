@@ -242,6 +242,10 @@ NOT_ON_THE_CALENDAR = {
     # MCP-G19c. The type filters and the task number of the agent door. The
     # board never sends them, so the calendar cannot drop them silently.
     "type_id", "type_name", "task_number",
+    # WS-39 T-1 (task 2532). The team scope, dark behind TEAMS_ORGS. No screen
+    # sends it yet. T-2 (task 2533) builds the team chip, and the calendar
+    # must take the value in that slice, before the chip sends it.
+    "team",
 }
 
 
