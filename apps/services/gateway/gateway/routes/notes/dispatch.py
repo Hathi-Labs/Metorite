@@ -377,15 +377,34 @@ _DOC_DRAFT_SYSTEM = (
 )
 
 
-async def _dispatch_document(action, meeting, owner_email: str) -> str:
-    """Generate a first-draft markdown doc into the note-taker agent's
-    workspace (blob store + disk). Returns ``artifact:<agent>/<path>``."""
-    from gateway.routes.notes.summaries import _llm_json
+@contextlib.asynccontextmanager
+async def _dispatch_session(bound: bool):
+    """The session of one dispatch step (task 3966).
 
+    ``bound=True`` is a member request that already checked the owner
+    (``POST /actions/{id}/dispatch``, ``POST /meetings/{id}/actions/approve-all``).
+    It opens ``_tenant_session()`` in the tenant of that request.
+    ``bound=False`` is ``auto_dispatch``, which keeps its unbound session.
+    """
+    if bound:
+        async with _tenant_session() as db:
+            yield db
+        return
     # H4: reached from the background summary pipeline (`generate_notes` →
     # `auto_dispatch`) and the meeting-bot poller — no ambient tenant; derive
     # it from the meeting/action_item row.
     async with await _get_db() as db:
+        yield db
+
+
+async def _dispatch_document(
+    action, meeting, owner_email: str, *, bound: bool = False
+) -> str:
+    """Generate a first-draft markdown doc into the note-taker agent's
+    workspace (blob store + disk). Returns ``artifact:<agent>/<path>``."""
+    from gateway.routes.notes.summaries import _llm_json
+
+    async with _dispatch_session(bound) as db:
         excerpts = await _segment_texts(db, action.segment_ids)
 
     user = (
@@ -441,11 +460,9 @@ async def _dispatch_document(action, meeting, owner_email: str) -> str:
 # ── The dispatcher ──────────────────────────────────────────────────────────
 
 async def _mark(action_id: str, *, ref: str | None, task_id: str | None,
-                error: str | None) -> None:
-    # H4: reached from the background summary pipeline (`generate_notes` →
-    # `auto_dispatch`) and the meeting-bot poller — no ambient tenant; derive
-    # it from the meeting/action_item row.
-    async with await _get_db() as db:
+                error: str | None, bound: bool = False) -> None:
+    # See `_dispatch_session` for which caller binds the tenant.
+    async with _dispatch_session(bound) as db:
         if error is not None:
             await db.execute(
                 text(
@@ -494,12 +511,16 @@ async def _audit(actor: str, action_id: str, meeting_id: str, kind: str,
 
 
 async def _dispatch(
-    action, meeting, actor: str, *, background: bool = False,
+    action, meeting, actor: str, *, background: bool = False, bound: bool = False,
 ) -> tuple[str | None, str | None]:
     """Route one action item by kind. Returns (dispatch_ref, error).
 
     ``background`` is True for ``auto_dispatch`` only. A Gmail email item
-    then becomes a draft (WS-17 EM-G11c2, G1)."""
+    then becomes a draft (WS-17 EM-G11c2, G1).
+
+    ``bound`` is True for the two member routes. The task write, the
+    document read and the mark then run in the tenant of the request
+    (task 3966). The email path keeps the session of the email package."""
     owner = meeting.owner_email or actor or "anonymous"
     kind = action.kind if action.kind in KINDS else "task"
     ref: str | None = None
@@ -522,28 +543,30 @@ async def _dispatch(
 
     try:
         if kind == "task":
-            # H4: reached from the background summary pipeline and the
-            # meeting-bot poller — no ambient tenant; derive from the row.
-            async with await _get_db() as db:
+            async with _dispatch_session(bound) as db:
                 task_id = await _create_task_from_action(db, owner, action)
                 await db.commit()
             # task_id=None: `resulting_task_id` FKs the legacy `task` table,
             # so a `pm_tasks` id lives in `dispatch_ref` alone (WS-39 S8c).
-            await _mark(str(action.id), ref=task_id, task_id=None, error=None)
+            await _mark(str(action.id), ref=task_id, task_id=None, error=None,
+                        bound=bound)
             ref = task_id
         elif kind == "email":
             ref = await _dispatch_email(
                 action, meeting, owner, actor, background=background)
-            await _mark(str(action.id), ref=ref, task_id=None, error=None)
+            await _mark(str(action.id), ref=ref, task_id=None, error=None,
+                        bound=bound)
         else:
-            ref = await _dispatch_document(action, meeting, owner)
-            await _mark(str(action.id), ref=ref, task_id=None, error=None)
+            ref = await _dispatch_document(action, meeting, owner, bound=bound)
+            await _mark(str(action.id), ref=ref, task_id=None, error=None,
+                        bound=bound)
     except DispatchError as exc:
         error = str(exc)
     except Exception as exc:  # noqa: BLE001 — a dispatch must never crash a caller
         error = f"{type(exc).__name__}: {str(exc)[:300]}"
     if error is not None:
-        await _mark(str(action.id), ref=None, task_id=None, error=error)
+        await _mark(str(action.id), ref=None, task_id=None, error=error,
+                    bound=bound)
         _log.warning(
             "notes.action_dispatch_failed",
             action_id=str(action.id), kind=kind, error=error[:200],
@@ -682,7 +705,7 @@ async def dispatch_action(
             )
         meeting = owner_meeting
 
-    ref, error = await _dispatch(action, meeting, user.email or "unknown")
+    ref, error = await _dispatch(action, meeting, user.email or "unknown", bound=True)
     kind = action.kind if action.kind in KINDS else "task"
     return DispatchResponse(
         action_id=action_id,

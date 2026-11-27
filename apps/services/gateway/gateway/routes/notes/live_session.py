@@ -153,21 +153,28 @@ async def _apply_prepared_copilot(meeting_id: str) -> None:
         )
 
 
-async def end(meeting_id: str) -> None:
-    """Mark a meeting no longer live (no-op if it wasn't). Never raises."""
-    # H4: also called from background paths (the transcription pipeline task
-    # and the meeting-bot poller) — no ambient tenant there; derive it from
-    # the live_session/meeting row.
+_END_SQL = (
+    "UPDATE live_session SET status = 'ended', ended_at = now(), "
+    "updated_at = now() "
+    "WHERE meeting_id = CAST(:m AS UUID) AND status = 'live'"
+)
+
+
+async def end(meeting_id: str, *, bound: bool = False) -> None:
+    """Mark a meeting no longer live (no-op if it wasn't). Never raises.
+
+    ``bound=True`` is the poll-on-read of a member request, which already
+    checked the owner: it writes in the tenant of that request (task 3966)."""
     try:
+        if bound:
+            async with _tenant_session() as db:
+                await db.execute(text(_END_SQL), {"m": meeting_id})
+            return
+        # H4: also called from background paths (the transcription pipeline
+        # task and the meeting-bot poller) — no ambient tenant there; derive
+        # it from the live_session/meeting row.
         async with await _get_db() as db:
-            await db.execute(
-                text(
-                    "UPDATE live_session SET status = 'ended', ended_at = now(), "
-                    "updated_at = now() "
-                    "WHERE meeting_id = CAST(:m AS UUID) AND status = 'live'"
-                ),
-                {"m": meeting_id},
-            )
+            await db.execute(text(_END_SQL), {"m": meeting_id})
             await db.commit()
     except Exception as exc:
         _log.warning(

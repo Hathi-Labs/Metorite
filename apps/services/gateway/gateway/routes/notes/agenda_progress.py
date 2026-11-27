@@ -28,9 +28,9 @@ import time
 from collections import deque
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends
+from fastapi import Depends, HTTPException
 from gateway.routes.notes.copilot_agenda import item_covered, normalize_agenda
-from gateway.routes.notes.core import _tenant_session, load_owned_meeting, router
+from gateway.routes.notes.core import _log, _tenant_session, load_owned_meeting, router
 from sqlalchemy import text
 
 #: Words of recent speech kept per meeting. ~2000 words is roughly fifteen
@@ -125,21 +125,30 @@ async def read_progress(
 ) -> dict:
     """Per-item coverage for the live console, and for the post-meeting recap.
 
-    Cheap enough to poll: one agenda read plus token overlap.
+    Cheap enough to poll: one agenda read plus token overlap. A database
+    error never raises — a coverage read must not be able to disturb a
+    meeting in progress. It answers an empty agenda.
 
     Two sources, because the live state is in-memory and deliberately dropped
     when a meeting ends. Reading only that would make the post-meeting recap
     report every item as missed on every finished meeting — the transcript is
     the honest source once the call is over.
 
-    Owner only, checked before the live state is read (task 3966). The one
-    404 of the detail route is the only error it raises. The reads run in
-    the bound session of this request."""
-    async with _tenant_session() as db:
-        row = await load_owned_meeting(db, meeting_id, user.email, columns="m.agenda")
-        agenda = normalize_agenda(row.agenda)
-        tracking = is_tracking(meeting_id)
-        said = "" if tracking else await _stored_transcript(db, meeting_id)
+    Owner only, checked before the live state is read (task 3966). The 404
+    of the detail route is the only error it raises. The reads run in the
+    bound session of this request. A database error gives the empty answer
+    for every id, so it is no oracle."""
+    try:
+        async with _tenant_session() as db:
+            row = await load_owned_meeting(db, meeting_id, user.email, columns="m.agenda")
+            agenda = normalize_agenda(row.agenda)
+            tracking = is_tracking(meeting_id)
+            said = "" if tracking else await _stored_transcript(db, meeting_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.warning("notes.agenda_progress_failed", error=str(exc)[:200])
+        return {"items": [], "covered_count": 0, "total": 0, "elapsed_s": 0.0}
     covered = mark(meeting_id, agenda) if tracking else coverage_for(agenda, said)
     return {
         "items": [

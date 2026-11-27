@@ -312,7 +312,12 @@ async def consult(question: str) -> dict[str, str]:
 #: the primary key of ``meeting`` holds ``organization_id``, so the meeting id
 #: alone does not name one tenant. A route reads it only after the owner
 #: check. The copilot task inherits the tenant of the request that started it.
-_CACHE: dict[tuple[str, str], ContextPack] = {}
+#:
+#: Each value is ``(pack, bound)``. ``bound`` is True when a route built the
+#: pack in its tenant-bound session. The copilot task builds on an unbound
+#: session (H4), which reads nothing under FORCE RLS. So an unbound pack never
+#: answers a bound read, and it never replaces a bound pack.
+_CACHE: dict[tuple[str, str], tuple[ContextPack, bool]] = {}
 
 
 def _cache_key(meeting_id: str) -> tuple[str, str]:
@@ -351,11 +356,13 @@ async def get(
     ``db`` is the tenant-bound session of a route that already checked the
     owner. The copilot task passes none."""
     key = _cache_key(meeting_id)
+    bound = db is not None
     cached = _CACHE.get(key)
-    if cached is not None:
-        return cached
+    if cached is not None and (cached[1] or not bound):
+        return cached[0]
     pack = await build(meeting_id, deep=deep, db=db)
-    _CACHE[key] = pack
+    if bound or cached is None:
+        _CACHE[key] = (pack, bound)
     return pack
 
 

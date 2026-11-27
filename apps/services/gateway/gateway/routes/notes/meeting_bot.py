@@ -34,6 +34,7 @@ Config (all via env; the feature is inert but safe until configured):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import uuid
 from urllib.parse import urlparse
@@ -465,8 +466,28 @@ async def _set_bot(db, bot_id: str, **fields) -> None:
     )
 
 
+@contextlib.asynccontextmanager
+async def _bot_session(bound: bool):
+    """The session of one step of a bot refresh or ingest (task 3966).
+
+    ``bound=True`` is a member request that already checked the owner
+    (``GET /meetings/{id}/bot``, ``GET /bots/active``). It opens
+    ``_tenant_session()`` in the tenant of that request. ``bound=False`` is
+    the background poller ``_poll_bot``, which keeps its unbound session.
+    """
+    if bound:
+        async with _tenant_session() as db:
+            yield db
+        return
+    # H4: the background poller (`_poll_bot`) reaches the refresh and the
+    # ingest with no ambient tenant; derive it from the meeting_bot row.
+    async with await _get_db() as db:
+        yield db
+
+
 async def _ingest_recording(
-    meeting_id: str, audio: bytes, ctype: str, requested_by: str
+    meeting_id: str, audio: bytes, ctype: str, requested_by: str,
+    *, bound: bool = False,
 ) -> None:
     """Save the bot's audio as a `meeting_recording` and run the pipeline —
     identical to an upload, so diarization/speaker-naming/summary all apply.
@@ -488,9 +509,9 @@ async def _ingest_recording(
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(audio)
 
-    # H4: reached from `_refresh_bot` (background poller / poll-on-read) — no
-    # ambient tenant; derive it from the meeting_bot row (`requested_by`).
-    async with await _get_db() as db:
+    # The poll-on-read of a member request binds its tenant. The poller does
+    # not (see `_bot_session`).
+    async with _bot_session(bound) as db:
         await db.execute(
             text(
                 "INSERT INTO meeting_recording (id, meeting_id, channel, "
@@ -523,18 +544,19 @@ async def _ingest_recording(
     _log.info("notes.bot_ingested", meeting_id=meeting_id, bytes=len(audio), mime=mime)
 
 
-async def _refresh_bot(bot_row_id: str) -> None:
+async def _refresh_bot(bot_row_id: str, *, bound: bool = False) -> None:
     """Poll the provider once and advance the bot's state; ingest on completion.
     Idempotent + safe to call from both the background poller and poll-on-read;
-    ingestion is claimed atomically so it happens exactly once. Never raises."""
+    ingestion is claimed atomically so it happens exactly once. Never raises.
+
+    ``bound=True`` is the poll-on-read of a member request: every step runs
+    in the tenant of that request (task 3966). The poller passes nothing."""
     provider = resolve_bot_provider()
     if provider is None:
         return
     try:
-        # H4: dual-entry — the background poller (`_poll_bot`) reaches this
-        # with no ambient tenant, so every `_get_db` block in this function
-        # stays unbound until H4 derives the tenant from the meeting_bot row.
-        async with await _get_db() as db:
+        # Dual-entry: see `_bot_session` for which caller binds the tenant.
+        async with _bot_session(bound) as db:
             row = (
                 await db.execute(
                     text("SELECT id, meeting_id, provider_bot_id, status, "
@@ -556,7 +578,7 @@ async def _refresh_bot(bot_row_id: str) -> None:
             # persists terminal state across restarts, so a 404 means even
             # that is gone (volume wiped / very old id) — fail the row
             # honestly instead of polling "joining" for four hours.
-            async with await _get_db() as db:
+            async with _bot_session(bound) as db:
                 await _set_bot(
                     db, bot_row_id, status="failed",
                     error="The meeting-bot worker no longer knows this bot — "
@@ -571,13 +593,13 @@ async def _refresh_bot(bot_row_id: str) -> None:
                 await db.commit()
             from gateway.routes.notes import live_session
 
-            await live_session.end(str(row.meeting_id))
+            await live_session.end(str(row.meeting_id), bound=bound)
             return
 
         # Terminal success: call finished AND media is downloadable → claim the
         # ingest atomically (only one caller flips out of an active status).
         if new_status == "done" and download_url:
-            async with await _get_db() as db:
+            async with _bot_session(bound) as db:
                 claim = (
                     await db.execute(
                         text(
@@ -594,10 +616,10 @@ async def _refresh_bot(bot_row_id: str) -> None:
                 audio, ctype = await provider.download(download_url)
                 await _ingest_recording(
                     str(row.meeting_id), audio, ctype,
-                    getattr(row, "requested_by", None) or "",
+                    getattr(row, "requested_by", None) or "", bound=bound,
                 )
             except Exception as exc:  # ingest failed after claiming
-                async with await _get_db() as db:
+                async with _bot_session(bound) as db:
                     await _set_bot(db, bot_row_id, status="failed",
                                    error=f"ingest failed: {str(exc)[:400]}")
                     await db.execute(
@@ -609,7 +631,7 @@ async def _refresh_bot(bot_row_id: str) -> None:
 
         # Non-terminal (or terminal-without-media-yet): record status changes.
         if new_status and new_status != row.status and new_status != "done":
-            async with await _get_db() as db:
+            async with _bot_session(bound) as db:
                 if new_status in ("failed", "not_admitted") and worker_error:
                     # Carry the worker's own explanation to the row the UI
                     # renders — "Failed" alone tells a human nothing.
@@ -626,7 +648,7 @@ async def _refresh_bot(bot_row_id: str) -> None:
                     # normally ends a session won't run without a recording).
                     from gateway.routes.notes import live_session
 
-                    await live_session.end(str(row.meeting_id))
+                    await live_session.end(str(row.meeting_id), bound=bound)
                 elif new_status == "in_call":
                     await db.execute(
                         text("UPDATE meeting SET status='recording' "
@@ -904,7 +926,9 @@ async def list_active_bots(
         ).fetchall()
     ids = [str(r.id) for r in rows]
     if ids:
-        await asyncio.gather(*(_refresh_bot(i) for i in ids), return_exceptions=True)
+        await asyncio.gather(
+            *(_refresh_bot(i, bound=True) for i in ids), return_exceptions=True
+        )
         async with _tenant_session() as db:
             rows = (
                 await db.execute(
@@ -936,7 +960,7 @@ async def get_meeting_bot(
     if r is None:
         return None
     if r.status in ACTIVE_STATUSES:
-        await _refresh_bot(str(r.id))
+        await _refresh_bot(str(r.id), bound=True)
         async with _tenant_session() as db:
             r = (
                 await db.execute(

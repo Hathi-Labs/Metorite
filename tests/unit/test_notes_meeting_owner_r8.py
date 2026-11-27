@@ -177,10 +177,23 @@ def world(promoted, monkeypatch):  # noqa: F811
         live_transcript,
         meeting_bot,
         speaker_id,
+        summaries,
     )
+    from gateway.routes.projects import personal
 
     org_b, org_a = promoted.org_b, promoted.org_a
     with promoted.admin_engine.begin() as c:
+        # The members, for the task that a dispatch captures.
+        for email, org in ((ALICE, org_b), (BOB, org_b), (CAROL, org_a)):
+            c.execute(
+                text(
+                    "INSERT INTO app_user (email, display_name, role, status, "
+                    "organization_id) SELECT :e, :e, 'employee', 'active', "
+                    "CAST(:o AS uuid) WHERE NOT EXISTS "
+                    "(SELECT 1 FROM app_user WHERE lower(email) = :e)"
+                ),
+                {"e": email, "o": org},
+            )
         alice = _seed_meeting(c, org_b, ALICE, title="Alice pricing")
         bob = _seed_meeting(c, org_b, BOB, title="Bob standup")
         carol = _seed_meeting(c, org_a, CAROL, title="Carol review")
@@ -189,9 +202,19 @@ def world(promoted, monkeypatch):  # noqa: F811
     calls: dict[str, list[Any]] = {
         "refresh": [], "spawn": [], "start": [], "stop": [], "draft": [],
         "speakers": [], "leave": [], "say": [], "diagnostics": [], "screenshot": [],
+        "summary": [],
     }
 
-    async def refresh(bot_row_id: str) -> None:
+    def spawn_summary(coro: Any) -> None:
+        calls["summary"].append(coro)
+        coro.close()
+
+    async def emit(event_type: str, payload: dict) -> None:
+        return None
+
+    real_refresh = meeting_bot._refresh_bot
+
+    async def refresh(bot_row_id: str, **_kw: Any) -> None:
         calls["refresh"].append(bot_row_id)
 
     def spawn(coro: Any) -> None:
@@ -223,6 +246,8 @@ def world(promoted, monkeypatch):  # noqa: F811
     provider = meeting_bot.SelfHostedProvider
     monkeypatch.setattr(meeting_bot, "_refresh_bot", refresh)
     monkeypatch.setattr(meeting_bot, "_spawn", spawn)
+    monkeypatch.setattr(summaries, "_spawn", spawn_summary)
+    monkeypatch.setattr(personal, "emit", emit)
     monkeypatch.setattr(meeting_bot, "resolve_bot_provider", lambda: provider())
     monkeypatch.setattr(provider, "leave", leave)
     monkeypatch.setattr(provider, "say", say)
@@ -242,11 +267,19 @@ def world(promoted, monkeypatch):  # noqa: F811
 
     yield SimpleNamespace(
         p=promoted, org_b=org_b, org_a=org_a, alice=alice, bob=bob, carol=carol,
-        legacy=legacy, calls=calls,
+        legacy=legacy, calls=calls, real_refresh=real_refresh,
     )
 
     copilot_context._CACHE.clear()
     with promoted.admin_engine.begin() as c:
+        c.execute(
+            text("DELETE FROM pm_tasks WHERE lower(created_by) = ANY(:e)"),
+            {"e": list(PEOPLE)},
+        )
+        c.execute(
+            text("DELETE FROM pm_projects WHERE lower(personal_owner) = ANY(:e)"),
+            {"e": list(PEOPLE)},
+        )
         c.execute(
             text("DELETE FROM meeting WHERE id = ANY(CAST(:ids AS uuid[]))"),
             {"ids": [w["meeting"] for w in (alice, bob, carol, legacy)]},
@@ -255,6 +288,7 @@ def world(promoted, monkeypatch):  # noqa: F811
             text("DELETE FROM copilot_config WHERE owner_email = ANY(:e)"),
             {"e": list(PEOPLE)},
         )
+        c.execute(text("DELETE FROM app_user WHERE email = ANY(:e)"), {"e": list(PEOPLE)})
 
 
 @asynccontextmanager
@@ -515,6 +549,81 @@ async def test_r8_a_meeting_with_no_owner_stays_open_to_its_org_only(world) -> N
         for path in (f"{base}/note", f"{base}/agenda", f"{base}/live/session"):
             resp = await _call(c, CAROL, "GET", path)
             assert resp is not None and resp.status_code == 404, (path, resp)
+
+
+# ── The request paths that write (verifier finding F1) ─────────────────────
+
+
+async def test_r8_the_owner_dispatch_and_summarize_write_in_the_bound_tenant(world) -> None:
+    """The task write, the mark and the summary run of a member request run
+    in the tenant of that request. On an unbound session FORCE RLS refuses
+    each one, so the owner's own action stayed a draft."""
+    mid, aid = world.alice["meeting"], world.alice["action"]
+    async with _client(world, world.org_b) as c:
+        one = await _call(c, ALICE, "POST", f"/notes/actions/{aid}/dispatch")
+        bulk = await _call(c, BOB, "POST",
+                           f"/notes/meetings/{world.bob['meeting']}/actions/approve-all",
+                           {"min_confidence": 0.5})
+        run = await _call(c, ALICE, "POST", f"/notes/meetings/{mid}/summarize")
+    assert one is not None and one.status_code == 200, one and one.text
+    assert one.json()["dispatch_error"] is None, one.json()
+    assert one.json()["status"] == "created"
+    assert bulk is not None and bulk.status_code == 200, bulk and bulk.text
+    assert bulk.json()["created"] == [world.bob["action"]]
+    assert run is not None and run.status_code == 202, run and run.text
+    with world.p.admin_engine.connect() as c:
+        mine = c.execute(text(
+            "SELECT a.status, a.dispatch_ref, t.organization_id::text AS org "
+            "FROM action_item a JOIN pm_tasks t ON t.id::text = a.dispatch_ref "
+            "WHERE a.id = CAST(:a AS uuid)"), {"a": aid}).fetchone()
+        bobs = c.execute(text(
+            "SELECT status FROM action_item WHERE id = CAST(:a AS uuid)"),
+            {"a": world.bob["action"]}).scalar_one()
+        queued = c.execute(text(
+            "SELECT organization_id::text FROM summary_run "
+            "WHERE id = CAST(:r AS uuid) AND kind = 'summary'"),
+            {"r": run.json()["run_id"]}).scalar_one()
+    assert mine is not None and mine.status == "created" and mine.org == world.org_b
+    assert bobs == "created"
+    assert queued == world.org_b
+    assert len(world.calls["summary"]) == 1
+
+
+async def test_r8_the_poll_on_read_of_the_owner_writes_in_the_bound_tenant(
+    world, monkeypatch,
+) -> None:
+    """The real ``_refresh_bot`` runs. A worker that reports a failed join
+    lands on the owner's rows, and the poll-on-read of Bob moves only his own
+    bots."""
+    from gateway.routes.notes import meeting_bot
+
+    seen: list[str] = []
+    report = {"status": "failed"}
+
+    async def status(_self: Any, bot_id: str) -> tuple:
+        seen.append(bot_id)
+        return report["status"], None, "The host did not admit the notetaker."
+
+    monkeypatch.setattr(meeting_bot, "_refresh_bot", world.real_refresh)
+    monkeypatch.setattr(meeting_bot.SelfHostedProvider, "status", status)
+    mid = world.alice["meeting"]
+    async with _client(world, world.org_b) as c:
+        got = await _call(c, ALICE, "GET", f"/notes/meetings/{mid}/bot")
+        report["status"] = "waiting_room"
+        listed = await _call(c, BOB, "GET", "/notes/bots/active")
+    assert got is not None and got.status_code == 200, got and got.text
+    assert got.json()["status"] == "failed"
+    assert got.json()["error"] == "The host did not admit the notetaker."
+    state = _state(world, mid)
+    assert state["bot"][0]["status"] == "failed"
+    assert state["meeting"][0]["status"] == "failed"
+    assert state["live"][0]["status"] == "ended"
+    assert listed is not None and listed.status_code == 200
+    assert _state(world, world.bob["meeting"])["bot"][0]["status"] == "waiting_room"
+    assert _state(world, world.carol["meeting"])["bot"][0]["status"] == "in_call"
+    # Bob's poll never asked the worker about Alice's bot.
+    alice_pb = f"pb-{world.alice['bot'][:8]}"
+    assert seen.count(alice_pb) == 1
 
 
 def test_this_suite_is_in_the_r8_must_run_list() -> None:

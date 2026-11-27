@@ -32,7 +32,7 @@ from gateway.db import get_session_factory as _get_session_factory  # noqa: F401
 # defaulting: fail closed, never "the usual org". `_get_db` above remains for
 # the sites H2 cannot reach from a request: background jobs/pollers and the
 # meeting-bot worker's service-identity paths (H4 threads their tenant).
-from gateway.db import tenant_session as _tenant_session  # noqa: F401
+from gateway.db import tenant_session as _tenant_session
 from pydantic import BaseModel
 from sqlalchemy import text
 from acb_auth import require_feature_router

@@ -583,7 +583,7 @@ async def test_summarizing_your_own_meeting_still_works(monkeypatch) -> None:
 
     queued: list[tuple] = []
 
-    async def _enqueue(meeting_id, triggered_by):
+    async def _enqueue(meeting_id, triggered_by, **_kw):
         queued.append((meeting_id, triggered_by))
         return "run-1"
 
@@ -1255,7 +1255,7 @@ async def test_approve_all_on_your_own_meeting_still_dispatches(
 
     seen: list = []
 
-    async def _dispatch(action, meeting, actor):
+    async def _dispatch(action, meeting, actor, **_kw):
         seen.append((str(action.id), actor))
         return "task:1", None
 

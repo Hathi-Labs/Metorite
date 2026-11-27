@@ -420,28 +420,36 @@ async def generate_notes(meeting_id: str, run_id: str, triggered_by: str) -> Non
             _log.error("notes.summary_failure_unrecorded", error=str(exc2))
 
 
-async def enqueue_summary(meeting_id: str, triggered_by: str) -> str:
+_ENQUEUE_SQL = (
+    "INSERT INTO summary_run (meeting_id, kind, status, stage) "
+    "VALUES (:id, 'summary', 'queued', 'queued') RETURNING id"
+)
+
+
+async def enqueue_summary(
+    meeting_id: str, triggered_by: str, *, bound: bool = False
+) -> str:
     """Create a queued summary run and spawn generation. Returns the run id.
 
     ``triggered_by`` is the member who asked for this (directly via
     ``/summarize``, or indirectly by uploading / finishing / re-transcribing a
     recording). It has no default so that a new caller has to answer the
     question rather than inherit somebody else's authority.
+
+    ``bound=True`` is ``POST /summarize``, which already checked the owner:
+    the run row lands in the tenant of the request (task 3966). The spawned
+    ``generate_notes`` job keeps its own H4 sessions.
     """
-    # H4: shared entry point also called from the background transcription
-    # pipeline (`pipeline.run_transcription`) — no ambient tenant there;
-    # derive it from the meeting row.
-    async with await _get_db() as db:
-        row = (
-            await db.execute(
-                text(
-                    "INSERT INTO summary_run (meeting_id, kind, status, stage) "
-                    "VALUES (:id, 'summary', 'queued', 'queued') RETURNING id"
-                ),
-                {"id": meeting_id},
-            )
-        ).fetchone()
-        await db.commit()
+    if bound:
+        async with _tenant_session() as db:
+            row = (await db.execute(text(_ENQUEUE_SQL), {"id": meeting_id})).fetchone()
+    else:
+        # H4: shared entry point also called from the background
+        # transcription pipeline (`pipeline.run_transcription`) — no ambient
+        # tenant there; derive it from the meeting row.
+        async with await _get_db() as db:
+            row = (await db.execute(text(_ENQUEUE_SQL), {"id": meeting_id})).fetchone()
+            await db.commit()
     run_id = str(row.id)
     _spawn(generate_notes(meeting_id, run_id, triggered_by))
     return run_id
@@ -510,7 +518,7 @@ async def summarize(
             status_code=409,
             detail=f"meeting is '{m.status}'; transcript not ready to summarize",
         )
-    run_id = await enqueue_summary(meeting_id, user.email or "")
+    run_id = await enqueue_summary(meeting_id, user.email or "", bound=True)
     return {"run_id": run_id, "status": "queued"}
 
 
