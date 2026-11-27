@@ -878,7 +878,7 @@ opens a fix task.
 - My Day shows a "Built, not live" row in its "Needs you" list for a member
   whose lanes hold such PRs, from `pm_task_refs`. Flag:
   `BUILT_NOT_LIVE_ORGS`.
-- Fences: `tests/unit/test_delivery_review.py` (the metric and its two
+- Fences: `tests/unit/test_delivery_metrics.py` (the metric and its two
   thresholds) and `tests/unit/test_built_not_live_r8.py` (the My Day row).
 
 ### 7b.2 The claim gate (rule 2)
@@ -1470,90 +1470,127 @@ PYTEST_ADDOPTS="-o timeout_method=thread" uv run pytest -p no:cacheprovider   te
 
 #### LBB-6b: the "Built, not live" row in My Day (task 4045)
 
-**Status.** Spec, 2026-11-27. Not built. Tier STANDARD, with a UI part. It
-edits the shared My Day feed seam, so the builder is Opus. It ships dark
-behind `BUILT_NOT_LIVE_ORGS`, and the flag flips only after the owner sees
-the row (D145, D218).
+**Status.** Spec, 2026-11-27, after an Opus audit (NO-GO, seven doc
+blockers, answered here). Not built. Two PRs:
+- **6b-1:** the flag, the reader, its session wrapper, the provider, the kind
+  rows and the label. The card is the generic card: a why line and one act.
+- **6b-2:** a body of up to five lines in `FeedCard.tsx`, after the owner sees
+  6b-1 on the local stack.
 
-**What a member sees.** One card in the "Needs you" group of My Day, titled
-"Built, not live". It lists the member's open PRs older than 24 hours, oldest
-first, at most 5, and says how many more there are. Each line names the PR
-number, its task number and title, its age in days, and its landing mark
-(`queued` or `parked`) when it has one. The one act of each line is a link
-to the task. The card has no write act.
+Both ship dark behind `BUILT_NOT_LIVE_ORGS`. The slice merges on green, and the
+owner preview gates the flip (D145, D218). **One owner decision is open:** the
+reach class of the kind (`reach/classes.py`). The recommendation is `brief`.
+`agent_questions` and `decision` use `interrupt`.
+
+**What a member sees.** One card in the "Needs you" group, titled "Built, not
+live". Its why line says how many of the member's PRs are open and over 24
+hours old, and how old the oldest is. Its one act opens the task of the oldest
+PR. 6b-2 adds one line for each PR, oldest first, at most 5, with "and N more".
 
 **Which PRs.** A reference `f` of `pm_task_refs` counts when each of these is
 true:
 - its kind is `pull_request`, its `state` is NULL or `open` (a draft does not
-  count, as in the `built_not_live` metric of LBB-6a), and its `merged_at` is
-  NULL;
+  count, as in the LBB-6a metric), and its `merged_at` is NULL;
+- its `landing_state` is not `gone` (a lane or a merger said it is merged or
+  closed);
 - it is older than 24 hours from `created_at` (`LIST_AGE_HOURS`);
 - its task is visible to the member (`task_visibility_clause`), not archived,
   and not in a done or cancelled status, and its project is open;
-- its owner run (§7b.8) has the member's member, in any label.
+- its owner run (§7b.8) has the member's member, in any label. A run with no
+  label counts too.
 
-A queued or parked mark does not remove the PR: it is still not live. This
-reader reads no `agent_label`, so the label rule of §3.7 of
-`agent_coordination.md` does not apply.
+A `queued` or `parked` mark, or an `awaiting` run, does not remove the PR,
+because it is still not live. The line names the mark.
 
-**The seams.**
+**What it leaves out, said to the owner.** A PR with no owner run shows for
+nobody (§7b.8 case 4). So the row can show fewer PRs than the LBB-6a metric,
+which counts every open PR in the repo.
+
+**The seams (6b-1).** The precedent is EA-18c, the `agent_questions` card
+(commit 4b00f346da).
+- **The owner rule, extracted.** The owner-run LATERAL of `_counted_sql`
+  becomes one module constant in `claim_gate.py`, and both readers use it. So
+  the two owner rules cannot drift. The text of `_counted_sql` changes, and its
+  meaning does not: every `test_claim_gate_r8.py` test passes unchanged. That
+  makes 6b-1 HIGH for its `claim_gate.py` part, with an Opus review.
 - **The reader.** `built_not_live_prs(db, user, vis, *, limit)` in
-  `gateway/routes/projects/claim_gate.py`, beside `counted_prs`. It reuses the
-  owner-run LATERAL of `_counted_sql` with no label term and no landing or
-  open-run exemption. `test_agent_label_fence.py` must still find no new
-  reader of `agent_label`.
-- **The flag.** `built_not_live_orgs: str = ""` in
-  `acb_common/flag_registry.py`, at its sorted place. One reader,
-  `built_not_live_on(org)` in `claim_gate.py`. An entry in
-  `docs/flag_reload.md`, and in `env_guard.py` where the other flags are.
-  The flag test pattern is the one of `AGENT_QUESTIONS_ORGS`.
-- **The provider.** A feed-only, gated provider, as `agent_questions` is
-  (`gateway/routes/shell/feed.py`): `Provider("built_not_live", ("projects",),
-  ..., needs=False, gated=True, app="projects")`. It raises
-  `needs.SourceAbsent` while the flag does not hold the org. Its source id
-  joins `MY_DAY_PROVIDERS`.
-- **The kind.** `built_not_live` joins `feed_rank.BASE`, in the group
-  `needs_you`. `prefs.MAX_KINDS` rises by one. The golden fixture
-  `tests/unit/fixtures/my_day_feed_golden.json` gains the kind.
-- **The UI.** `FEED_KIND_LABELS` in `workbench/control_plane/src/lib/shell/feed.ts`
-  gains "Built, not live". `FeedCard.tsx` renders the lines with the
-  shared components and tokens of `DESIGN_SYSTEM.md`, and no new colour.
+  `claim_gate.py`. It reads no `agent_label`, so `test_agent_label_fence.py`
+  stays green with no change. The module docstring says that the gate shows
+  nothing, and that the module also holds this read for My Day.
+- **The session wrapper.** `read_built_not_live_mine(user)` opens one session,
+  as `agent_questions.read_mine` does. `feed.py` opens none.
+- **The flag.** `built_not_live_orgs: str = ""` in `acb_common/flag_registry.py`,
+  at its sorted place. One reader, `built_not_live_on(org)`. Entries in
+  `docs/flag_reload.md` and `env_guard.py`. The flip also needs the source id
+  in `MY_DAY_PROVIDERS` and a restart (`needs.py`), and the p95 measure of
+  `my_day_feed.md` §5.9 item 7.
+- **The provider.** `_built_not_live(user)` in `routes/shell/feed.py`, as
+  `_agent_questions` is: `Provider("built_not_live", ("projects",), ...,
+  needs=False, gated=True, app="projects")`. It raises `needs.SourceAbsent`
+  while the flag does not hold the org.
+- **The card.** `signal_id` `built_not_live:mine`, one card per member. Facts:
+  `{"prs": [{"number", "task_id", "task_number", "title", "age_days",
+  "landing"}], "total": N}`. The state facts are `total` and the PR numbers.
+  `age_days` stays out of `STABLE_FACTS` (`feed.py`), so the fold fingerprint
+  does not move each day.
+- **The kind rows.** `built_not_live` in `feed_rank.BASE` at 43, as
+  `agent_questions`. It joins the `needs_you` arm of `feed_rank.group`. It gets
+  a why template in `feed.py`, because an unknown kind raises there. It gets a
+  row in `reach/classes.py` (the owner decision above). Its prefix joins the
+  `SOURCE_APPS` of the brief. `prefs.MAX_KINDS` goes from 32 to 33, with its
+  two pins.
+- **The golden.** `tests/unit/fixtures/my_day_feed_golden.json` stays
+  byte-equal. EA-18c did not change it either.
+- **The UI.** "Built, not live" in `FEED_KIND_LABELS` (`lib/shell/feed.ts`).
+- **The feed spec.** `my_day_feed.md` §4.3, and items 2, 3, 4 and 6 of §5.9,
+  gain the kind in the same PR. `my_day_feed.md` owns the kinds.
 
-**Not in this slice.** A write act on the card. A row for another member. A
-change to the bell (the card is feed-only). The flag flip.
+**Not in this slice.** A write act on the card. A row for another member. The
+bell (the card is feed-only). The flag flip.
 
-**Fences.**
-- `tests/unit/test_built_not_live_r8.py` (R8, real database). The member's
-  PR over 24 hours shows. These do not show: a PR under 24 hours, another
-  member's PR, a draft, a merged PR, a PR on a done task, a PR on a task the
-  member cannot see, a PR with no owner run. A queued PR shows with its mark.
-  With the flag off, the provider gives `SourceAbsent`.
-- `tests/unit/test_shell_feed.py`: the provider list and its order hold the new
-  source.
-- The feed kind tests and the golden fixture: the kind is in the `needs_you`
-  group.
-- `tests/unit/test_flag_reload.py` and `tests/unit/test_flag_registry.py`: the
-  flag and its one reader.
-- `feed.test.ts` (vitest): the label of the kind.
+**Fences (6b-1).**
+- `tests/unit/test_built_not_live_r8.py` (R8, real database):
+  - The member's PR over 24 hours shows.
+  - These do not show: a PR under 24 hours, another member's PR, a draft, a
+    merged PR, a `gone` PR, a PR on a done task, a PR on a task the member
+    cannot see, and a PR with no owner run.
+  - A `queued` PR shows with its mark. So does a PR whose task has an
+    `awaiting` run.
+  - With the flag off, the provider gives `SourceAbsent`.
+- `tests/unit/test_claim_gate_r8.py`: unchanged, and it passes on the
+  extracted owner rule.
+- `test_shell_feed.py` (the provider list and its order), `test_feed_rank.py`
+  (the base and the group), `test_reach_plan.py` (the class),
+  `test_feed_fold_fingerprint.py` (the age is not stable),
+  `test_brief_run.py` (`SOURCE_APPS`), `test_my_day_prefs.py` and
+  `test_kb_my_day.py` (`MAX_KINDS`).
+- `test_flag_reload.py` and `test_flag_registry.py`: the flag and its one
+  reader.
 - `test_agent_label_fence.py`: unchanged, and green.
+- `feed.test.ts` (vitest): the label.
 
-**Done when.**
-1. Each fence above passes.
+**Done when (6b-1).**
+1. Each fence above passes, and the golden fixture is byte-equal.
 2. With the flag on, on the local stack (`scripts/dev_up.sh`), the card shows
-   in My Day for a seeded member with an old open PR. Captures in light mode,
-   at compact density, under a changed accent and at phone width go on task
-   4045 (the visual-review skill).
+   in My Day for a seeded member who has an old open PR. The PR body holds a
+   `Visual review:` line, with captures in light mode, at compact density,
+   under a changed accent and at phone width (the visual-review skill), and
+   one sentence on what the card's act does.
 3. With the flag off, My Day is the same as before.
 
-**Verify with.**
+**Verify with (6b-1).**
 
 ```
 eval "$(bash scripts/dev_db.sh --export)"
 PYTEST_ADDOPTS="-o timeout_method=thread" uv run pytest -p no:cacheprovider \
-  tests/unit/test_built_not_live_r8.py tests/unit/test_shell_feed.py \
-  tests/unit/test_feed_agent_questions.py tests/unit/test_flag_reload.py \
-  tests/unit/test_flag_registry.py tests/unit/test_agent_label_fence.py \
-  tests/unit/test_my_day_cache.py tests/unit/test_feed_task_kinds.py
+  tests/unit/test_built_not_live_r8.py tests/unit/test_claim_gate_r8.py \
+  tests/unit/test_shell_feed.py tests/unit/test_feed_agent_questions.py \
+  tests/unit/test_feed_rank.py tests/unit/test_reach_plan.py \
+  tests/unit/test_feed_fold_fingerprint.py tests/unit/test_brief_run.py \
+  tests/unit/test_my_day_prefs.py tests/unit/test_kb_my_day.py \
+  tests/unit/test_flag_reload.py tests/unit/test_flag_registry.py \
+  tests/unit/test_agent_label_fence.py tests/unit/test_my_day_cache.py \
+  tests/unit/test_feed_task_kinds.py
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/shell
 ```
 
