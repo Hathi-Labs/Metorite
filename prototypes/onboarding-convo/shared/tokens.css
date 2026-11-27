@@ -1,0 +1,116 @@
+/* Aroh onboarding demos: the shared "leading to dawn" look.
+   Every version links this file and uses these tokens only.
+   Light first. Sage carries the product, dawn yellow carries a reward. */
+
+@import url("https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600&display=swap");
+
+:root {
+  color-scheme: light;
+
+  /* Paper and surfaces */
+  --paper: #f5f7f0;          /* page background, pale sage cream */
+  --surface: #ffffff;        /* cards, bubbles of the assistant */
+  --surface-sunk: #ecf1e6;   /* wells, input background */
+  --line: #d9e2d0;           /* hairlines */
+
+  /* Sage scale */
+  --sage-50: #eef3e9;
+  --sage-100: #dfe9d6;
+  --sage-200: #c9d9bc;
+  --sage-300: #b2c8a3;
+  --sage-400: #9ab78b;       /* light sage, the signature colour */
+  --sage-500: #7fa172;
+  --sage-600: #5f8560;
+  --sage-700: #44694d;       /* text on sage-100, icons */
+  --sage-800: #2f5340;       /* primary button, strong accent */
+  --sage-900: #1f3a2d;
+
+  /* Ink */
+  --ink: #1d2a22;            /* body text */
+  --ink-soft: #55655a;       /* secondary text */
+  --ink-faint: #8a988d;      /* hints, timestamps */
+
+  /* Dawn: use for a reward, a first insight, the brief. Never for chrome. */
+  --dawn-50: #fdf8e4;
+  --dawn-100: #fbefc2;
+  --dawn-200: #f6e19a;       /* pastel yellow */
+  --dawn-300: #f2cf7a;
+  --dawn-peach: #f8dcc0;
+  --dawn-ink: #6b5417;       /* text on dawn-100 */
+
+  /* State */
+  --ok: #2f7d55;
+  --warn: #b7791f;
+  --risk: #b4533c;
+
+  /* The dawn sky: bottom is sage ground, top is first light */
+  --dawn-sky: linear-gradient(180deg, #fdf3cf 0%, #f8ecd0 22%, #eef1dd 55%, #dfe9d6 100%);
+  --dawn-glow: radial-gradient(60% 50% at 50% 0%, rgba(246, 225, 154, 0.75) 0%, rgba(246, 225, 154, 0) 70%);
+
+  /* Type */
+  --font-display: "Instrument Serif", "Iowan Old Style", Georgia, serif;
+  --font-body: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --text-xs: 12px;
+  --text-sm: 14px;
+  --text-md: 16px;
+  --text-lg: 20px;
+  --text-xl: 28px;
+  --text-2xl: 40px;
+  --text-3xl: 56px;
+
+  /* Shape and depth */
+  --r-sm: 8px;
+  --r-md: 14px;
+  --r-lg: 22px;
+  --r-pill: 999px;
+  --shadow-1: 0 1px 2px rgba(31, 58, 45, 0.06), 0 2px 8px rgba(31, 58, 45, 0.05);
+  --shadow-2: 0 4px 14px rgba(31, 58, 45, 0.08), 0 18px 40px rgba(31, 58, 45, 0.08);
+
+  /* Motion */
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --t-fast: 160ms;
+  --t-med: 320ms;
+  --t-slow: 700ms;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: var(--text-md);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.display { font-family: var(--font-display); font-weight: 400; letter-spacing: -0.01em; line-height: 1.08; }
+
+.btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  border: 0; border-radius: var(--r-pill);
+  padding: 11px 20px; font: 500 var(--text-sm)/1 var(--font-body);
+  background: var(--sage-800); color: #fff; cursor: pointer;
+  transition: transform var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+.btn:hover { background: var(--sage-900); }
+.btn:active { transform: scale(0.98); }
+.btn.quiet { background: transparent; color: var(--sage-800); box-shadow: inset 0 0 0 1px var(--sage-300); }
+.btn.quiet:hover { background: var(--sage-50); }
+
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  border-radius: var(--r-pill); padding: 8px 14px;
+  background: var(--surface); color: var(--sage-800);
+  box-shadow: inset 0 0 0 1px var(--sage-200);
+  font: 500 var(--text-sm)/1 var(--font-body); cursor: pointer;
+  transition: background var(--t-fast) var(--ease);
+}
+.chip:hover { background: var(--sage-50); }
+
+:focus-visible { outline: 2px solid var(--sage-600); outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; }
+}

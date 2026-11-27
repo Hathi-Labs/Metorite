@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Aroh · Setup call</title>
+<link rel="stylesheet" href="../shared/tokens.css">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="corner">
+  <a class="corner-link" href="../index.html">← All demos</a>
+</div>
+<div class="corner right">
+  <span class="demo-tag">Demo</span>
+  <button class="corner-link" id="restart" type="button">Restart</button>
+</div>
+
+<!-- 1. The incoming call -->
+<section class="screen ring" id="ring" aria-labelledby="ring-title">
+  <div class="ring-glow" aria-hidden="true"></div>
+  <div class="ring-card">
+    <div class="ring-orb" aria-hidden="true"><span></span><span></span><span></span></div>
+    <p class="ring-kicker">Incoming call</p>
+    <h1 class="display ring-title" id="ring-title">Aroh</h1>
+    <p class="ring-sub">Your setup call. About five minutes.<br>No forms. Just talk.</p>
+    <div class="ring-actions">
+      <button class="ring-btn decline" id="decline" type="button" aria-label="Not now">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 14.5c4.6-4 11.4-4 16 0l-2 2.4-3.2-1.4V13a12 12 0 0 0-5.6 0v2.5L6 16.9z"/></svg>
+      </button>
+      <button class="ring-btn answer" id="answer" type="button" aria-label="Answer the call">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.6 10.8a15 15 0 0 0 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1A17 17 0 0 1 3 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1z"/></svg>
+      </button>
+    </div>
+    <div class="ring-labels" aria-hidden="true"><span>Not now</span><span>Answer</span></div>
+    <p class="ring-later" id="ring-later" hidden>No problem. Aroh can call back any time.
+      <button class="linkish" id="answer-anyway" type="button">Take the call now</button></p>
+    <label class="voice-pref"><input type="checkbox" id="voice-pref" checked> Let Aroh speak out loud</label>
+  </div>
+</section>
+
+<!-- 2. The call -->
+<section class="screen call" id="call" hidden aria-label="Call with Aroh">
+  <header class="call-bar">
+    <div class="call-who">
+      <span class="live-dot" aria-hidden="true"></span>
+      <span class="call-name">Aroh</span>
+      <span class="call-time" id="call-time" aria-label="Call time">00:00</span>
+    </div>
+    <div class="call-controls">
+      <button class="ctl" id="mute" type="button" aria-pressed="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path class="on" d="M4 9v6h4l5 4V5L8 9zm12.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4z"/><path class="off" d="M4 9v6h4l5 4V5L8 9zm15.6 3 2.1-2.1-1.4-1.4-2.1 2.1-2.1-2.1-1.4 1.4 2.1 2.1-2.1 2.1 1.4 1.4 2.1-2.1 2.1 2.1 1.4-1.4z"/></svg>
+        <span id="mute-label">Mute Aroh</span>
+      </button>
+      <button class="ctl end" id="end" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 14.5c4.6-4 11.4-4 16 0l-2 2.4-3.2-1.4V13a12 12 0 0 0-5.6 0v2.5L6 16.9z"/></svg>
+        <span>End call</span>
+      </button>
+    </div>
+  </header>
+
+  <div class="call-body">
+    <main class="call-main">
+      <div class="orb-wrap">
+        <div class="orb" id="orb" aria-hidden="true">
+          <div class="orb-halo"></div>
+          <div class="orb-core"></div>
+        </div>
+        <p class="state" id="state" aria-live="polite">Connecting</p>
+      </div>
+
+      <div class="transcript" id="transcript" aria-live="polite" aria-label="Live transcript"></div>
+
+      <div class="reply" id="reply">
+        <p class="reply-hint" id="reply-hint">Say one of these, or type your own</p>
+        <div class="suggest" id="suggest"></div>
+        <form class="say" id="say" autocomplete="off">
+          <label class="sr" for="say-input">Type what you'd say</label>
+          <input id="say-input" type="text" placeholder="Type what you'd say…" enterkeyhint="send">
+          <button class="say-send" type="submit" aria-label="Say it">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h13m-5-6 6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </form>
+      </div>
+    </main>
+
+    <aside class="rail" aria-labelledby="rail-title">
+      <h2 class="rail-title" id="rail-title">What Aroh heard</h2>
+      <p class="rail-empty" id="rail-empty">Notes appear here as you talk.</p>
+      <ul class="notes" id="notes"></ul>
+    </aside>
+  </div>
+</section>
+
+<!-- The mock phone sheet: a link "to your phone" -->
+<div class="phone-scrim" id="phone" hidden>
+  <div class="phone" role="dialog" aria-modal="true" aria-labelledby="phone-title">
+    <div class="phone-notch" aria-hidden="true"></div>
+    <div class="phone-screen">
+      <p class="phone-from">Your phone · link from Aroh</p>
+      <div class="phone-app" id="phone-app"></div>
+      <h3 class="phone-title" id="phone-title"></h3>
+      <p class="phone-why" id="phone-why"></p>
+      <ul class="phone-scopes" id="phone-scopes"></ul>
+      <p class="phone-fine">Demo only. Nothing connects, and no data leaves this page.</p>
+      <button class="btn phone-allow" id="phone-allow" type="button">Allow</button>
+      <button class="btn quiet phone-deny" id="phone-deny" type="button">Not now</button>
+    </div>
+  </div>
+</div>
+
+<!-- 3. The first brief -->
+<section class="screen brief" id="brief" hidden aria-labelledby="brief-title">
+  <div class="brief-sky" aria-hidden="true"></div>
+  <div class="brief-inner">
+    <p class="brief-ended" id="brief-ended">Call ended · 04:52</p>
+    <p class="brief-kicker">Your first brief · <span id="brief-date"></span></p>
+    <h1 class="display brief-title" id="brief-title">Good morning, Rajesh.</h1>
+    <p class="brief-lede" id="brief-lede"></p>
+    <ol class="decisions" id="decisions"></ol>
+    <div class="brief-foot">
+      <p id="brief-foot-text">Aroh will send the next brief at 8:00 tomorrow, on WhatsApp.</p>
+      <button class="btn quiet" id="brief-restart" type="button">Take the call again</button>
+    </div>
+  </div>
+</section>
+
+<script src="app.js"></script>
+</body>
+</html>

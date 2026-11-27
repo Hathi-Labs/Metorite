@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Aroh in WhatsApp</title>
+  <meta name="theme-color" content="#2f5340">
+  <link rel="stylesheet" href="../shared/tokens.css">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <a class="corner corner-left" href="../index.html">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7" /></svg>
+    All versions
+  </a>
+  <div class="corner corner-right">
+    <span class="demo-tag">Demo</span>
+    <button class="corner-btn" type="button" data-restart>Restart</button>
+  </div>
+
+  <main class="stage">
+    <aside class="story" aria-label="About this version">
+      <p class="kicker">Version 2 · Messenger first</p>
+      <h1 class="display story-title">He never leaves the channel he trusts.</h1>
+      <p class="story-body">Rajesh does not install an app. Aroh writes to him first, in the
+        messenger he opens a hundred times a day. Each setup step is a message. Each
+        connection opens a small sheet inside the thread.</p>
+      <ol class="arc" id="arc">
+        <li data-arc="1">Tell me about your business</li>
+        <li data-arc="2">Aroh reflects back</li>
+        <li data-arc="3">Connect email</li>
+        <li data-arc="4">Connect the books</li>
+        <li data-arc="5">WhatsApp groups</li>
+        <li data-arc="6">Short or with detail</li>
+        <li data-arc="7">The first brief</li>
+      </ol>
+    </aside>
+
+    <div class="phone" id="phone">
+      <div class="statusbar" aria-hidden="true">
+        <span id="clock">9:41</span>
+        <span class="status-icons">
+          <svg viewBox="0 0 18 12"><rect x="0" y="8" width="3" height="4" rx="1"/><rect x="5" y="5.5" width="3" height="6.5" rx="1"/><rect x="10" y="3" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="12" rx="1"/></svg>
+          <svg viewBox="0 0 26 12"><rect x="0.5" y="0.5" width="22" height="11" rx="3" fill="none" stroke="currentColor"/><rect x="2" y="2" width="16" height="8" rx="2"/><rect x="23.5" y="4" width="2" height="4" rx="1"/></svg>
+        </span>
+      </div>
+
+      <header class="chat-head">
+        <a class="head-back" href="../index.html" aria-label="Back to all versions">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7" /></svg>
+        </a>
+        <span class="avatar" aria-hidden="true">
+          <svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="20" class="f-sage800"/><circle cx="20" cy="25" r="9" class="f-dawn"/><rect x="0" y="25" width="40" height="15" class="f-sage800"/><rect x="9" y="25" width="22" height="1.6" rx="0.8" class="f-sage200"/></svg>
+        </span>
+        <div class="head-text">
+          <div class="head-name">Aroh
+            <svg class="verified" viewBox="0 0 16 16" aria-label="Verified business"><path d="M8 0l2 1.6 2.5-.2.8 2.4 2.1 1.4-.8 2.4.8 2.4-2.1 1.4-.8 2.4-2.5-.2L8 16l-2-1.6-2.5.2-.8-2.4L.6 10.8l.8-2.4-.8-2.4 2.1-1.4.8-2.4 2.5.2z" class="f-sage400"/><path d="M4.8 8.2l2.1 2 4.3-4.4" fill="none" class="s-sage900" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div class="head-status" id="status" aria-live="polite">business account</div>
+        </div>
+        <span class="demo-tag head-demo">Demo</span>
+        <button class="head-btn" type="button" data-restart aria-label="Restart the demo">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.4-5.7M4 4v4h4" /></svg>
+        </button>
+      </header>
+
+      <div class="thread" id="thread" role="log" aria-live="polite" aria-label="Conversation with Aroh">
+        <div class="dawn-wash" aria-hidden="true"></div>
+        <div class="thread-inner" id="threadInner"></div>
+      </div>
+
+      <form class="composer" id="composer" autocomplete="off">
+        <label class="sr-only" for="input">Message</label>
+        <div class="input-pill">
+          <input id="input" type="text" placeholder="Message" enterkeyhint="send">
+        </div>
+        <button class="send" type="submit" aria-label="Send" id="sendBtn">
+          <svg class="ic-mic" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" fill="none"/></svg>
+          <svg class="ic-send" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12l16-8-6 16-2.5-6.5z" /></svg>
+        </button>
+      </form>
+
+      <div class="scrim" id="scrim" hidden></div>
+      <section class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle" hidden></section>
+      <section class="doc-view" id="docView" role="dialog" aria-modal="true" aria-label="Your first brief" hidden></section>
+    </div>
+
+    <aside class="learned" aria-label="What Aroh knows">
+      <p class="kicker">What Aroh knows</p>
+      <ul class="facts" id="facts">
+        <li class="fact-empty">Nothing yet. Aroh learns from the chat.</li>
+      </ul>
+    </aside>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
