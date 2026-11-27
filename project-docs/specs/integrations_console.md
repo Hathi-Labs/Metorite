@@ -1081,9 +1081,15 @@ TLY-2a builds the program's side first, against a fake link (`tests/unit/test_ta
 - An answer that comes back at once with no requests makes the program wait 1 s before the next poll.
 - Each poll carries `copy_at` (TLY-2b). The console can then say "Reads use the copy of 14:05" (§3.8.13 point 7). It is `null` when the copy is off or empty.
 
-### 3.9 Who can use an integration (task 3985, ACC-1 and ACC-2 BUILT)
+### 3.9 Who can use an integration (task 3985, ACC-1 and ACC-2 MERGED, ACC-3 BUILT)
 
-> **Status:** 🔨 **ACC-1 BUILT** (2026-11-26, task 3987, branch `mt-e90fb5c0-integration-access`, review fix rounds 1 and 2 done), dark behind `INTEGRATION_ACCESS_ORGS`. The flag flip waits for the owner preview. 🔨 **ACC-2 BUILT** (2026-11-26, task 3988, branch `mt-a65680e5-who-can-use`), the console control of §3.9.5, dark behind the same flag. ACC-3 and ACC-4 are a 📝 PLAN. The owner approved teams on 2026-11-26 (ACC-Q2), and ACC-Q4 in §10 is open.
+> **Status:** ✅ **ACC-1 MERGED** (task 3987, #2889), dark behind `INTEGRATION_ACCESS_ORGS`. The flag flip waits for the owner preview.
+
+> ✅ **ACC-2 MERGED** (task 3988, #2900, and the follow-on #2909), the console control of §3.9.5, dark behind the same flag.
+
+> 🔨 **ACC-3 BUILT** (2026-11-27, task 3989, branch `mt-fbef9dab-my-integrations`), the backend only: `GET /auth/me/integrations` (§3.9.4), dark behind the same flag. Another member builds the People tab.
+
+> ACC-4 is a 📝 PLAN. The owner approved teams on 2026-11-26 (ACC-Q2), and ACC-Q4 in §10 is open.
 
 This section holds the one rule of "who may use a connection". §3.8.8 and rule g of §3.8.7 use it.
 
@@ -1207,6 +1213,37 @@ Each site below reads the resolved access, so the rule reaches it with no change
 - Each write calls `record_admin_change` with the service, the mode and the subjects, and then `invalidate()` for all members.
 - The flag `INTEGRATION_ACCESS_ORGS` is empty by default. For an organization off the flag, each route answers 404 and the console shows no control. The resolver applies a rule that exists, whatever the flag says. So a flag change never widens access.
 
+**The self view (ACC-3).** `GET /auth/me/integrations` tells a member if they may use each integration, and why. `routes/admin/my_integrations.py` attaches it to `me_router`. It needs a signed-in member only, and no feature or admin right. It takes no parameter.
+
+1. An organization off `INTEGRATION_ACCESS_ORGS` gets 404 before any session opens.
+2. A caller with no address, or with access that is not active, gets 403.
+3. `get_org_id` gives the organization. The member row is the caller's own `app_user` row, from `find_member` with the session's address. The route does not use `user.user_id`, because it is an identity id under `IDENTITY_CUTOVER`. No row gets 403.
+4. A failed read of the closed list, or a failed read of the rules, gets 503. The route never sends a list with no reasons.
+
+The answer is `{"services": [...], "source": "integration-rule"}`. Each row is exactly `{"service", "kind", "name", "allowed", "reason"}`, and the rows are in the order of `service`. `kind` is `mcp` or `api`, and `name` is the service without its prefix.
+
+- The list is `closed_list` of `integration_access.py`, with no change. A stored rule of a service off the list does not show.
+- `allowed` is `user.access.has(integrations:use:<service>)`. It is the same resolver and the same cache that the chat's `_integration_authorizer` reads.
+- The reason comes from `_common.member_rule_access`. It is the one step of roles, overrides and `narrow`, and the admin preview calls it too.
+- When that step and `allowed` do not agree (the cache window of 60 seconds), `allowed` stays and the reason is `updating`.
+- A caller whose roles and allow overrides match no listed service (a guest) gets `{"services": [], "source": ..., "blocked": "no-role"}`. So a guest does not see the names of the MCP servers.
+- The answer never holds a mode, a team, a person, `set_by`, `set_at` or an address. That includes the caller's own team slugs.
+
+| Allowed | Case | Reason |
+|---|---|---|
+| Yes | A rule names the service, and the member holds `integrations:manage` | `admin` |
+| Yes | A rule names the service, and the member passes it | `on-rule` |
+| Yes | No rule, and a role gives it | `role` |
+| Yes | No rule, and an allow override gives it | `allowed-for-you` |
+| No | The member row is not active | `inactive` |
+| No | A rule refuses it, and the roles and overrides allow it | `rule` |
+| No | The code cannot read the rules, and the roles and overrides allow it | `rules-unreadable` |
+| No | A deny override | `denied-for-you` |
+| No | No role gives it | `no-role` |
+| Either | The cache and a fresh read do not agree yet | `updating` |
+
+A No row follows the order of `members._explain_ruled`. When the code cannot read the rules at all, a holder of `integrations:manage` sees `admin` on each row.
+
 #### 3.9.5 The screens and the chat
 
 - **Console (slice b).** Each row of Connections gets "Who can use", with the three modes, a group picker and a people picker. A row with no rule says "Everyone".
@@ -1222,6 +1259,8 @@ Each site below reads the resolved access, so the rule reaches it with no change
   - A stopped save moves the focus to "Reload the rule", or to the line that says why.
   - Fences: `app/integrations/lib/whoCanUse.test.ts`, `app/integrations/lib/accessSave.test.ts`, `app/integrations/components/WhoCanUse.test.tsx` and `app/integrations/components/accessWiring.test.ts`.
 - **My access (slice c).** The People app tab "My access" lists the integrations of the organization for the member, each with "Yes" or "No" and the reason. It never shows another member's name or list.
+  - **Backend built (ACC-3).** The tab reads `GET /auth/me/integrations` (§3.9.4). Another member builds the tab, and that work adds its own chat parity row.
+  - The answer is the member's solo access, and never the access of a room or a session. A shared room can still refuse a "Yes". A room of more than 200 members, or a failed read of a room, does not narrow. A delegated run acts as its parent, and a run with no member gets no filter. No field of the answer says these.
 - **Chat (slice d).** An admin asks the assistant to change a rule, and a card confirms it. This waits for the owner decision of PAR-6b (task 3932).
 
 ---
@@ -1363,7 +1402,7 @@ ACC-1 comes first. ACC-2 and ACC-3 need it.
 |---|---|---|---|---|
 | **ACC-1** (task 3987) 🔨 BUILT 2026-11-26, dark | 1 | Backend: the storage, the resolver step, the two routes, the audit line and the flag (§3.9.2 to §3.9.4). Modes: everyone, chosen people, chosen teams and admins only, with the two group-write rules | 🟢 AGENT-SAFE to build dark. HIGH risk. The flag flip waits for the owner preview | Rows ACC-a to ACC-g below |
 | **ACC-2** (task 3988) 🔨 BUILT 2026-11-26, dark | 1 | The "Who can use" control on each connection (§3.9.5) | 🟢 AGENT-SAFE to build. STANDARD: UI, with an owner preview | Visual review passes in four contexts |
-| **ACC-3** (task 3989) | 1 | The integrations list in My access, and `GET /auth/me/integrations` | 🟢 AGENT-SAFE to build. HIGH: it shows access | A member sees their own result only |
+| **ACC-3** (task 3989) 🔨 backend BUILT 2026-11-27, dark | 1 | The integrations list in My access, and `GET /auth/me/integrations`. This slice builds the route only. Another member builds the tab | 🟢 AGENT-SAFE to build. HIGH: it shows access | A member sees their own result only. Each reason of §3.9.4 maps to its case, and `allowed` equals the resolver and the chat authorizer. No body names another member, a team or `set_by`. A guest sees no service name. Org B changes nothing in org A (`test_auth_me_integrations.py`, `test_auth_me_integrations_r8.py`) |
 | **ACC-4** (task 3990) | 2 | The chat tool for admins, behind a card | 🔴 Waits for the owner decision of PAR-6b | Chat parity row |
 
 **ACC-1 acceptance, R8** (`test_integration_access_r8.py`, two organizations, a real database):
@@ -1421,6 +1460,16 @@ timeout 900 uv run pytest tests/unit/test_integration_access_rules.py tests/unit
 uv run ruff check packages/acb_auth apps/services/gateway/gateway/routes/admin
 ```
 
+**Verify ACC-3 (§3.9.4).** The first two files are new. No R8 suite may skip.
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+timeout 900 uv run pytest tests/unit/test_auth_me_integrations.py tests/unit/test_auth_me_integrations_r8.py \
+  tests/unit/test_integration_access_rules.py tests/unit/test_integration_access_r8.py \
+  tests/unit/test_org_access_enforcement.py tests/unit/test_auth_me_features.py -v -rs
+uv run ruff check packages/acb_auth apps/services/gateway/gateway/routes/admin
+```
+
 **Verify ACC-2 (§3.9.5).**
 
 ```bash
@@ -1461,6 +1510,7 @@ No R8 suite may skip.
 | The pairing start names no org, and the pending record holds no tenant data | `test_connector_pairing.py` (new) | LNK-1 |
 | Each link answer is framed, and it marks the session | `test_connector_link_injection.py` (new) | LNK-3 |
 | The pending record serves one approval and one poll | R8, `test_connector_pairing_r8.py` (new) | LNK-1 |
+| The self view names no other member | R8, `test_auth_me_integrations_r8.py` (new), and the sentinel of `test_auth_me_integrations.py` | ACC-3 |
 
 ---
 
