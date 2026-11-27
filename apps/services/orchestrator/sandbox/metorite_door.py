@@ -11,7 +11,10 @@ Rules (SBX-F22, ``tests/unit/test_sandbox_door_client.py``):
 * The module reads one environment value, ``METORITE_API_TOKEN``. The proxy
   settings of the container reach ``requests`` inside the library, and this
   module does not touch them.
-* It reads only. A write method is not here (SBX-3 adds the hold first).
+* It reads with GET, and it sends one write: :meth:`Door.batch`, a POST to
+  ``DOOR_URL + BATCH_PATH`` only (SBX-3b, §12.5 decision 8). The door holds
+  each row of a batch for the member's card, and runs only a ticked row. No
+  other method and no other write path is here.
 * An error never holds the token, a header value or the body of an answer.
 
 It uses the standard library and ``requests`` only.
@@ -28,7 +31,17 @@ from typing import Any
 
 import requests
 
-__all__ = ["DOOR_URL", "PAGED_ROUTES", "PAGE_CAP", "Door", "DoorError", "Paging"]
+__all__ = [
+    "BATCH_PATH",
+    "BATCH_TIMEOUT_S",
+    "DOOR_URL",
+    "MAX_BATCH_ROWS",
+    "PAGED_ROUTES",
+    "PAGE_CAP",
+    "Door",
+    "DoorError",
+    "Paging",
+]
 
 #: The door on the org's internal network of the box (§12.3 decision 2).
 DOOR_URL = "http://metorite-api.sandbox"
@@ -41,6 +54,25 @@ _CAPABILITY_RE = re.compile(r"^msbx_[A-Za-z0-9_-]{43}$")
 
 #: The page cap of the door (§12.2 decision 9).
 PAGE_CAP = 100
+
+#: The one write path of the door (§12.5 decision 4).
+BATCH_PATH = "/sandbox/v1/batch"
+
+#: The rows of one batch (§12.5 decision 4).
+MAX_BATCH_ROWS = 25
+
+#: The methods of a batch row. A DELETE never goes through the door.
+BATCH_METHODS = frozenset({"POST", "PUT", "PATCH"})
+
+#: The wait of a held batch, in seconds: the default of the gateway setting
+#: ``sandbox_approval_timeout_seconds``. The image cannot read the setting,
+#: so ``test_sandbox_door_client.py::test_batch_posts_to_the_door_only``
+#: compares this value with the default of the setting.
+APPROVAL_WAIT_S = 300
+
+#: The read timeout of a batch: the wait of the cards plus 60 seconds, so the
+#: door answers before the client stops reading.
+BATCH_TIMEOUT_S = float(APPROVAL_WAIT_S + 60)
 
 #: The longest wait before the one retry of a 503, in seconds.
 RETRY_WAIT_CAP_S = 5.0
@@ -156,6 +188,35 @@ def _checked_path(path: str) -> str:
     return path
 
 
+def _batch_rows(rows: Any) -> list[Any]:
+    if not isinstance(rows, list) or not 1 <= len(rows) <= MAX_BATCH_ROWS:
+        raise ValueError(f"rows must be a list of 1 to {MAX_BATCH_ROWS} rows.")
+    return rows
+
+
+def _batch_row(row: Any) -> dict[str, Any]:
+    """One row of a batch, with exactly the four keys of the door."""
+    if not isinstance(row, dict) or not set(row) <= {"method", "path", "query", "body"}:
+        raise ValueError("A row holds method, path, body and an optional query.")
+    method = row.get("method")
+    if not isinstance(method, str) or method.upper() not in BATCH_METHODS:
+        raise ValueError("The method of a row must be POST, PUT or PATCH.")
+    query = row.get("query", {})
+    if not isinstance(query, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in query.items()
+    ):
+        raise ValueError("The query of a row must be an object of strings.")
+    body = row.get("body")
+    if not isinstance(body, dict):
+        raise ValueError("The body of a row must be a JSON object.")
+    return {
+        "method": method.upper(),
+        "path": _checked_path(row.get("path")),
+        "query": query,
+        "body": body,
+    }
+
+
 def _retry_after(answer: requests.Response) -> float | None:
     value = (answer.headers.get("Retry-After") or "").strip()
     if not re.fullmatch(r"[0-9]{1,6}", value):
@@ -245,6 +306,41 @@ class Door:
         if not isinstance(body, (dict, list)):
             raise DoorError("bad_answer", status=200, path=path)
         return body
+
+    def batch(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Send the write rows of one batch to the door, and return the answer
+        of each row, in the order of the rows.
+
+        Each row is ``{"method", "path", "body"}``, with an optional
+        ``"query"`` of strings. The door holds the rows for the member's card.
+        Only a row that the member ticks runs, as the member. The call waits
+        for each card, up to :data:`BATCH_TIMEOUT_S`. A refused or a timed-out
+        row comes back with a 403 and its door code. The call is not retried.
+        """
+        wire = [_batch_row(row) for row in _batch_rows(rows)]
+        token = _capability()
+        try:
+            answer = self._session.post(
+                DOOR_URL + BATCH_PATH,
+                json={"rows": wire},
+                headers={CAPABILITY_HEADER: token, "Accept": "application/json"},
+                timeout=BATCH_TIMEOUT_S,
+                auth=_NO_AUTH,
+                allow_redirects=False,
+            )
+        except requests.RequestException:
+            # The text of a requests error can hold the proxy URL or a header.
+            raise DoorError("unreachable", path=BATCH_PATH) from None
+        if answer.status_code != 200:
+            raise _error(answer, BATCH_PATH)
+        try:
+            body = answer.json()
+        except ValueError:
+            raise DoorError("bad_answer", status=200, path=BATCH_PATH) from None
+        out = body.get("rows") if isinstance(body, dict) else None
+        if not isinstance(out, list) or not all(isinstance(r, dict) for r in out):
+            raise DoorError("bad_answer", status=200, path=BATCH_PATH)
+        return out
 
     def pages(
         self,

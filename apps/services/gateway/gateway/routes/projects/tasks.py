@@ -175,6 +175,7 @@ from gateway.routes.projects.relations import (
     insert_task_link,
 )
 from gateway.routes.projects.tags import apply_task_tags
+from gateway.routes.projects.team_scope import TeamScope, resolve_team_scope
 from gateway.routes.projects.text_links import link_from_text, saved_texts
 from gateway.routes.projects.watchers import ensure_watchers
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
@@ -669,6 +670,7 @@ async def _task_scope(
     mine: bool, include_triage: bool, unheld: bool,
     agent_clauses: list[str], agent_params: dict[str, Any],
     filters: dict[str, Any],
+    team: TeamScope | None = None,
 ) -> tuple[str, str, str, dict[str, Any]]:
     """``(walk_cte, walk_join, where, params)`` of one task read.
 
@@ -676,10 +678,16 @@ async def _task_scope(
     org, group grants, connection pins) to the project scope and the filters.
     ``GET /projects/tasks`` and ``GET /projects/tasks/stats`` both call it, so
     a count and a list read the same set. The fence is
-    ``tests/unit/test_board_stats_r8.py``.
+    ``tests/unit/test_board_stats_r8.py``. ``GET /projects/teams`` counts the
+    tasks of a team through it too (T-1).
     """
     clauses: list[str] = [task_visibility_clause(vis)]
     params: dict[str, Any] = dict(vis.params)
+    if team is not None:
+        # WS-39 T-1. ANDed beside the visibility clause, so a team scope
+        # narrows the read and never widens it (§14.9 rule 5).
+        clauses.append(team.project_clause("t.project_id"))
+        params.update(team.params)
     if mine:
         # ANDed beside the visibility clause, so "mine" narrows the
         # board and never widens it (WS-64 OP-11).
@@ -843,6 +851,9 @@ async def list_tasks(
     # backlog of the Backlog canvas (`cycle_filter_clauses`). Dark behind
     # `PROJECTS_SPRINTS_ORGS`, like the cycle routes.
     cycle: str | None = None,
+    # WS-39 T-1. A team slug or `all` (`team_scope.py`). A slug narrows the
+    # read to the projects of one team of the caller. Dark behind TEAMS_ORGS.
+    team: str | None = None,
 ) -> TaskListResponse:
     """The one task-list endpoint every surface reads through.
 
@@ -927,6 +938,7 @@ async def list_tasks(
                 title_prefix=title_prefix, type_id=type_id, type_name=type_name,
                 task_number=task_number,
             ),
+            team=await resolve_team_scope(db, user, vis, team),
         )
         total = (await db.execute(
             text(f"{walk_cte}SELECT count(*) FROM pm_tasks t{walk_join}{where}"),
@@ -1062,6 +1074,9 @@ async def task_stats(
     updated_after: str | None = None,
     created_after: str | None = None,
     title_prefix: str | None = None,
+    # WS-39 T-1. The team scope of `GET /projects/tasks`, so a count and the
+    # list read the same set under a team too.
+    team: str | None = None,
 ) -> dict:
     """Counts of the tasks this caller can see (MCP-G19a).
 
@@ -1100,6 +1115,7 @@ async def task_stats(
                 updated_after=updated_after, created_after=created_after,
                 title_prefix=title_prefix,
             ),
+            team=await resolve_team_scope(db, user, vis, team),
         )
         total = (await db.execute(
             text(f"{walk_cte}SELECT count(*) FROM pm_tasks t{walk_join}{where}"),

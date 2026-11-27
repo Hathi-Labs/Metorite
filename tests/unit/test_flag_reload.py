@@ -202,6 +202,7 @@ _READERS = {
     "STUDIO_LOGIC_ORGS": ("gateway.routes.studio.flags", "logic_allowed"),
     "STUDIO_NUM_F8_ORGS": ("acb_common.studio_flags", "num_f8_allowed"),
     "STUDIO_SEARCH_ORGS": ("gateway.routes.studio.flags", "search_allowed"),
+    "TEAMS_ORGS": ("gateway.routes.projects.team_scope", "teams_allowed"),
     "WORKFLOW_STUDIO_GATE_ORGS": ("gateway.routes.workflows.core", "author_gate_on"),
 }
 

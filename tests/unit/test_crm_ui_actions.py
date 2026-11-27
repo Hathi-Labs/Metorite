@@ -62,7 +62,8 @@ SPEC = REPO_ROOT / "project-docs" / "specs" / "crm_conversational.md"
 #: CRM-M3b (task 2041) raised it by one, for the dark route
 #: ``PATCH /crm/pipelines/{pipeline_id}/stages/{status_id}``, a CRM-M2j row.
 #: The spec records why (crm_conversational.md "Built as (CRM-M3b)").
-PLANNED_CEILING = 79
+#: Task 3953 (CRM-M2f, CRM-M2i) paid eight rows of the Field map and the plan (79 to 71).
+PLANNED_CEILING = 71
 
 #: The directory of the CRM client files, relative to ``src``.
 CLIENT_DIR = "app/crm/lib/"

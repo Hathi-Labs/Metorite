@@ -246,3 +246,46 @@ export function fileLabel(value: unknown): string {
 export function newButtonState(owner: boolean, createDeclared: boolean): "hidden" | "off" | "on" {
   return !owner ? "hidden" : createDeclared ? "on" : "off";
 }
+
+/** The most facts in the header of a record (spec `studio_layouts.md` L6: 3 to 5). */
+export const MAX_FACTS = 4;
+
+export interface RecordFact {
+  key: string;
+  label: string;
+  /** The field, so the header draws the value as the Detail sheet does. */
+  field: { key: string; type: string; label?: string; many?: boolean; options?: readonly string[] };
+  value: unknown;
+}
+
+/**
+ * The facts of a record header: up to `MAX_FACTS` fields that hold a value, a select first (it is the
+ * status of the record), then the others in the order of the object. The title field, a long text, a rich
+ * text, a file and a lines relation stay out: the title is the heading, and the others are tall or hold
+ * no short value. A field with no value stays out, so the header never shows a row of dashes.
+ */
+export function recordFacts(
+  fields: readonly RecordFact["field"][],
+  record: Record<string, unknown>,
+  titleKey: string | null,
+  max: number = MAX_FACTS,
+): RecordFact[] {
+  const long = new Set(["longText", "richText", "file"]);
+  const held = fields.filter((f) => {
+    if (f.key === titleKey || long.has(f.type) || typeof (f as { lines?: unknown }).lines === "string") return false;
+    const v = record[f.key];
+    return !(v === null || v === undefined || v === "" || (Array.isArray(v) && v.length === 0));
+  });
+  const ordered = [...held.filter((f) => f.type === "select"), ...held.filter((f) => f.type !== "select")];
+  return ordered.slice(0, Math.max(0, max)).map((f) => ({ key: f.key, label: f.label || f.key, field: f, value: record[f.key] }));
+}
+
+/** The number of files that a record holds, over its file fields. */
+export function fileCount(fields: readonly { key: string; type: string }[], record: Record<string, unknown> | undefined): number {
+  if (!record) return 0;
+  return fields.filter((f) => f.type === "file").reduce((n, f) => {
+    const v = record[f.key];
+    const items = Array.isArray(v) ? v : v === null || v === undefined ? [] : [v];
+    return n + items.filter((x) => typeof x === "object" && x !== null && typeof (x as { id?: unknown }).id === "string").length;
+  }, 0);
+}

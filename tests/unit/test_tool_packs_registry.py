@@ -601,17 +601,22 @@ def test_the_crm_pack_holds_ten_tools_of_the_crm_assistant() -> None:
     orchestrator does not hold it. Mutation: add a tool the owner lacks, or
     drop one of the 10 -> red."""
     scope = _crm_own_tool_scope()
-    # 32: 22 since CRM-M1, crm_update_record and crm_update_task of CRM-M2b,
+    # 38: 22 since CRM-M1, crm_update_record and crm_update_task of CRM-M2b,
     # crm_create_pipeline of CRM-M3a, the two set-up writes of CRM-M2e (task
-    # 3951), and the five tools of the suggestions and the AI analysis (P-3,
-    # task 3954). The owner chooses the pack of a tool, so those seven are in
-    # no pack yet: with the 12 shared reads, 19 tools are in no pack.
-    assert len(scope) == 32, "non-vacuity: the owner declares 32 tools"
+    # 3951), the five tools of the suggestions and the AI analysis (P-3, task
+    # 3954), and the six tools of the Field map and its plan (CRM-M2f, CRM-M2i,
+    # task 3953). 22 + 2 + 1 + 2 + 5 + 6 = 38. The owner chooses the pack of a
+    # tool, so those thirteen are in no pack yet: with the 12 shared reads, 25
+    # tools are in no pack (12 + 2 + 5 + 6 = 25).
+    assert len(scope) == 38, "non-vacuity: the owner declares 38 tools"
     family = sf.SKILL_FAMILIES["crm-records"]
     assert tuple(family["tools"]) == CRM_TOOLS and family["owner"] == CRM
     assert set(family["tools"]) <= scope
     assert scope - set(family["tools"]) >= {"crm_edit_status", "crm_edit_lost_reason"}
-    assert len(scope - set(family["tools"])) == 19
+    assert scope - set(family["tools"]) >= {
+        "crm_field_map", "crm_edit_field_rule", "crm_list_mapping_plans",
+        "crm_draft_mapping_plan", "crm_approve_mapping_plan", "crm_restore_mapping_plan"}
+    assert len(scope - set(family["tools"])) == 25
     assert "crm_change_history" in family["tools"]
     assert "crm_change_history" not in _orchestrator_scope()
 
