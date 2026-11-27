@@ -51,6 +51,7 @@ from .base import (
     SyncResult,
     canonical_folder,
     find_unsubscribe_link_in_html,
+    guard_client,
     normalize_content_id,
     received_key,
 )
@@ -391,6 +392,20 @@ def _repeatable(request: httpx.Request) -> bool:
         return True
     return (request.method == "POST"
             and request.url.path.endswith(_REPEATABLE_POST_ACTIONS))
+
+
+def _write_kind(request: httpx.Request) -> str | None:
+    """``"send"`` or ``"draft"`` for a POST that writes mail, else None
+    (HRD-20). The upload URI ends in the same path. A PUT that updates a draft
+    is repeatable, so it keeps its old path."""
+    if request.method != "POST":
+        return None
+    path = request.url.path.rstrip("/")
+    if path.endswith(("/messages/send", "/drafts/send")):
+        return "send"
+    if path.endswith("/drafts"):
+        return "draft"
+    return None
 
 
 async def _is_rate_limit(response: httpx.Response) -> bool:
@@ -1364,12 +1379,12 @@ class GmailProvider(BaseEmailProvider):
         # call through this client gets one rule.
         if self._http is None:
             await self.authenticate()
-            self._http = httpx.AsyncClient(
+            self._http = guard_client(httpx.AsyncClient(
                 base_url=GMAIL_API_BASE,
                 headers={"Content-Type": "application/json"},
                 auth=GmailBearer(self),
                 timeout=30.0,
-            )
+            ), "Gmail", _write_kind, retry_reads=False)
         return self._http
 
     def _record_fetch_failure(self, message_id: Any, exc: BaseException) -> str:

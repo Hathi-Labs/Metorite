@@ -193,9 +193,10 @@ CAPABILITIES: tuple[str, ...] = (
     # right to share a package or a skill with other people, and to approve
     # the manifest diff of that share (J2). A member builds and publishes a
     # private app for themselves with `feature:studio` and ownership only
-    # (STU-Q4b). Before J2 one route checks this verb: the org and group
+    # (STU-Q4b). Before J2 two routes check this verb: the org and group
     # install of WS-PKG PKG-8b (`routes/studio/packages.install_package`), a
-    # share to others (D180.3). The owner holds it through `*`. Its seed on
+    # share to others (D180.3), and its uninstall of PKG-8e
+    # (`uninstall_package`). The owner holds it through `*`. Its seed on
     # `admin` is J1-2 (Metorite task 1707).
     "studio:publish",
 )

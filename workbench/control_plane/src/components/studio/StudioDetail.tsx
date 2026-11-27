@@ -10,11 +10,15 @@
  * Table cell does. The sheet is generic. A caller adds its own actions beside it.
  */
 import { ValueElement } from "@/components/CardFieldValue";
-import { displayValue, labelOf, safeHref } from "@/lib/studio/blocks";
+import { MarkdownBody } from "@/components/MarkdownMessage";
+import { accentForHue } from "@/lib/statusAccent";
+import { FLAG_HUE, displayValue, labelOf, quantityReading, safeHref } from "@/lib/studio/blocks";
 import type { FieldSpec } from "@/lib/studio/fieldCheck";
+import { fileLabel } from "@/lib/studio/recordPageModel";
 
 function Value({ field, value }: { field: FieldSpec; value: unknown }) {
-  const text = displayValue(field, value);
+  // A file holds an attachment id. The sheet says that a file is there, and never shows the id (STU-AF5).
+  const text = field.type === "file" ? fileLabel(value) : displayValue(field, value);
   if (text === "") return <span className="text-muted-foreground">—</span>;
   const items = Array.isArray(value) ? value : [value];
   switch (field.type) {
@@ -47,6 +51,35 @@ function Value({ field, value }: { field: FieldSpec; value: unknown }) {
       return <span className="break-all">{text}</span>;
     case "longText":
       return <span className="whitespace-pre-wrap break-words">{text}</span>;
+    case "richText":
+      // The one markdown seam. It makes no element of raw HTML, and the check refuses a tag.
+      // A heading in the text stays at the size of the sheet, so it never outranks its label.
+      return (
+        <div className="flex min-w-0 flex-col gap-1 break-words [&_h1:not(:first-child)]:!mt-2 [&_h1:first-child]:!mt-0 [&_h1]:!text-xs [&_h2:not(:first-child)]:!mt-2 [&_h2:first-child]:!mt-0 [&_h2]:!text-xs [&_h3:not(:first-child)]:!mt-2 [&_h3:first-child]:!mt-0 [&_h3]:!text-xs [&_h4:not(:first-child)]:!mt-2 [&_h4:first-child]:!mt-0 [&_h4]:!text-xs [&_h5:not(:first-child)]:!mt-2 [&_h5:first-child]:!mt-0 [&_h5]:!text-xs [&_h6:not(:first-child)]:!mt-2 [&_h6:first-child]:!mt-0 [&_h6]:!text-xs">
+          {items.map((v, i) => <MarkdownBody key={i} content={String(v)} />)}
+        </div>
+      );
+    case "quantity":
+      // STU-C24a: the flag is a chip from `statusAccent`, and its word is always in it.
+      return (
+        <span className="flex flex-col gap-0.5">
+          {items.map((v, i) => {
+            const q = quantityReading(field, v);
+            const hue = q ? FLAG_HUE[q.flag] : undefined;
+            return q ? (
+              <span key={i} className="inline-flex flex-wrap items-center gap-1.5">
+                {q.text}
+                {q.word && hue && (
+                  <span data-flag={q.flag}
+                    className={`rounded-md px-1.5 py-0.5 text-xs font-medium ${accentForHue(hue).chip}`}>{q.word}</span>
+                )}
+              </span>
+            ) : null;
+          })}
+        </span>
+      );
+    case "barcode":
+      return <span className="break-all font-mono">{text}</span>;
     default:
       return <span className="break-words">{text}</span>;
   }

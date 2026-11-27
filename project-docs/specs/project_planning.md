@@ -190,6 +190,8 @@ A delete stays a single guarded act (class C). No batch tool deletes.
 
    **Since ALN-4.** `projects-authority` holds 3 tools, and it is on wherever the core pack is on. WS-39 LP-1a adds the two tools of a project update to it, so it holds 5 (`project_management_app.md` §14.2a). It does not count in the reach test, because it holds fewer than `REACH_MIN_TOOLS` tools (fix round 4). Before fix round 4 it kept the owner reached up to 107 tools while no work pack fitted. Then a bulk load beside the core and plan packs refused with `LOAD_NO_PATH`, and the chat handed off one round later.
 
+   **Since SP-5a.** The pack `projects-cycles` comes after `projects-authority`. It holds 6 tools: `list_cycles`, `cycle_detail`, `create_cycle`, `plan_cycle`, `start_cycle` and `close_cycle`. It follows the core pack (`FOLLOWS`), so it needs no flag change. It holds fewer than `REACH_MIN_TOOLS` tools, so it does not count in the reach test (`project_management_app.md` §13.2).
+
 These tests changed because their premise changed:
 
 - `test_projects_packs.py`: `SLUGS` and `SIZES` (:69 to :71), the 120-tool union (:119) and the "35 tools" answer (:716).
@@ -247,6 +249,7 @@ Production's list names `projects-plan` and `projects`, so both following packs 
 **PJP-6a defaults (built).** Each default below is in the code as a named constant or a documented rule.
 - `REVIEW_WAIT_MINS = 60` per slice. SW-93 replaces it. Duration = `estimate_mins` + `REVIEW_WAIT_MINS`. A task with no estimate counts 0 minutes for the estimate, still gets the wait, is listed in `missing`, and never stops the read.
 - A working day is 360 minutes (`WORKING_DAY_MINS`). Dates skip Saturday and Sunday. No holidays. Day 1 is the start date, or the next Monday when the start is a weekend.
+- **A finish with no estimate (task 2473).** A slice with no estimate counts for its review wait only, so the finish never reads as a length of work. When no open slice has an estimate, the finish is `unknown`: no minutes, no days, no date, and `guessed` is the count of such slices. When some have none, the date stays and `guessed` names how many it guessed. A plan with every estimate has no `guessed` key. `get_plan` and the chat answer say so in `words`.
 - A slice is an open leaf under the root: a task with no children. An epic-to-epic `blocks` link expands to every slice of the blocker epic blocking every slice of the blocked epic. That is the strict reading, and it needs no extra data. A done slice blocks nothing.
 - A blocker outside the root that is done is ignored. A blocker outside the root that is open holds its task, and the result names it in `outside_blockers`. A slice that it holds, and each slice after it, is in `held` and has no wave. A blocker that the caller cannot see is counted in `hidden.outside_blockers` and does not hold the task.
 - A link is not a dependency when both ends are the same task, or when one end is a parent (or any ancestor) of the other. The engine drops it before the expansion and lists it in `ignored_links` as `{blocker, blocked, reason}`, with the reason "same task" or "parent and child". It is never a cycle.

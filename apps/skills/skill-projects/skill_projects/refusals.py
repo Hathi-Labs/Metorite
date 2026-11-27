@@ -21,6 +21,10 @@ applied where the agent registers its tools (``agent-projects/agents.py``):
 * :func:`unknown_argument_text` is the answer to a call with an argument the
   tool does not declare. MAF drops such an argument in silence, and the call
   then succeeds without it. The agent's strict tool refuses it by name.
+* :class:`CardClosedByChat` is no refusal. The member wrote in the chat while
+  the tool's card was open (task 2494), so ``writes._confirm`` raises it, and
+  nothing is written. :func:`refusals_as_text` gives its message to the model
+  as the tool's whole answer.
 
 The generic half lives in ``acb_common.tool_refusals``, the ONE seam that
 the CRM and email tools share. This module holds the Projects words (its
@@ -32,16 +36,21 @@ Fences: F4 and F5, ``tests/unit/test_projects_agent_refusals.py``.
 from __future__ import annotations
 
 import difflib
+import functools
+import inspect
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
 from acb_common import tool_refusals as _shared
 from acb_common.tool_refusals import REFUSED, WRAPPED_ATTR, GatewayRefusal, RefusalVoice
 
+from skill_projects.client import resolve_task_refs
+
 __all__ = [
     "PROJECTS_VOICE",
     "REFUSED",
     "WRAPPED_ATTR",
+    "CardClosedByChat",
     "bad_value_text",
     "refusal_text",
     "refusals_as_text",
@@ -70,6 +79,48 @@ def refusal_text(exc: GatewayRefusal) -> str:
     return _shared.refusal_text(exc, PROJECTS_VOICE)
 
 
+class CardClosedByChat(Exception):
+    """The member wrote in the chat while the card was open (task 2494).
+
+    ``writes._confirm`` raises it when ``request_confirmation`` gives
+    ``REVISED``, so no line after the card runs and nothing is written. It is
+    not a refusal and not a decline. Its message is the tool's whole answer,
+    which :func:`refusals_as_text` gives to the model as it is.
+    """
+
+
+def _task_ref_params(fn: Callable[..., Any]) -> tuple[str, ...]:
+    """The parameters of *fn* that hold a task id or a list of them."""
+    try:
+        names = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return ()
+    return tuple(n for n in names if n.endswith(("task_id", "task_ids")))
+
+
+async def _resolve_task_numbers(
+    fn: Callable[..., Any],
+    params: tuple[str, ...],
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    """The call with each task number swapped for its id (HRD-2, B3).
+
+    ``uuid_of`` is the one gate of about 120 call sites, and it is
+    synchronous. The model gives ``244`` or ``#244`` because it reads task
+    numbers on every line. This step is the one place that resolves them, in
+    the member's org, through the search route that ``find_tasks`` uses.
+    """
+    try:
+        bound = inspect.signature(fn).bind_partial(*args, **kwargs)
+    except TypeError:
+        return args, kwargs  # the call is malformed. The tool itself refuses it.
+    for name in params:
+        if name in bound.arguments:
+            bound.arguments[name] = await resolve_task_refs(bound.arguments[name])
+    return bound.args, bound.kwargs
+
+
 def refusals_as_text(
     fn: Callable[..., Awaitable[Any]],
 ) -> Callable[..., Awaitable[Any]]:
@@ -77,9 +128,29 @@ def refusals_as_text(
 
     Each refusal writes ONE warning, ``projects.tool_refused``, with the
     tool, the status and the route template. See
-    :func:`acb_common.tool_refusals.refusals_as_text`.
+    :func:`acb_common.tool_refusals.refusals_as_text`. A
+    :class:`CardClosedByChat` answers with its own message. A *fn* that is
+    already wrapped comes back as it is.
     """
-    return _shared.refusals_as_text(fn, PROJECTS_VOICE)
+    if getattr(fn, WRAPPED_ATTR, False):
+        return fn
+
+    task_params = _task_ref_params(fn)
+
+    @functools.wraps(fn)
+    async def closed_card_as_text(*args: Any, **kwargs: Any) -> Any:
+        try:
+            if task_params:
+                args, kwargs = await _resolve_task_numbers(fn, task_params, args, kwargs)
+            return await fn(*args, **kwargs)
+        except CardClosedByChat as closed:
+            return str(closed)
+
+    wrapped = _shared.refusals_as_text(closed_card_as_text, PROJECTS_VOICE)
+    # Two layers, one tool: ``__wrapped__`` names the tool itself, so a pack
+    # that reuses it still shows one write path (test_calendar_day_pack.py).
+    wrapped.__wrapped__ = fn
+    return wrapped
 
 
 def bad_value_text(tool: str, fields: Iterable[str]) -> str:

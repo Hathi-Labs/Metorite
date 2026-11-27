@@ -1,6 +1,6 @@
 ---
 slug: kit/plan-the-work
-version: 5
+version: 6
 title: "Kit: plan the work on the board"
 summary: How an agent turns a goal into epics and slices on a Metorite board, with the approval of a person at each gate, using the tools of today.
 audience: agent
@@ -18,6 +18,7 @@ This page tells an agent how to plan a goal on a Metorite board with the tools t
 4. **Do not guess dates or paths.** Read the order with `get_plan`, and use its answer and not your own. Where it cannot answer yet, write the order down and show your sums.
 5. **The person decides.** Ask with `ask_on_task`. Do not ask only in the terminal.
 6. **Plan a ladder of rungs.** Each rung ends in a demo that a person can see and use. Gate 1 draws the ladder.
+7. **The ladder is the default, and the person may change it.** See "Find the way of working" below.
 
 ## Before you start
 
@@ -25,6 +26,15 @@ This page tells an agent how to plan a goal on a Metorite board with the tools t
 2. Find or make a planning task in the project, and claim it (`claim_task`). Its run holds your questions and your progress lines.
 3. Call `get_project` for the project. Keep three things: the status ids, the type whose `is_epic` is true, and the tags. Call `list_tags` for the tags of every project, and reuse a name that exists. Call `list_members` for the people you may assign.
 4. Check that your connection can write. `whoami` shows the scopes.
+
+## Find the way of working
+
+Do this before Gate 1.
+
+1. Use the ladder, unless the project turns it off or the person asks for another way.
+2. A plan-driven project plans by milestones, phase gates and the critical path. It does not use the ladder.
+3. When `get_project` shows the style of the project, read it. Until then, ask the person if the project does not say.
+4. Plan in the chosen way. Say which way you use in the question of Gate 1.
 
 ## Gate 1: what
 

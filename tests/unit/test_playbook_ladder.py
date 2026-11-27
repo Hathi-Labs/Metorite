@@ -56,3 +56,21 @@ def test_plan_slices_steps_group_into_rungs_first():
     assert "rung 0" in steps
     assert "foundation rides with the rung" in steps
     assert steps.index("group the work into rungs") < steps.index("cut the slices of rungs 1 to 3")
+
+
+@pytest.mark.parametrize("slug", ("kit/plan-the-work", "kit/skill/planning"))
+def test_page_names_the_default_and_the_way_to_change_it(slug):
+    body = _page(slug)
+    if slug == "kit/plan-the-work":
+        assert "the ladder is the default" in body
+        assert "asks for another way" in body
+        assert "plan-driven" in body
+    else:
+        assert "where the ladder is off" in body
+        assert "critical path" in body
+
+
+def test_plan_slices_checks_the_way_of_working_first():
+    steps = _steps()
+    assert steps.index("way of working") < steps.index("group the work into rungs")
+    assert "default" in steps

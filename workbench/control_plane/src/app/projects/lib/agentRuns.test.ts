@@ -41,6 +41,7 @@ import {
   hasConfirmOption,
   replacePayload,
   CLIENT_LABELS,
+  WAITING_ON_LABELS,
   activityAttribution,
   githubMergeReason,
   viaLabel,
@@ -115,6 +116,23 @@ describe("the pill: state → text, by the table in §12.1", () => {
     expect(agentPillText("stale", facts).text).toBe("Claude Code idle");
     expect(agentPillText("stopping", facts).text).toBe("Stopping");
     expect(agentPillText("failed", facts).text).toBe("Agent failed");
+    // Task 1045a: the pill says that the agent waits, and the hover says on what.
+    const wait = {
+      ...facts,
+      waiting: { on: "review" as const, until: "2026-11-06T11:00:00Z" },
+      nowMs: Date.parse("2026-11-06T10:30:00Z"),
+    };
+    expect(agentPillText("waiting", wait)).toEqual({
+      text: "Claude Code waiting",
+      title: "Claude Code waiting on a review · about 30 min",
+    });
+    // Owner, 2026-11-07: the agent's own sub-agents are work, never a wait.
+    // `agent` is another (external) agent.
+    expect(Object.keys(WAITING_ON_LABELS)).toEqual(["ci", "review", "deploy", "member", "agent"]);
+    expect(WAITING_ON_LABELS.agent).toBe("another agent");
+    expect(
+      agentPillText("waiting", { ...wait, waiting: { on: "agent" as const } }).title,
+    ).toBe("Claude Code waiting on another agent");
   });
 
   it("shows the newest thought as the tooltip of working", () => {
@@ -176,6 +194,9 @@ describe("the pill: state → accent, through statusAccent.ts", () => {
     expect(AGENT_STATES.failed.hue).toBe("red"); // error
     expect(AGENT_STATES.stale).toMatchObject({ hue: "gray", muted: true });
     expect(AGENT_STATES.stopping).toMatchObject({ hue: "gray", muted: true });
+    // Task 1045a: neutral, as working is, with its own glyph.
+    expect(AGENT_STATES.waiting).toMatchObject({ hue: "gray", icon: "Hourglass" });
+    expect(AGENT_STATES.waiting.muted).toBeFalsy();
   });
 
   it("draws neutral as the chip, and muted as the faint pair", () => {
@@ -355,6 +376,13 @@ describe("the run panel's reads", () => {
     expect(
       newestEphemeral([{ id: "x", seq: 1, type: "action", content: { action: "run_tests" } }]),
     ).toBe("Running run_tests");
+  });
+
+  it("skips a plan write, so the newest thought shows (SW-32)", () => {
+    const thought: AgentActivity = { id: "t1", seq: 1, type: "thought", content: { body: "Reading" } };
+    const plan: AgentActivity = { id: "p1", seq: 2, type: "action", content: { action: "set_run_plan" } };
+    expect(newestEphemeral([thought, plan])).toBe("Reading");
+    expect(newestEphemeral([plan])).toBeNull();
   });
 });
 

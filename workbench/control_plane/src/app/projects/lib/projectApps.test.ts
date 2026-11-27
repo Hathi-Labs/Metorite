@@ -127,3 +127,48 @@ describe("WS-27bn R5f: one Reports app", () => {
     expect(page).not.toMatch(/items\)\.find\(\s*\(i\) => i\.id === (appLink|id) &&/);
   });
 });
+
+describe("WS-55 EA-18b: the Questions destination", () => {
+  const items = PROJECT_APP_SECTIONS.flatMap((s) => s.items);
+  const ids = items.map((i) => i.id as string);
+
+  it("sits in the workspace section beside Reports and Settings", () => {
+    const workspace = PROJECT_APP_SECTIONS.find((s) => s.id === "workspace");
+    const inside = workspace?.items.map((i) => i.id as string) ?? [];
+    expect(inside).toEqual(expect.arrayContaining(["reports", "questions", "settings"]));
+    const questions = items.find((i) => i.id === "questions");
+    expect(questions?.launch).toBe("live");
+    expect(questions?.label).toBe("Questions");
+    expect(questions?.icon).toBe("MessageCircleQuestion");
+  });
+
+  it("opens by ?app=questions through the one map, in any case", () => {
+    expect(resolveAppLink("questions")).toBe("questions");
+    expect(resolveAppLink(" Questions ")).toBe("questions");
+    expect(resolveAppLink("questions", projectAppSections(ON))).toBe("questions");
+  });
+
+  it("is not a pane of nav.ts", () => {
+    // R9 and the shape: a destination inside one app is never in PANES.
+    const nav = fs.readFileSync(path.join(__dirname, "..", "..", "..", "lib", "nav.ts"), "utf8");
+    expect(nav).not.toContain('"questions"');
+    expect(ids.filter((id) => id === "questions")).toHaveLength(1);
+  });
+
+  it("the sidebar draws the entry only while the route answers, with a count badge", () => {
+    const page = fs.readFileSync(path.join(__dirname, "..", "page.tsx"), "utf8");
+    expect(page).toContain('item.id !== "questions" || questionsOn');
+    expect(page).toContain("questionsOn={questions.on === true}");
+    expect(page).toMatch(/questions: questions\.count/);
+    const hook = fs.readFileSync(path.join(__dirname, "..", "components", "useQuestionsBadge.ts"), "utf8");
+    expect(hook).toContain("page === null");
+    expect(hook).toContain("badgeCount(page)");
+  });
+
+  it("builds no shell of its own (R9)", () => {
+    for (const file of ["QuestionsView.tsx", "useQuestionsBadge.ts"]) {
+      const src = fs.readFileSync(path.join(__dirname, "..", "components", file), "utf8");
+      expect(src, file).not.toMatch(/CommandPalette|NotificationBell|<AgentChat|keydown/);
+    }
+  });
+});

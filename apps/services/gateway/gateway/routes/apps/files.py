@@ -287,10 +287,9 @@ def host_build_refusal(workspace: Path) -> str | None:
         is_sandbox_dir = None
     if is_sandbox_dir is not None and is_sandbox_dir(workspace):
         return (
-            "The App Workshop builder on MAF edited this app, so it builds only "
-            "in its sandbox. Ask the builder to build it. If the builder is off "
-            "for your organization, an admin must turn it on (app_builder in "
-            "MAF_CODING_SCOPE) before this app can build again."
+            "This app can only be built in the App Workshop sandbox now, so it "
+            "did not build here. Ask the App Workshop builder to build it. If "
+            "the builder is not available to you, ask Metorite support."
         )
     links = workspace_links(workspace)
     if links:

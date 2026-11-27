@@ -59,6 +59,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import pytest
+from acb_skills.ask_tools import CARD_DECLINED, card_outcome_text
 
 pytest.importorskip("skill_projects", reason="skill-projects not installed")
 
@@ -455,7 +456,7 @@ async def test_a_declined_card_writes_nothing(tool: str, kwargs: dict, monkeypat
     asked = deny(monkeypatch)
     calls = fake_gateway(monkeypatch, _fake_for(tool))
     out = await getattr(skill_projects, tool)(**kwargs)
-    assert out == W.CANCELLED
+    assert out == card_outcome_text(CARD_DECLINED)
     assert len(asked) == 1 and writes(calls) == []
 
 
@@ -463,7 +464,7 @@ async def test_reopen_asks_first_and_reads_the_closed_lists(monkeypatch) -> None
     done = _row(state="done", resolution="done")
     asked = deny(monkeypatch)
     calls = fake_gateway(monkeypatch, Gateway(rows=[done]))
-    assert await skill_projects.reopen_reminder(REM) == W.CANCELLED
+    assert await skill_projects.reopen_reminder(REM) == card_outcome_text(CARD_DECLINED)
     assert len(asked) == 1 and writes(calls) == []
     states = [c["params"].get("state") for c in calls if c["path"] == BASE and "state" in c["params"]]
     assert states == ["done"], "the done list held it, so the dropped list is not read"

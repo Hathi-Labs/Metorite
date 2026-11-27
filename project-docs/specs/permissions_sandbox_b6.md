@@ -12,6 +12,9 @@
 > is now a precondition of the pooled cutover (`saas_multitenancy.md` §5.1,
 > MT-0c-2); the internal-tool premise expires with the first external tenant.
 > Acceptance remains unwritten by design until the owner un-parks.]*
+> *[Update 2026-11-21 — task 560 (H-211): the root `metorite` factory sets no
+> `approve_all` now. Every first-party agent gets the B6 handler. Fence:
+> `tests/unit/test_no_first_party_approve_all.py`. See "The gap".]*
 > **Module:** B6 (core_module_map.md).
 >
 > **Isolation ladder (R2).** This doc's Phase-5 build order is lettered **P5-a/b/c/d**.
@@ -38,6 +41,19 @@
 > `executor.py:632, 2483, 3011, 3909, 4442` and every one of them installs
 > `_copilot_permission_handler()`, not `_PH.approve_all`. The paragraph below
 > describes the **pre-2026-07-03** state.
+
+> **Closed 2026-11-21 (task 560, H-211).** The root `metorite` factory
+> (repo-root `agents.py`) still set `on_permission_request:
+> PermissionHandler.approve_all`. The executor kept that handler inside the
+> D85 guard, so the root agent approved every request in every mode. The
+> factory now sets no handler, and the executor installs the handler of
+> `AGENT_PERMISSION_MODE`.
+
+> **Fence:** `tests/unit/test_no_first_party_approve_all.py`. It fails on an
+> `approve_all` in any file under `apps/`, `packages/` or the root
+> `agents.py`. Two files are on its allow-list. `mutation_runner.py` runs
+> only in the mutation container. `_copilot_session.py` holds the
+> `approve_all` mode, which is the escape hatch.
 
 - **Copilot-SDK agents ran with `PermissionHandler.approve_all`** — set at FIVE
   sites in `executor.py` (then `~1190, ~2572, ~3023, ~3796, ~4297`), always as

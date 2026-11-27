@@ -57,6 +57,7 @@ pytest.importorskip("sqlalchemy")
 
 from acb_common import studio_rules as sr
 from acb_common.db import tenant_session
+from acb_common.studio_access import Viewer
 from acb_common.studio_rules import ConstraintError, MoveViolation
 from gateway.studio import objects_store as store
 from gateway.studio.objects_store import BatchError, Write
@@ -73,6 +74,9 @@ pytestmark = _DB_GATE
 
 TAG = uuid.uuid4().hex[:8]
 ANA = f"ana.{TAG}@stuc6.test"
+#: C8a. The store takes a viewer. No object of this suite declares `access`,
+#: so each object is open and any member reads and writes it.
+_VIEWER = Viewer(ANA)
 
 _FIELDS: list[dict[str, Any]] = [
     {"key": "status", "type": "select", "options": ["draft", "approved", "sent", "void", "archived"]},
@@ -147,7 +151,7 @@ async def _po(org: str, pkg: str, rules: list[dict[str, Any]] | None = None,
 
 async def _put(org: str, obj: store.StudioObject, *writes: Write) -> list[Any]:
     async with tenant_session(org) as db:
-        return await store.apply_writes(db, ANA, package_id=obj.package_id, writes=list(writes))
+        return await store.apply_writes(db, ANA, package_id=obj.package_id, writes=list(writes), viewer=_VIEWER)
 
 
 async def _refused(org: str, obj: store.StudioObject, *writes: Write) -> BatchError:
@@ -356,9 +360,9 @@ def test_r8_update_record_runs_the_machine(world) -> None:
         async with tenant_session(world.a) as db:
             with pytest.raises(MoveViolation) as bad:
                 await store.update_record(db, ANA, obj.id, made.id, {"status": "void"},
-                                          package_id=obj.package_id)
+                                          package_id=obj.package_id, viewer=_VIEWER)
             ok = await store.update_record(db, ANA, obj.id, made.id, {"status": "approved"},
-                                           package_id=obj.package_id)
+                                           package_id=obj.package_id, viewer=_VIEWER)
         return bad.value, ok
 
     bad, ok = _go(world, go)
@@ -408,13 +412,13 @@ def test_r8_a_mixed_batch_that_breaks_the_machine_writes_nothing(world) -> None:
         obj = await _po(world.a, world.pkg_a)
         made = await _make(world.a, obj)
         async with tenant_session(world.a) as db:
-            await store.create_record(db, ANA, obj.id, {"note": "outer"}, package_id=obj.package_id)
+            await store.create_record(db, ANA, obj.id, {"note": "outer"}, package_id=obj.package_id, viewer=_VIEWER)
             with pytest.raises(BatchError) as bad:
                 await store.apply_writes(db, ANA, package_id=obj.package_id, writes=[
                     Write("create", obj.id, data={"note": "inside"}),
-                    _set(obj, made.id, status="void")])
+                    _set(obj, made.id, status="void")], viewer=_VIEWER)
             more = await store.create_record(db, ANA, obj.id, {"note": "after"},
-                                             package_id=obj.package_id)
+                                             package_id=obj.package_id, viewer=_VIEWER)
         assert more is not None
         return obj, bad.value
 
@@ -502,7 +506,7 @@ def test_r8_org_b_is_not_bound_by_the_machine_of_org_a(world) -> None:
         free = await _make(world.b, b_obj, status="sent")
         in_a = await _make(world.a, a)
         async with tenant_session(world.b) as db:
-            seen = await store.get_record(db, a.id, in_a.id, package_id=world.pkg_a)
+            seen = await store.get_record(db, a.id, in_a.id, package_id=world.pkg_a, viewer=_VIEWER)
             declared = await store.set_constraints(db, a.id, [], package_id=world.pkg_a)
         refused = await _refused(world.a, a, Write("create", a.id, data={"status": "sent"}))
         return free, in_a, seen, declared, refused

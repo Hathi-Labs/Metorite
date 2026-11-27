@@ -13,16 +13,17 @@ This file walks the REAL ``gateway.routes.knowledge.router`` and holds
    because a stale tool is a lie the agent will tell.
 
 Then the manifest is held to the tools: each read tool is in the manifest
-with class A and a read-only annotation, the only write with a tool is
-``POST /knowledge/proposals`` (KB-5a), and the client refuses a route the
-manifest does not give to the tool.
+with class A and a read-only annotation. The writes with a tool are
+``POST /knowledge/proposals`` (KB-5a), and the page and space create and edit
+of PAR-3 (task 3105). The client refuses a route the manifest does not give
+to the tool.
 
 Mutations this file catches (R7):
 
 * a new route in the router and not in the manifest -> the first test;
 * a manifest row for a route that is gone -> the second test;
-* a write route other than the proposals that gets a tool ->
-  ``test_no_write_has_a_tool``, and a publish, accept, reject, restore or
+* a write route other than the proposals and the PAR-3 writes that gets a
+  tool -> ``test_no_write_has_a_tool``, and a publish, accept, reject, restore or
   archive route with a tool -> ``test_kb_proposals.py``;
 * the client sends a route that the manifest does not map to the tool ->
   ``test_the_client_refuses_an_unmapped_route`` in ``test_knowledge_tools.py``.
@@ -78,9 +79,23 @@ def test_the_router_is_not_empty_and_has_no_duplicate_rows() -> None:
     assert len(seen) == len(set(seen))
 
 
-#: The reads of KB-4a and the two proposals of KB-5a.
-READ_TOOLS = {"list_spaces", "read_page"}
+#: The reads of KB-4a, the eight reads of PAR-3b (task 3901), and the two
+#: proposals of KB-5a.
+READ_TOOLS = {
+    "list_spaces", "read_page", "list_pages", "list_recent", "read_page_version",
+    "list_backlinks", "list_proposals", "list_sources", "list_gaps", "list_maintenance",
+}
 PROPOSE_TOOLS = {"propose_page", "propose_edit"}
+#: PAR-3 (task 3105): the write route of each of the member's own writes.
+WRITE_TOOLS = {
+    "create_page": ("POST", "/knowledge/pages"),
+    "edit_page": ("PATCH", "/knowledge/pages/{page_id}"),
+    "create_space": ("POST", "/knowledge/spaces"),
+    "edit_space": ("PATCH", "/knowledge/spaces/{space_id}"),
+    # PAR-3b (task 3901): the move and the revert of a draft.
+    "move_page": ("POST", "/knowledge/pages/{page_id}/move"),
+    "revert_page": ("POST", "/knowledge/pages/{page_id}/revert"),
+}
 
 
 def test_the_tools_map_to_their_routes() -> None:
@@ -90,15 +105,20 @@ def test_the_tools_map_to_their_routes() -> None:
     propose = m.route_for("POST", "/knowledge/proposals")
     assert propose is not None and propose.cls == "B"
     assert {propose.tool, *propose.also} == PROPOSE_TOOLS
-    assert m.tools() == READ_TOOLS | PROPOSE_TOOLS
+    for tool, (method, path) in WRITE_TOOLS.items():
+        row = next(r for r in m.MANIFEST if (r.method, r.path) == (method, path))
+        assert row.tool == tool and not row.also and row.cls in ("B", "C"), tool
+    assert m.tools() == READ_TOOLS | PROPOSE_TOOLS | set(WRITE_TOOLS)
 
 
 def test_no_write_has_a_tool() -> None:
-    """KB-4a builds reads. KB-5a gives one write route to the proposals."""
+    """KB-4a builds reads. KB-5a gives one write route to the proposals. PAR-3
+    and PAR-3b give the six routes of :data:`WRITE_TOOLS`, and no other."""
+    built = {("POST", "/knowledge/proposals"), *WRITE_TOOLS.values()}
     for row in m.MANIFEST:
         if row.method != "GET":
             assert row.cls in ("B", "C", "X"), (row.method, row.path)
-            if (row.method, row.path) == ("POST", "/knowledge/proposals"):
+            if (row.method, row.path) in built:
                 continue
             assert not row.tool and not row.also, f"{row.method} {row.path} has a tool"
             assert row.planned or row.reason, (row.method, row.path)
@@ -119,8 +139,8 @@ def test_each_built_tool_is_exported_with_its_risk() -> None:
         assert TOOL_ANNOTATIONS[name] == {
             "read_only": True, "destructive": False, "idempotent": True, "open_world": False,
         }
-    for name in PROPOSE_TOOLS:
-        assert m.tool_class(name) == "B"
+    for name in PROPOSE_TOOLS | set(WRITE_TOOLS):
+        assert m.tool_class(name) in ("B", "C")
         assert TOOL_ANNOTATIONS[name] == {
             "read_only": False, "destructive": False, "idempotent": False, "open_world": False,
         }
