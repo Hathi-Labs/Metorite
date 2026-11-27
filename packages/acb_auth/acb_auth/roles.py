@@ -95,6 +95,11 @@ class SandboxScope:
     app_id: str | None = None
     version: int | None = None
     read_scopes: tuple[str, ...] = ()
+    #: SBX-3a (``agent_sandbox.md`` §12.5 decision 5): the write scopes of the
+    #: row, and the stamp ``sandbox:<slug>:v<n>`` of one approved write. Only
+    #: a live ticket sets ``stamp``. A header never sets it.
+    write_scopes: tuple[str, ...] = ()
+    stamp: str = ""
 
 
 @dataclass(slots=True, frozen=True)

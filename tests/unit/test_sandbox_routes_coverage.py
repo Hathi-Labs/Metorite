@@ -245,3 +245,132 @@ def test_deny_by_default_a_row_without_the_mark_is_off_the_door():
         for row in one.routes:
             if not row.sandbox:
                 assert (row.method, row.path) not in app_manifests.SANDBOX_ROUTES
+
+
+# ── SBX-3a (§12.5 decision 3): the write rows ───────────────────────────────
+
+#: Decision 3, the CRM rows that SBX-3 opens (16), with the class of each.
+CRM_WRITE: dict[tuple[str, str], str] = {
+    # Create (4)
+    ("POST", "/crm/leads"): "B", ("POST", "/crm/deals"): "B",
+    ("POST", "/crm/contacts"): "B", ("POST", "/crm/organizations"): "B",
+    # Change (4)
+    ("PATCH", "/crm/leads/{record_id}"): "B", ("PATCH", "/crm/deals/{record_id}"): "B",
+    ("PATCH", "/crm/contacts/{record_id}"): "B",
+    ("PATCH", "/crm/organizations/{record_id}"): "B",
+    # Log an activity (4)
+    ("POST", "/crm/leads/{record_id}/activities"): "B",
+    ("POST", "/crm/deals/{record_id}/activities"): "B",
+    ("POST", "/crm/contacts/{record_id}/activities"): "B",
+    ("POST", "/crm/organizations/{record_id}/activities"): "B",
+    # Activities, modules, deal contacts (3)
+    ("PATCH", "/crm/activities/{activity_id}"): "B",
+    ("PATCH", "/crm/modules/{module}/records/{record_id}"): "B",
+    ("POST", "/crm/deals/{deal_id}/contacts"): "B",
+    # Convert (1)
+    ("POST", "/crm/leads/{lead_id}/convert"): "C",
+}
+
+#: Decision 3, the Projects rows that SBX-3 opens (13), with the class of each.
+PROJECTS_WRITE: dict[tuple[str, str], str] = {
+    ("POST", "/projects/tasks"): "B",
+    ("PATCH", "/projects/tasks/{task_id}"): "B",
+    ("POST", "/projects/tasks/{task_id}/move"): "B",
+    ("PUT", "/projects/tasks/{task_id}/assignees"): "B",
+    ("POST", "/projects/tasks/{task_id}/comments"): "B",
+    ("POST", "/projects/tasks/{task_id}/complete"): "B",
+    ("POST", "/projects/tasks/{task_id}/defer"): "B",
+    ("POST", "/projects/tasks/{task_id}/links"): "B",
+    ("PUT", "/projects/tasks/{task_id}/recurrence"): "B",
+    ("POST", "/projects/nodes/{project_id}/updates"): "B",
+    ("POST", "/projects/my/tasks"): "B",
+    ("PATCH", "/projects/tasks/{task_id}/personal"): "B",
+    ("POST", "/projects/tasks/{task_id}/archive"): "C",
+}
+
+#: Rows of class B or C that stay off, each named by decision 3.
+WRITE_KEPT_OFF: frozenset[tuple[str, str]] = frozenset({
+    ("POST", "/projects/tasks/bulk"),
+    ("POST", "/projects/tasks/move"),
+    ("POST", "/projects/tasks/{task_id}/unarchive"),
+    ("POST", "/projects/tasks/{task_id}/merge"),
+    ("POST", "/projects/activities/{activity_id}/revert"),
+    ("PATCH", "/projects/comments/{activity_id}"),
+    ("POST", "/crm/change-history/{change_id}/undo"),
+    ("POST", "/crm/statuses/{kind}"),
+    ("PATCH", "/crm/settings"),
+    ("POST", "/crm/connection/disconnect"),
+})
+
+
+@pytest.mark.parametrize(("method", "cls", "extra"), [
+    ("POST", "A", {}),
+    ("POST", "X", {"reason": "a file"}),
+    ("GET", "B", {}),
+    ("DELETE", "C", {}),
+    ("DELETE", "B", {}),
+    ("POST", "C", {"op": "send_it", "title": "Send it", "sends": True}),
+    ("PATCH", "B", {"sandbox": True}),
+])
+def test_a_write_row_is_class_b_or_c_and_no_delete(method, cls, extra):
+    """Done-when 1. ``Route(sandbox_write=True)`` raises on class A or X, on a
+    GET or a DELETE, with ``sends=True``, or with ``sandbox=True``."""
+    kwargs = dict(extra)
+    tool = "" if cls == "X" else "t"
+    if cls != "X" and "op" not in kwargs:
+        kwargs["off_door"] = "later"
+    with pytest.raises(ValueError, match="sandbox"):
+        base.Route(method, "/x/{id}", tool, cls, sandbox_write=True, **kwargs)
+
+
+def test_a_write_row_is_off_by_default_and_takes_a_class_b_or_c_write():
+    for method in ("POST", "PUT", "PATCH"):
+        for cls in ("B", "C"):
+            row = base.Route(method, "/x/{id}", "t", cls, off_door="later", sandbox_write=True)
+            assert row.sandbox_write
+    assert base.Route("POST", "/x/{id}", "t", "B", off_door="later").sandbox_write is False
+
+
+def test_the_write_rows_are_the_29_of_sbx3():
+    """Done-when 2. Exactly the 29 rows of decision 3, 16 of CRM and 13 of
+    Projects, each with the class of its manifest row, and each served by
+    the live gateway. ``POST /projects/tasks/bulk`` is not one of them."""
+    from fastapi.routing import iter_route_contexts
+    from gateway.main import app
+
+    assert len(CRM_WRITE) == 16 and len(PROJECTS_WRITE) == 13
+    expected = {**CRM_WRITE, **PROJECTS_WRITE}
+    assert dict(app_manifests.SANDBOX_WRITE_ROUTES) == expected
+    assert ("POST", "/projects/tasks/bulk") not in app_manifests.SANDBOX_WRITE_ROUTES
+    rows = _rows()
+    for pair, cls in expected.items():
+        app_id, row = rows[pair]
+        assert row.cls == cls and row.sandbox_write and not row.sandbox, pair
+        assert row.method != "DELETE" and not row.sends, pair
+        scope = "crm:write" if app_id == "crm" else "projects:write"
+        assert app_manifests.sandbox_write_scope(pair) == scope, pair
+    served: set[tuple[str, str]] = set()
+    for context in iter_route_contexts(app.routes):
+        for method in getattr(context, "methods", None) or ():
+            served.add((method, getattr(context, "path", "")))
+    assert not sorted(set(expected) - served)
+    assert app_manifests.SANDBOX_BATCH_PAIR in served
+
+
+def test_each_kept_off_write_row_is_a_real_row_and_stays_off():
+    rows = _rows()
+    for pair in WRITE_KEPT_OFF:
+        _, row = rows[pair]
+        assert row.cls in ("B", "C"), pair
+        assert not row.sandbox_write, pair
+        assert pair not in app_manifests.SANDBOX_WRITE_ROUTES, pair
+
+
+def test_no_delete_and_no_class_x_row_is_a_write_row():
+    for one in app_manifests.SANDBOX_APPS:
+        for row in one.routes:
+            if row.method == "DELETE" or row.cls in ("A", "X"):
+                assert not row.sandbox_write, (row.method, row.path)
+    assert {"crm:write", "projects:write"} == app_manifests.SANDBOX_WRITE_SCOPES
+    assert app_manifests.sandbox_write_scope(("POST", None)) is None
+    assert app_manifests.sandbox_write_scope(("GET", "/crm/leads")) is None

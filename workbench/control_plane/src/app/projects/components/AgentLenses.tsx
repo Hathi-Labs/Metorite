@@ -53,6 +53,9 @@ import {
   findGroup,
   groupKeyOf,
   openBucket,
+  OVERVIEW_ABOVE,
+  boundedFolds,
+  drawnCards,
   overviewTiles,
   questionStops,
   scopeSessions,
@@ -259,7 +262,6 @@ export function AgentLenses({
   const title = model && selection ? selectionTitle(model, selection, nameOf) : null;
   // A selection whose node left the map closes at once, and does not come back.
   if (model && selection !== null && title === null) setSelection(null);
-  const openGroup = useCallback((key: string) => setOpened((prev) => new Set(prev).add(key)), []);
   const openTask = useCallback(
     (taskId: string) => {
       // The task panel takes the place of the dock.
@@ -279,7 +281,8 @@ export function AgentLenses({
   const here = model ? findGroup(model, groupKey) : null;
   // An orchestrator that left the map gives its level back.
   if (model && groupKey !== null && here === null) setGroupKey(null);
-  const overview = !phone && model !== null && here === null && lens !== "list" && usesOverview(model, person);
+  const overview =
+    !phone && model !== null && here === null && lens !== "list" && usesOverview(model, filters, nameOf);
   const stops = useMemo(() => (model ? questionStops(model, questions.order) : []), [model, questions.order]);
   const tiles = useMemo(
     () => (model && overview ? overviewTiles(model, { person, find }, nameOf) : []),
@@ -293,6 +296,25 @@ export function AgentLenses({
     setWindows({});
     setSubsOf(null);
   }, []);
+  // AMR-5a: the Graph and the Board draw open folds only while they fit one
+  // canvas. The List draws only the rows on screen, so it keeps each of them.
+  const folds = useMemo(
+    () => (!model || lens === "list" ? opened : boundedFolds(model, filters, opened, nameOf)),
+    [model, lens, filters, opened, nameOf],
+  );
+  /**
+   * Opens a fold of idle or done sessions in place. When that would pass the
+   * bound, the orchestrator opens as its own level, which is bounded.
+   */
+  const openGroup = useCallback(
+    (key: string) => {
+      const next = new Set(folds).add(key);
+      const at = model && lens !== "list" ? findGroup(model, key) : null;
+      if (model && at && drawnCards(model, filters, next, nameOf) > OVERVIEW_ABOVE) return openLevel(at.person, key);
+      setOpened(next);
+    },
+    [folds, model, lens, filters, nameOf, openLevel],
+  );
   /** Opens the orchestrator of a session, selects it and centres its card. */
   const goToSession = useCallback(
     (sessionId: string) => {
@@ -406,7 +428,7 @@ export function AgentLenses({
   const shared: LensViewProps = {
     model,
     filters,
-    opened,
+    opened: folds,
     onOpenGroup: openGroup,
     selectedId: selectionNodeId(selection),
     onOpenSession: openSession,
@@ -429,7 +451,7 @@ export function AgentLenses({
     setQuestionAt(next);
     if (stops[next]) goToSession(stops[next]);
   };
-  const showCrumbs = here !== null || stops.length > 0 || usesOverview(model, "");
+  const showCrumbs = here !== null || stops.length > 0 || usesOverview(model, { ...filters, person: "" }, nameOf);
   return (
     <div data-agent-lenses={lens} className="flex h-full min-h-0 flex-1">
       <div className="flex min-w-0 flex-1 flex-col">

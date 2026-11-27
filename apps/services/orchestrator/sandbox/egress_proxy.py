@@ -3,8 +3,8 @@
 One container, ``mtr-egress-proxy``, runs this file with the image's own
 ``python3 -I``. It runs as uid 65534, with a read-only root, no capability,
 no published port and no credential. It is the ONLY way out of a sandbox
-container that the broker moved onto its organization's ``--internal``
-network after an approval. The broker writes the grants file, and this
+container that the broker moved onto the ``--internal`` network of its own
+grant after an approval (WS-43g2a). The broker writes the grants file, and this
 process mounts it read-only and reads it again for each request, so a revoke
 takes effect at the next request.
 
@@ -28,7 +28,9 @@ value is an IP address and a port, so no DNS lookup runs. An empty value, a
 ``CONNECT``, or a request with no ``X-Sandbox-Capability`` header is refused.
 The proxy adds no header. It removes ``Proxy-Authorization`` and the
 hop-by-hop headers, and sets ``Connection: close``, so one connection carries
-one checked request.
+one checked request. The upstream read of the door waits
+``--door-read-timeout`` seconds, the card wait plus 30 (WS-43g2a). Every other
+host keeps a read of 60 s. Below 90 s, the proxy refuses to start.
 
 **The log.** One JSON line on stdout per request, allowed or refused, with the
 organization, the run, the agent, the approver, the method, the host, the
@@ -108,6 +110,14 @@ MAX_PER_GRANT = 8
 MAX_PREAUTH_PER_PEER = 4
 #: The connect and read timeout of a plain HTTP forward.
 FORWARD_TIMEOUT_S = 60.0
+#: The upstream read of the door waits the card wait plus 30 s, so a held
+#: batch of ``agent_sandbox.md`` §12.5 is not cut (WS-43g2a, §7.3 "The door
+#: wait"). The broker passes it as ``--door-read-timeout``. This default is
+#: the card wait of 300 s plus 30.
+DOOR_READ_TIMEOUT_S = 330.0
+#: The proxy refuses to start with a door read below this. A card wait
+#: below 60 s then stops the proxy, and every grant fails closed.
+DOOR_READ_TIMEOUT_MIN_S = 90.0
 #: The most requests in flight. The container's pids limit is 64.
 MAX_CLIENTS = 32
 
@@ -558,8 +568,22 @@ def log_line(
 # ── the server ───────────────────────────────────────────────────────────────
 
 
+def check_door_read_timeout(value: float) -> float:
+    """*value* as a float. Raises ``ValueError`` below :data:`DOOR_READ_TIMEOUT_MIN_S`."""
+    seconds = float(value)
+    if not seconds >= DOOR_READ_TIMEOUT_MIN_S:
+        raise ValueError(
+            f"the door read timeout {seconds!r} is below {DOOR_READ_TIMEOUT_MIN_S} s"
+        )
+    return seconds
+
+
 class Proxy:
-    """The request loop. *resolve*, *connect* and *clock* are seams for the fence."""
+    """The request loop. *resolve*, *connect* and *clock* are seams for the fence.
+
+    *door_read_timeout* is the upstream read of the door only. Every other
+    host keeps :data:`FORWARD_TIMEOUT_S`.
+    """
 
     def __init__(
         self,
@@ -569,8 +593,10 @@ class Proxy:
         connect: Callable[[str, int], socket.socket] | None = None,
         clock: Callable[[], float] = time.time,
         emit: Callable[[str], None] | None = None,
+        door_read_timeout: float = DOOR_READ_TIMEOUT_S,
     ) -> None:
         self.grants_path = grants_path
+        self.door_read_timeout = check_door_read_timeout(door_read_timeout)
         self.resolve = resolve
         self.connect = connect or _connect
         self.clock = clock
@@ -737,7 +763,8 @@ class Proxy:
                 client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
                 up, down = _tunnel(client, upstream, extra)
             else:
-                up, down = _forward(client, upstream, request, path, extra)
+                read_s = self.door_read_timeout if target.door else FORWARD_TIMEOUT_S
+                up, down = _forward(client, upstream, request, path, extra, read_s)
         except Refused as refusal:
             reason = refusal.reason
             with contextlib.suppress(OSError):
@@ -827,9 +854,13 @@ def _read_head(client: socket.socket) -> tuple[bytes, bytes]:
 
 def _forward(
     client: socket.socket, upstream: socket.socket, request: Request, path: str,
-    extra: bytes,
+    extra: bytes, read_s: float = FORWARD_TIMEOUT_S,
 ) -> tuple[int, int]:
-    """One plain HTTP request upstream, then the whole answer back."""
+    """One plain HTTP request upstream, then the whole answer back.
+
+    *read_s* is the upstream timeout: the door read for the door, and
+    :data:`FORWARD_TIMEOUT_S` for every other host.
+    """
     if request.header("Transfer-Encoding"):
         raise Refused(411, "chunked_body")
     if sum(1 for k, _v in request.headers if k.lower() == "content-length") > 1:
@@ -840,7 +871,7 @@ def _forward(
     length = int(raw_length)
     if length > _BODY_MAX:
         raise Refused(413, "body_too_large")
-    upstream.settimeout(FORWARD_TIMEOUT_S)
+    upstream.settimeout(read_s)
     upstream.sendall(forward_head(request, path))
     body = extra[:length]
     sent = len(body)
@@ -914,20 +945,31 @@ class _Server(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
 
 
-def serve(grants_path: str, listen: str) -> None:  # pragma: no cover — the container
+def serve(
+    grants_path: str, listen: str, door_read_timeout: float = DOOR_READ_TIMEOUT_S,
+) -> None:  # pragma: no cover — the container
+    proxy = Proxy(grants_path, door_read_timeout=door_read_timeout)
     host, _sep, port = listen.rpartition(":")
     server = _Server((host or "0.0.0.0", int(port)), _Handler)
-    server.proxy = Proxy(grants_path)  # type: ignore[attr-defined]
+    server.proxy = proxy  # type: ignore[attr-defined]
     _print_line(json.dumps({"event": "egress_proxy.listening", "port": int(port)}))
     server.serve_forever()
 
 
-def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover — the container
+def main(argv: Sequence[str] | None = None) -> int:
+    """Parse the arguments and serve. Returns 2, and serves nothing, when the
+    door read timeout is below :data:`DOOR_READ_TIMEOUT_MIN_S`."""
     parser = argparse.ArgumentParser(description="The egress proxy of the coding sandbox.")
     parser.add_argument("--grants", required=True)
     parser.add_argument("--listen", default=f"0.0.0.0:{LISTEN_PORT}")
+    parser.add_argument("--door-read-timeout", type=float, default=DOOR_READ_TIMEOUT_S)
     args = parser.parse_args(argv)
-    serve(args.grants, args.listen)
+    try:
+        door_s = check_door_read_timeout(args.door_read_timeout)
+    except ValueError as exc:
+        _print_line(json.dumps({"event": "egress_proxy.refused_to_start", "error": str(exc)}))
+        return 2
+    serve(args.grants, args.listen, door_s)
     return 0
 
 

@@ -24,6 +24,7 @@ from acb_common import get_logger
 from email_ingestion import html_tier
 from email_ingestion import storage as ingest_storage
 from email_ingestion.body_backfill import _html_to_text
+from email_ingestion.providers.base import trash_checks_message_id
 from fastapi import APIRouter, HTTPException
 
 # The shared gateway engine (BO-10) — see the DB section below.
@@ -228,6 +229,49 @@ async def _provider_for_message(db: Any, message_id: str, user_email: str):
     provider = _instantiate_provider(row.provider, creds)
     _scope_provider(provider, str(row.account_id))
     return provider, row.provider_message_id, str(row.account_id), store
+
+
+#: Task 4095 (``email_app_master_plan.md`` §18.13.3): the stored Message-ID
+#: of a row, for a trash that checks it. The IMAP sync keeps the Message-ID
+#: as the thread id and leaves ``internet_message_id`` empty, so the read
+#: falls back to ``thread_id``, as ``reply_card._read_reply_to`` does.
+_STORED_MESSAGE_ID_SQL = (
+    "SELECT COALESCE(NULLIF(internet_message_id, ''), thread_id) AS message_id"
+    " FROM email_messages WHERE id = CAST(:id AS uuid)")
+_STORED_MESSAGE_IDS_SQL = (
+    "SELECT provider_message_id,"
+    " COALESCE(NULLIF(internet_message_id, ''), thread_id) AS message_id"
+    " FROM email_messages"
+    " WHERE account_id = CAST(:aid AS uuid) AND provider_message_id = ANY(:pmids)")
+
+
+async def _trash_message_id(db: Any, provider: Any, message_id: str) -> str | None:
+    """The stored Message-ID of row ``message_id``, for the trash of
+    ``provider`` (``base.trash_checked``), or None.
+
+    It reads only for a provider whose trash checks it (IMAP), so a Gmail or
+    an Outlook trash makes no extra read. A row with no value gives None, and
+    the IMAP trash then raises and moves nothing."""
+    if not trash_checks_message_id(provider):
+        return None
+    row = (await db.execute(text(_STORED_MESSAGE_ID_SQL),
+                            {"id": message_id})).fetchone()
+    return (getattr(row, "message_id", None) or None) if row else None
+
+
+async def _trash_message_ids(
+    db: Any, provider: Any, account_id: str, provider_message_ids: list[str],
+) -> dict[str, str | None] | None:
+    """The stored Message-ID of each provider id of one mailbox, for the
+    ``message_ids`` of ``bulk_apply``. None when the trash of ``provider``
+    does not check it, so the caller passes nothing new."""
+    if not trash_checks_message_id(provider):
+        return None
+    if not provider_message_ids:
+        return {}
+    rows = (await db.execute(text(_STORED_MESSAGE_IDS_SQL), {
+        "aid": account_id, "pmids": list(provider_message_ids)})).fetchall()
+    return {r.provider_message_id: r.message_id for r in rows}
 
 
 async def _provider_for_account(db: Any, account_id: str, user_email: str):

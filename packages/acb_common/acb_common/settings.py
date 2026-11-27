@@ -846,6 +846,17 @@ class Settings(FlagRegistry):
     # tests/unit/test_user_tool_injection.py.
     user_tool_find_enabled: bool = False
 
+    # ── The held writes of the sandbox door (agent_sandbox.md §12.5, SBX-3a) ─
+    #
+    # The longest time, in seconds, that a batch of the sandbox door waits for
+    # the member to answer its cards. The wait of one batch is this value or
+    # the time left on its capability less 30 seconds, whichever is less. At
+    # the end of the wait each row that has no answer runs nothing. The one
+    # reader is `gateway.sandbox_batch.batch_wait_s`. The door itself stays
+    # off while `SANDBOX_DOOR_ORGS` is empty.
+    # Fence: tests/unit/test_sandbox_door_writes.py.
+    sandbox_approval_timeout_seconds: int = 300
+
     # ── The floor trim of the one assistant (WS-67 OA-8f) ──────────────────
     #
     # ON takes ten floor tools out of the orchestrator's request: the tools

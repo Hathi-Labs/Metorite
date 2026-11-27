@@ -102,6 +102,9 @@ All providers implement the `BaseEmailProvider` abstract interface:
 19. **The IMAP trash.** `_trash_inbox_uid` in `providers/imap.py` runs each trash command with INBOX selected. A UID names a mail in one folder only.
    - It uses UID MOVE, or UID COPY with a STORE and a UID EXPUNGE of that one UID. It never sends a plain EXPUNGE, because that removes mail that another client flagged.
    - It raises, and removes nothing, with no Trash folder, a UID that is not in INBOX, or a copy that is not OK. Fence: `test_email_imap_trash.py`.
+   - A stored UID can name another mail after a change of UIDVALIDITY. So the trash takes the stored Message-ID as `message_id=`, reads the Message-ID at the UID with `BODY.PEEK`, and compares the two.
+   - A mismatch raises and moves nothing. A missing Message-ID on either side does the same. Fence: `test_email_imap_trash_uidvalidity.py`.
+   - Each caller that has the row calls the trash through `base.trash_checked`. The gateway reads the stored value with `core._trash_message_id` or `core._trash_message_ids`. A call with no `message_id` fails closed on IMAP. Fence: `test_email_imap_trash_uidvalidity_r8.py` (R8).
 
 ## Inbound SMTP Server
 

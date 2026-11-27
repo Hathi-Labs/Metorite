@@ -573,17 +573,32 @@ async def _push_threads(
     account_id: str, thread_ids: list[str], delays: tuple[float, ...],
 ) -> None:
     """:func:`push_labels` for each of *thread_ids*, with ONE provider. It
-    builds and authenticates the provider at the first thread that needs it.
-    A fault on one thread does not stop the others. Best effort."""
+    builds and authenticates the provider at the first thread that needs it,
+    and it tries that once. A fault on one thread does not stop the others.
+
+    The local repair runs for each thread. When the provider refuses to
+    authenticate, or the try raises, only the provider push stops: each
+    later thread still gets its local labels (fix round 5, F1). Best effort."""
     got: tuple[Any, Any] | None = None
+    tried = False
     for thread_id in thread_ids:
         try:
             if not await _settle_mirror(account_id, thread_id, delays):
                 continue
-            if got is None:
+        except Exception as exc:
+            _log.warning("email.mark_done_labels_failed",
+                         account_id=account_id, error=str(exc)[:160])
+            continue
+        if not tried:
+            tried = True
+            try:
                 got = await _provider_for(account_id)
-                if got is None:
-                    return
+            except Exception as exc:
+                _log.warning("email.mark_done_labels_auth_failed",
+                             account_id=account_id, error=str(exc)[:160])
+        if got is None:
+            continue
+        try:
             await converge(got[0], account_id, thread_id)
         except Exception as exc:
             _log.warning("email.mark_done_labels_failed",
@@ -607,16 +622,56 @@ async def owned_among(account_id: str, thread_ids: list[str]) -> set[str]:
     one, and each one that a move back or a reopen wrote inside
     :data:`PENDING_PUSH_WINDOW`. A block of its own. No block with the flag off.
     """
+    return (await owned_and_seen(account_id, thread_ids))[0]
+
+
+async def owned_and_seen(
+    account_id: str, thread_ids: list[str],
+) -> tuple[set[str], dict[str, Any]]:
+    """:func:`owned_among`, and the ``classified_at`` of each status row of
+    *thread_ids* that the statement read. A thread with no row is not in the
+    map. One statement in a block of its own. No block with the flag off.
+
+    The label learner gives each of its writes the value of its thread
+    (:func:`member_wrote_since_sql`). So a write of the member that commits
+    after this read wins over the learner (fix round 5, F2)."""
     ids = [t for t in thread_ids if t]
     if not ids or not mark_done_on():
-        return set()
+        return set(), {}
     async with _tenant_session() as db:
         rows = (await db.execute(text(
-            "SELECT s.thread_id FROM email_thread_status s "
-            "WHERE s.account_id = CAST(:aid AS uuid) AND s.thread_id = ANY(:tids) "
-            f"AND {owned_sql('s', recent=True)}"
+            "SELECT s.thread_id, s.classified_at, "
+            f"{owned_sql('s', recent=True)} AS owned "
+            "FROM email_thread_status s "
+            "WHERE s.account_id = CAST(:aid AS uuid) AND s.thread_id = ANY(:tids)"
         ), {"aid": account_id, "tids": ids})).fetchall()
-    return {r.thread_id for r in rows}
+    return ({r.thread_id for r in rows if r.owned},
+            {r.thread_id: r.classified_at for r in rows})
+
+
+#: The reasons of a write that a member asked for: Mark done, a move back, a
+#: reopen, a dismiss (``replyzero.resolve_thread``) and the Fix. The label
+#: learner stores "Fix correction" too, so a learner write after the read of
+#: another learner also counts. That is safe: the later learner then leaves
+#: the row alone.
+_MEMBER_WRITE_REASONS = (*_MEMBER_REASONS, "Dismissed by the user",
+                         "Fix correction")
+
+
+def member_wrote_since_sql(row: str) -> str:
+    """The SQL test "a member wrote the status row *row* after the learner
+    read it". The learner read ``classified_at`` as the bind ``:member_seen``,
+    NULL for no row (:func:`owned_and_seen`). Each write of a member sets
+    ``classified_at`` to the time of its transaction, so a changed value with
+    a member reason is a later write of the member.
+
+    An automated write of the status in between, such as the classification
+    of new inbound mail, stores another reason. So the learner still works on
+    such a row."""
+    reasons = ", ".join(f"'{r}'" for r in _MEMBER_WRITE_REASONS)
+    return (f"({row}.reason IN ({reasons}) "
+            f"AND {row}.classified_at IS DISTINCT FROM "
+            "CAST(:member_seen AS timestamptz))")
 
 
 async def settle_owned(account_id: str, thread_id: str) -> None:
