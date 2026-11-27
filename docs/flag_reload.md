@@ -463,6 +463,7 @@ so the flip is `enforcement-flip`.
 ⚠️ Since task 3870 the same flag turns on the delete walk of that weekly read.
 The sync deletes a mirror row that two complete weekly reads missed, with the
 guards of the core walk. It deletes mirror rows only, never a Zoho record.
+
 `EMAIL_MARK_DONE_ORGS` turns on "Mark done" in the Email app
 (`email_app_master_plan.md` §6.6, task 3995). For each listed org, a Done by
 hand writes a held status. No automated writer moves a held thread until a new

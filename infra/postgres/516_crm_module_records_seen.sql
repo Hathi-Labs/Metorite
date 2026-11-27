@@ -1,13 +1,12 @@
 -- ============================================================================
--- 499_crm_module_records_seen.sql - the seen stamp of a generic mirror record
+-- 516_crm_module_records_seen.sql - the seen stamp of a generic mirror record
 -- (WS-53 CRM-Q6a, Metorite task 3870)
 -- ============================================================================
 -- Spec: project-docs/specs/crm_platform.md §18.7 (the delete walk of a
 --   generic module) · R1 · R5 · R6.
 --
--- R1: the number 477 was booked for task 3870 on 2026-11-22. Main then held
---   472 as its highest file. Check the number again at merge
---   (scripts/premerge.sh).
+-- R1: task 3870 booked 477, then 499, then 516 (2026-11-27). Check the
+--   number again at merge (scripts/premerge.sh).
 --
 -- Why: a generic module of the Zoho mirror (Invoices, Quotes, a custom
 --   module) got its deletes only from the deleted list of Zoho. Zoho keeps a
