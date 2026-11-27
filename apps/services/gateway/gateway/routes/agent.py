@@ -4011,6 +4011,23 @@ def _plain_409() -> HTTPException:
     )
 
 
+#: HRD-16: the 409 detail of an answer that a run already took. The browser
+#: reads it (``respondInput.ts`` ``answeredOnceOf``), says that someone
+#: answered the card, and sends nothing again. Owner decision 2026-11-23.
+ANSWERED_ONCE = "answered_once"
+
+
+def _answered_once_409() -> HTTPException:
+    """The 409 of a repeat answer or decline that a run already took."""
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "error": ANSWERED_ONCE,
+            "message": "Someone already answered this card.",
+        },
+    )
+
+
 async def _resumable_row(
     req: UserInputResponseRequest, user: UserContext,
 ) -> tuple[str, str, dict[str, Any], dict[str, Any]] | None:
@@ -4622,6 +4639,12 @@ async def respond_user_input(
         from orchestrator.stream_relay import dispatch_control  # noqa: PLC0415
 
         delivered = await dispatch_control(req.thread_id, _command)
+    _org_id = getattr(user, "organization_id", None)
+    if delivered:
+        # HRD-16: a run took this answer. A repeat of it acts on nothing.
+        from orchestrator.answer_once import mark_answered  # noqa: PLC0415
+
+        await mark_answered(_org_id, req.thread_id, req.request_id)
     if delivered and not req.declined:
         # EM-CR (email_app_master_plan.md §18, review of #1191): the record of
         # a reply card's answer, only AFTER the thread that owns the card took
@@ -4635,6 +4658,19 @@ async def respond_user_input(
             getattr(user, "organization_id", None), req.request_id, _responder or "",
             req.answer, req.thread_id,
         )
+    if not delivered:
+        # HRD-16: a double tap or a retry of an answer or a decline that a run
+        # already took. It starts nothing (no resume, no resend), so it acts
+        # once. The check comes BEFORE the late-decline resume below.
+        from orchestrator.answer_once import was_answered  # noqa: PLC0415
+
+        if await was_answered(_org_id, req.thread_id, req.request_id):
+            _log.info("agent.user_input_repeat", request_id=req.request_id[:12])
+            # A 409 that names the repeat, so the second device reads "someone
+            # answered it" and never a false success (chat_run_continuity.md
+            # scenario 6). The browser sends nothing again on it, and the route
+            # skips the restart path, so nothing acts twice.
+            raise _answered_once_409()
     if not delivered and req.declined:
         # RESUME-4a-2 (D-RES-9): a late decline of a parked plain card with a
         # stored call starts a short continuation that runs no tool, so the

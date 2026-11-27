@@ -2194,7 +2194,9 @@ def test_the_persona_marks_detail_and_people_at_once() -> None:
     # PZ-32: `name` and `language` are profile_set areas too.
     assert ("For name, language and detail, mark it at once after profile_set, and for "
             "people after profile_alias") in " ".join(line.split())
-    assert "before any other\n    save" in (pt.profile_interview.__doc__ or "")
+    # Whitespace-folded: Python 3.13 dedents a docstring, so a text that counts
+    # the indent of a continuation line fails there and passes on 3.12.
+    assert "before any other save" in " ".join((pt.profile_interview.__doc__ or "").split())
 
 
 # ── 24. PZ-31: the member's own typed steers ground a save ─────────────────
@@ -2227,9 +2229,11 @@ PASTED_MAIL = f"From: Raj <raj@alpha.example>\nSubject: goals\n{ANSWER}"
 def steer_mod():
     steer = pytest.importorskip("orchestrator.steer")
     steer._PENDING_GUIDANCE.clear()
+    steer._SEEN_STEER_IDS.clear()
     steer._CLOSED.clear()
     yield steer
     steer._PENDING_GUIDANCE.clear()
+    steer._SEEN_STEER_IDS.clear()
     steer._CLOSED.clear()
 
 

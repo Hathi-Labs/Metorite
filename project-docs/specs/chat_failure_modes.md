@@ -14,6 +14,11 @@ server half of the run phase, task 3438) is BUILT dark, 2026-11-16. Its flag
 is `CHAT_RUN_PHASE_ORGS`. HRD-5 (a per-turn budget for each read tool, task
 2984) is BUILT dark, 2026-11-16. Its flag is `TOOL_TURN_BUDGET_ORGS`.**
 
+**HRD-16 (task 2995) is BUILT, 2026-11-26, with no flag. A card answer acts
+once, and a steer seen twice counts once. A repeat answer gets the 409
+`answered_once`, and the browser sends nothing again (owner, 2026-11-23). The
+follow-up is task 4036.**
+
 **HRD-1b (the HRD-1 answer on the batch path, task 3230) is BUILT,
 2026-11-17, with no flag. The model of a batch run, a delegated agent and a
 worker reads the HRD-1 answer, and never MAF's own text.**
