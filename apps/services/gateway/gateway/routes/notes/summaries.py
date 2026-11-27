@@ -517,9 +517,11 @@ async def summarize(
 @router.get("/meetings/{meeting_id}/note")
 async def get_note(
     meeting_id: str,
-    _user: UserContext = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ) -> NoteDoc:
+    """The edited note of the meeting. Owner only (task 3966)."""
     async with _tenant_session() as db:
+        await load_owned_meeting(db, meeting_id, user.email, columns="m.id")
         row = (
             await db.execute(
                 text("SELECT * FROM meeting_note WHERE meeting_id=:id"),
@@ -543,14 +545,9 @@ async def put_note(
     body: PutNoteRequest,
     user: UserContext = Depends(get_current_user),
 ) -> NoteDoc:
+    # Owner only (task 3966): a colleague's note is not a shared document.
     async with _tenant_session() as db:
-        exists = (
-            await db.execute(
-                text("SELECT 1 FROM meeting WHERE id=:id"), {"id": meeting_id}
-            )
-        ).fetchone()
-        if exists is None:
-            raise HTTPException(status_code=404, detail="meeting not found")
+        await load_owned_meeting(db, meeting_id, user.email, columns="m.id")
         await db.execute(
             text(
                 "INSERT INTO meeting_note (meeting_id, notes_md, notes_json, "
@@ -566,15 +563,17 @@ async def put_note(
                 "by": user.email or "user",
             },
         )
-    return await get_note(meeting_id, _user=user)
+    return await get_note(meeting_id, user=user)
 
 
 @router.get("/meetings/{meeting_id}/actions")
 async def list_actions(
     meeting_id: str,
-    _user: UserContext = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ) -> list[ActionItemModel]:
+    """The action items of the meeting. Owner only (task 3966)."""
     async with _tenant_session() as db:
+        await load_owned_meeting(db, meeting_id, user.email, columns="m.id")
         rows = (
             await db.execute(
                 text(

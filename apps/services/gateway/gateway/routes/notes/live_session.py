@@ -28,7 +28,15 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
-from gateway.routes.notes.core import _get_db, _iso, _log, _tenant_session, router
+from gateway.routes.notes.core import (
+    OWNED_MEETING_PREDICATE,
+    _get_db,
+    _iso,
+    _log,
+    _tenant_session,
+    load_owned_meeting,
+    router,
+)
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -122,8 +130,9 @@ async def _apply_prepared_copilot(meeting_id: str) -> None:
                     {"m": meeting_id},
                 )
             ).fetchone()
+            # The settings of the owner, in the same bound session (task 3966).
+            settings, _ = await load_for_meeting(meeting_id, db)
         per_meeting = None if row is None else row.copilot_enabled
-        settings, _ = await load_for_meeting(meeting_id)
         if not copilot_should_run(per_meeting, settings.copilot_default_on):
             return
         async with _tenant_session() as db:
@@ -171,17 +180,22 @@ async def end(meeting_id: str) -> None:
 
 @router.get("/live/sessions")
 async def list_live_sessions(
-    _user: UserContext = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ) -> list[LiveSessionModel]:
-    """Meetings being captured right now — drives the global "live now" dock."""
+    """Meetings being captured right now — drives the global "live now" dock.
+
+    The member's own meetings only, by the rule of the meetings list
+    (task 3966). The dock links each row to a console that is owner only."""
     async with _tenant_session() as db:
         rows = (
             await db.execute(
                 text(
                     "SELECT ls.*, m.title FROM live_session ls "
                     "JOIN meeting m ON m.id = ls.meeting_id "
-                    "WHERE ls.status = 'live' ORDER BY ls.started_at DESC"
-                )
+                    f"WHERE ls.status = 'live' AND {OWNED_MEETING_PREDICATE} "
+                    "ORDER BY ls.started_at DESC"
+                ),
+                {"owner": user.email or ""},
             )
         ).fetchall()
     return [_row_to_session(r) for r in rows]
@@ -190,12 +204,16 @@ async def list_live_sessions(
 @router.get("/meetings/{meeting_id}/live/session")
 async def get_live_session(
     meeting_id: str,
-    _user: UserContext = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ) -> LiveSessionModel | None:
     """This meeting's live session, if any — how the console reattaches after a
     refresh. Returns null (200) rather than 404 when nothing is live, so the UI
-    can poll it without treating "not live" as an error."""
+    can poll it without treating "not live" as an error.
+
+    Owner only (task 3966). A meeting that is not the caller's is the 404 of
+    the detail route, so the null answer is never a presence oracle."""
     async with _tenant_session() as db:
+        await load_owned_meeting(db, meeting_id, user.email, columns="m.id")
         row = (
             await db.execute(
                 text(
@@ -222,7 +240,7 @@ class CopilotToggleRequest(BaseModel):
 async def set_copilot(
     meeting_id: str,
     body: CopilotToggleRequest,
-    _user: UserContext = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ) -> LiveSessionModel:
     """Turn the copilot on/off for a live session, mid-session either way.
 
@@ -231,7 +249,10 @@ async def set_copilot(
     mode = (body.mode or "").strip() or None
     if mode is not None and mode not in _MODES:
         raise HTTPException(status_code=400, detail=f"mode must be one of {_MODES}")
+    # Owner only (task 3966): the copilot spends the owner's tokens and
+    # reads the owner's meeting.
     async with _tenant_session() as db:
+        await load_owned_meeting(db, meeting_id, user.email, columns="m.id")
         row = (
             await db.execute(
                 text(

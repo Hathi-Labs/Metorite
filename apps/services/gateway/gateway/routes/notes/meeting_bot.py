@@ -46,6 +46,7 @@ from gateway.routes.notes.core import (
     _get_db,
     _log,
     _tenant_session,
+    load_owned_meeting,
     media_dir,
     router,
 )
@@ -868,29 +869,37 @@ async def bot_join(
 # watching just empties — the single most confusing outcome, because "it didn't
 # work" is indistinguishable from "nothing happened". Keeping recent failures
 # visible is what makes the error text reachable at all.
+#
+# The member's own meetings only, by the rule of the meetings list (task 3966).
+# The list drives poll-on-read, so the rule also decides whose bots a GET
+# refreshes.
 _RECENT_FAILURE_WINDOW = "30 minutes"
 _ACTIVE_SQL = (
     "SELECT b.*, m.title AS meeting_title FROM meeting_bot b "
     "JOIN meeting m ON m.id = b.meeting_id "
-    "WHERE b.status IN :active "
+    "WHERE (b.status IN :active "
     "   OR (b.status IN ('failed', 'not_admitted') "
-    f"       AND b.updated_at > now() - interval '{_RECENT_FAILURE_WINDOW}') "
+    f"       AND b.updated_at > now() - interval '{_RECENT_FAILURE_WINDOW}')) "
+    f"  AND {OWNED_MEETING_PREDICATE} "
     "ORDER BY b.created_at DESC"
 )
 
 
 @router.get("/bots/active")
 async def list_active_bots(
-    _user: UserContext = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ) -> list[MeetingBotModel]:
     """Active notetaker bots (for the live surface). Poll-on-read: refresh each
     from the provider so status advances (and completed calls ingest) even
-    without the in-process poller."""
+    without the in-process poller.
+
+    The bots of the member's own meetings only (``_ACTIVE_SQL``, task 3966)."""
+    params = {"active": list(ACTIVE_STATUSES), "owner": user.email or ""}
     async with _tenant_session() as db:
         rows = (
             await db.execute(
                 text(_ACTIVE_SQL).bindparams(bindparam("active", expanding=True)),
-                {"active": list(ACTIVE_STATUSES)},
+                params,
             )
         ).fetchall()
     ids = [str(r.id) for r in rows]
@@ -900,7 +909,7 @@ async def list_active_bots(
             rows = (
                 await db.execute(
                     text(_ACTIVE_SQL).bindparams(bindparam("active", expanding=True)),
-                    {"active": list(ACTIVE_STATUSES)},
+                    params,
                 )
             ).fetchall()
     return [_row_to_bot(r) for r in rows]
@@ -909,9 +918,13 @@ async def list_active_bots(
 @router.get("/meetings/{meeting_id}/bot")
 async def get_meeting_bot(
     meeting_id: str,
-    _user: UserContext = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ) -> MeetingBotModel | None:
+    """The newest bot of the meeting. Owner only, checked before the
+    poll-on-read refresh, so a GET never refreshes a colleague's bot
+    (task 3966)."""
     async with _tenant_session() as db:
+        await load_owned_meeting(db, meeting_id, user.email, columns="m.id")
         r = (
             await db.execute(
                 text("SELECT b.*, m.title AS meeting_title FROM meeting_bot b "
@@ -938,15 +951,16 @@ async def get_meeting_bot(
 @router.get("/meetings/{meeting_id}/bot/diagnostics")
 async def meeting_bot_diagnostics(
     meeting_id: str,
-    _user: UserContext = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ) -> dict:
     """Why a notetaker couldn't join, in enough detail to act on.
 
     Browser automation against a UI that isn't a public API breaks in ways a
     status code can't express — a sign-in wall, a device dialog covering the
     green room and a host who never clicked Admit all end as "didn't join".
-    This returns the page the bot actually saw."""
+    This returns the page the bot actually saw. Owner only (task 3966)."""
     async with _tenant_session() as db:
+        await load_owned_meeting(db, meeting_id, user.email, columns="m.id")
         r = (
             await db.execute(
                 text("SELECT id, provider, provider_bot_id, status, error "
@@ -971,11 +985,13 @@ async def meeting_bot_diagnostics(
 @router.get("/meetings/{meeting_id}/bot/screenshot")
 async def meeting_bot_screenshot(
     meeting_id: str,
-    _user: UserContext = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ) -> Response:
     """The green room exactly as the bot saw it (PNG). 404 when no screenshot
-    was captured (only failure paths snapshot the page)."""
+    was captured (only failure paths snapshot the page). Owner only
+    (task 3966)."""
     async with _tenant_session() as db:
+        await load_owned_meeting(db, meeting_id, user.email, columns="m.id")
         r = (
             await db.execute(
                 text("SELECT provider_bot_id FROM meeting_bot "
@@ -997,11 +1013,13 @@ async def meeting_bot_screenshot(
 @router.post("/meetings/{meeting_id}/bot/stop", status_code=202)
 async def stop_meeting_bot(
     meeting_id: str,
-    _user: UserContext = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ) -> dict:
     """Remove the notetaker from the call. Any audio captured so far is still
-    processed by the provider and ingested when ready."""
+    processed by the provider and ingested when ready. Owner only
+    (task 3966)."""
     async with _tenant_session() as db:
+        await load_owned_meeting(db, meeting_id, user.email, columns="m.id")
         r = (
             await db.execute(
                 text("SELECT id, provider_bot_id, status FROM meeting_bot "

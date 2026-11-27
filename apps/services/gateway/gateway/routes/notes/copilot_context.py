@@ -37,8 +37,16 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_common.db import current_tenant
 from fastapi import Depends, HTTPException
-from gateway.routes.notes.core import _get_db, _log, _tenant_session, router
+from gateway.routes.notes.core import (
+    OWNED_MEETING_PREDICATE,
+    _get_db,
+    _log,
+    _tenant_session,
+    load_owned_meeting,
+    router,
+)
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -151,68 +159,76 @@ def summarise_past(title: str | None, when: Any, summary: str | None) -> str:
 
 # ── Layers 1 + 2: brief and our own records (no external dependency) ────────
 
-async def _local_context(meeting_id: str) -> ContextPack:
+async def _local_context(meeting_id: str, db: Any = None) -> ContextPack:
+    """Layers 1 and 2. A route passes its tenant-bound session ``db``, after
+    the owner check (task 3966). With no ``db`` it reads as before."""
+    if db is not None:
+        return await _read_local_context(db, meeting_id)
     # H4: shared helper also consumed by the copilot orchestrator background
     # task (`copilot._run` via `get()`), which has no ambient tenant; derive
     # it from the meeting row before moving this off `_get_db`.
-    pack = ContextPack()
     async with await _get_db() as db:
-        m = (
-            await db.execute(
-                text(
-                    "SELECT title, attendees, copilot_brief, owner_email "
-                    "FROM meeting WHERE id = CAST(:id AS UUID)"
-                ),
-                {"id": meeting_id},
-            )
-        ).fetchone()
-        if m is None:
-            return pack
-        pack.brief = _clip(m.copilot_brief or "", _MAX_BRIEF_CHARS)
-        pack.attendees = attendee_names(m.attendees)
-        emails = attendee_emails(m.attendees)
-        if not emails:
-            return pack
+        return await _read_local_context(db, meeting_id)
 
-        # Past meetings that shared at least one attendee email. The JSONB
-        # containment check keeps this a single indexed-ish query rather than
-        # pulling every meeting the user has ever had.
-        rows = (
+
+async def _read_local_context(db: Any, meeting_id: str) -> ContextPack:
+    pack = ContextPack()
+    m = (
+        await db.execute(
+            text(
+                "SELECT title, attendees, copilot_brief, owner_email "
+                "FROM meeting WHERE id = CAST(:id AS UUID)"
+            ),
+            {"id": meeting_id},
+        )
+    ).fetchone()
+    if m is None:
+        return pack
+    pack.brief = _clip(m.copilot_brief or "", _MAX_BRIEF_CHARS)
+    pack.attendees = attendee_names(m.attendees)
+    emails = attendee_emails(m.attendees)
+    if not emails:
+        return pack
+
+    # Past meetings that shared at least one attendee email. The JSONB
+    # containment check keeps this a single indexed-ish query rather than
+    # pulling every meeting the user has ever had.
+    rows = (
+        await db.execute(
+            text(
+                """
+                SELECT title, start_at, summary_md, id
+                FROM meeting
+                WHERE id <> CAST(:id AS UUID)
+                  AND owner_email = :owner
+                  AND summary_md IS NOT NULL
+                  AND EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(attendees) a
+                    WHERE lower(a->>'email') = ANY(:emails)
+                  )
+                ORDER BY COALESCE(start_at, created_at) DESC
+                LIMIT :lim
+                """
+            ),
+            {"id": meeting_id, "owner": m.owner_email or "",
+             "emails": emails, "lim": _MAX_PAST_MEETINGS},
+        )
+    ).fetchall()
+    pack.past = [summarise_past(r.title, r.start_at, r.summary_md) for r in rows]
+
+    if rows:
+        actions = (
             await db.execute(
                 text(
-                    """
-                    SELECT title, start_at, summary_md, id
-                    FROM meeting
-                    WHERE id <> CAST(:id AS UUID)
-                      AND owner_email = :owner
-                      AND summary_md IS NOT NULL
-                      AND EXISTS (
-                        SELECT 1 FROM jsonb_array_elements(attendees) a
-                        WHERE lower(a->>'email') = ANY(:emails)
-                      )
-                    ORDER BY COALESCE(start_at, created_at) DESC
-                    LIMIT :lim
-                    """
+                    "SELECT description FROM action_item "
+                    "WHERE meeting_id = ANY(CAST(:ids AS UUID[])) "
+                    "AND status IN ('draft','approved') "
+                    "ORDER BY created_at DESC LIMIT :lim"
                 ),
-                {"id": meeting_id, "owner": m.owner_email or "",
-                 "emails": emails, "lim": _MAX_PAST_MEETINGS},
+                {"ids": [str(r.id) for r in rows], "lim": _MAX_OPEN_ACTIONS},
             )
         ).fetchall()
-        pack.past = [summarise_past(r.title, r.start_at, r.summary_md) for r in rows]
-
-        if rows:
-            actions = (
-                await db.execute(
-                    text(
-                        "SELECT description FROM action_item "
-                        "WHERE meeting_id = ANY(CAST(:ids AS UUID[])) "
-                        "AND status IN ('draft','approved') "
-                        "ORDER BY created_at DESC LIMIT :lim"
-                    ),
-                    {"ids": [str(r.id) for r in rows], "lim": _MAX_OPEN_ACTIONS},
-                )
-            ).fetchall()
-            pack.open_actions = [_clip(a.description, 140) for a in actions]
+        pack.open_actions = [_clip(a.description, 140) for a in actions]
     return pack
 
 
@@ -292,14 +308,24 @@ async def consult(question: str) -> dict[str, str]:
 
 # ── Assembly + per-session cache ────────────────────────────────────────────
 
-_CACHE: dict[str, ContextPack] = {}
+#: Keyed on ``(tenant, meeting id)`` (task 3966). Under the promoted catalog
+#: the primary key of ``meeting`` holds ``organization_id``, so the meeting id
+#: alone does not name one tenant. A route reads it only after the owner
+#: check. The copilot task inherits the tenant of the request that started it.
+_CACHE: dict[tuple[str, str], ContextPack] = {}
 
 
-async def build(meeting_id: str, *, deep: bool = False) -> ContextPack:
+def _cache_key(meeting_id: str) -> tuple[str, str]:
+    return (current_tenant() or "", meeting_id)
+
+
+async def build(
+    meeting_id: str, *, deep: bool = False, db: Any = None
+) -> ContextPack:
     """Assemble the pack for a meeting. Never raises — a copilot with no
     context is much better than a copilot that crashed."""
     try:
-        pack = await _local_context(meeting_id)
+        pack = await _local_context(meeting_id, db)
         if deep:
             pack.systems = await _system_context(pack.attendees)
         _log.info(
@@ -317,18 +343,24 @@ async def build(meeting_id: str, *, deep: bool = False) -> ContextPack:
         return ContextPack()
 
 
-async def get(meeting_id: str, *, deep: bool = False) -> ContextPack:
-    """Cached per meeting — built once at session start, reused every prompt."""
-    cached = _CACHE.get(meeting_id)
+async def get(
+    meeting_id: str, *, deep: bool = False, db: Any = None
+) -> ContextPack:
+    """Cached per meeting — built once at session start, reused every prompt.
+
+    ``db`` is the tenant-bound session of a route that already checked the
+    owner. The copilot task passes none."""
+    key = _cache_key(meeting_id)
+    cached = _CACHE.get(key)
     if cached is not None:
         return cached
-    pack = await build(meeting_id, deep=deep)
-    _CACHE[meeting_id] = pack
+    pack = await build(meeting_id, deep=deep, db=db)
+    _CACHE[key] = pack
     return pack
 
 
 def forget(meeting_id: str) -> None:
-    _CACHE.pop(meeting_id, None)
+    _CACHE.pop(_cache_key(meeting_id), None)
 
 
 # ── API: write the brief, inspect what the copilot will know ────────────────
@@ -341,7 +373,7 @@ class BriefRequest(BaseModel):
 async def set_brief(
     meeting_id: str,
     body: BriefRequest,
-    _user: UserContext = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ) -> dict:
     """Set the meeting's briefing — the single highest-value piece of context,
     because it's usually the part only the human knows (what this meeting is
@@ -349,9 +381,14 @@ async def set_brief(
     edit takes effect on the next suggestion."""
     brief = _clip(body.brief or "", _MAX_BRIEF_CHARS)
     async with _tenant_session() as db:
+        # Owner only (task 3966). The rule is bound INTO the write, so one
+        # statement decides, and a miss is the 404 of the detail route.
         res = await db.execute(
-            text("UPDATE meeting SET copilot_brief = :b WHERE id = CAST(:id AS UUID)"),
-            {"b": brief or None, "id": meeting_id},
+            text(
+                "UPDATE meeting AS m SET copilot_brief = :b "
+                f"WHERE m.id = CAST(:id AS UUID) AND {OWNED_MEETING_PREDICATE}"
+            ),
+            {"b": brief or None, "id": meeting_id, "owner": user.email or ""},
         )
         if res.rowcount == 0:
             raise HTTPException(status_code=404, detail="meeting not found")
@@ -362,11 +399,17 @@ async def set_brief(
 @router.get("/meetings/{meeting_id}/context")
 async def get_context(
     meeting_id: str,
-    _user: UserContext = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ) -> dict:
     """What the copilot knows about this meeting — so "why did it say that?"
-    (and "why is it being generic?") are both answerable."""
-    pack = await get(meeting_id)
+    (and "why is it being generic?") are both answerable.
+
+    Owner only, checked before the cache (task 3966). The pack names the
+    brief, the attendees and the past meetings of the owner. The read runs in
+    the bound session of this request."""
+    async with _tenant_session() as db:
+        await load_owned_meeting(db, meeting_id, user.email, columns="m.id")
+        pack = await get(meeting_id, db=db)
     return {
         "brief": pack.brief,
         "attendees": pack.attendees,
@@ -385,12 +428,15 @@ class DeepContextRequest(BaseModel):
 async def set_deep_context(
     meeting_id: str,
     body: DeepContextRequest,
-    _user: UserContext = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ) -> dict:
     """Opt this session into asking the business agents (tasks) for
     background. Off by default because the fan-out spends tokens before the
-    meeting starts — worth it for a customer call, not for a standup."""
+    meeting starts — worth it for a customer call, not for a standup.
+
+    Owner only (task 3966): the fan-out spends the owner's tokens."""
     async with _tenant_session() as db:
+        await load_owned_meeting(db, meeting_id, user.email, columns="m.id")
         res = await db.execute(
             text(
                 "UPDATE live_session SET deep_context = :e, updated_at = now() "

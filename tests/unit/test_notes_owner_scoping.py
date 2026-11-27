@@ -1018,7 +1018,7 @@ async def test_minting_a_live_token_against_a_colleagues_meeting_is_404(
             provider="assemblyai", token="t", model="m", expires_in=60
         )
 
-    async def _wanted(_mid):
+    async def _wanted(_mid, _db=None):  # task 3966: the route passes its session
         return True, "wanted"
 
     monkeypatch.setattr(live, "_issue_live_token", _issue)

@@ -51,7 +51,11 @@ from acb_auth import UserContext, get_current_user
 from acb_common.db import current_tenant
 from acb_llm.voice import voice_prompt
 from fastapi import Depends, HTTPException
-from gateway.routes.notes.actions import ApproveResponse, _create_task_from_action
+from gateway.routes.notes.actions import (
+    ApproveResponse,
+    _create_task_from_action,
+    _load_action,
+)
 from gateway.routes.notes.core import _get_db, _log, _tenant_session, router
 from sqlalchemy import text
 
@@ -641,6 +645,10 @@ async def dispatch_action(
     a colleague's already-sent email.
     """
     async with _tenant_session() as db:
+        # The one owner rule first (task 3966): its 404 is the answer of the
+        # approve and reject routes. The cross-owner refusal below stays as
+        # the second lock of the dispatch seam.
+        await _load_action(db, action_id, user.email)
         action = (
             await db.execute(
                 text(_ACTION_COLS + "WHERE id = :id"), {"id": action_id}

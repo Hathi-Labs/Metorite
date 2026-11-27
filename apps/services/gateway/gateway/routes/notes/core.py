@@ -209,6 +209,20 @@ async def load_owned_meeting(
     return row
 
 
+async def require_owned_meeting(meeting_id: str, owner_email: str | None) -> None:
+    """Raise the 404 of :func:`load_owned_meeting` unless the meeting is the
+    caller's. Opens its own tenant-bound session.
+
+    For a route that reads no meeting row itself: a stream, an in-process map
+    keyed by the meeting id (the live bus, the roster, agenda coverage), or a
+    call to the bot worker. Call it BEFORE the response starts. A 404 raised
+    inside a started ``StreamingResponse`` arrives as a broken stream, not as
+    a refusal (task 3966).
+    """
+    async with _tenant_session() as db:
+        await load_owned_meeting(db, meeting_id, owner_email, columns="m.id")
+
+
 # ── Media storage (same recipe as tasks/attachments.py) ──────────────────────
 
 def media_dir() -> Path:

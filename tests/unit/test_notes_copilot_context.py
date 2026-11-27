@@ -170,7 +170,8 @@ def test_the_copilot_fan_out_names_no_crm_agent() -> None:
 
 def test_pack_is_cached_and_forgettable() -> None:
     mid = "ctx-cache"
-    cc._CACHE[mid] = cc.ContextPack(brief="cached")
+    # Task 3966: the key holds the bound tenant. No tenant is bound here.
+    cc._CACHE[("", mid)] = cc.ContextPack(brief="cached")
     assert asyncio.run(cc.get(mid)).brief == "cached"
     cc.forget(mid)
-    assert mid not in cc._CACHE
+    assert ("", mid) not in cc._CACHE
