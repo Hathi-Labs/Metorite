@@ -382,10 +382,12 @@ async def test_two_orgs_never_share_an_egress_network(
     assert len(sb.egress_bridge_name(ORG, a.name, "k")) <= 15
 
 
-async def test_a_network_of_another_org_or_run_or_not_internal_is_refused(
+async def test_a_network_of_another_org_or_not_internal_is_refused(
     broker: sb.SandboxBroker, docker: EgressDocker, egress_on: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A found network of another org, not internal, or with another run label
+    (WS-43g2a) opens no grant, and the container stays on ``none``."""
     token = "p" * 43
     monkeypatch.setattr(sb.secrets, "token_urlsafe", lambda _n=32: token)
     key = sb.EgressGrant(
