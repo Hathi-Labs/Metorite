@@ -1307,6 +1307,25 @@ def _language_order_typed(language: str) -> bool:
     return named and any(w.casefold() in words for w in _ORDER_WORDS)
 
 
+def _drop_unordered_mark(prior: dict[str, Any], merged: dict[str, Any]) -> None:
+    """Drop ``language_fixed`` from *merged* when a write of ``languages``
+    puts a new language first that the member did not order (PZ-52). The old
+    first language keeps the mark. So does a first language that the typed
+    words name in an order (:func:`_language_order_typed`). An empty or a
+    null list has no first language. At a WhatsApp Confirm there are no
+    typed words, and the card still binds the exact value."""
+    def first(style: dict[str, Any]) -> str:
+        listed = style.get("languages")
+        if isinstance(listed, list):
+            return str(listed[0]) if listed else ""
+        return str(style.get("language") or "")
+
+    new = first(merged)
+    if new and (new.lower() == first(prior).lower() or _language_order_typed(new)):
+        return
+    merged.pop("language_fixed", None)
+
+
 @_write_tool
 async def profile_set(key: Literal["address", "style", "celebrations"], value: dict[str, Any],
                       sensitive: bool = False) -> str:
@@ -1360,6 +1379,9 @@ async def profile_set(key: Literal["address", "style", "celebrations"], value: d
     # ground it, never a card (PZ-32 repair, P2-6b). A name may ask a card.
     typed = _ground(*free, card=key == "address")
     merged = _merge_style(prior, value) if key == "style" else _merge(prior, value)
+    if (key == "style" and "languages" in value and "language_fixed" not in value
+            and prior.get("language_fixed") is True):
+        _drop_unordered_mark(prior, merged)
     if merged == prior:
         raise _Refused("Already set.", "duplicate")
     reasons = [*typed, *_reasons(free, sensitive)]

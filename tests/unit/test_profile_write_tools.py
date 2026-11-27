@@ -445,6 +445,28 @@ class TestSet:
         (put,) = own_chat.writes()
         assert json.loads(put.content)["value"]["language_fixed"] is True
 
+    @pytest.mark.parametrize(("typed", "languages", "kept"), [
+        # A new first language that the member did not order drops the mark.
+        ("please summarise this mail", ["hi", "en"], False),
+        # Naming a language with no order about answers is not an order.
+        ("I also speak Hindi", ["hi", "en"], False),
+        # The member's typed order keeps the mark.
+        ("reply in Hindi from now on", ["hi", "en"], True),
+        # The same first language keeps it, in any case of the tag.
+        ("please summarise this mail", ["EN", "hi"], True),
+        # An empty or a null list has no first language.
+        ("please summarise this mail", [], False),
+        ("please summarise this mail", None, False),
+    ])
+    def test_a_new_list_keeps_the_mark_only_for_an_ordered_first_language(
+            self, own_chat, monkeypatch, typed, languages, kept) -> None:
+        own_chat.profile["style"] = {
+            "language": "en", "languages": ["en"], "language_fixed": True}
+        monkeypatch.setattr(pt, "_member_words", lambda: typed)
+        _run(pt.profile_set("style", {"languages": languages}))
+        (put,) = own_chat.writes()
+        assert json.loads(put.content)["value"].get("language_fixed", False) is kept
+
     def test_it_merges_and_puts_the_whole_sub_object(self, own_chat) -> None:
         out = _run(pt.profile_set("style", {"length": "detailed"}))
         (put,) = own_chat.writes()

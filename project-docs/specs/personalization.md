@@ -747,7 +747,11 @@ another language.` When the member orders an answer language in the chat,
 `profile_set` moves that language to the first place and keeps the others. A
 full list drops its last tag. The member's typed words must name the first
 language of the write. In Settings, a reorder keeps the mark, so the mark
-moves to the new first language. An empty list drops the mark. Fences:
+moves to the new first language. An empty list drops the mark. A
+`profile_set` write of `languages` with no mark keeps a stored mark in two
+cases only. The first language stays the same, or the member's typed words
+order the new one. In all other cases the tool drops the mark. A write of a
+lone `language` keeps the mark, as before. Fences:
 `tests/unit/test_assistant_profile_languages.py`,
 `tests/unit/test_profile_write_tools.py` and `profile.test.ts`.
 
