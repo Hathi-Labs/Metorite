@@ -23,7 +23,7 @@
 --   `rollup.goal_rollup`: the epics of one Goal.
 --   One trigger attaches the same-org guard of 491 to the new key (below).
 --
--- Who writes them: `POST /projects/types` and `PATCH /projects/types/{id}`
+-- Who writes them: `POST /projects/nodes/{project_id}/types` and `PATCH /projects/types/{id}`
 --   write `is_goal` (`routes/projects/admin.py`). `POST /projects/tasks` and
 --   `PATCH /projects/tasks/{id}` write `goal_task_id`
 --   (`routes/projects/tasks.py`). `core.assert_goal_link` holds the rules:
@@ -66,8 +66,7 @@
 -- Never wait for the lock: `ALTER TABLE` takes ACCESS EXCLUSIVE, and every
 --   task write takes this table. So the file sets `lock_timeout` first, as
 --   304 and 401 do. On a lock timeout the runner tries the whole file again.
---   No CONCURRENTLY: the runner applies the file in one transaction. The
---   index is partial on a column that is NULL in every row, so it is empty.
+--   No CONCURRENTLY: the index is partial, on a column that is NULL in every row.
 --
 -- Depends on: 146_projects.sql (the tables), 161_projects_tenancy.sql
 --   (organization_id), 168_projects_delta_sync.sql (the `is_epic` pattern).

@@ -548,12 +548,6 @@ asks it. A reload applies a change. The flip is AGENT-SAFE under the
 `/projects/my/focus-sessions` route answers 404 before any database work. A
 reload applies it. The flip stays OWNER-GATE (`enforcement-flip`).
 
-`PROJECTS_GOALS_ORGS` opens the Goals of Projects (`project_management_app.md`
-§13.6a row WM-5). Its one reader is
-`gateway.routes.projects.core.goals_allowed`. While the list does not hold the
-org, a write that sends a Goal field gets 422 `goals_off`. A reload applies a
-change, and the flip stays OWNER-GATE (`enforcement-flip`).
-
 `GITHUB_APP_ORGS` turns the Metorite GitHub App on for each named org
 (`agent_coordination.md` SW-53). `GITHUB_APP_ENABLED` stays the master, and a
 reload does not apply the master. With the master on, an empty list turns
@@ -654,6 +648,12 @@ also selects the orgs where the daily expiry tick may delete installs
 the next tick. The owner must treat a change of this list as part of the
 expiry decision. `PACKAGE_EXPIRY_ENABLED` does not reload. Only a restart
 changes it.
+
+`PROJECTS_GOALS_ORGS` opens the Goals of Projects (`project_management_app.md`
+§13.6a row WM-5). Its one reader is
+`gateway.routes.projects.core.goals_allowed`. While the list does not hold the
+org, a write that sends a Goal field gets 422 `goals_off`. A reload applies a
+change, and the flip stays OWNER-GATE (`enforcement-flip`).
 
 `PROJECT_EDIT_CARD_ORGS` turns on the card of a new task that the member
 edits (`projects_ai_chat.md` §32, EAC-1). For each listed org, the card of
