@@ -342,9 +342,9 @@ export function chartBlock(
 
 /** The node of a Stat block: the `sparkTrend` template, bound to an aggregate source. */
 export function statBlock(
-  source: AggregateSource, title?: string, measure = 0, good: "up" | "down" = "up",
+  source: AggregateSource, title?: string, measure = 0, good: "up" | "down" = "up", icon?: string,
 ): { type: "template"; props: Record<string, unknown> } {
-  return { type: "template", props: { name: "sparkTrend", source, data: { label: title, measure, good } } };
+  return { type: "template", props: { name: "sparkTrend", source, data: { label: title, measure, good, ...(icon ? { icon } : {}) } } };
 }
 
 // --- the mapper from a manifest view ---------------------------------------
@@ -359,6 +359,8 @@ export interface AggregateView {
   id: string;
   title?: string | null;
   source?: { object?: string | null; action?: string | null; args?: Record<string, unknown> | null } | null;
+  /** A stat view may name an icon of the icon list (STU-LOOK-2). */
+  icon?: string | null;
 }
 
 export type ViewBlock =
@@ -425,5 +427,5 @@ export function statViewBlock(view: AggregateView, ctx: ViewContext = {}): ViewB
   if (good !== "up" && good !== "down") {
     return { ok: false, reason: `“${label}” sets good to ${JSON.stringify(good)}. Use up or down.` };
   }
-  return { ok: true, node: statBlock(src.source, view.title ?? undefined, measure, good) };
+  return { ok: true, node: statBlock(src.source, view.title ?? undefined, measure, good, view.icon ?? undefined) };
 }
