@@ -53,6 +53,22 @@ describe("StudioChart", () => {
   });
 });
 
+describe("StudioStat icon (STU-LOOK-2)", () => {
+  const draw = (data: unknown) => renderToStaticMarkup(createElement(StudioStat, { data, rows: [AGG] }));
+  it("draws an icon of the list before the heading", () => {
+    const html = draw({ label: "Deals", icon: "Truck" });
+    expect(html).toContain("<svg");
+    expect(html.indexOf("<svg")).toBeLessThan(html.indexOf("data-stat-heading"));
+    expect(html).toContain('data-stat-heading=""');
+  });
+  it("draws no icon for a name outside the list, a non-string or no icon", () => {
+    for (const icon of ["Skull", 5, null, undefined, ""]) {
+      const html = draw({ label: "Deals", icon });
+      expect(html.slice(0, html.indexOf("data-stat-heading"))).not.toContain("<svg");
+    }
+  });
+});
+
 describe("StudioStat", () => {
   it("shows the value and the trend", () => {
     const html = renderToStaticMarkup(createElement(StudioStat, { data: { label: "Deals" }, rows: [AGG] }));
@@ -98,5 +114,36 @@ describe("the bound blocks", () => {
   it("is a node of the one renderer: the chart and the stat template", () => {
     expect(chartBlock("bar", SOURCE).props.name).toBe("chart");
     expect(statBlock(SOURCE).props.name).toBe("sparkTrend");
+  });
+});
+
+describe("the mapped views (D4c)", () => {
+  const ctx = { actions: [{ id: "agg", uses: "object:deal.aggregate" }] };
+  const door: StudioDataDoor = { scope: "t:draft", read: async () => [AGG], run: async () => ({ ok: true }) };
+  const draw = (node: unknown) =>
+    renderToStaticMarkup(createElement(StudioDataContext.Provider, { value: door },
+      createElement(GenerativeUINode, { spec: node as never })));
+
+  it("a chart view draws through the one renderer, in its loading state", async () => {
+    const { chartViewBlock, statViewBlock } = await import("@/lib/studio/aggregateModel");
+    const chart = chartViewBlock({ id: "c", title: "Deals", source: { action: "agg", args: { kind: "bar" } } }, ctx);
+    const stat = statViewBlock({ id: "s", title: "Deals", source: { action: "agg", args: {} } }, ctx);
+    expect(chart.ok && stat.ok).toBe(true);
+    if (!chart.ok || !stat.ok) return;
+    expect(draw(chart.node)).toContain('aria-busy="true"');
+    expect(draw(stat.node)).toContain('aria-busy="true"');
+  });
+
+  it("the sample door answers the aggregate of a mapped view with no live door", async () => {
+    const { makeSampleDoor } = await import("@/lib/studio/sampleDoor");
+    const { parseAggregate, chartFromAggregate, statFromAggregate } = await import("@/lib/studio/aggregateModel");
+    const rows = await makeSampleDoor(undefined, undefined, 0).read({
+      action: "object:visit.aggregate",
+      args: { group_by: { field: "visit_date", bucket: "day" }, measures: [{ op: "count" }] },
+    });
+    const agg = parseAggregate(rows);
+    expect(agg?.total.count).toBe(3);
+    expect(chartFromAggregate("bar", agg).ok).toBe(true);
+    expect(statFromAggregate(agg)?.trend).not.toBeNull();
   });
 });

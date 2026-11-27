@@ -31,3 +31,26 @@ def _clean_harness_state():
     _reset()
     yield
     _reset()
+
+
+@pytest.fixture(autouse=True)
+def _allow_the_direct_ai_arm(request, monkeypatch):
+    """Let an eval take the direct AI arm (local litellm), as before task 3554.
+
+    The twin of the fixture of the same name in ``tests/conftest.py``, which
+    says why. ``test_llm_retry_trajectory.py`` stubs litellm and runs as
+    production, so the real guard would refuse each call. It does not set
+    ``ACB_ENV=dev``. A test with the ``direct_arm_guard`` marker keeps the
+    real guard. It imports the guard module itself, so a lazy import in a
+    test body still gets the allow.
+    """
+    if request.node.get_closest_marker("direct_arm_guard") is not None:
+        yield
+        return
+    try:
+        from acb_llm import routed
+    except ImportError:  # acb_llm unavailable: no direct arm to allow
+        yield
+        return
+    monkeypatch.setattr(routed, "direct_arm_allowed", lambda: True)
+    yield

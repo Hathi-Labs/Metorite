@@ -1,8 +1,8 @@
 # My Day command centre — capture, plan, start, focus and close from one page (WS-MDC)
 
-**Product:** Metorite · **Feature:** My Day runs the whole day of one member · **Updated:** 2026-11-07 · **Owner:** vjvarada
+**Product:** Metorite · **Feature:** My Day runs the whole day of one member · **Updated:** 2026-11-27 · **Owner:** vjvarada
 
-**Status:** ✅ **ACTIVE** (owner decision 2026-11-07, task 1946). No slice is built. The owner approved MD-Q1 to MD-Q8 as recommended, and added the "Needs you" tabs (D-MD-9).
+**Status:** ✅ **ACTIVE** (owner decision 2026-11-07, task 1946). Built on main: CC-1, CC-2 (dark, `TODAY_RULE_ORGS`), CC-4 and CC-11. CC-5a, the server half of the focus-session log, is built dark behind `FOCUS_LOG_ORGS` (task 1972, PR 1824, migration 509). The owner approved MD-Q1 to MD-Q8 as recommended, and added the "Needs you" tabs (D-MD-9).
 
 **Verified against code on 2026-11-07** at `origin/main` `f2671c706`. Each anchor in §2 comes from the research on task 1946. Re-check each anchor at dispatch.
 
@@ -125,6 +125,35 @@ A second implementation of any rule below is a defect (CLAUDE.md §4, "Respect t
 
 ---
 
+## 4a. The focus coach (D221)
+
+The owner asked on 2026-11-14 (task 3177). Focus mode helps the member do the task in front of them. It breaks the task into steps, shows how to start, uses the context from Email, WhatsApp, the CRM and Projects, gives a reason to keep going, and names who can help when the member is stuck. The review of task 3177 keeps the core and cuts the parts that hurt focus.
+
+**What the coach does, and when.** A coach that talks during a session breaks the focus that the session protects. So the coach speaks at two moments only: when the session starts, and at the check-in when it ends. During the session, the dock shows the steps and the facts, and nothing more.
+
+| Moment | What the member sees | Slice |
+|---|---|---|
+| The start (▶) | One brief before the timer: why the task matters, what is done, the next step, and its sources. One tap skips it | CC-12 |
+| The start, on a large task | "Plan the steps": 3 to 7 steps with estimates. One accept makes them subtasks | CC-13 |
+| During the session | The checklist of steps, and one line of facts: steps done, minutes against the estimate, who waits | CC-15 |
+| The check-in, "Blocked" | Up to 3 people who can help, each with a reason, a drafted ask, and "Waiting for" | CC-14 |
+| Chat | "Help me with this task", "break this down", "who can help with this?" | CC-16 |
+
+**The rules.** Each rule binds when its slice merges, and until then it is advisory (R7).
+
+1. **Grounded, or silent.** Each sentence of the brief cites the task or a source. Where no source says how to do the work, the coach gives the steps and no general advice. A how-to essay from the model alone is the part of the request that the review cut: it is often wrong, and an expert finds it slow. Fence: the CC-12 eval.
+2. **The context comes from the knowledge graph.** The sources of a task are its one-hop neighbours in `kb_links` (`knowledge_graph.md`, D128): the email or WhatsApp message that it came from, a linked CRM record, a Knowledge page and related tasks. The seam opens each one again as the viewer. The coach adds no second link type and no second retrieval path. Fence: the CC-12 R8 test.
+3. **Steps are subtasks.** An accepted step is a subtask in the one task store (D52 to D54), with one Undo. For a company task, the card says that the team sees the new subtasks. One new function proposes the steps. "Split into sessions?" of `calendar_focus_os.md` §4.8 (F3) uses the same function. `propose()` and `propose_with_llm()` in `routes/tasks/ai.py` stay eval-locked.
+4. **"Who can help" reads only what the member can see.** The signals are tasks and records that the member can open, the profiles that the directory shows the member, and `manager_id`. The coach shows no workload, no hours and no absence reason. The capability search of `people_center_app.md` §5.5 shows those, and it stays admin-only. Fence: the CC-14 R8 test.
+5. **The member asks, and the coach never does.** The coach drafts the ask. The member edits it and sends it. It never assigns (D-PC-13), it never tells a manager by itself, and it never reads that a member is stuck from their activity. "Blocked" comes only from the member's own answer at the check-in (CC-5).
+6. **Cost.** A brief is one model call through the one router. The answer is kept for the task version and the source versions, so a second ▶ on an unchanged task makes no call. A member gets at most 20 briefs in a day. The setting "Brief before focus" is "tasks over 30 minutes" by default, "always" or "never".
+7. **Motivation is facts.** The coach says why the work matters and how far it got: "Step 3 of 5 done. Ravi's dispatch can start." The setting "Coach tone" is "facts only" by default, "encouraging" or "off". The coach shows no streak to lose, no guilt copy, and nothing that another member sees.
+8. **Chat parity.** Each coach act works from the chat with the same card (CC-16).
+
+**Ideas for later, with no slice yet.** Do the first step with Mira, such as a draft reply from the email of the task. Learn estimates for each step from the focus log (CC-5). Focus Shield of `calendar_focus_os.md` §4.1 holds the notifications while a session runs.
+
+---
+
 ## 5. The phases of My Day
 
 ### 5.1 The three phases
@@ -155,7 +184,7 @@ The owner said that several apps can need a member. So the "Needs you" group of 
 
 1. **One tab for each app that has a needs provider.** The first tab is "All". Each other tab names one app, for example Projects, Email, Approvals, Waiting, CRM and Calendar. Each tab shows its count.
 2. **The source is the one feed.** `GET /shell/needs` already merges each app's provider (`navigation_shell.md` §7.2). The tabs filter that feed by app. No new read exists.
-3. **A tab shows only for an app that the member can open.** A pane in `preview` shows no tab. A tab with a count of 0 stays visible but quiet, so the row does not jump.
+3. **A tab shows only for an app that the member can open.** A pane in `preview` shows no tab. A tab with a count of 0 is not drawn (owner, 2026-11-22: approved as built, task 1973). The tab bar keeps its place, so the row does not jump. "See all" opens `/approvals` on the Approvals tab until `/waiting` ships.
 4. **A new app joins by its manifest.** It adds a provider. It adds no tab code (D89).
 5. **The Waiting tab shows the top 5** of `/waiting` and links to the page. `waiting_on_me.md` owns that page.
 6. **Each row acts in place** under D101 and D171.4. A row that needs more context opens the owning app.
@@ -212,6 +241,11 @@ Each slice ships alone, dark where it changes behavior, through the preview, the
 | **CC-9** | 1977 | The phone layout | At 390 px and 360 px, the session, capture and plan work with one hand | MEDIUM |
 | **CC-10** | 1978 | Chat parity: capture, start and stop focus, plan and close the day (with CAL-1) | Each verb works from the chat with one card | HIGH (chat tools) |
 | **CC-11** | 1973 | The "Needs you" tabs (D-MD-9) | One tab for each app with a provider shows its count. A tab filters the one feed | MEDIUM |
+| **CC-12** | 3179 | The brief at the start of focus, with up to 5 sources from the knowledge graph (§4a rules 1, 2 and 6) | R8: a source that the viewer cannot open never shows. An eval of 20 real tasks: each sentence cites the task or a source. A second ▶ on an unchanged task makes no model call | HIGH (reads other apps) |
+| **CC-13** | 3180 | Plan the steps: 3 to 7 steps with estimates, accepted once as subtasks, with one Undo (§4a rule 3) | The focus checklist shows the steps. An eval of 20 real tasks: no step names a fact that is not in the task or a source | MEDIUM |
+| **CC-14** | 3181 | Who can help, when the member answers "Blocked": up to 3 people with a reason, a drafted ask, and "Waiting for" (§4a rules 4 and 5) | R8: no person or reason from a record that the viewer cannot open. No workload, hours or absence reason. Nothing goes out until the member sends it | HIGH (people data) |
+| **CC-15** | 3182 | Progress and why it matters: the dock line, the end line, and the "Coach tone" setting (§4a rule 7) | The dock line drops each missing fact. "Off" hides the end line | LOW |
+| **CC-16** | 3183 | The coach in chat (§4a rule 8) | Each of the three asks gives its card in a scripted chat test | HIGH (chat tools) |
 
 ### 9.1 Order and dependencies
 
@@ -222,6 +256,7 @@ Each slice ships alone, dark where it changes behavior, through the preview, the
 5. **CC-8 needs CC-5.**
 6. CC-9 follows CC-3. CC-10 follows CC-4, CC-5 and CAL-1.
 7. **CC-11 waits on PR 1789.** That PR changes `FeedCard.tsx`. CC-11 starts after it merges.
+8. **The coach (D221).** CC-12 needs CC-4. CC-13 needs CC-12. CC-14 needs CC-5. CC-15 needs CC-13. CC-16 needs CC-12, CC-13 and CC-14. The My Day ladder puts all five in rung 4 (demo task 3178).
 
 ### 9.2 CC-2 in detail: one Today rule and the today's-focus mark
 
@@ -235,12 +270,12 @@ The spec audit of 2026-11-07 asked for these choices before the build. Each is a
 
 None of them reads the One Thing, a focus mark or a block.
 
-**Storage (migration 349, expand only).**
+**Storage (migration 507, expand only).**
 
 - `pm_task_personal.focus_on date NULL`. A mark is the member's date of the mark. It is "today's focus" only while it equals the member's today, so it expires by itself.
 - `user_settings.today_focus_cap smallint NULL`. Null reads as 3. A write clamps it to 1..10, and a read clamps it again.
 - Both columns ride tables that are already tenant-scoped with FORCE RLS. Identity comes from the session only (R5).
-- The build takes the number 349 (main is at 347, and 348 is on another branch). Re-check it at merge (R1).
+- The build took the number 349, then 412, then 498 (booked 2026-11-23). It moved to 507 on 2026-11-26. Re-check it at merge (R1).
 
 **The Today set.** One SQL predicate in the gateway decides it, for one member and one local day. The day is the member's local day, read from the zone that `in_today` uses now. A task is in the set when it is open, visible to the member, and one of these is true:
 
@@ -265,7 +300,11 @@ None of them reads the One Thing, a focus mark or a block.
 - Setting the One Thing never refuses. It counts toward the cap.
 - A lower cap keeps the marks that exist and refuses new ones until the count is under it.
 
-**The flag.** `TODAY_RULE_ORGS`, default empty. It reloads by SIGHUP (`docs/flag_reload.md`). With it off, the Today chip and its count keep the old rule, and nothing that a member sees changes. The new route and the mark exist with the flag off, and no UI calls them until CC-3 and CC-7. The flip is gate `enforcement-flip`.
+**The flag.** `TODAY_RULE_ORGS`, default empty. It reloads by SIGHUP (`docs/flag_reload.md`). The flip is gate `enforcement-flip`.
+
+With the flag off, the Today chip and its count keep the old rule, and nothing that a member sees changes. The new route answers, but no UI calls it until CC-3 and CC-7. The route refuses a mark and a clear with 403 `today_focus_off`.
+
+With the flag on, `GET /projects/my/today` adds `today_rule: true`. The Today chip reads the set from the new route. The chat reads the new key. Without it, the chat refuses `todays_focus` before its confirm card. No UI sends a mark until CC-3 and CC-7.
 
 **Not in CC-2.** The phases, the focus log, the day rail, the chat tools (CC-10) and a control for the cap setting. The control ships with CC-7, which picks the top 3.
 
@@ -288,7 +327,7 @@ CC-5 ships in two parts. **CC-5a** is the server log. **CC-5b** is the check-in 
 
 **What exists.** One `actual_start` and `actual_end` pair on `pm_task_personal` (`infra/postgres/187`). Each session writes over the pair. No row holds a session, a pause or an outcome. `estimate-stats` learns from the pair (`routes/projects/planning.py:187-199`).
 
-**CC-5a, storage (migration 350, expand only).** A new table `focus_sessions`:
+**CC-5a, storage (migration 509, expand only).** A new table `focus_sessions`:
 
 - `id uuid` primary key, `member_email text NOT NULL`, and `task_id uuid NOT NULL REFERENCES pm_tasks(id) ON DELETE CASCADE`. A deleted task takes its sessions with it.
 - `organization_id uuid NOT NULL REFERENCES organization(id) DEFAULT current_setting('app.tenant_id', true)::uuid`, in the idiom of migration 340. A guarded `DO` block enables and forces RLS, with the policy `focus_sessions_tenant_isolation` on `app.tenant_id` for USING and WITH CHECK. `test_tenant_coverage.py` and `test_tenancy_boundary.py` must pass with no exemption.
@@ -299,7 +338,7 @@ CC-5 ships in two parts. **CC-5a** is the server log. **CC-5b** is the check-in 
 - A partial unique index on `(organization_id, member_email) WHERE ended_at IS NULL`. A member has at most one open session.
 - The DDL is idempotent, as `infra/postgres/README.md` asks.
 
-A new table can have NOT NULL columns and defaults, because no old code reads it (R6). The build takes the number 350, after CC-2's 349. Re-check both at merge (R1).
+A new table can have NOT NULL columns and defaults, because no old code reads it (R6). The build books a number above main's highest, with reserve_migration.sh. CC-2 holds 507. CC-5a holds 509, booked on 2026-11-27. Re-check at merge (R1).
 
 **CC-5a, privacy.** A session row belongs to its member. Every route reads and writes only the rows of the session's member. Identity comes from the session, never from the request (R5). A manager sees no other member's minutes (D-MD-5).
 
@@ -310,8 +349,12 @@ The RLS of the table is tenant RLS only, as on `pm_task_personal`. The routes fi
 - `POST /projects/my/focus-sessions` starts a session for a task that the member can see. A task that the member cannot see answers 404. In one transaction, it ends any open session of the member with the outcome `replaced`, then inserts the new row. On a unique violation of the open-session index, it retries once.
 - `PATCH /projects/my/focus-sessions/{id}` pauses, resumes, extends (`+10 min` moves `planned_end`) or ends a session with an outcome. Only the session's member can write it.
 - `GET /projects/my/focus-sessions?day=` lists the member's sessions of one local day, with the minutes of each and the total. The minutes are the end minus the start minus the paused seconds. The day is the member's local day, in the zone that the Today predicate of CC-2 uses.
-- **Auto close.** No job runs. A read or a start first runs ONE statement: `UPDATE … SET ended_at = planned_end, outcome = 'auto_closed' WHERE` the member's row is open and `planned_end` is more than 15 minutes ago. A second reader at the same time updates no row. Never read first and then write.
-- **The overlay pair.** The routes own the `actual_start` and `actual_end` stamps of a session: a start stamps `actual_start`, and an end stamps `actual_end`. A replaced session stamps the end of its own task. An auto-closed session stamps `planned_end`. Until CC-5b, no client calls these routes, so the room's own stamp stays the only writer. CC-5b removes the room's stamp in the same change that calls the routes. So the two never write the same pair.
+- **Auto close.** No job runs. Each read, each start and each PATCH first runs ONE statement, `AUTO_CLOSE_SQL` in `focus_sessions.py`. It writes `outcome = 'auto_closed'` on the member's open row in two cases:
+  1. The timer runs, and `planned_end` is more than 15 minutes ago. The session ends at `planned_end`.
+  2. A pause runs for more than 60 minutes. The session ends at `paused_at`.
+
+  A pause stops the timer. While a pause runs, the effective planned end is `planned_end + (now() - paused_at)`, and the 15-minute rule reads it. A resume adds the pause to `paused_seconds` and moves `planned_end` by the same length. A second reader at the same time waits on the row lock, finds `ended_at` set and updates no row. Never read first and then write.
+- **The overlay pair.** The routes own the `actual_start` and `actual_end` stamps of a session: a start stamps `actual_start`, and an end stamps `actual_end`. A replaced session stamps the end of its own task. An auto-closed session stamps its end: `planned_end`, or `paused_at` after a long pause. Until CC-5b, no client calls these routes, so the room's own stamp stays the only writer. CC-5b removes the room's stamp in the same change that calls the routes. So the two never write the same pair.
 - Each new route gets a row in `skill_projects/manifest.py` as class X, with the reason "the tools come with CC-10", so `test_projects_chat_coverage.py` passes.
 
 **CC-5a, flag.** `FOCUS_LOG_ORGS`, default empty, reloaded by SIGHUP. With it off, each route answers 404 before any database work, and nothing writes the overlay. The flag work:
@@ -361,8 +404,8 @@ A fence below is a test to write in the slice named. Each is advisory until that
 | The today's-focus cap holds, from 1 to 10. A mark past it answers 409, and a lower cap keeps the marks that exist | `tests/unit/test_today_focus_cap_r8.py` | CC-2 |
 | A focus-session row is tenant-scoped and private to the member | `tests/unit/test_focus_session_rls_r8.py` | CC-5 |
 | Capture from My Day lands in the Inbox. A time today also sets a reminder, and one Undo removes both | `src/lib/shell/captureTime.test.ts`, `e2e/my-day-capture.spec.ts` | CC-1 |
-| One focus session at a time, from any door | `src/lib/focus/singleSession.test.ts` | CC-4 |
-| Focus on a To do task moves it to In progress, with Undo | `tests/unit/test_focus_start_board_r8.py` | CC-4 |
+| One focus session at a time, from any door | `e2e/focus-anywhere.spec.ts` (a second start replaces the session, a double click starts once) and `src/app/tasks/lib/focusStart.fence.test.ts` (one door) | CC-4 |
+| Focus on a To do task moves it to In progress, with Undo | `e2e/focus-anywhere.spec.ts` (one PATCH, Undo puts it back) and `src/app/tasks/lib/focusStart.test.ts` (lane choice and Undo; no new SQL, so no R8 test) | CC-4 |
 | The phase default follows the clock and the day state | `src/app/my-day/phase.test.ts` | CC-7 |
 | A tab exists for each live provider only | `src/lib/shell/needsTabs.test.ts` | CC-11 |
 | `navigation_shell.md` §4.3 names the command centre | `tests/unit/test_my_day_command_centre_spec.py` | CC-0 follow-up |

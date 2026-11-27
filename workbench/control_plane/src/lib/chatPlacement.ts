@@ -77,6 +77,10 @@ const ANSWER: readonly string[] = [
   "my_tasks_plan_day",
   "my_tasks_replan_day",
   "my_tasks_rollover",
+  // AI Studio (STU-F5a): a read of the records draws a live table, a view of
+  // the read like `render_tasks`. Its text result is for the model, and its
+  // card (`components/studio/StudioRecordsCard.tsx`) never writes.
+  "studio_record_list",
 ];
 
 /** Reads. Projects names are manifest class A (held by the Python fence). */
@@ -175,10 +179,26 @@ const EVIDENCE: readonly string[] = [
   "get_pipeline",
   "get_record",
   "get_timeline",
+  // P-3 (task 3954): the suggestions of the field map and the AI analysis.
+  "crm_mapping_suggestions",
+  "crm_preview_suggestion",
+  "crm_analysis_status",
+  // WS-CRM CRM-M2f and CRM-M2i (task 3953): the Field map and its plan.
+  "crm_field_map",
+  "crm_list_mapping_plans",
   // ── Every data agent (WS-48, `acb_skills/narrowing.py`) ────────────────
   // `narrow_and_read` searches, picks and reads, and changes nothing. One
   // name serves the email and the WhatsApp agents.
   "narrow_and_read",
+  // ── AI Studio (the `studio` pack, `read_only=True`) ────────────────────
+  // STB-6a: the workflows, one workflow, or (STU-E4b) the human steps of one run.
+  "studio_workflow_read",
+  // PAR-8a: the runs of a workflow, the check of a draft, and the parts of a step.
+  "studio_workflow_runs",
+  "studio_workflow_check",
+  "studio_workflow_catalog",
+  // PAR-9 (task 3950): the Custom Apps of the App Workshop, read only.
+  "custom_app_read",
 ];
 
 /** Writes. Projects names are manifest class B or C. */
@@ -364,11 +384,22 @@ const WRITE: readonly string[] = [
   "update_deal_status",
   "log_activity",
   "convert_lead",
+  // P-3 (task 3954): a suggestion of the field map, and a new AI analysis.
+  "crm_decide_suggestion",
+  "crm_rerun_analysis",
   // WS-CRM CRM-M2b: a field of a record, and a task done or due.
   "crm_update_record",
   "crm_update_task",
   // WS-CRM CRM-M3a: a new deal pipeline, on one card.
   "crm_create_pipeline",
+  // WS-CRM CRM-M2e (task 3951): a stage, a lead status or a lost reason.
+  "crm_edit_status",
+  "crm_edit_lost_reason",
+  // WS-CRM CRM-M2f and CRM-M2i (task 3953): a field rule and the plan.
+  "crm_edit_field_rule",
+  "crm_draft_mapping_plan",
+  "crm_approve_mapping_plan",
+  "crm_restore_mapping_plan",
   // ── The assistant profile (WS-63 PZ-6a): each acts at once, with Undo ──
   "profile_remember",
   "profile_forget",

@@ -22,6 +22,9 @@ What the harness replaces, and nothing more:
   It answers none. It reads the database.
 * The Redis relay. ``executor._push_sse_to_stream`` records each line with
   its thread, in :attr:`RoutingHarness.relayed`.
+* Scripted: Redis. Every command stays in memory
+  (:mod:`evals.routing.memory_redis`), and :attr:`RoutingHarness.redis` holds
+  it. So no scripted run writes to the Redis of a machine.
 * Scripted (``models`` given): the model of each agent. :class:`ReplyModel`
   replays turns under the real client. Every other host HTTP send raises,
   and :attr:`RoutingHarness.sent` records it.
@@ -74,6 +77,9 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+
+from evals.routing import memory_redis
+from evals.routing.memory_redis import MemoryRedis
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = "orchestrator"
@@ -522,6 +528,8 @@ class RoutingHarness:
         self.relayed: list[tuple[str, str]] = []
         #: Each host HTTP send of a scripted run. It must stay empty.
         self.sent: list[str] = []
+        #: Scripted: the Redis of the run, in memory. None on a live run.
+        self.redis: MemoryRedis | None = None
         #: Live: each delegation the stand-in took, ``(agent, message)``.
         self.delegated: list[tuple[str, str]] = []
         #: The member's mailboxes, as ``GET /email/accounts`` lists them.
@@ -547,6 +555,11 @@ class RoutingHarness:
         # WS-62 CF-3: the eval runs with the page tool on, so S1 to S3 can
         # drive it. Production ships it dark (settings.chat_first_tools).
         mp.setattr(settings, "chat_first_tools", True, raising=False)
+        if self.live:
+            # Task 3554: a call that the Router does not take runs on a dev
+            # box only. The executor's error recovery calls `complete` in
+            # process, so a live run says dev, as `one_assistant_measure`.
+            mp.setattr(settings, "acb_env", "dev", raising=False)
         mp.setattr(routes_agent, "_load_dynamic_agents", lambda: [])
         mp.setattr(ti, "_load_disabled_skill_families", lambda name: frozenset())
         # WS-17 EM-G11d: the upward-egress mark in memory, as in the unit
@@ -555,6 +568,9 @@ class RoutingHarness:
         from tests.unit._egress_mark_store import install_memory_mark_store
 
         install_memory_mark_store(mp)
+        # Every other Redis command of a scripted run (the active mark, the
+        # live-run registry, the activity writes) stays in memory too.
+        self.redis = None if self.live else memory_redis.install(mp)
         # WS-62 CF-3: the panes the member holds, for show_in_app. The real
         # read is acb_auth.resolve_access, and CI has no database, so it
         # would fail closed and refuse every page. The stand-in holds every

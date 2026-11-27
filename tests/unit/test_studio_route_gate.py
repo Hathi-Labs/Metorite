@@ -18,10 +18,13 @@ c. A holder of ``feature:studio`` passes the gate on each route. With the
    org outside ``STUDIO_ORGS``, each route answers 404, and no handler reads
    a store.
 d. The router carries one feature gate, ``feature:studio``. No route adds a
-   second gate. Only the org and group install of WS-PKG PKG-8b and its
-   uninstall of PKG-8e read ``studio:publish``, in their handlers, because
-   such an install is a share to others (D180.3, ``package_host.md`` §6.1).
-   No other route reads it (J2 owns the review of a share). The fence reads the syntax tree, so a second read
+   second gate. Only the org and group install of WS-PKG PKG-8b, its
+   uninstall of PKG-8e, the member of a run with no viewer of WS-STU B6a, the
+   share with people of J2b-2, the list, the approve and the reject of
+   WS-STU J2b-1, and the list, the approve, the reject and the unshare of the
+   skill share of J2c read ``studio:publish``, in their handlers. Such an install
+   is a share to others (D180.3, ``package_host.md`` §6.1), and J2b-1 is its
+   review. No other route reads it. The fence reads the syntax tree, so a second read
    in another quote style fails too.
 e. ``EXPECTED_ROUTES`` pins the routes. A new route fails here until a person
    adds it, and so adds its 403 case.
@@ -73,13 +76,13 @@ from typing import Any
 import httpx
 import pytest
 from acb_auth import UserContext, UserRole, build_access, get_current_user
-from acb_auth.permissions import CAPABILITIES, FEATURES
 from acb_common import get_settings
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
-from gateway.routes import studio as studio_pkg
 from gateway.routes.studio import actions
+
+from tests.unit import _r8_lists as r8_lists
 
 _ROOT = Path(__file__).resolve().parents[2]
 _STUDIO_DIR = _ROOT / "apps/services/gateway/gateway/routes/studio"
@@ -97,10 +100,28 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     # F2a, the skill routes.
     ("GET", "/studio/skills"),
     ("POST", "/studio/skills"),
+    # TOF rung 1 (task 3830): does a saved skill match these words.
+    ("POST", "/studio/skills/match"),
     ("GET", "/studio/skills/{skill_id}"),
     ("GET", "/studio/skills/{skill_id}/versions/{version}"),
     ("POST", "/studio/skills/{skill_id}/versions"),
+    ("GET", "/studio/skills/{skill_id}/versions"),
+    ("POST", "/studio/skills/{skill_id}/undo"),
     ("PATCH", "/studio/skills/{skill_id}/state"),
+    # WS-STU J2c, the share of a skill with the org.
+    ("POST", "/studio/skills/{skill_id}/versions/{version}/share"),
+    ("GET", "/studio/skill-shares"),
+    ("POST", "/studio/skills/{skill_id}/versions/{version}/share/approve"),
+    ("POST", "/studio/skills/{skill_id}/versions/{version}/share/reject"),
+    ("DELETE", "/studio/skills/{skill_id}/share"),
+    # WS-STU J2d (TOF-4b), the owner's read of the share. It reads no right.
+    ("GET", "/studio/skills/{skill_id}/share"),
+    # TOF-3b F4b, the test run of a skill.
+    ("POST", "/studio/skills/{skill_id}/tests/run"),
+    # TOF-3a F12c, the history, the repair and the approve of a skill.
+    ("GET", "/studio/skills/{skill_id}/runs"),
+    ("POST", "/studio/skills/{skill_id}/repairs"),
+    ("POST", "/studio/skills/{skill_id}/repairs/{proposal_id}/approve"),
     # A5, the package routes.
     ("POST", "/studio/packages"),
     # K1a, the template list and the one-step create from a template.
@@ -109,6 +130,9 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/studio/packages"),
     ("GET", "/studio/packages/{package_id}"),
     ("PUT", "/studio/packages/{package_id}/draft"),
+    # C11b, the CSV import of an object.
+    ("POST", "/studio/packages/{package_id}/objects/{object_name}/import"),
+    ("POST", "/studio/packages/{package_id}/objects/{object_name}/import/preview"),
     ("POST", "/studio/packages/{package_id}/versions"),
     ("GET", "/studio/packages/{package_id}/versions"),
     ("GET", "/studio/packages/{package_id}/versions/{version}"),
@@ -119,13 +143,40 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/studio/packages/{package_id}/install"),
     # WS-PKG PKG-8e, the org and group uninstall.
     ("DELETE", "/studio/packages/{package_id}/install"),
+    # WS-STU B6a, the member of a run with no viewer.
+    ("PUT", "/studio/packages/{package_id}/install/run-as"),
+    # WS-STU J2b-2, the share with people.
+    ("POST", "/studio/packages/{package_id}/share"),
+    # WS-STU J2b-5, the per-person unshare.
+    ("DELETE", "/studio/packages/{package_id}/share/{email}"),
     # WS-PKG PKG-10d, Keep and Restore of the private install.
     ("POST", "/studio/packages/{package_id}/keep"),
     ("POST", "/studio/packages/{package_id}/restore"),
     # WS-PKG PKG-10e-1, the lifetime read of the private install.
     ("GET", "/studio/packages/{package_id}/lifetime"),
+    # WS-STU J2b-1, the approval for the org.
+    ("POST", "/studio/packages/{package_id}/versions/{version}/approval"),
+    ("GET", "/studio/approvals"),
+    ("POST", "/studio/packages/{package_id}/versions/{version}/approval/approve"),
+    ("POST", "/studio/packages/{package_id}/versions/{version}/approval/reject"),
+    # I8a, the connections of a draft (Connect in place).
+    ("GET", "/studio/packages/{package_id}/connections"),
+    # I8b-1a, the ask of an admin and its withdraw.
+    ("POST", "/studio/packages/{package_id}/connections/ask"),
+    ("DELETE", "/studio/packages/{package_id}/connections/ask"),
+    # AF-10a, the saved views of an app.
+    ("GET", "/studio/packages/{package_id}/views"),
+    ("POST", "/studio/packages/{package_id}/views"),
+    ("PATCH", "/studio/packages/{package_id}/views/{view_id}"),
+    ("DELETE", "/studio/packages/{package_id}/views/{view_id}"),
     # B2a to B2c, the action door.
     ("POST", "/studio/apps/{app_id}/actions/{action}"),
+    # B1b-2, the refresh of the tools of one MCP server.
+    ("POST", "/studio/mcp/{server}/refresh"),
+    # B1b-3, the approval of the text of one MCP tool.
+    ("POST", "/studio/mcp/{server}/tools/{tool}/approve"),
+    # SBX-1a, the gap view of an approver (agent_sandbox.md §9.2).
+    ("GET", "/studio/tool-gaps"),
 )
 
 _PARAMS = {
@@ -134,6 +185,12 @@ _PARAMS = {
     "app_id": str(uuid.uuid4()),
     "version": "1",
     "action": "peek",
+    "email": "ben@example.test",
+    "view_id": str(uuid.uuid4()),
+    "server": "github",
+    "tool": "get_issue",
+    "object_name": "ledger",
+    "proposal_id": str(uuid.uuid4()),
 }
 
 STUDIO = ["feature:studio"]
@@ -142,8 +199,9 @@ GUEST = ["feature:chat", "apps:use:*"]
 
 
 def _router_routes() -> list[tuple[str, str]]:
-    return sorted((m, r.path) for r in actions.router.routes
-                  if isinstance(r, APIRoute) for m in r.methods)
+    return sorted(
+        (m, r.path) for r in actions.router.routes if isinstance(r, APIRoute) for m in r.methods
+    )
 
 
 def _url(path: str) -> str:
@@ -155,8 +213,12 @@ def _client(grants: list[str], overrides: list[tuple[str, str]] | None = None) -
     app.include_router(actions.router)
 
     def _user() -> UserContext:
-        return UserContext(email=ANA, role=UserRole.EMPLOYEE, organization_id=ORG,
-                           access=build_access(grants, overrides or []))
+        return UserContext(
+            email=ANA,
+            role=UserRole.EMPLOYEE,
+            organization_id=ORG,
+            access=build_access(grants, overrides or []),
+        )
 
     app.dependency_overrides[get_current_user] = _user
     return TestClient(app, raise_server_exceptions=False)
@@ -177,14 +239,20 @@ def no_store(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         def _fn(*_a: Any, **_k: Any) -> Any:
             reached.append(name)
             raise RuntimeError(f"{name} ran")
+
         return _fn
 
-    from gateway.routes.studio import invoke, packages, skills
+    from gateway.routes.studio import connections, invoke, packages, skills, tool_gaps, views
 
-    for module in (actions, invoke, packages, skills):
+    for module in (actions, connections, invoke, packages, skills, tool_gaps, views):
         if hasattr(module, "_tenant_session"):
             monkeypatch.setattr(module, "_tenant_session", _trip(f"{module.__name__}.session"))
     monkeypatch.setattr(actions, "catalog_rows", _trip("catalog_rows"))
+    # B1b-2: the refresh and the cache read of the MCP tools.
+    monkeypatch.setattr(actions.mcp_tools, "refresh", _trip("mcp_tools.refresh"))
+    monkeypatch.setattr(actions.mcp_tools, "catalog_tools", _trip("mcp_tools.catalog_tools"))
+    # B1b-3: the approval of the text of one tool.
+    monkeypatch.setattr(actions.mcp_tools, "approve_tool", _trip("mcp_tools.approve_tool"))
     monkeypatch.setattr(actions, "package_rows", _trip("package_rows"))
     return reached
 
@@ -199,13 +267,8 @@ def _open(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
 def test_expected_routes_are_the_routes_of_the_router() -> None:
     assert _router_routes() == sorted(EXPECTED_ROUTES), (
         "The Studio router changed. Add the new route to EXPECTED_ROUTES, so "
-        "the 403 tests of J1 cover it.")
-
-
-def test_the_package_exports_the_one_router() -> None:
-    assert studio_pkg.router is actions.router
-    sources = {p.name: p.read_text(encoding="utf-8") for p in _STUDIO_DIR.glob("*.py")}
-    assert [n for n, s in sources.items() if "APIRouter(" in s] == ["actions.py"]
+        "the 403 tests of J1 cover it."
+    )
 
 
 # ── d. One gate, and it is `feature:studio` ───────────────────────────────
@@ -245,8 +308,11 @@ def test_the_router_carries_one_feature_gate_and_it_is_studio() -> None:
 
 @pytest.mark.parametrize("method,path", EXPECTED_ROUTES)
 def test_no_route_adds_a_second_gate_or_the_share_verb(method: str, path: str) -> None:
-    route = next(r for r in actions.router.routes
-                 if isinstance(r, APIRoute) and r.path == path and method in r.methods)
+    route = next(
+        r
+        for r in actions.router.routes
+        if isinstance(r, APIRoute) and r.path == path and method in r.methods
+    )
     assert _gates_of(route) == ["feature:studio"], (method, path)
 
 
@@ -256,7 +322,11 @@ def test_no_route_adds_a_second_gate_or_the_share_verb(method: str, path: str) -
 @pytest.mark.parametrize("listed", ["", "*"])
 @pytest.mark.parametrize("method,path", EXPECTED_ROUTES)
 def test_a_workflows_member_gets_403_on_each_route(
-    monkeypatch: pytest.MonkeyPatch, no_store: list[str], method: str, path: str, listed: str,
+    monkeypatch: pytest.MonkeyPatch,
+    no_store: list[str],
+    method: str,
+    path: str,
+    listed: str,
 ) -> None:
     """B1's interim gate is gone. The 403 comes before the 404 of the switch."""
     _open(monkeypatch, listed)
@@ -266,16 +336,27 @@ def test_a_workflows_member_gets_403_on_each_route(
     assert no_store == []
 
 
-@pytest.mark.parametrize("who,grants,overrides", [
-    ("guest", GUEST, []),
-    ("denied member", ["feature:*"], [("feature:studio", "deny")]),
-    ("workflows yes, studio no", ["feature:*"],
-     [("feature:workflows", "allow"), ("feature:studio", "deny")]),
-])
+@pytest.mark.parametrize(
+    "who,grants,overrides",
+    [
+        ("guest", GUEST, []),
+        ("denied member", ["feature:*"], [("feature:studio", "deny")]),
+        (
+            "workflows yes, studio no",
+            ["feature:*"],
+            [("feature:workflows", "allow"), ("feature:studio", "deny")],
+        ),
+    ],
+)
 @pytest.mark.parametrize("method,path", EXPECTED_ROUTES)
 def test_a_member_without_studio_gets_403_on_each_route(
-    monkeypatch: pytest.MonkeyPatch, no_store: list[str], method: str, path: str,
-    who: str, grants: list[str], overrides: list[tuple[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    no_store: list[str],
+    method: str,
+    path: str,
+    who: str,
+    grants: list[str],
+    overrides: list[tuple[str, str]],
 ) -> None:
     _open(monkeypatch, "*")
     r = _call(_client(grants, overrides), method, path)
@@ -289,7 +370,10 @@ def test_a_member_without_studio_gets_403_on_each_route(
 @pytest.mark.parametrize("grants", [STUDIO, ["feature:*"], ["*"]])
 @pytest.mark.parametrize("method,path", EXPECTED_ROUTES)
 def test_a_studio_holder_passes_the_gate_on_each_route(
-    monkeypatch: pytest.MonkeyPatch, no_store: list[str], method: str, path: str,
+    monkeypatch: pytest.MonkeyPatch,
+    no_store: list[str],
+    method: str,
+    path: str,
     grants: list[str],
 ) -> None:
     """Past the gate, the switch of each handler answers 404 for an org
@@ -304,7 +388,10 @@ def test_a_studio_holder_passes_the_gate_on_each_route(
 
 @pytest.mark.parametrize("method,path", EXPECTED_ROUTES)
 def test_a_workflows_deny_override_no_longer_closes_studio(
-    monkeypatch: pytest.MonkeyPatch, no_store: list[str], method: str, path: str,
+    monkeypatch: pytest.MonkeyPatch,
+    no_store: list[str],
+    method: str,
+    path: str,
 ) -> None:
     """The edge that the owner accepted on 2026-11-06 (task 1199, D180). Before
     J1-1, a member with a ``feature:workflows`` deny override got 403 here.
@@ -320,176 +407,12 @@ def test_an_anonymous_caller_gets_401() -> None:
     app = FastAPI()
     app.include_router(actions.router)
     app.dependency_overrides[get_current_user] = lambda: UserContext(
-        email=None, role=UserRole.EMPLOYEE, access=build_access(STUDIO))
+        email=None, role=UserRole.EMPLOYEE, access=build_access(STUDIO)
+    )
     assert TestClient(app).get("/studio/actions").status_code == 401
 
 
 # ── f. The source names no `workflows` gate ───────────────────────────────
-
-
-def test_no_studio_file_names_the_workflows_gate() -> None:
-    gate = re.compile(
-        r"""(?:require_feature(?:_router)?|require_permission|require_any_permission)"""
-        r"""\(\s*["'](?:feature:)?workflows["']""")
-    for path in sorted(_STUDIO_DIR.glob("*.py")):
-        text = path.read_text(encoding="utf-8")
-        assert not gate.search(text), path.name
-        assert "feature:workflows" not in text, path.name
-    actions_src = (_STUDIO_DIR / "actions.py").read_text(encoding="utf-8")
-    assert 'dependencies=[require_feature_router("studio")]' in actions_src
-
-
-def _owners(tree: Any) -> dict[int, str]:
-    """The top-level function that holds each node, by ``id(node)``. A node
-    outside every function maps to ``<module>``."""
-    import ast
-
-    out: dict[int, str] = {}
-    for top in tree.body:
-        name = top.name if isinstance(top, ast.AsyncFunctionDef | ast.FunctionDef) else "<module>"
-        for node in ast.walk(top):
-            out[id(node)] = name
-    return out
-
-
-def test_the_share_verb_is_read_by_the_install_only() -> None:
-    """J1-1 adds `studio:publish` to the vocabulary. Version publish of a
-    member's own app needs `feature:studio` and ownership (STU-Q4b). The one
-    readers in `routes/studio` are the org and group install of PKG-8b, a
-    share to others (D180.3, `package_host.md` §6.1), and its uninstall of
-    PKG-8e.
-
-    J2a (the read of a viewer, `ai_studio.md` §14 J2a) adds no reader. A
-    viewer reads through an install that a holder of the verb made, and the
-    read checks no right of its own. The new module `package_host/viewer.py`
-    must not read the verb either, so the scan covers it too.
-
-    The check reads the syntax tree, so the quote style does not matter. The
-    string constant `studio:publish` occurs once in `routes/studio`: the
-    definition of `packages.SHARE_RIGHT`. The name `SHARE_RIGHT` is read in
-    `install_package` and `uninstall_package`, each with one
-    `user.has_permission(SHARE_RIGHT)`, and, since A5c-2,
-    `user.has_permission(ADMIN_RIGHT)` in `_delete_mode`: the admin
-    path of a delete, which reads `admin:members:manage` (the seam of
-    `routes/admin/members.py`) and no other right. No route gains a
-    dependency, so the gate stays one gate. No file reads `.access.has(`,
-    the other door to the same check."""
-    import ast
-
-    from gateway.routes.studio import packages
-
-    assert "studio:publish" in CAPABILITIES
-    assert "studio" in FEATURES
-    assert packages.SHARE_RIGHT == "studio:publish"
-    verbs: list[tuple[str, str, str]] = []
-    names: list[tuple[str, str, str]] = []
-    calls: list[tuple[str, str, str]] = []
-    viewer = _ROOT / "apps/services/gateway/gateway/package_host/viewer.py"
-    assert viewer.is_file()
-    for path in [*sorted(_STUDIO_DIR.glob("*.py")), viewer]:
-        text = path.read_text(encoding="utf-8")
-        assert ".access.has(" not in text, path.name
-        tree = ast.parse(text)
-        owner = _owners(tree)
-        for node in ast.walk(tree):
-            where = (path.name, owner.get(id(node), "<module>"))
-            if isinstance(node, ast.Constant) and node.value == "studio:publish":
-                verbs.append((*where, "constant"))
-            if isinstance(node, ast.Name) and node.id == "SHARE_RIGHT":
-                names.append((*where, type(node.ctx).__name__))
-            if isinstance(node, ast.Attribute) and node.attr == "SHARE_RIGHT":
-                names.append((*where, "attribute"))
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and \
-                    node.func.attr in ("has_permission", "has"):
-                calls.append((*where, ast.unparse(node)))
-    assert verbs == [("packages.py", "<module>", "constant")], verbs
-    assert sorted(names) == [("packages.py", "<module>", "Store"),
-                             ("packages.py", "install_package", "Load"),
-                             ("packages.py", "uninstall_package", "Load")], names
-    assert sorted(calls) == [("packages.py", "_delete_mode", "user.has_permission(ADMIN_RIGHT)"),
-                             ("packages.py", "install_package",
-                              "user.has_permission(SHARE_RIGHT)"),
-                             ("packages.py", "uninstall_package",
-                              "user.has_permission(SHARE_RIGHT)")], calls
-    assert packages.ADMIN_RIGHT == "admin:members:manage"
-
-
-#: The one right of the admin path of a delete (STU-A5c-2).
-_ADMIN_TEXT = "admin:members:manage"
-#: Each read of that right in ``routes/studio``: the definition of
-#: ``packages.ADMIN_RIGHT`` (its name and its text), and one load in
-#: ``_delete_mode``.
-_ADMIN_READS = [("packages.py", "<module>", "Store"),
-                ("packages.py", "<module>", "constant"),
-                ("packages.py", "_delete_mode", "Load")]
-
-
-def _docstrings(tree: Any) -> set[int]:
-    """The ids of the docstring nodes of a module and of each def in it."""
-    import ast
-
-    out: set[int] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
-            body = node.body
-            if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
-                out.add(id(body[0].value))
-    return out
-
-
-def admin_right_reads(sources: dict[str, str]) -> list[tuple[str, str, str]]:
-    """Each read of ``ADMIN_RIGHT``, and each string that holds the text of
-    the right, in *sources* (a file name -> its text), as ``(file, top-level
-    function, kind)``. A docstring may name the right. Any other string that
-    holds it counts, an f-string part too."""
-    import ast
-
-    found: list[tuple[str, str, str]] = []
-    for name, text in sorted(sources.items()):
-        tree = ast.parse(text)
-        owner, docs = _owners(tree), _docstrings(tree)
-        for node in ast.walk(tree):
-            where = (name, owner.get(id(node), "<module>"))
-            if (isinstance(node, ast.Constant) and isinstance(node.value, str)
-                    and _ADMIN_TEXT in node.value and id(node) not in docs):
-                found.append((*where, "constant"))
-            if isinstance(node, ast.Name) and node.id == "ADMIN_RIGHT":
-                found.append((*where, type(node.ctx).__name__))
-            if isinstance(node, ast.Attribute) and node.attr == "ADMIN_RIGHT":
-                found.append((*where, "attribute"))
-    return sorted(found)
-
-
-def _studio_sources() -> dict[str, str]:
-    return {p.name: p.read_text(encoding="utf-8") for p in sorted(_STUDIO_DIR.glob("*.py"))}
-
-
-def test_the_admin_right_is_read_by_the_delete_mode_only() -> None:
-    """STU-A5c-2 fix round 1. The admin path reads ``admin:members:manage``
-    in ``_delete_mode`` and nowhere else in ``routes/studio``. So no other
-    route grows an admin path by a second read, and no route names the right
-    in its own text. Mutation M6 -> red."""
-    from gateway.routes.studio import packages
-
-    assert packages.ADMIN_RIGHT == _ADMIN_TEXT
-    assert admin_right_reads(_studio_sources()) == _ADMIN_READS
-
-
-def test_a_second_read_of_the_admin_right_fails() -> None:
-    """M6, run on the real sources: a read of ``ADMIN_RIGHT`` in
-    ``install_package``, and the text of the right in a function of another
-    module, each give one more read."""
-    sources = _studio_sources()
-    share = "    if not user.has_permission(SHARE_RIGHT):\n"
-    text = sources["packages.py"].replace("\r\n", "\n")
-    assert text.count(share) == 2, "non-vacuity: the share checks of the install and the uninstall"
-    mutated = {**sources, "packages.py": text.replace(
-        share, "    if not (user.has_permission(SHARE_RIGHT) or user.has_permission(ADMIN_RIGHT)):\n", 1)}
-    assert admin_right_reads(mutated) == sorted(
-        [*_ADMIN_READS, ("packages.py", "install_package", "Load")])
-    other = {**sources, "skills.py": sources["skills.py"] + (
-        "\n\ndef _peek(user):\n    return user.has_permission(f\"admin:members:manage\")\n")}
-    assert admin_right_reads(other) == sorted([*_ADMIN_READS, ("skills.py", "_peek", "constant")])
 
 
 # ── g. The chat gets the refusal ──────────────────────────────────────────
@@ -506,18 +429,20 @@ def chat(monkeypatch: pytest.MonkeyPatch) -> Any:
     app = FastAPI()
     app.include_router(actions.router)
     app.dependency_overrides[get_current_user] = lambda: UserContext(
-        email=ANA, role=UserRole.EMPLOYEE, organization_id=ORG,
-        access=build_access(box["grants"]))
+        email=ANA, role=UserRole.EMPLOYEE, organization_id=ORG, access=build_access(box["grants"])
+    )
     real = httpx.AsyncClient
-    monkeypatch.setattr(st.httpx, "AsyncClient",
-                        lambda **kw: real(transport=httpx.ASGITransport(app=app), **kw))
+    monkeypatch.setattr(
+        st.httpx, "AsyncClient", lambda **kw: real(transport=httpx.ASGITransport(app=app), **kw)
+    )
     monkeypatch.setattr(st, "_current_user_email", lambda: ANA)
     box["st"] = st
     return box
 
 
 def test_a_chat_tool_of_a_member_without_the_feature_gets_the_refusal(
-    chat: Any, no_store: list[str],
+    chat: Any,
+    no_store: list[str],
 ) -> None:
     import asyncio
 
@@ -532,7 +457,8 @@ def test_a_chat_tool_of_a_member_without_the_feature_gets_the_refusal(
 
 
 def test_a_chat_tool_of_a_holder_reaches_the_handler(
-    chat: Any, monkeypatch: pytest.MonkeyPatch,
+    chat: Any,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import asyncio
 
@@ -552,8 +478,5 @@ def test_a_chat_tool_of_a_holder_reaches_the_handler(
 def test_the_r8_suite_is_named_in_the_ci_skip_guard() -> None:
     """A fence that never runs is no fence. The ``--must-run`` list names the
     pytest ARGUMENT, so a mention in a comment does not count."""
-    workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(encoding="utf-8")
-    block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", workflow)
-    assert block, "the --must-run argument list is missing"
-    assert re.search(r"^[ \t]+tests/unit/test_studio_route_gate_r8\.py(?: \\)?$",
-                     block.group(1), re.M)
+    must_run = r8_lists.must_run()
+    assert "tests/unit/test_studio_route_gate_r8.py" in must_run

@@ -18,7 +18,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { RUN_ERROR_WORDS, isInfoOnlyNotice, type RunErrorCode } from "@/lib/runErrors";
 
@@ -29,7 +29,11 @@ const CODES = Object.keys(RUN_ERROR_WORDS) as RunErrorCode[];
 // `answer_in_other_account` is info-only in its BASE words, the ones drawn
 // when this browser holds no slot for that account. With a slot, the chat
 // draws a card with a Switch button instead (`otherAccountNotice.test.ts`).
-const INFO_ONLY: RunErrorCode[] = ["run_restarted", "run_restarted_steered", "answer_in_other_account"];
+// `answered_once` (HRD-16): someone answered the card first. Nothing is lost
+// and the member has nothing to do, so it only informs.
+const INFO_ONLY: RunErrorCode[] = [
+  "run_restarted", "run_restarted_steered", "answer_in_other_account", "answered_once",
+];
 const DISMISS = 'aria-label="Dismiss"';
 
 /** A `localStorage` that keeps its items in a map. */
@@ -87,13 +91,22 @@ function findElement(node: ReactNode, match: (props: Record<string, unknown>) =>
   return findElement(props.children as ReactNode, match);
 }
 
+// The first cold load of the card's module graph took 4.3 s on the Windows
+// dev box before AO-3, and 5 s after its picture joined the graph. That is
+// the whole 5 s budget of the first test. One warm load here pays the
+// transform once. Each test still loads its own fresh modules.
+beforeAll(async () => {
+  await loadWith(memoryStorage());
+  vi.unstubAllGlobals();
+}, 60_000);
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
 describe("which notices only inform", () => {
   // Mutation: drop `!words.retry` from isInfoOnlyNotice, and the list grows.
-  it("the two restart notices and the other-account notice, and nothing else", () => {
+  it("the two restart notices, the other-account notice and answered_once, and nothing else", () => {
     expect(CODES.filter((c) => isInfoOnlyNotice(RUN_ERROR_WORDS[c])).sort()).toEqual([...INFO_ONLY].sort());
   });
 
@@ -125,7 +138,8 @@ describe("an info-only notice is a slim line with a Dismiss", () => {
   it("the body is the second part of the same line", async () => {
     const m = await loadWith(memoryStorage());
     const html = renderNotice(m, "run_restarted_steered");
-    expect(html).toMatch(/The assistant restarted<\/span>.*Your answer went into the current reply\.<\/span>/);
+    // RESUME-3a (§4.12.4 item 5): the title says what happened, and nothing restarted.
+    expect(html).toMatch(/The chat had stopped waiting<\/span>.*Your answer went into the current reply\.<\/span>/);
     // With no slot to switch to (`otherAccountNotice.test.ts`), the line
     // says how to get there.
     expect(renderNotice(m, "answer_in_other_account")).toContain(

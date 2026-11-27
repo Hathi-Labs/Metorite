@@ -70,6 +70,17 @@ empty in production. So the answer is the same as before, byte for byte.
 2469, no migration). It is dark behind `NEXT_PUBLIC_MY_DAY_PEEK`, default
 OFF. PK-2 (email) and PK-3 (reminders) are not built.
 
+**MD-9 part 1 is BUILT, 2026-11-16** (LOOP-4a, task 3444, no migration). The
+feed reads the kind mutes (§6.6) and the affinity of each kind (§7). It is
+dark behind `MY_DAY_LEARN_ORGS`, default empty, so the answer keeps its
+bytes. The reach loop and the briefs read the same feed, so a mute reaches
+them too. `proactive_loop.md` §7.2 holds the pins.
+
+**MD-9, "Why am I seeing this", is BUILT, 2026-11-26** (LOOP-4b, task 4006,
+no migration). Each card of a listed org holds `why_seen`, and the card menu
+shows it in a box. It is dark behind the same flag. The rest of MD-9 is not
+built. That includes the judged group and weight in words.
+
 The rest of this file is not built. The open AGENT-SAFE tickets are MD-4,
 MD-6b, MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12.
 Each ships dark.
@@ -387,6 +398,7 @@ sets the group. A ticket that adds a kind adds its row in the same PR.
 | `deal_close_passed` | Needs you |
 | `colleague_out` | For your information |
 | `agent_asks` | Needs you |
+| `agent_questions` | Needs you |
 | `digest_ready` | For your information (WS-53 CRM-Q28) |
 | `crm_open_questions` | Needs you while a money question is open, else For your information (WS-53 CRM-Q32, specified 2026-10-17) |
 
@@ -567,6 +579,7 @@ nothing (`navigation_shell.md` §4.5, "No second arithmetic").
 | `colleague_out` | A person I have a block with today is absent | Template | Open the day | None | MD-3, **only for a member who passes `can_read_hr_fields`** (`routes/tasks/core.py:75`). The provider calls the People app's own gated read. A plain member gets no row, and a negative test proves it. BUILT in MD-3f, source `people` (§5.9 item 14) |
 | `agent_done` | A chat run that I started finished while I was away | Template from the run | Open chat | None | MD-3. It reads WS-51's run state |
 | `agent_asks` | A run waits for my answer (`chat_pending_ask`) | Template | Open chat | None | MD-3. Feed only, until a §7.2 amendment. BUILT in MD-3f, source `chat` (§5.9 item 14) |
+| `agent_questions` | An agent question waits on me: I created the task, I am an assignee, or my agent asked (`GET /projects/agent-questions?scope=mine`) | Template: the project path, the oldest question, its options and how many more wait | Answer (opens the list in Projects) | None | WS-55 EA-18c. One card, source `agent_questions`, dark behind `AGENT_QUESTIONS_ORGS`. BUILT 2026-11-11, not merged (task 1808). Dark behind `AGENT_QUESTIONS_ORGS` and `MY_DAY_PROVIDERS`. A member with no open question sees no card |
 | `whatsapp_waiting` | A WhatsApp thread waits for me | Template | Open thread | None | MD-9 |
 
 ### 5.7 The cards about the day itself
@@ -746,6 +759,7 @@ needs kind still starts above it.
 | `notification` | 48 |
 | `needs_reply` | 44 |
 | `agent_asks` | 43 |
+| `agent_questions` | 43 (WS-55 EA-18c, ties with `decision`) |
 | `promise_due` | 42 |
 | `crm_followup_due` | 41 |
 | `block_overlap` | 40 |
@@ -783,6 +797,7 @@ These rows join the table of §4.3 and `feed_rank.group`.
 | `deal_close_passed` | Needs you |
 | `colleague_out` | For your information |
 | `agent_asks` | Needs you |
+| `agent_questions` | Needs you |
 | `digest_ready` | For your information (WS-53 CRM-Q28) |
 | `crm_open_questions` | Needs you while a money question is open, else For your information (WS-53 CRM-Q32, specified 2026-10-17) |
 
@@ -807,6 +822,7 @@ note is a change of the task. The fence covers every kind of `BASE`
 | `deal_quiet` | `waiting_since`, set to `status_changed_at` |
 | `deal_close_passed` | `due_at`, the close date at 00:00 in the zone of the member |
 | `agent_asks` | `waiting_since`, the newest `asked_at` on the thread |
+| `agent_questions` | `waiting_since`, the NEWEST `asked_at` of the whole "mine" list, so a new question brings a dismissed card back |
 | `colleague_out` | None. The id is the day, so a dismiss holds for that day |
 | `digest_ready` | None. The id is the week, so a dismiss holds for that week (WS-53 CRM-Q28) |
 | `crm_open_questions` | None. The id is the UTC date of `new_at`, so a dismiss holds for that day (WS-53 CRM-Q32) |
@@ -842,6 +858,7 @@ Two names are not allowed:
 | `deal_close_passed` | Close date passed |
 | `colleague_out` | Colleague away |
 | `agent_asks` | Waiting for your answer |
+| `agent_questions` | Waiting for your answer |
 
 #### 7. The budget, and the rule for the flip
 
@@ -997,6 +1014,7 @@ slice gives these facts and no others:
 | `deal_close_passed` | `due_at` |
 | `colleague_out` | `out`, a list of names, and `task`, a title |
 | `agent_asks` | `waiting_since` |
+| `agent_questions` | `waiting_since` |
 
 ⚠️ **No task kind of MD-3c carries a state fact, also not `due_at`.** A
 notification card has no `due_at`. A task kind that carried one would change
@@ -1430,8 +1448,8 @@ Four rules sit on top of the score:
 
 **Fence (MD-1, MD-6a).** `tests/unit/test_feed_rank.py` holds the table, each
 term, the four rules, and a fixed seed whose order may change only with the
-table. It also holds rule 2: a `drop` answer for an overdue task leaves the
-card in Later.
+table. Rule 2 has its fence in `tests/unit/test_feed_decide.py` (TestRuleTwo): a
+`drop` answer for an overdue task leaves the card in Later.
 
 ---
 
@@ -2386,6 +2404,9 @@ and is off by default (`packages/acb_memory`).
 
 `GET /shell/feed?limit=` gives 40 cards by default, and 80 at most.
 
+**LOOP-4b adds one card field.** `why_seen` is a list of sentences, only for an
+org in `MY_DAY_LEARN_ORGS`. `proactive_loop.md` §7.2 holds its rules.
+
 ```json
 {
   "cards": [
@@ -2515,7 +2536,8 @@ this spec disagree, this spec wins.
 
 1. **"Why am I seeing this".** The card menu shows the score terms in words:
    "Due in 2 hours. You act on most overdue cards." It builds trust, and it
-   is the first thing a member asks of a chief of staff.
+   is the first thing a member asks of a chief of staff. LOOP-4b uses the
+   sentences of `proactive_loop.md` §7.2, and it shows no score.
 2. **Ask about this card.** One menu row opens the assistant dock with the
    card as context. The dock owns the talk (`navigation_shell.md` §7.1).
 3. **Teach My Day.** "Not useful" and its one line are the training. No
@@ -4134,6 +4156,26 @@ Fence: `feedActs.test.ts` (§11.4).
 Affinity, mutes, "Why am I seeing this", `metric_moved`, `lead_replied`,
 `whatsapp_waiting`. "Why am I seeing this" names the judged group and weight
 in words, for example "Judged high: it moves the Q3 launch".
+
+**The learning of MD-9, proposed 2026-11-16.** `proactive_loop.md` §7 and its
+slices LOOP-4a, LOOP-4b and LOOP-5 specify the learned `affinity`, the mutes and the class
+that the learner lowers. This spec stays the owner of the feed parts.
+
+**LOOP-4a is BUILT, 2026-11-16, dark.** `state.learn_allowed` reads
+`MY_DAY_LEARN_ORGS`. For a listed org, the state join drops a muted kind
+before the order, and a needs card goes to Later at worst. The join adds the
+affinity of the main kind. `feed_decide._habits` is the one count read.
+
+**LOOP-4b is BUILT, 2026-11-26, dark** (task 4006). It is "Why am I seeing
+this", and `proactive_loop.md` §7.2 holds its pins W1 to W5. The words about
+the judged group and weight above are not built, because the judged path
+changes no live card (pin W5).
+
+The affinity of a needs card never goes below 0 in the score, so the
+per-app cut cannot drop it. The reach loop, the briefs and the chat brief read
+the same learned join. So a kind that the member mutes leaves them too. A
+muted needs card in Later is no interrupt, and it is in no brief. LOOP-5 owns
+the rest of the effect on reach (`proactive_loop.md` §7.3).
 
 ### MD-10 · Nudges outside the app — OWNER-GATE
 

@@ -8,10 +8,18 @@ one parser of the profile. Repair round 1 (2026-10-24): only a private room
 of one is solo, and a detached run is never solo. A profile write ends the
 cached block.
 
+**PZ-52 and PZ-53 BUILT 2026-11-09 on branch `mt-0261187d-langs`** (task 2505,
+no flag, owner approved the preview). `style.languages` holds up to 6 tags
+(§5.3a). Settings → Assistant shows "Languages I speak" as a ranked list.
+VOX-8 stays deferred. Fences: `tests/unit/test_assistant_profile_languages.py`
+and `tests/unit/test_assistant_profile_languages_r8.py`.
+
 **PZ-51 BUILT 2026-11-09** (task 2500, no flag). Every chat turn carries one
 language rule (§5.3). The assistant answers in the member's language and
 saves every record in English. The style line names the language. Fence:
-`tests/unit/test_assistant_profile_language.py`.
+`tests/unit/test_assistant_profile_language.py`. **Task 3131 BUILT
+2026-11-13** (no flag): a member's order about the answer language is saved
+in `style.language_fixed` and holds (§5.3).
 
 **PZ-39 MERGED 2026-11-08** (task 1823, 5ba0e3147, no flag). One
 greeting table (`acb_common.today.GREETING_TABLE`) is mirrored in `myDay.ts`.
@@ -38,6 +46,11 @@ gets the briefing block. It holds the newest 3 summaries of the member's
 other private chats, and at most 3 of their due tasks. The block shows only
 with `ASSISTANT_BRIEFING_ORGS` on for the org. See §15.4 "As built, PZ-34",
 §15.9 and D-PZ-38 in §15.11.
+
+**§19 MM-1, MM-1b and MM-2 BUILT, dark** (2026-11-27). MM-1 (task 2878, PR
+2498) and MM-2 (task 2879, PR 2508) are merged. MM-1b (task 3614, PR 2513)
+records the chat card answer. The act record of §19.4 writes no row until
+`MEMBER_ACTIONS_ORGS` holds the org. No other slice of §19 is built.
 
 **§18 ACCEPTED 2026-11-08 (D196). No slice is built.** It adds the epic "Setup health" (Metorite task 940, slice SH-0 task 945). Each live app lists its setup items. The chat raises one missing item at a time, on the seam of the interview, inside the limits of D-PZ-13.
 
@@ -336,6 +349,7 @@ for per-member preference.
 | `address.greeting` | `none`, `brief`, `warm` | — |
 | `style.length` | `short`, `default`, `detailed` | — |
 | `style.language` | A BCP 47 tag | 16 characters |
+| `style.language_fixed` | `true`, or absent. Needs `style.language` | — |
 | `style.notes` | A list of free text | 5 items, 200 characters each |
 | `aliases` | `{id, alias, email}`. `email` must be a member or a person of the org | 50 items, alias 60 characters |
 | `facts` | `{id, text, kind, source, at}`. `kind` is `about`, `routine`, `preference`, `work` or `relationship`. `source` is `chat`, `whatsapp` or `settings` | 40 items, 300 characters each |
@@ -520,6 +534,36 @@ outside the map stays bare. `block_language` still returns the tag.
 Fence: `tests/unit/test_assistant_profile_language.py` pins the rule text,
 the line, the round trip and the equality of the two maps.
 
+**The member's order about the answer language (task 3131, 2026-11-13).**
+On 2026-11-13 a member wrote in Hindi and asked for the answers in English.
+The chat obeyed in that chat only. It saved nothing, so the next chat
+answered in Hindi again. The owner rule above (the message wins over the
+profile language) is the default, and it stays. A member's own order is not
+a guess, so it wins over the default.
+
+When a member says which language the answers must use, the chat calls
+`profile_set` at once with `style.language` and `style.language_fixed: true`.
+This is an own write of D-CF-5. It acts at once and offers Undo. The rule
+that tells the model to do this sits in the profile tool list of
+`orchestrator/agents.py`.
+
+The mark needs the member's own typed words of this turn. Those words must
+name the language and hold an order word about answers or replies. The name
+is the English name or the member's own name for it. A mail or a
+page cannot set the mark, and the call saves nothing for it. The refusal is
+`LANGUAGE_FIXED_REFUSED` in `profile_tools.py`.
+
+The marked style line reads as follows.
+`Language: en-IN. Answer in English, even when the member writes in Hindi or
+another language.` For other languages, the line ends with "writes in another
+language". Without the mark, the line stays as above. `LANGUAGE_RULE_LINE`
+says that this profile line wins.
+
+A member clears the mark with a null `language_fixed`, or by Undo. Settings
+keeps the mark when the member changes the language. Settings drops the mark
+when the member clears the language. Fence:
+`tests/unit/test_assistant_profile_language.py`.
+
 **Open owner question (PZ-51).** The Email app's automatic reply drafts
 (`gateway/routes/email/automation/drafting.py`) "match the language of the
 email". This slice leaves them as they are. Should an automatic draft be in
@@ -569,6 +613,171 @@ alias. The tool reads through the tenant session, so it sees one org only.
 
 The offer to save the alias needs the alias tool of PZ-6. PZ-5 adds no
 prompt line.
+
+### 5.3a Languages I speak (PZ-52, PZ-53, VOX-8)
+
+**Status: APPROVED by the owner 2026-11-09. PZ-52 and PZ-53 BUILT 2026-11-09 on branch `mt-0261187d-langs` (task 2505, no flag). The owner deferred VOX-8, and nobody built it.**
+This section sits after §5.4 so that it does not touch the text of PZ-51 (§5.3).
+
+The owner said on 2026-11-09: "it should still try and detect Indian languages
+even if the preference is set to auto in the settings. Say, for example, if
+it's set to English as a preference but is talking Hindi, it should still
+attempt to talk in Hindi. Have a cascading thing where it might be preferring
+English, but then Hindi, then Kannada, then Telugu, etc." The owner also said:
+"just because our preference is English doesn't mean that it should not
+understand Hindi as input."
+
+Today the member picks one language (Settings → Assistant → Language). This
+section makes it an ordered list. The list does two jobs. It tells the chat
+which language to use when the message does not decide. It tells the mic which
+languages to expect.
+
+**Preview.** `workbench/control_plane/ux-shots/lang-list/index.html` is a local
+mock of the control. It is not product code.
+
+#### The list (PZ-52)
+
+- `style.languages` is an ordered list of BCP 47 tags, for example
+  `["en", "hi", "kn"]`.
+- It holds at most **6** tags. A tag appears once. The parser lowercases each
+  tag and drops a repeat. A seventh tag is a 422.
+- `_clean_style` checks each tag with the same rules as `style.language`
+  today (shape, length, no digit run).
+- The default is empty. An empty list means "the language of my message". The
+  Settings control shows "English" as a grey hint, and it stores nothing.
+- **Expand and contract (R6).** `style.language` stays and always holds the
+  first tag. A write of `languages` sets `language` to its first tag. A write
+  of `language` alone sets `languages` to a list of one. If one write holds
+  both and they disagree, `languages` wins.
+- **A read of an old profile** that has only `style.language` returns
+  `languages` as a list of one. No migration runs. The data stays in the same
+  `user_settings.assistant_profile` column.
+- **A read after an old writer.** If `languages[0]` differs from `language`,
+  an old build wrote `language` last. Then `language` wins, and the reader
+  returns a list of one.
+- Release N writes both keys. A later release may drop `language`. That
+  release is a separate task.
+
+#### The chat (PZ-52)
+
+- The style line of the member block lists the languages in order. Example:
+  `Languages: English (en), then Hindi (hi), then Kannada (kn). Answer in the
+  language of their message. When that is unclear, use the first in the list.`
+- A list of one keeps the PZ-51 line (`Language: Kannada (kn). ...`).
+- The PZ-51 rule decides the reply language. It answers in the language of the
+  message. The list changes nothing there. It is only the fallback order when
+  the language of the message is unclear.
+- `block_language` still returns one tag, the first.
+- The setup coach (§12.5) still asks one question, "Which language should I
+  answer you in?". The answer becomes a list of one.
+
+#### The mic (VOX-8)
+
+The member's list must not narrow what the mic understands. A member who lists
+only English can still speak Hindi to the assistant.
+
+- **The gateway reads the list itself (R5).** `chat_transcribe.transcribe`
+  loads the profile of the proven member, in the tenant session, with the
+  reader that builds the block. The request carries no language field. The
+  route ignores any such field or header from the client.
+- **The new Console field.** `POST /v1/audio/transcriptions` takes an optional
+  form field `language_hints`.
+  - **Shape:** a comma-separated list of lowercase base language tags, for
+    example `en,hi,kn`. The gateway strips a region (`en-IN` becomes `en`).
+  - **Cap:** at most 6 tags and 64 characters in all.
+  - **Order:** the first tag is the most preferred.
+  - **An unknown tag:** the door drops a tag that is not well formed. The
+    handler drops a tag that its vendor does not support. The door never
+    refuses a clip because of this field. A field with more than 6 tags, or
+    one that is too long, is ignored as a whole. The hint is advice.
+  - **No hint:** an absent or empty field gives today's behaviour, exactly.
+- **Sarvam (`stt_sarvam.py`).** The handler sends **no `language_code`**,
+  with or without a hint, so Sarvam detects the language. The hint never
+  narrows detection. The reason is the owner's rule: Hindi must be understood
+  even when the list says English. The modes (`translit`, `codemix`,
+  `transcribe`, `translate`) do not change.
+- **AssemblyAI (`stt_assemblyai.py`).**
+  - A model id that names languages (`assemblyai/universal-3-5-pro/hi,en`)
+    wins. The operator chose it. The hint is not used.
+  - Otherwise the handler keeps the hint tags that are in its 32 `LANGUAGES`.
+    It sends them as `config.language_codes`, in list order, with `en` first
+    when `en` is in the list. `kn` is not in `LANGUAGES`, so the handler drops
+    it.
+  - **Fewer than two supported tags:** the handler sends no `config`. One tag
+    could steer the model away from Hindi for a member who lists only English.
+  - **No supported tag:** the handler sends no `config`, as today.
+- **Billing does not change.** The Console bills the seconds that it measures
+  from the WAV bytes (VOX-6). The hint adds no charge and no usage column.
+  The `transcribe` row for the same clip is equal with and without a hint.
+- **No provider key moves.** The gateway still calls only the Console door.
+
+#### What does not change
+
+- **Saved records stay in English (PZ-51).** Titles, descriptions, comments,
+  notes, CRM records, calendar events and drafts are in English. The list does
+  not change that. Only the chat reply comes back in the regional language.
+- The mic text is the transcript as the vendor returns it. Sarvam `translit`
+  still gives Roman script (§31.6 Q1).
+- The automatic reply drafts of the Email app keep their open question from
+  PZ-51.
+- The WhatsApp voice notes keep `acb_stt` (§31.8).
+
+#### Slices
+
+| Slice | What | Done when | Fence (R7) | Tier |
+|---|---|---|---|---|
+| **PZ-52** (BUILT 2026-11-09) | `style.languages` in `_clean_style`, the dual write with `style.language`, the old-profile read, the block line, the route in `admin/assistant_profile.py` | A profile with `languages=["en","hi","kn"]` gives the line `Languages: English (en), then Hindi (hi), then Kannada (kn).` An old profile with `language="kn"` reads as `["kn"]` | `tests/unit/test_assistant_profile_languages.py`: cap 6, repeat dropped, 7th tag 422, old read, mismatch rule, block line. R8: the PUT and GET round trip on a real database | AGENT-SAFE · STANDARD |
+| **PZ-53** (BUILT 2026-11-09) | The Settings control: ordered chips, rank 1 "Preferred", drag and button reorder, remove, add from the 9 languages | The control saves the order, and a reload shows it | `profile.test.ts` (the `LANGUAGES` map, the move helpers), a pane test for the keyboard moves, and the captures of the UI gate | AGENT-SAFE · STANDARD |
+| **VOX-8** (DEFERRED, owner 2026-11-09) | Console: `language_hints` on the door and in both handlers. Gateway: read the list server-side and send it. Details are in `projects_ai_chat.md` §31 | A WAV clip on a `tier-stt` chain with AssemblyAI sends `language_codes` from the list. A Sarvam clip sends none | See §31 VOX-8 | HIGH |
+
+**Owner, 2026-11-09 (task 2505):** "looks fine. You can continue", which approved the option "build the list for the chat now, mic hint later". VOX-8 stays closed until Sarvam has served real clips and shows a wrong-language guess. The reason: Sarvam detects every Indian language with no hint, and a hint can only narrow it. AssemblyAI steered with `hi` wrote English speech in Devanagari script (production Try, 2026-11-09). Since 2026-11-09 09:33 UTC, `tier-stt` on production is `[sarvam/saaras:v4/codemix, assemblyai/universal-3-5-pro/en]`.
+
+**As built (PZ-52, PZ-53).** `_clean_style` is the one write check. A repeat
+drops, and the cap counts the tags that are left. A lone `language` sets
+`languages` to a list of one and keeps its own case, while the list is lower
+case. `_stored_style` is the one reader: a lone `language` reads as a list of
+one, and a `language` that differs from `languages[0]` wins. The chat tool
+`profile_set` replaces the list when the member names one language and gives
+no answer order. The undo
+areas treat `language` and `languages` as one.
+
+The Settings control reorders by drag, by the arrow buttons and by Alt with
+the arrow keys. It saves the whole list on each change.
+
+**The answer order meets the list (merge with task 3131).** The mark
+`style.language_fixed` (§5.3) orders the first language of the list. With two
+languages or more, the line reads as follows. `Languages: Hindi (hi), then
+English (en). Answer in Hindi, even when the member writes in English or
+another language.` When the member orders an answer language in the chat,
+`profile_set` moves that language to the first place and keeps the others. A
+full list drops its last tag. The member's typed words must name the first
+language of the write. In Settings, a reorder keeps the mark, so the mark
+moves to the new first language. An empty list drops the mark. A
+`profile_set` write of `languages` with no mark keeps a stored mark in two
+cases only. The first language stays the same, or the member's typed words
+order the new one. In all other cases the tool drops the mark. A write of a
+lone `language` keeps the mark, as before. Fences:
+`tests/unit/test_assistant_profile_languages.py`,
+`tests/unit/test_profile_write_tools.py` and `profile.test.ts`.
+
+PZ-52 goes first. PZ-53 follows. VOX-8, when it opens, reads
+`style.languages` from the profile, so it needs PZ-52. No slice adds a flag,
+because an empty list changes nothing. The existing voice routing switch turns
+the mic path off.
+
+Numbers: `PZ-51` is taken (PR 2031). `VOX-7` is in `main` (PR 2718), so this
+section takes `VOX-8`. `PZ-52` and `PZ-53` are slice ids. The decision
+`D-PZ-52` of §19.12 is a separate id. Re-check all three at merge (R1).
+
+#### Owner calls
+
+**ANSWERED 2026-11-09:** the owner approved the preview and the recommendations. Q1 is 6 and Q3 is "not now". Q2 does not apply while VOX-8 stays closed.
+
+| # | Call | Recommendation |
+|---|---|---|
+| Q1 | How many languages may the list hold? | **6.** It covers the usual Indian mix. The cap keeps the block line and the hint short |
+| Q2 | When the list has only English (or one language), does AssemblyAI get a steer? | **No.** Send nothing, so the vendor detects the language. A steer of `en` alone may hurt Hindi. A manual test of 10 Hindi clips with the list `["en"]` should confirm it before the owner binds AssemblyAI above Sarvam |
+| Q3 | Offer more than the 9 languages (for example Odia and Punjabi)? | **Not now.** Keep the 9 of `LANGUAGES`. Sarvam already detects the rest. Add more when the chat tests show a need |
 
 ### 5.5 Learning from the chat
 
@@ -1792,6 +2001,8 @@ The slices, with their Metorite tasks:
   another agent.
 - No summary in the chat list, in My Day or in any shared surface.
 - No new recall store and no vector store. MEM-2 stays the one search.
+- No note over a series of chats. `chat_organization.md` §16 plans it (task
+  3491), on the typed-words rule of D-PZ-37.
 - No change to the day's brief (CF-5, BR-2c). §15.4 reads beside it.
 - No outbound message. Reach stays the only sender (D103).
 
@@ -3584,6 +3795,8 @@ does not exist yet is advisory until its slice builds (R7).
 | **PZ-48** · task 1473 | The line on reminders and nudges, from the bank, with the 14-day rotation | Each message picks one line. No line repeats within 14 days. No model runs at send time. Over 3 lines a day, the member gets the plain message | Planned `tests/unit/test_persona_lines.py`, advisory until PZ-48 builds. It also fails when a send path imports a model client | AGENT-SAFE · STANDARD |
 | **PZ-49** · task 1474 | The guards of §17.7 and a flattery test | Each guard has a test. A failed check gives a plain message. The evaluation set of PZ-10 covers each guard | Planned `tests/unit/test_persona_guards.py`, advisory until PZ-49 builds | AGENT-SAFE · STANDARD |
 | **PZ-51** · task 2500 | The language rule on every turn, and the style line that names the language | A turn with no profile block carries the rule. The line reads `Language: Kannada (kn).` and `block_language` returns `kn` | `tests/unit/test_assistant_profile_language.py`. **BUILT 2026-11-09, no flag** | AGENT-SAFE · STANDARD |
+| **PZ-52** · task 2505 | `style.languages`, the dual write, the old-profile read and the block line | See §5.3a | `tests/unit/test_assistant_profile_languages.py` and `tests/unit/test_assistant_profile_languages_r8.py`. **BUILT 2026-11-09, no flag** | AGENT-SAFE · STANDARD |
+| **PZ-53** · task 2505 | The ordered "Languages I speak" control | See §5.3a | `profile.test.ts` and `AssistantPane.test.ts`. **BUILT 2026-11-09, no flag** | AGENT-SAFE · STANDARD |
 | **PZ-50** · task 1475 | None. D-PZ-43 decided it: one persona and one tick list | The rows of §17.4 hold | No build | Decided |
 
 Verification commands for the spec slice. Run from the repository root:
@@ -4167,10 +4380,15 @@ merge confirms the number (R1).
 
 ## 19. How I work: the member model of how the member acts (ACCEPTED, 2026-11-11)
 
-**Status: ACCEPTED, 2026-11-11 (D212). Nothing is built.** Owner ask of
-2026-11-11, in chat. Epic task 2876. It extends §4, §12 and §15, and it
+**Status: ACCEPTED, 2026-11-11 (D212). MM-1 (task 2878, PR 2498) and MM-2
+(task 2879, PR 2508) are merged. MM-1b (task 3614, PR 2513) is built. All of
+them are dark behind `MEMBER_ACTIONS_ORGS`.** Owner ask of 2026-11-11, in chat. Epic task 2876. It extends §4, §12 and §15, and it
 changes no rule of them. The owner accepted the decisions D-PZ-47 to
 D-PZ-52 of §19.12 the same day.
+
+**An extension, proposed 2026-11-16 (task 3439).** `proactive_loop.md` §5 proposes
+five layers for this model, a source on each item, and more acts for MM-1. It
+changes no decision of this section until the owner accepts it.
 
 ### 19.1 The owner's ask
 
@@ -4205,7 +4423,7 @@ Three stores hold parts of a writing style today, and they never meet.
 | Store | What it holds | How it learns | Reader |
 |---|---|---|---|
 | `email_voice_profiles` (migration 94) | One voice for each mailbox: tone, formality, length, greetings, sign-offs | The member presses Build. A job reads up to 150 sent mails | The email drafter only |
-| `email_learned_patterns` and `email_assistant_settings.learned_writing_style` (migrations 28, 38) | The changes from the AI draft to the sent mail, by sender, domain and topic | In silence, after each send (`drafting.py:772`). It also writes to Mem0, which D132 retires | The email drafter only |
+| `email_learned_patterns` and `email_assistant_settings.learned_writing_style` (migrations 28, 39) | The changes from the AI draft to the sent mail, by sender, domain and topic | In silence, after each send (`_learn_from_sent` in `drafting.py`). It also writes to Mem0, which D132 retires | The email drafter only |
 | `user_settings.assistant_profile.style` (migration 294) | How the assistant talks to the member | Only the member's typed words, or a yes on a card (D-PZ-2, D-PZ-37) | Each chat turn |
 
 **No store records how the member acts.** These are the gaps:
@@ -4238,9 +4456,30 @@ like a sent mail. It is not a profile fact, so D-PZ-1 and D-PZ-2 stand.
 | `at` | The time of the act |
 
 **The writer.** One function in `acb_common` writes a row. Each act seam
-calls it: the send, reply and forward routes, the Reply Zero resolve route,
-archive, snooze, label, and the card answer in `ask_tools`. A fence fails on
-a second writer.
+of MM-1 calls it: `POST /email/send`, `POST /email/drafts/send`,
+`POST /email/forward`, the Reply Zero resolve route, and the archive, snooze
+and label of one mail. A fence fails on a second writer.
+
+- The in-app reply and compose paths (`EmailDetail.tsx`, `ComposePanel.tsx`
+  and `ConversationView.tsx`) send through `POST /email/drafts/send`.
+- That seam reads a reply from the thread id of the draft row. A synced new
+  draft that has a thread id then reads as a reply.
+- A send seam writes the row after the provider takes the mail. The row
+  holds only the recipients that the mail server did not refuse.
+- The send-later sweep sends as a job, inside `member_actions.job_acts`. The
+  writer records no row for it, because the member pressed nothing then.
+  Fence: `tests/unit/test_member_action_writer.py` (section f).
+- A bulk archive (`POST /email/messages/bulk`) records nothing.
+- MM-1b (task 3614) records the card answer in `ask_tools`, in
+  `orchestrator/card_act.py`. The outcome comes from `CARD_OUTCOMES`.
+  `approved` gives `card_approve`, and `declined` gives `card_reject`, with
+  `via` `card`. Only an answer of the run's own member records. A late
+  approve records too.
+- No other outcome records. A late decline, a WhatsApp reply code and a
+  `card_revise` record nothing yet.
+- **Open:** a yes on an email card also makes the send route write its own
+  row, with `via` `app`. This section does not say how to join the two rows.
+  The flag stays off until the owner decides.
 
 **The limits:**
 
@@ -4250,7 +4489,11 @@ a second writer.
 - With `learning` off (D-PZ-7), the writer records nothing.
 - An org switch can turn it off for each member (D-PZ-17).
 - A shared mailbox (WS-65) records no act until its spec says how.
-- It ships dark behind `MEMBER_ACTIONS_ORGS`.
+- It ships dark behind `MEMBER_ACTIONS_ORGS`. Before an org goes on, turn
+  on `JOB_QUEUE`, because the prune job deletes the old rows. The profile
+  must also be on for the org: `ASSISTANT_PROFILE_ENABLED` on, and
+  `ASSISTANT_PROFILE_ORGS` empty or with the org in it. Without the profile,
+  the member cannot see or turn off `learning`.
 
 ### 19.5 Habits (MM-2)
 
@@ -4337,7 +4580,9 @@ Only the member reads the page (D-PZ-3). An admin sees nothing of it.
 | Slice | Task | What | Gate · tier |
 |---|---|---|---|
 | **MM-0** | 2877 | This section and the INDEX row | AGENT-SAFE · LOW |
-| **MM-1** | 2878 | The act record of §19.4 | AGENT-SAFE, dark · HIGH |
+| **MM-1** | 2878 | The act record of §19.4: the table, the one writer, the purge, the prune, and the email seams (send, reply, forward, mark done, archive, snooze, label) | AGENT-SAFE, dark · HIGH |
+| **MM-1b** | 3614 | The chat card answer calls the writer | AGENT-SAFE, dark · HIGH |
+| **MM-1c** | 3615 | My Day acts, reach ratings, `draft_sent` and `delegate` call the writer | AGENT-SAFE, dark · STANDARD |
 | **MM-2** | 2879 | Habits, §19.5 | AGENT-SAFE · STANDARD |
 | **MM-3** | 2880 | Suggestions in the chat and in Email | AGENT-SAFE, dark · STANDARD |
 | **MM-4** | 2881 | Suggestions on My Day | AGENT-SAFE, dark · STANDARD |

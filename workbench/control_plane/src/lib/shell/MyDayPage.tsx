@@ -39,6 +39,8 @@
  * the feed column and shows the top five cards with their reasons. It reads
  * the same feed answer as the column. `showTodayBand` is its one gate.
  *
+ * **The pin card** (`package_host.md` §9.3 item 2, PKG-19a-2) is a sixth flag,
+ * `NEXT_PUBLIC_PIN_SUGGEST` (`pinSuggestOn`). It sits under the band.
  * **The panel** (`my_day_feed.md` §11.5, PK-1, D213) is a fifth flag,
  * `NEXT_PUBLIC_MY_DAY_PEEK` (`myDayPeekOn`). With it on, a plain click on a
  * task row opens the task in a panel at the right of the page, or in a full
@@ -63,21 +65,26 @@ import { useCachedResource } from "@/lib/useCachedResource";
 
 import { ADDRESS_KEY, addressedGreetingLine, fetchAddressName } from "./addressName";
 import AppLauncher from "./AppLauncher";
+import MyDayCapture from "./MyDayCapture";
 import { feedFailedLines, feedNeedsCount, handledClaim } from "./feed";
 import BriefCard from "./BriefCard";
-import { BRIEF_KEY, fetchBrief } from "./briefCard";
+import { BRIEF_KEY, fetchBrief } from "./briefCardModel";
 import { briefCardOn, briefCardOnServer } from "./briefCardFlag";
 import { FeedColumn, useFeed } from "./FeedCard";
+import NowCard from "./NowCard";
 import NeedsYouCard, { useNeedsYou } from "./NeedsYouCard";
 import { cardOrderFor, cardsFor, dateLine, failedLines, seesApprovals, summaryLine } from "./myDay";
 import { myDayFeedOn, myDayFeedOnServer } from "./myDayFlag";
 import { BUILT_CARDS } from "./presets";
+import PinSuggestCard from "./PinSuggestCard";
+import { pinSuggestOn, pinSuggestOnServer } from "./pinSuggestFlag";
 import TodayBand from "./TodayBand";
 import { showTodayBand, todayBandOn, todayBandOnServer } from "./todayBandFlag";
 import { useMyDayPeek } from "./useMyDayPeek";
 import { rereadFeed } from "./feedState";
 import { needsKey } from "./needs";
 import { CARD_PAGE_ATTR, CARD_PAGE_COLUMN_ATTR } from "@/components/CardPanel";
+import SidePanelMotion from "@/components/ui/SidePanelMotion";
 import { invalidate } from "@/lib/dataCache";
 import { MyDayPeekContext } from "./myDayGo";
 import { myDayPeekOn, myDayPeekOnServer } from "./myDayPeekFlag";
@@ -134,6 +141,7 @@ export default function MyDay() {
   const feedOn = useSyncExternalStore(noSubscribe, myDayFeedOn, myDayFeedOnServer);
   const briefOn = useSyncExternalStore(noSubscribe, briefCardOn, briefCardOnServer);
   const bandOn = useSyncExternalStore(noSubscribe, todayBandOn, todayBandOnServer);
+  const pinOn = useSyncExternalStore(noSubscribe, pinSuggestOn, pinSuggestOnServer);
   const peekOn = useSyncExternalStore(noSubscribe, myDayPeekOn, myDayPeekOnServer);
   // The brief read is the page's, so the grid waits for it and paints once.
   // Off, the key is null: no read, and the brief never gates the page. A
@@ -264,11 +272,17 @@ export default function MyDay() {
         </div>
       </div>
 
+      {/* The capture box (CC-1): the door to the one capture flow. */}
+      <MyDayCapture className="mt-4" />
+
       {/* The brief card (BR-2c-2): a component of its own above both
           layouts, outside the feed flag. It draws nothing on a 404. */}
       {briefOn && !accessLoading && !briefPending ? (
         <BriefCard brief={brief.data} error={brief.error} now={now} className="mt-6 -mb-2" />
       ) : null}
+
+      {/* The Now card (CC-4): the running focus session, or one offer to start. */}
+      {!accessLoading ? <NowCard today={today} now={now} className="mt-6 -mb-2" /> : null}
 
       {/* The AI runs that wait on the member (owner, 2026-11-01: Needs you
           folds into My Day). The feed holds it in its column. The cards
@@ -299,6 +313,16 @@ export default function MyDay() {
         // start classes place each one at `xl`, whatever the order.
         <>
         {showTodayBand(bandOn, feedOn, cards.needs) ? <TodayBand feed={feed} visit={feedVisit} className="mt-6" /> : null}
+        {/* The pin card (PKG-19a-2): under the band, drawn only with a suggestion. */}
+        {pinOn && shell.enabled && !shell.loading && shell.stored !== undefined ? (
+          <PinSuggestCard
+            email={session?.user?.email ?? null}
+            accept={{ stored: shell.stored }}
+            sections={sections}
+            layout={shell.layout}
+            className="mt-4"
+          />
+        ) : null}
         <div className={`mt-6 grid grid-cols-1 items-start gap-4 ${wide("xl:grid-cols-3")}`}>
           {cards.today ? (
             <TodayCard
@@ -371,7 +395,8 @@ export default function MyDay() {
       />
     </div>
     </div>
-    {peek.panel}
+    {/* A docked card opens and closes with the one side-panel motion (task 7). */}
+    <SidePanelMotion>{peek.panel}</SidePanelMotion>
     </div>
     {peek.reader}
     </div>

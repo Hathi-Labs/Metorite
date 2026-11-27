@@ -217,17 +217,17 @@ describe("PKG-6 packageManifest", () => {
     expect(src).toMatch(/refresh\(\);\s*(\/\/[^\n]*\n\s*)*refreshManifest\(\);/);
   });
 
-  it("All apps lists an install pane, and the stars ignore it", () => {
+  it("All apps lists an install pane, and the stars run over the merged sections (PKG-6c-2)", () => {
     const base = visibleSections(NAV_SECTIONS.flatMap((s) => s.items.map((p) => p.feature ?? "")), true);
     const m = manifest({ nav: [entry("crm", { href: "/zz-crm", label: "CRM" })] });
     const merged = mergeInstallNav(base, installNavPanes(m));
     const listed = launcherGroups(merged).flatMap((g) => g.items.map((p) => p.href));
     expect(listed).toContain("/zz-crm");
-    // The stars read the held sections, so a save never names an install href.
+    // Over `base` alone the install is unknown. All apps stars over the merged sections.
     expect(isStarred({ pins: [], known: [] }, base, "/zz-crm")).toBe(false);
     const src = readFileSync(new URL("./AppLauncher.tsx", import.meta.url), "utf-8");
-    expect(src).toMatch(/toggleStar\(base, held, href\)/);
-    expect(src).toMatch(/isStarred\(shell\.layout, held, p\.href\)/);
+    expect(src).toMatch(/toggleStar\(base, sections, href\)/);
+    expect(src).toMatch(/isStarred\(shell\.layout, sections, p\.href\)/);
     // Empty manifest: the same array, so All apps is as it was.
     expect(launcherGroups(mergeInstallNav(base, installNavPanes(EMPTY_MANIFEST)))).toEqual(launcherGroups(base));
   });

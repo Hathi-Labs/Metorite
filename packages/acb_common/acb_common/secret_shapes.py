@@ -80,6 +80,8 @@ REDACTION_SHAPES: tuple[re.Pattern[str], ...] = (
     re.compile(
         r"(?<![A-Za-z0-9_-])eyJ[\w-]{1,256}+\.[\w-]{1,2048}+\.[\w-]{1,1024}+"
     ),
+    # A Zoho OAuth token: "1000." and two parts of 32 hex characters (task 3896).
+    re.compile(_NOT_WORD + r"1000\.[0-9a-fA-F]{32}\.[0-9a-fA-F]{32}(?![0-9A-Za-z])"),
 )
 #: A bearer value of any length, for scrubbing (the strict shape needs 16 characters).
 REDACTION_BEARER: re.Pattern[str] = re.compile(r"(?i)\bbearer[ \t\r\n]{1,8}+\S{1,512}+")
@@ -99,3 +101,30 @@ def is_secret_key(name: object) -> bool:
     """True when the key ``name`` says its value is a secret. ``api-key`` and ``apiKey`` count."""
     lowered = str(name).lower().replace("-", "_")
     return any(w in lowered for w in SECRET_KEY_WORDS)
+
+
+#: The names of a field that holds a secret (WS-STU I1a). A field key matches
+#: when one of these names is a run of whole segments of it, as in
+#: ``zoho_api_key``. It is narrower than :data:`SECRET_KEY_WORDS` on purpose:
+#: a field such as ``token_number``, ``secretary`` or ``credential_expiry``
+#: holds member data.
+SECRET_FIELD_NAMES: tuple[str, ...] = (
+    "api_key", "apikey", "password", "passwd", "client_secret", "access_token",
+    "refresh_token", "private_key", "secret_key", "auth_token", "bearer_token",
+    "api_secret", "app_secret", "webhook_secret", "signing_secret", "consumer_secret",
+    "access_key", "api_token",
+)  # fmt: skip
+
+_CAMEL_STEP = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
+def is_secret_field_key(name: object) -> bool:
+    """True when the field key ``name`` names a secret (WS-STU I1a).
+
+    The key splits into segments at ``_``, ``-`` and a camel-case step. It
+    matches when a name of :data:`SECRET_FIELD_NAMES` is a run of whole
+    segments. So ``db_password`` and ``apiKey`` match, and ``token_number``
+    does not. :func:`is_secret_key` keeps its wider rule for its own callers."""
+    text = _CAMEL_STEP.sub("_", str(name)).lower().replace("-", "_")
+    joined = "_" + "_".join(s for s in text.split("_") if s) + "_"
+    return any(f"_{n}_" in joined for n in SECRET_FIELD_NAMES)

@@ -471,7 +471,19 @@ H2_WHATSAPP_EXEMPT_SITES: dict[str, int] = {
 #: session of its own (-1). The one new unbound read is
 #: `service._organization_ids`, a tenant-discovery site that is not counted
 #: here (+1 in H2_TENANT_DISCOVERY_SITES). Measured drop: 5.
-H2_BASELINE_ELSEWHERE = 62
+#: 62 → 58: H-328 part (c) (2026-11-12). The base measured 60 already: two
+#: sites left in earlier work, and no PR banked them. In routes/workflows,
+#: the hook door (`hooks.workflow_hook`) and the event door
+#: (`triggers.dispatch_event`) moved their read to `_tenant_session(org)`
+#: (-2). The hook door finds the org through `service._organization_ids`,
+#: which is already a discovery site, so it adds no new one. Measured: 58.
+#: `test_workflows_triggers_r8.py` fences both doors under FORCE RLS.
+#: 58 → 55: H2 (task 566, 2026-11-22). `routes/agent_skills.py` held three
+#: unbound sites (a helper and two request handlers). The handlers run in a
+#: member's request, so they now open the ambient `tenant_session()`. The
+#: file has no `get_db()` left. `test_agent_skills_per_org_r8.py` fences it
+#: under FORCE RLS with two orgs.
+H2_BASELINE_ELSEWHERE = 55
 
 #: routes/apps (H2 slice, 2026-08-10): the sites that STAY on the unbound
 #: seam, as file → exact remaining count. Counts rather than whole files
@@ -773,6 +785,13 @@ H2_TENANT_DISCOVERY_SITES: dict[tuple[str, str], str] = {
         "blind. It runs only when `KNOWLEDGE_EMBED` names an org, and every "
         "chunk read and write after it binds one organization with "
         "`tenant_session`",
+    ("apps/services/gateway/gateway/calendar_sync/scheduler.py",
+     "_organization_ids"):
+        "WS-CAL CE-10: which organizations the calendar sync loop looks at. "
+        "It lists the RLS-EXEMPT `organization` table, so it does not go "
+        "blind. It keeps the orgs that `CALENDAR_SYNC_READ` names, and every "
+        "connection read and write after it binds one organization with "
+        "`tenant_session`",
     ("apps/services/gateway/gateway/kb_sync/scheduler.py",
      "_organization_ids"):
         "WS-61 KC-3: which organizations the Knowledge sync loop looks at. It "
@@ -982,8 +1001,9 @@ _FACTORY_OPEN_ALLOW: dict[str, tuple[int, str]] = {
         "WS-55 EA-1 — the outside-agent token store. ONE helper (`_session`) "
         "that only the token acts open, and it MUST start unbound: an outside "
         "agent sends only an opaque token, so the edge finds the token BEFORE "
-        "it knows the tenant. The first read touches only `agent_token`, which "
-        "is RLS-EXEMPT (`gen_tenant_migration.EXEMPT`, external_agent_access.md "
+        "it knows the tenant. The first read touches only `agent_token`, or "
+        "`sandbox_capabilities` for the sandbox door (SBX-2), which both "
+        "are RLS-EXEMPT (`gen_tenant_migration.EXEMPT`, external_agent_access.md "
         "§10.3). Before it touches the tenant-scoped `agent_connection`, the "
         "act binds the tenant FROM THE TOKEN ROW inside the same transaction, "
         "with the seam's own `set_config(..., true)` statement (the "

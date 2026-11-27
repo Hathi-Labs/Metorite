@@ -52,6 +52,7 @@ import {
   reportFrom,
   reportMeta,
 } from "@/lib/report";
+import { useFloor } from "@/lib/floorContext";
 import { resolveIcon } from "@/lib/icons";
 import { groupedNumber } from "@/lib/numberFormat.mjs";
 import { useNumberSystem } from "@/lib/numberSystem";
@@ -1662,6 +1663,13 @@ function rootRemPx(): number {
 const useIsoLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 /**
+ * The touch height of the cell edit button, in the floor view of a Studio app
+ * only (STU-D23a-2, `lib/floorContext.ts`). A chat card and every other grid
+ * draw the button with the classes it always had, also on a phone.
+ */
+export const CELL_EDIT_FLOOR = " pointer-coarse:min-h-10";
+
+/**
  * The cell editing of a Studio Table (STU-D2b). A grid with no `edit` draws as
  * it always did. `components/studio/StudioTable.tsx` supplies one, and the
  * store behind it is `lib/studio/inlineEdit.ts`. A row with no `id` never edits.
@@ -1706,6 +1714,7 @@ export function DataGrid({ data, layout, edit, nested }: { data: Data; layout?: 
   const scrollRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
   const [more, setMore] = useState(false);
+  const floor = useFloor();
   const mode = layout ?? gridLayout(width, shown, rootRemPx());
   useIsoLayoutEffect(() => {
     const el = boxRef.current;
@@ -1741,7 +1750,9 @@ export function DataGrid({ data, layout, edit, nested }: { data: Data; layout?: 
       return cellText(av).localeCompare(cellText(bv)) * sort.dir;
     })
     : kept;
-  // A cell that edits shows its editor, or a button that opens it (STU-D2b).
+  // A cell that edits shows its editor, or a button that opens it (STU-D2b). In the floor view
+  // of a Studio app the button takes the touch height (STU-D23a-2). Elsewhere its classes stay.
+  const cellEditClass = `min-h-5 w-full min-w-8 cursor-text text-left${floor ? CELL_EDIT_FLOOR : ""}`;
   const withEdit = (r: Data, c: GridColumn, plain: React.ReactNode): React.ReactNode => {
     const id = str(r.id);
     if (!edit || !id || !edit.can(c.index)) return plain;
@@ -1752,7 +1763,7 @@ export function DataGrid({ data, layout, edit, nested }: { data: Data; layout?: 
       <Button type="button" variant="text" size="none" radius="keep" layout="block" data-cell-edit=""
         aria-label={`Edit ${c.label}`} aria-busy={busy || undefined} disabled={busy}
         onClick={() => edit.open(id, c.index)} style={{ color: "inherit" }}
-        className="min-h-5 w-full min-w-8 cursor-text text-left">
+        className={cellEditClass}>
         {isEmptyCell(arr(r.cells)[c.index]) ? <span style={{ color: "var(--muted-foreground)" }}>—</span> : plain}
         {/* A quiet pencil says the cell edits. It needs no hover, so touch sees it too. */}
         <span data-edit-mark="" aria-hidden="true"

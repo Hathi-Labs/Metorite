@@ -60,6 +60,8 @@ from typing import Any
 
 import pytest
 
+from tests.unit import _r8_lists as r8_lists
+
 pytest.importorskip("sqlalchemy")
 
 import httpx
@@ -386,7 +388,8 @@ def _version_fields(world: Any, pid: str, version: int) -> list[str]:
 def _unplanned(planned: dict[str, Any]) -> dict[str, Any]:
     out = copy.deepcopy(planned)
     out["objects"][0]["fields"].append(
-        {"key": "secret", "type": "text", "label": "Never on a plan card"})
+        # STU-I1a: a field key that names a secret is refused, so this key does not.
+        {"key": "hidden_note", "type": "text", "label": "Never on a plan card"})
     return out
 
 
@@ -394,7 +397,8 @@ def _settled(world: Any, pid: str, published: dict[str, Any]) -> str:
     """Check one round: the planned draft is live, or no version is. Answer
     how the publish ended."""
     planned = [f["key"] for f in _FIELDS]
-    assert "secret" not in _tables(world, pid).get("visit", []), "the unplanned draft went live"
+    assert "hidden_note" not in _tables(world, pid).get("visit", []), (
+        "the unplanned draft went live")
     if published["ok"]:
         assert _version_fields(world, pid, published["version"]) == planned, published
         return "published"
@@ -527,8 +531,4 @@ def test_r8_a_stop_on_a_plan_of_another_app_id_withdraws_the_older_approval(
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
     """The ``--must-run`` list is a hand list. A suite that leaves it skips with
     no database and still reads green."""
-    from pathlib import Path
-
-    root = Path(__file__).resolve().parents[2]
-    workflow = (root / REPO_WORKFLOW).read_text(encoding="utf-8")
-    assert "tests/unit/test_studio_chat_build_r8.py" in workflow
+    assert "tests/unit/test_studio_chat_build_r8.py" in r8_lists.must_run()

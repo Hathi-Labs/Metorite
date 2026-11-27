@@ -15,6 +15,9 @@
  * - A reply box writes a free `prompt`.
  * - Stop writes a `prompt` with the signal `stop`, after a confirm.
  *
+ * CIV-14b: the line of the newest thought or action draws the images that the
+ * agent put on it (`AgentImageStrip`), and a click opens one at full size.
+ *
  * The panel reads the run again every 5 seconds while the run is open and
  * the panel is mounted. It asks only for the activities after the newest
  * `seq` it holds.
@@ -67,6 +70,7 @@ import {
   archiveExpired,
   archiveRequestOf,
   canReleaseRun,
+  strandedLine,
   clientName,
   heldByLine,
   RELEASE_ADMIN_PERMISSION,
@@ -80,7 +84,9 @@ import {
   lastSeq,
   latestElicitation,
   mergeActivities,
+  activityImages,
   newestEphemeral,
+  newestEphemeralActivity,
   panelState,
   replyPayload,
   runToShow,
@@ -91,11 +97,15 @@ import {
   writeFailure,
 } from "../lib/agentRuns";
 import { newestHandoff } from "../lib/agentHandoff";
+import { agentPlaceLine } from "../lib/agentCardLook";
 import { ASK_COPY, hasOpenRunOf } from "../lib/askAgent";
+import { AgentImageStrip } from "./AgentImageStrip";
 import { AgentPill } from "./AgentPill";
 import { AGENT_SUBMIT_HINT, AgentQuestionCard } from "./AgentQuestionCard";
+import AgentRunPlan from "./AgentRunPlan";
 import { AskAgentDialog } from "./AskAgentDialog";
 import { HandoffCard } from "./HandoffCard";
+import { MarkdownBody } from "@/components/MarkdownMessage";
 
 /** How often the open run is read again. */
 export const AGENT_RUN_POLL_MS = 5_000;
@@ -254,11 +264,19 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
       agent_state: state,
       agent_client_via: run?.client_via ?? null,
       agent_member_email: run?.member_email ?? null,
+      // SW-7b: the card line names the session too.
+      agent_label: run?.agent_label ?? null,
+      // Task 1045c: the card drops or gains the strand with the panel. The
+      // polled run is newer than the row, so its strand wins.
+      agent_stranded: run?.stranded ?? null,
     };
     if (
       (task.agent_state ?? null) === next.agent_state &&
       (task.agent_client_via ?? null) === next.agent_client_via &&
-      (task.agent_member_email ?? null) === next.agent_member_email
+      (task.agent_member_email ?? null) === next.agent_member_email &&
+      (task.agent_label ?? null) === next.agent_label &&
+      // The words, not the object: each poll gives a new stamp.
+      strandedLine(task.agent_stranded) === strandedLine(next.agent_stranded)
     ) {
       return;
     }
@@ -266,7 +284,7 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
     // Only a change of the run's facts reports. The task object changes on
     // every merge, and listing it would report again for each one.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, state, run?.client_via, run?.member_email]);
+  }, [enabled, state, run?.stranded, run?.client_via, run?.member_email, run?.agent_label]);
 
   // M1 (ORC-3): the panel sits above the task card's tabs, so its first read
   // must not move the Add row and the tab bar. Until the read answers, keep
@@ -342,10 +360,13 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
   }
 
   const client = clientName(run.client_via);
+  const placeLook = agentPlaceLine(run);
   // The closures below cannot see the narrowing of `run` above.
   const shownRunId = run.id;
   const host = httpsHost(run.external_link);
   const ephemeral = newestEphemeral(activities);
+  // CIV-14b: the images that the agent put on the line that shows.
+  const lineImages = activityImages(newestEphemeralActivity(activities));
   const elicitation = latestElicitation(activities, run);
   const answer =
     elicitation &&
@@ -368,6 +389,20 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
     assignees: task.assignees,
   });
   const canReply = REPLYABLE.has(run.status) && (!cardOpen || archiveStale);
+  // One control for both holder layouts. It ends the row that holds it.
+  const releaseControl = canRelease ? (
+    <Button
+      className="ml-auto shrink-0"
+      variant="ghost"
+      size="sm"
+      icon="LogOut"
+      data-agent-release=""
+      disabled={busy}
+      onClick={() => setConfirmRelease(true)}
+    >
+      {RELEASE_COPY.button}
+    </Button>
+  ) : null;
 
   /** One member write: `send` posts it. The panel guesses the state first. */
   async function write(
@@ -579,36 +614,54 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
         ) : null}
       </div>
 
-      {/* EA-14a: who holds the task, and the Release control. */}
+      {/* EA-14a: who holds the task, and the Release control. The holder
+          wraps and never truncates. A strand takes a second row, and Release
+          sits at its end, so the narrow panel clips nothing (task 1045c). */}
       {holding ? (
-        <div className="flex min-w-0 items-center gap-2 text-xs" data-agent-held-by="">
-          <p className="min-w-0 flex-1 truncate text-muted-foreground" title={heldByLine(run, personLabels)}>
-            {heldByLine(run, personLabels)}
+        <div className="flex min-w-0 flex-col gap-1 text-xs" data-agent-held-by="">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <p className="min-w-0 break-words text-muted-foreground" data-agent-holder="">
+              {heldByLine(run, personLabels)}
+            </p>
             {runHolderFree(run) ? (
               <span
-                className="ml-1.5 rounded border border-border px-1 text-[10px] uppercase tracking-wide"
+                className="shrink-0 rounded border border-border px-1 text-[10px] uppercase tracking-wide text-muted-foreground"
                 data-agent-held-stale=""
                 title="No activity for a long time. The next claim can take this task."
               >
                 {STALE_HOLD_TEXT}
               </span>
             ) : null}
-          </p>
-          {canRelease ? (
-            <Button
-              className="shrink-0"
-              variant="ghost"
-              size="sm"
-              icon="LogOut"
-              data-agent-release=""
-              disabled={busy}
-              onClick={() => setConfirmRelease(true)}
-            >
-              {RELEASE_COPY.button}
-            </Button>
+            {run.stranded ? null : releaseControl}
+          </div>
+          {run.stranded ? (
+            <div className="flex min-w-0 items-center gap-2">
+              <p
+                className="min-w-0 break-words text-warning"
+                data-agent-stranded=""
+                title="The run went quiet. Release it to give the task back."
+              >
+                {strandedLine(run.stranded)}
+              </p>
+              {releaseControl}
+            </div>
           ) : null}
         </div>
       ) : null}
+
+      {/* SW-106: where the session runs, and on which model. It shows only when
+          the session reported a machine, a kind or a model, so a run with none
+          adds no line. */}
+      {placeLook.none ? null : (
+        <p
+          className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground"
+          data-agent-place=""
+          title={placeLook.line}
+        >
+          <Icon name={placeLook.icon} size={12} className="shrink-0" aria-hidden />
+          <span className="min-w-0 truncate">{placeLook.line}</span>
+        </p>
+      )}
 
       {/* The second line: the newest thought, and the session link. */}
       {(ephemeral && run.status !== "failed") || host ? (
@@ -619,7 +672,7 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
               title={ephemeral}
               data-agent-ephemeral=""
             >
-              {ephemeral}
+              <MarkdownBody content={ephemeral} inline />
             </p>
           ) : null}
           {host ? (
@@ -636,6 +689,13 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
           ) : null}
         </div>
       ) : null}
+      {ephemeral && run.status !== "failed" && lineImages.length > 0 ? (
+        <div data-agent-ephemeral-images="">
+          <AgentImageStrip images={lineImages} agentLabel={client} />
+        </div>
+      ) : null}
+
+      <AgentRunPlan plan={run.plan} />
 
       {elicitation ? (
         // EA-18b: the answer part is ONE component, shared with the Questions list.

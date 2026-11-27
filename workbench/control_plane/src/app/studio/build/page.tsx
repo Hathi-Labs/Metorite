@@ -16,6 +16,11 @@
  * moves the hash that her next save uses. When her run ends, the page reads the draft again and
  * the Explorer, the Preview and the Problems follow. A poll never replaces an unsaved edit.
  *
+ * I8a: the Problems panel opens with one line for each connection that the stored draft names. A
+ * missing one has Connect, which opens a sheet and then the connect page of the owning app, with the
+ * way back to this page (`ConnectSheet.tsx`). The page reads the lines again after each save, and on
+ * the return, so a met connection reads "connected".
+ *
  * G5: a change bar above the tabs says what the newest change in the draft did, in plain words, with
  * a one-step Undo through the same save. Publish is in the top bar: its dialog lists what changes in
  * the LIVE app, then sends the stored draft with its hash. The bar is in the IDE and not in the dock,
@@ -37,10 +42,12 @@ import Button from "@/components/ui/Button";
 import Tabs from "@/components/Tabs";
 import { useOptionalSidebarFold } from "@/components/SidebarFold";
 import { autoFoldEnabled } from "@/lib/sidebarFold";
+import { useCachedResource } from "@/lib/useCachedResource";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { DOCK_MIN_VIEWPORT, assistantState, dockFoldsNav, currentAssistantFacts, openAssistant, useAssistantFacts } from "@/lib/shell/assistant";
 import { sendHeldBrief } from "@/lib/studio/buildHandoff";
 import { buildOutline, type OutlineTab } from "@/lib/studio/buildOutline";
+import { connectPanel, connectionsKey, getConnections, phoneProblemsCount, type ConnectionRow } from "@/lib/studio/connect";
 import type { Reveal } from "@/lib/studio/codeReveal";
 import type { Problem } from "@/lib/studio/draftProblems";
 import { checkDraft } from "@/lib/studio/draftProblems";
@@ -59,16 +66,20 @@ import CodeTab from "./components/CodeTab";
 import DataTab from "./components/DataTab";
 import EditBar from "./components/EditBar";
 import Explorer from "./components/Explorer";
+import PagesTab from "./components/PagesTab";
 import PreviewTab from "./components/PreviewTab";
 import PublishDialog from "./components/PublishDialog";
 import ChangeBar from "./components/ChangeBar";
 import ProblemsPanel from "./components/ProblemsPanel";
 import ViewsTab from "./components/ViewsTab";
 
+// AF-8b-2: the Pages tab and the Pages branch show only under the app frame flag, the same inline const as the preview page.
+const APP_FRAME = process.env.NEXT_PUBLIC_STUDIO_APP_FRAME === "1";
 const TABS = [
   { id: "preview", label: "Preview", icon: "Eye" },
   { id: "data", label: "Data", icon: "Table" },
   { id: "views", label: "Views", icon: "LayoutGrid" },
+  ...(APP_FRAME ? [{ id: "pages", label: "Pages", icon: "Layers" }] : []),
   { id: "code", label: "Code", icon: "Code" },
 ];
 const PHONE_TABS = [
@@ -124,6 +135,8 @@ function Ide({ pkg }: { pkg: string }) {
   const [phoneProblemsOpen, setPhoneProblemsOpen] = useState(true);
   const [reveal, setReveal] = useState<(Reveal & { seq: number }) | null>(null);
   const object = params.get("object");
+  // The page of the Pages tab that the Explorer put in focus. Local state, not the URL.
+  const [focusPage, setFocusPage] = useState<string | null>(null);
 
   // The editor gets the width: the app nav folds while the IDE is open, and opens again on leave.
   // The ref holds the latest fold, so the cleanup reads the state of that moment.
@@ -163,7 +176,7 @@ function Ide({ pkg }: { pkg: string }) {
   // The tabs, the Explorer and the Problems draw what the member edits. The facts below keep the STORED draft.
   const manifest = editor.shown;
   const hash = useMemo(() => draftHash(manifest), [manifest]);
-  const outline = useMemo(() => buildOutline(manifest), [manifest]);
+  const outline = useMemo(() => buildOutline(manifest, { frame: APP_FRAME }), [manifest]);
   const { server } = editor.state;
   const checked = useMemo(() => [...server, ...checkDraft(manifest)], [server, manifest]);
   // A refusal of a publish is shown in the panel too, but it never blocks the next try.
@@ -175,6 +188,20 @@ function Ide({ pkg }: { pkg: string }) {
     if (server.length > 0) { setProblemsOpen(true); setPhoneProblemsOpen(true); }
   }
   const liveRows = useMemo(() => (draft?.objects ?? []) as unknown as LiveObject[], [draft]);
+  // I8a: the connections of the STORED draft. A 404 (the gate off) gives no line. A new stored hash
+  // (a save, Mira's save, an undo) reads them again, and a focus does too, so the return reads "met".
+  const conns = useCachedResource<ConnectionRow[]>(connectionsKey(pkg), () => getConnections(pkg), { revalidateOnFocus: true });
+  const storedHash = draft?.manifestHash ?? null;
+  const seenHash = useRef(storedHash);
+  const refreshConns = conns.refresh;
+  useEffect(() => {
+    if (seenHash.current === storedHash) return;
+    seenHash.current = storedHash;
+    refreshConns();
+  }, [storedHash, refreshConns]);
+  // A failed read (a 5xx, the network) shows its own line with Retry, never an empty panel.
+  const panel = useMemo(() => connectPanel(conns.data, conns.error, pkg), [conns.data, conns.error, pkg]);
+  const retrying = conns.loading || conns.refreshing;
   // No facts when the app is gone (404): Mira must never save to a deleted app.
   useAssistantFacts(
     draft && !watch.off ? ideFacts({ id: draft.id, name: draft.name }, draft.manifest, draft.manifestHash) : null,
@@ -207,8 +234,9 @@ function Ide({ pkg }: { pkg: string }) {
   }
 
   const setObject = (name: string) => router.replace(buildHref(pkg, name));
-  const pick = (p: { object: string | null; tab: OutlineTab | null; reveal?: Reveal }) => {
+  const pick = (p: { object: string | null; tab: OutlineTab | null; reveal?: Reveal; page?: string }) => {
     if (p.object) setObject(p.object);
+    if (p.page) setFocusPage(p.page);
     if (p.tab) setTab(p.tab);
     if (p.reveal) setReveal({ ...p.reveal, seq: (reveal?.seq ?? 0) + 1 });
     if (isMobile) setPhoneTab("editor");
@@ -248,6 +276,7 @@ function Ide({ pkg }: { pkg: string }) {
       {tab === "preview" ? <PreviewTab manifest={manifest} hash={hash} pkg={pkg} object={object} onObject={setObject} /> : null}
       {tab === "data" ? <DataTab manifest={manifest} object={object} onObject={setObject} onChange={editor.edit} live={liveRows} locked={locked} /> : null}
       {tab === "views" ? <ViewsTab manifest={manifest} onChange={editor.edit} locked={locked} /> : null}
+      {APP_FRAME && tab === "pages" ? <PagesTab manifest={manifest} onChange={editor.edit} locked={locked} focusPage={focusPage} /> : null}
       {tab === "code" ? <CodeTab manifest={manifest} text={editor.codeText} editorKey={editor.codeKey} readOnly={editor.state.saving || change.undoing} fault={editor.state.fault} reveal={reveal}
         onText={editor.typeCode} onSave={editor.save} /> : null}
     </div>
@@ -273,13 +302,17 @@ function Ide({ pkg }: { pkg: string }) {
   );
 
   if (isMobile) {
+    // The Problems tab counts each problem and each missing connection, so a phone shows them before a tap.
+    const count = phoneProblemsCount(problems.length, conns.data);
+    const phoneTabs = PHONE_TABS.map((t) => (t.id === "problems" && count !== undefined ? { ...t, count } : t));
     return (
       <Frame title={draft.name} actions={actions}>
-        <Tabs tabs={PHONE_TABS} activeTab={phoneTab} onTabChange={setPhoneTab} variant="segmented" chrome="inline" className="p-2" />
+        <Tabs tabs={phoneTabs} activeTab={phoneTab} onTabChange={setPhoneTab} variant="segmented" chrome="inline" className="p-2" />
         <div className="flex min-h-0 flex-1 flex-col">
           {phoneTab === "explorer" ? <div className="min-h-0 flex-1 overflow-y-auto">{explorer}</div> : null}
           {phoneTab === "editor" ? editorPane : null}
-          {phoneTab === "problems" ? <ProblemsPanel problems={problems} open={phoneProblemsOpen} onToggle={() => setPhoneProblemsOpen((o) => !o)} fill /> : null}
+          {phoneTab === "problems" ? <ProblemsPanel problems={problems} open={phoneProblemsOpen} onToggle={() => setPhoneProblemsOpen((o) => !o)} fill
+            connections={panel.lines} missing={panel.missing} failure={panel.failure} onRetry={refreshConns} retrying={retrying} /> : null}
         </div>
         {dialog}
       </Frame>
@@ -297,7 +330,8 @@ function Ide({ pkg }: { pkg: string }) {
         ) : null}
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {editorPane}
-          <ProblemsPanel problems={problems} open={problemsOpen} onToggle={() => setProblemsOpen((o) => !o)} />
+          <ProblemsPanel problems={problems} open={problemsOpen} onToggle={() => setProblemsOpen((o) => !o)}
+            connections={panel.lines} missing={panel.missing} failure={panel.failure} onRetry={refreshConns} retrying={retrying} />
         </div>
       </div>
       {dialog}

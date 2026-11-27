@@ -30,13 +30,12 @@ writes longer, and at most :data:`MAX_MANIFEST_BYTES` bytes. So no manifest
 reaches a statement that the CHECK ``apps_manifest_package`` refuses. Each
 refusal raises one :class:`PackageStoreError` that carries every path.
 
-**The slug.** ``apps.slug`` is UNIQUE for all orgs until WS-STU A3b-2. The
-slug of a package is ``<manifest id>-<8 hex digits of the new id>``. So a slug
-that org A holds never blocks a package of org B. When the slug is taken
-anyway, the INSERT writes nothing (``ON CONFLICT DO NOTHING``), and the store
-tries a new id. The clause names no column, so it holds with
-``apps_slug_key`` and with ``apps_org_slug_key`` (A3b-1). No refusal names
-the slug of another org. The slug never changes after the INSERT, and so the
+**The slug.** Since WS-STU A3b-2 only ``apps_org_slug_key`` (org and slug)
+is unique, so a slug that org A holds never blocks a package of org B. The
+slug of a package is ``<manifest id>-<8 hex digits of the new id>``. When the
+slug is taken in the own org anyway, the INSERT writes nothing (``ON CONFLICT
+DO NOTHING``), and the store tries a new id. The clause names no column. No
+refusal names the slug of another org. The slug never changes after the INSERT, and so the
 manifest id never changes either: :func:`update_manifest` refuses a new id.
 
 **Private and a draft.** A new package has ``visibility = 'private'``,
@@ -48,14 +47,38 @@ and :func:`rollback` change the status, and only to ``live``. The trigger
 **Versions (A4).** :func:`publish_version` and :func:`rollback` write
 ``app_versions``. A version row holds the manifest, ``bundle_html = ''`` and
 ``bundle_sha256``, the SHA-256 of the manifest JSON text from
-:func:`check_manifest`. The store never updates or deletes a version row, so
-history is append-only. Both functions lock the package row first
+:func:`check_manifest`. The store never deletes a version row, and it never
+writes the manifest, the bundle or the hash of a version again, so history is
+append-only. The one exception is the review of J2 (below). Both functions
+lock the package row first
 (``FOR UPDATE``), so two writers get N and N+1. ``UNIQUE (app_id, version)``
 is the backstop. Each writes its ``app_audit`` row in the same transaction.
 ⚠️ A package skips the App Workshop review: no function here calls
 ``record_app_audit`` or proposes ``app.publish_review``. The organization
 approval is J2. The install is WS-PKG, and ``apps.live_version`` is only the
 pointer of the author.
+
+**The approval for the org (J2, PKG-11b-2).** The owner decided on
+2026-11-07 (task 2174) that ``app_versions.review_status`` records it, and
+that this store writes it. ``package_host.md`` §6.2 holds the rules.
+:func:`request_org_approval`, :func:`approve_version` and
+:func:`reject_version` move the state of ONE version along
+:data:`REVIEW_MOVES`: ``auto`` to ``pending``, then ``pending`` to
+``approved`` or ``rejected``. ``_REVIEW_MOVE_SQL`` is the one UPDATE of
+``app_versions``. It sets ``review_status`` only, and it names the bound
+org, the package, the version and the expected state. Each move reads the
+version row ``FOR UPDATE`` first, and the UPDATE must change exactly one
+row, or :class:`ApprovalConflict` raises. Each move writes ONE ``app_audit``
+row (op :data:`REVIEW_OP`) in the same transaction. The owner of the package
+asks. The publisher of the version and the owner of the package cannot
+approve it (PKG-Q10). The caller passes ``can_publish``, the check of
+``studio:publish`` that the route makes, because a store does not read
+rights. The routes of J2b-1 (``routes/studio/packages.py``) call the three
+moves, and :func:`list_pending_versions` is the read of an approver: the
+``pending`` versions of the bound org, each with its full manifest, with no
+member filter. The chat twins are not built (J2b-3). The App
+Workshop review (``routes/apps/publish.py``, ``routes/apps/tools.py``) is a
+separate path for a ``code`` app, and this store does not reuse it.
 
 **The delete (A5c-1).** :func:`delete_preview` counts what a delete takes
 and gives :func:`confirm_token` of the counts. :func:`delete_package` is one
@@ -64,7 +87,9 @@ the org lock of the object store (``objects_store.lock_org``), the one lock
 order of a publish. The first step of a call checks the token under both
 locks, and raises :class:`CountsChanged` for a stale one. Each later step
 checks the object names of that preview. Then the step purges at most one
-chunk of records (``objects_store.purge_records``), and the purge stops at
+chunk of change history (``objects_store.purge_record_changes``, C4a-1),
+and then at most one chunk of records (``objects_store.purge_records``). A
+full chunk of history keeps the package for a next step. The purge stops at
 the end of the call. A full chunk ends the step, and the caller commits, so
 no lock stays between two steps. The last step of a call that leaves
 records writes a partial audit row (op :data:`PARTIAL_OP`) in its own
@@ -93,7 +118,8 @@ of A5c-1. Each audit row names the admin as ``user_email``, with ``by:
 is the precheck of the route: a read with no lock.
 
 **The lock of an install (PKG-8b).** :func:`lock_for_install` holds the
-package row ``FOR KEY SHARE`` and reads ``live_version``. The install route
+package row ``FOR KEY SHARE`` and reads ``live_version`` and the pause
+(``paused``, J2b-1). The install route
 of WS-PKG calls it before the install store, so its lock order is the order
 of a publish: the ``apps`` row, then the org lock of the install store.
 
@@ -275,6 +301,67 @@ _AUDIT_SQL = (
     "VALUES (CAST(:id AS uuid), :v, :m, :kind, CAST(:detail AS jsonb))"
 )
 
+#: The moves of the review of one version (J2, PKG-11b-2): the name of a move
+#: to its expected state and its new state. No other move exists.
+REVIEW_MOVES: Mapping[str, tuple[str, str]] = {
+    "request": ("auto", "pending"),
+    "approve": ("pending", "approved"),
+    "reject": ("pending", "rejected"),
+}
+#: The op of the audit row of a review move.
+REVIEW_OP = "package.review"
+
+#: The locked read of a review move: the version row ``FOR UPDATE``, with the
+#: owner of its package. It does not filter on the member, because an
+#: approver is not the owner. RLS and the bound org scope it.
+_REVIEW_READ_SQL = (
+    "SELECT v.version, v.published_by, v.review_status, a.owner_email "
+    "FROM app_versions v JOIN apps a ON a.id = v.app_id "
+    f"WHERE a.organization_id = {_BOUND_ORG} AND v.organization_id = {_BOUND_ORG} "
+    "AND a.format = 'manifest' AND a.id = CAST(:id AS uuid) AND v.version = :v "
+    "FOR UPDATE OF v"
+)
+
+#: The ONE UPDATE of ``app_versions``. It sets ``review_status`` and no other
+#: column, of one version, only from the expected state. Fences:
+#: ``test_studio_packages_store.py`` and ``test_studio_package_delete.py``.
+_REVIEW_MOVE_SQL = (
+    "UPDATE app_versions SET review_status = :to "
+    f"WHERE organization_id = {_BOUND_ORG} AND app_id = CAST(:id AS uuid) "
+    "AND version = :v AND review_status = :expected "
+    f"RETURNING app_id::text, {_VERSION_FIELDS}"
+)
+
+#: The member who asked for the review of one version: the newest request row.
+_REVIEW_REQUESTER_SQL = (
+    "SELECT user_email FROM app_audit "
+    f"WHERE organization_id = {_BOUND_ORG} AND app_id = CAST(:id AS uuid) "
+    "AND app_version = :v AND kind = 'action' AND detail->>'op' = :op "
+    "AND detail->>'review' = 'pending' ORDER BY id DESC LIMIT 1"
+)
+
+#: The most pending versions in one read of :func:`list_pending_versions`.
+#: Each row holds a manifest of at most 256 KiB, so the page stays small.
+MAX_PENDING_PAGE = 20
+
+#: The pending versions of the bound org, for a holder of ``studio:publish``
+#: (J2b-1). ⚠️ The ONE read of a version that does not filter on the member,
+#: because the approver is not the owner. RLS and the bound org scope it, and
+#: only a ``pending`` version shows: a private ``auto`` version never shows.
+#: The newest request row gives who asked and when. A read only: no lock.
+_PENDING_SQL = (
+    "SELECT a.id::text, a.name, a.owner_email, v.version, v.published_by, v.published_at, "
+    "v.manifest, r.user_email, r.at "
+    "FROM app_versions v JOIN apps a ON a.id = v.app_id "
+    "LEFT JOIN LATERAL (SELECT user_email, at FROM app_audit "
+    f"WHERE organization_id = {_BOUND_ORG} AND app_id = v.app_id "
+    "AND app_version = v.version AND kind = 'action' AND detail->>'op' = :op "
+    "AND detail->>'review' = 'pending' ORDER BY id DESC LIMIT 1) r ON true "
+    f"WHERE a.organization_id = {_BOUND_ORG} AND v.organization_id = {_BOUND_ORG} "
+    "AND a.format = 'manifest' AND v.review_status = 'pending' "
+    "ORDER BY v.published_at, a.id, v.version LIMIT :limit"
+)
+
 #: The longest release note, in characters.
 MAX_NOTES_CHARS = 2000
 #: The version column is an INT4.
@@ -302,6 +389,12 @@ ROW_LOCK_WAIT_MS = 1_000
 #: The longest run of one step before its decision, in seconds: the wait for
 #: the ``apps`` row, the wait for the org lock and one purge. A step goes on
 #: to a next step only while one more of these fits before the end of the call.
+#: ⚠️ C4a-1: a step runs two purges, the change history and then the records,
+#: and each stops at the end of the call. Two full purges do not fit in the
+#: budget of a call of the delete route (``DELETE_BUDGET_SECONDS``). So a records
+#: purge that times out after the history purge removed rows does not end the
+#: call as busy. The step counts as a full chunk, and this budget check ends
+#: the call with a 202 (:func:`delete_package`).
 STEP_SECONDS = (ROW_LOCK_WAIT_MS + objects_store.ORG_LOCK_WAIT_MS
                 + objects_store.PURGE_TIMEOUT_MS) / 1000
 #: The refusal of a delete whose confirm token is not the token of now.
@@ -922,13 +1015,201 @@ async def get_version(db: Any, member: str, package_id: str,
     return None if row is None else _version(row)
 
 
+# --- the approval for the org (J2, PKG-11b-2) --------------------------------
+
+
+#: The refusal of a move without the right ``studio:publish``.
+NO_PUBLISH_RIGHT = "Only a holder of studio:publish can approve or reject a version."
+#: The refusal of an approval by the publisher or the owner (PKG-Q10).
+SELF_APPROVAL = ("The member who published this version, or the owner of the package, "
+                 "cannot approve it. Another holder of studio:publish approves.")
+
+
+class ApprovalConflict(Exception):
+    """The version is not in the state that the move expects. Nothing was
+    written. The route answers 409. ``current`` is the state that the store
+    read, or None when the guarded UPDATE changed no row."""
+
+    def __init__(self, message: str, current: str | None = None) -> None:
+        super().__init__(message)
+        self.current = current
+
+
+class ApprovalRefused(Exception):
+    """The actor may not make this move. Nothing was written. The route
+    answers 403."""
+
+
+@dataclass(frozen=True)
+class _ReviewRow:
+    version: int
+    published_by: str
+    review_status: str
+    owner_email: str
+
+
+def _same(a: str, b: str) -> bool:
+    return a.strip().lower() == b.strip().lower()
+
+
+async def _review_row(db: Any, pid: str, version: int) -> _ReviewRow | None:
+    """The version row, locked ``FOR UPDATE``, or None."""
+    row = (await db.execute(text(_REVIEW_READ_SQL), {"id": pid, "v": version})).first()
+    if row is None:
+        return None
+    return _ReviewRow(version=int(row[0]), published_by=str(row[1]),
+                      review_status=str(row[2]), owner_email=str(row[3]))
+
+
+def _right(can_publish: object) -> None:
+    """Only ``True`` passes. A truthy value that is not a bool is refused."""
+    if can_publish is not True:
+        raise ApprovalRefused(NO_PUBLISH_RIGHT)
+
+
+async def _move_review(db: Any, actor: str, pid: str, current: _ReviewRow, move: str,
+                       requested_by: str) -> PackageVersion:
+    """Move one version along :data:`REVIEW_MOVES`, with its audit row.
+
+    The caller holds the row lock of :func:`_review_row`. A state that is not
+    the expected one raises :class:`ApprovalConflict`. The guarded UPDATE must
+    change exactly one row, or :class:`ApprovalConflict` raises too."""
+    expected, to = REVIEW_MOVES[move]
+    if current.review_status != expected:
+        raise ApprovalConflict(
+            f"The version is {current.review_status}, so it cannot move to {to}. "
+            f"Only a version that is {expected} can.", current.review_status)
+    rows = (await db.execute(text(_REVIEW_MOVE_SQL), {
+        "id": pid, "v": current.version, "expected": expected, "to": to})).all()
+    if len(rows) != 1:
+        raise ApprovalConflict("The version changed under this move. Nothing was written.")
+    await _audit(db, actor, pid, current.version, "action", {
+        "op": REVIEW_OP, "review": to, "by": actor, "requested_by": requested_by})
+    return _version(rows[0])
+
+
+async def request_org_approval(db: Any, member: str, package_id: str,
+                               version: int) -> PackageVersion | None:
+    """Ask for the approval of *version* for the org: ``auto`` to ``pending``.
+
+    Only the owner of the package asks. Answers None when the bound org holds
+    no such version of a package of *member*. A ``pending`` version answers
+    as it is, and the call writes nothing. An ``approved`` or a ``rejected``
+    version raises :class:`ApprovalConflict`: the owner publishes a new
+    version and asks again. The move writes one audit row (``requested_by``
+    is the member)."""
+    m = _member(member)
+    pid = _package_id(package_id)
+    v = _version_number(version)
+    current = await _review_row(db, pid, v)
+    if current is None or not _same(current.owner_email, m):
+        return None
+    if current.review_status == "pending":
+        return await get_version(db, m, pid, v)
+    return await _move_review(db, m, pid, current, "request", m)
+
+
+async def _requester(db: Any, pid: str, current: _ReviewRow) -> str:
+    """The member of the newest request row, or the owner when no row exists."""
+    row = (await db.execute(text(_REVIEW_REQUESTER_SQL), {
+        "id": pid, "v": current.version, "op": REVIEW_OP})).first()
+    return current.owner_email if row is None else str(row[0])
+
+
+async def approve_version(db: Any, approver: str, package_id: str, version: int, *,
+                          can_publish: bool) -> PackageVersion | None:
+    """Approve *version* for the org: ``pending`` to ``approved``.
+
+    *can_publish* is the check of ``studio:publish`` that the caller made for
+    *approver*. Anything but ``True`` raises :class:`ApprovalRefused` before
+    any statement. Answers None when the bound org holds no such version.
+    The publisher of the version and the owner of the package raise
+    :class:`ApprovalRefused` (PKG-Q10). A version that is not ``pending``
+    raises :class:`ApprovalConflict`. The move touches this version only."""
+    a = _member(approver)
+    pid = _package_id(package_id)
+    v = _version_number(version)
+    _right(can_publish)
+    current = await _review_row(db, pid, v)
+    if current is None:
+        return None
+    if _same(current.published_by, a) or _same(current.owner_email, a):
+        raise ApprovalRefused(SELF_APPROVAL)
+    return await _move_review(db, a, pid, current, "approve", await _requester(db, pid, current))
+
+
+async def reject_version(db: Any, rejecter: str, package_id: str, version: int, *,
+                         can_publish: bool) -> PackageVersion | None:
+    """Reject *version* for the org: ``pending`` to ``rejected``.
+
+    The rule of the right is the rule of :func:`approve_version`. Any holder of
+    ``studio:publish`` can reject, the publisher and the owner too, because a
+    reject only narrows the share. A rejected version stays rejected."""
+    r = _member(rejecter)
+    pid = _package_id(package_id)
+    v = _version_number(version)
+    _right(can_publish)
+    current = await _review_row(db, pid, v)
+    if current is None:
+        return None
+    return await _move_review(db, r, pid, current, "reject", await _requester(db, pid, current))
+
+
+@dataclass(frozen=True)
+class PendingVersion:
+    """One version that waits for the approval for the org (J2b-1).
+
+    ``manifest`` is the FULL manifest of the version. A two-version diff is a
+    later slice. ``requested_by`` and ``requested_at`` come from the newest
+    request row. With no such row, ``requested_by`` is the owner and
+    ``requested_at`` is None."""
+
+    package_id: str
+    name: str
+    owner_email: str
+    version: int
+    published_by: str
+    published_at: datetime
+    manifest: dict[str, Any]
+    requested_by: str
+    requested_at: datetime | None
+
+
+def _pending(row: Any) -> PendingVersion:
+    manifest = row[6]
+    if isinstance(manifest, str | bytes):
+        manifest = json.loads(manifest)
+    owner = str(row[2])
+    return PendingVersion(
+        package_id=str(row[0]), name=str(row[1]), owner_email=owner, version=int(row[3]),
+        published_by=str(row[4]), published_at=row[5], manifest=dict(manifest or {}),
+        requested_by=owner if row[7] is None else str(row[7]), requested_at=row[8])
+
+
+async def list_pending_versions(db: Any, *, can_publish: bool,
+                                limit: int = MAX_PENDING_PAGE) -> tuple[list[PendingVersion], bool]:
+    """The ``pending`` versions of each package of the bound org, oldest
+    first, at most *limit* (1 to :data:`MAX_PENDING_PAGE`). The second value
+    is True when more rows wait past the page.
+
+    *can_publish* is the check of ``studio:publish`` that the caller made.
+    Anything but ``True`` raises :class:`ApprovalRefused` before any
+    statement. A version in another state never shows, so the read names no
+    private package. The read takes no lock and writes nothing."""
+    _right(can_publish)
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_PENDING_PAGE:
+        raise PackageStoreError(f"limit must be an integer from 1 to {MAX_PENDING_PAGE}")
+    rows = (await db.execute(text(_PENDING_SQL), {"op": REVIEW_OP, "limit": limit + 1})).all()
+    return [_pending(r) for r in rows[:limit]], len(rows) > limit
+
+
 # --- the lock of an install (WS-PKG PKG-8b) ---------------------------------
 
 #: The row of a package that the install route holds, ``FOR KEY SHARE``. A
 #: publish takes ``FOR UPDATE`` on the same row, so the two wait for each
 #: other here, before either takes the org lock of the install store.
 _INSTALL_LOCK_SQL = (
-    "SELECT live_version FROM apps "
+    "SELECT live_version, paused_at IS NOT NULL FROM apps "
     f"WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
     "AND owner_email = :m AND id = CAST(:id AS uuid) AND status <> 'archived' "
     "FOR KEY SHARE"
@@ -941,10 +1222,13 @@ class InstallTarget:
 
     ``live_version`` is ``apps.live_version``: the version that an org or a
     group install runs. None means that the package has no published version.
+    ``paused`` is True when the kill switch of J3a holds the package. The org
+    install of J2b-1 refuses a paused package.
     """
 
     package_id: str
     live_version: int | None
+    paused: bool = False
 
 
 async def lock_for_install(db: Any, member: str, package_id: str) -> InstallTarget | None:
@@ -965,7 +1249,8 @@ async def lock_for_install(db: Any, member: str, package_id: str) -> InstallTarg
     row = (await db.execute(text(_INSTALL_LOCK_SQL), {"m": _member(member), "id": pid})).first()
     if row is None:
         return None
-    return InstallTarget(package_id=pid, live_version=None if row[0] is None else int(row[0]))
+    return InstallTarget(package_id=pid, live_version=None if row[0] is None else int(row[0]),
+                         paused=bool(row[1]))
 
 
 # --- the kill switch of a package (J3a) --------------------------------------
@@ -1164,7 +1449,10 @@ class DeleteStep:
     the preview of the end was busy: then ``left`` can be None. ``gone`` is
     True when another call deleted the package between two steps of this
     call (404). ``owner_active`` is True when a later step of the admin path
-    found that the owner is an active member again (403, A5c-2)."""
+    found that the owner is an active member again (403, A5c-2).
+    ``history_left`` is True when the step ended with a full chunk of change
+    history (C4a-1), so the package holds history rows still, also with no
+    record left."""
 
     deleted: bool
     removed: int
@@ -1174,6 +1462,7 @@ class DeleteStep:
     busy: bool = False
     gone: bool = False
     owner_active: bool = False
+    history_left: bool = False
 
 
 class CountsChanged(Exception):
@@ -1342,7 +1631,8 @@ async def _read_for_delete(db: Any, m: str, pid: str, as_admin: bool = False) ->
 
 
 async def _end_call(db: Any, m: str, current: Package, seen: frozenset[str], this_call: int,
-                    reason: str, *, removed: int = 0, admin: bool = False) -> DeleteStep:
+                    reason: str, *, removed: int = 0, admin: bool = False,
+                    history_left: bool = False) -> DeleteStep:
     """The end of a call that leaves records: the partial audit row, in the
     transaction of this step, and the preview of now for the token of a 202.
 
@@ -1358,7 +1648,8 @@ async def _end_call(db: Any, m: str, current: Package, seen: frozenset[str], thi
     except objects_store.StoreBusy:
         left = None
     return DeleteStep(deleted=False, removed=removed, names=tuple(sorted(seen)), left=left,
-                      changed=reason == "changed", busy=reason == "busy" or left is None)
+                      changed=reason == "changed", busy=reason == "busy" or left is None,
+                      history_left=history_left)
 
 
 async def _finish_delete(db: Any, m: str, current: Package, seen: frozenset[str],
@@ -1399,6 +1690,27 @@ async def _finish_delete(db: Any, m: str, current: Package, seen: frozenset[str]
         "versions": left.versions, "installs": left.installs,
         "other_member_installs": left.other_member_installs})
     return DeleteStep(deleted=True, removed=gone, names=tuple(sorted(seen)))
+
+
+async def _purge_chunk(db: Any, pid: str, size: int,
+                       end_at: float | None) -> tuple[int, int, bool]:
+    """One chunk of a delete step (C4a-1): at most *size* rows of change
+    history first, then at most *size* records. Answers the history rows, the
+    records and ``cut``. A full chunk of history keeps the package for a next
+    step, so the last step leaves no history to the cascade.
+
+    ``cut`` is True when the records purge ran out of time after the history
+    purge removed rows. The step made progress, so it counts as a full chunk,
+    and the budget check of :func:`delete_package` decides. Else a
+    ``StoreBusy`` of either purge raises."""
+    history = await objects_store.purge_record_changes(db, pid, limit=size, deadline=end_at)
+    try:
+        gone = await objects_store.purge_records(db, pid, limit=size, deadline=end_at)
+    except objects_store.StoreBusy:
+        if history == 0:
+            raise
+        return history, 0, True
+    return history, gone, False
 
 
 async def delete_package(db: Any, member: str, package_id: str, *,
@@ -1497,15 +1809,16 @@ async def delete_package(db: Any, member: str, package_id: str, *,
         if not set(found) <= seen:
             return await _end_call(db, m, current, seen, before, "changed", admin=as_admin)
     try:
-        gone = await objects_store.purge_records(db, pid, limit=size, deadline=end_at)
+        history, gone, cut = await _purge_chunk(db, pid, size, end_at)
     except objects_store.StoreBusy:
         if token is not None:
             raise
         return await _end_call(db, m, current, seen, before, "busy", admin=as_admin)
-    if gone >= size:
+    if history >= size or gone >= size or cut:
         if end_at is not None and objects_store._clock() + STEP_SECONDS > end_at:
             return await _end_call(db, m, current, seen, before + gone, "budget", removed=gone,
-                                   admin=as_admin)
-        return DeleteStep(deleted=False, removed=gone, names=tuple(sorted(seen)))
+                                   admin=as_admin, history_left=history >= size or cut)
+        return DeleteStep(deleted=False, removed=gone, names=tuple(sorted(seen)),
+                          history_left=history >= size or cut)
     return await _finish_delete(db, m, current, seen, before, gone, first=token is not None,
                                 admin=as_admin)
