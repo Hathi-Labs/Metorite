@@ -921,6 +921,47 @@ def test_the_covered_run_itself_holds_only_its_pinned_tools(sandbox, monkeypatch
     assert sent == []
 
 
+def test_a_no_egress_run_never_reaches_request_network_access(
+    sandbox, monkeypatch, _no_process,  # noqa: F811
+) -> None:
+    """Done-when 14 of WS-43g (§7.3): a ``no_egress`` run never reaches the
+    network card. ``code_task`` is an egress tool, so H-236 takes it from the
+    run, and only the ``code_task`` session holds ``request_network_access``.
+    With egress on, a call of either name runs nothing, shows no card and
+    opens no grant."""
+    import importlib
+
+    _register_every_annotation()
+    monkeypatch.setattr(sandbox.env["settings"], "sandbox_egress_enabled", True)
+    reached: list[str] = []
+
+    async def card(*_a: Any, **_k: Any) -> bool:
+        reached.append("card")
+        return True
+
+    async def grant(*_a: Any, **_k: Any) -> Any:
+        reached.append("grant")
+        raise AssertionError("a no_egress run opened a grant")
+
+    monkeypatch.setattr(importlib.import_module("acb_skills.ask_tools"),
+                        "request_confirmation", card)
+    monkeypatch.setattr(sandbox.broker, "grant_egress", grant)
+    pa = _Model([
+        _call("code_task", {"task": "pip install x"}),
+        _call("request_network_access", {"reason": "pip", "hosts": ["pypi.org"]},
+              call_id="call_2"),
+        _say("ok"),
+    ])
+    sent = _harness(monkeypatch, sandbox, {PA: pa})
+    _run_parent(ORG_A)
+    assert "run_command" in _offered(pa.bodies[0]), "the run was not covered"
+    for body in pa.bodies:
+        assert not {"code_task", "request_network_access"} & _offered(body)
+    results = [r for b in pa.bodies[1:] for r in _results(b)]
+    assert len(results) >= 2 and all(_blocked(r) for r in results), results
+    assert reached == [] and sent == [] and _no_process == []
+
+
 @pytest.mark.parametrize("tier_routing", ["", "projects-assistant"])
 def test_a_covered_run_on_the_tier2_path_holds_the_same_tools(
     sandbox, monkeypatch, tier_routing: str,  # noqa: F811
