@@ -248,6 +248,8 @@ TOOL_SOURCES: tuple[str, ...] = (
     "packages/acb_skills/acb_skills/people_tools.py",
     # Task 3963: the notes read tools send the Notes routes. They read only.
     "packages/acb_skills/acb_skills/notes_read_tools.py",
+    # Task 4117: the four writes of the notes pack, each after one card.
+    "packages/acb_skills/acb_skills/notes_write_tools.py",
     "packages/acb_skills/acb_skills/profile_tools.py",
     "packages/acb_skills/acb_skills/studio_tools.py",
 )
@@ -408,6 +410,11 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "GET /api/notes/meetings/{}": "notes_meeting",
     "GET /api/notes/settings": "notes_settings",
     "GET /api/notes/templates": "notes_templates",
+    # Task 4117 (PAR-4e-1): the four writes of the member's own Note Taker setup.
+    "DELETE /api/notes/glossary/{}": "notes_delete_glossary_term",
+    "POST /api/notes/glossary": "notes_add_glossary_term",
+    "PUT /api/notes/copilot/instructions": "notes_set_copilot_instructions",
+    "PUT /api/notes/settings": "notes_update_settings",
     # P-4a (task 3960): the read tools of the WhatsApp settings, rules, calls and link.
     "GET /api/me/whatsapp-link": "whatsapp_link_status",
     "GET /api/whatsapp/calls": "list_whatsapp_calls",
@@ -1113,7 +1120,6 @@ DEBT: dict[str, str] = {
     "GET /api/notes/meetings/{}/live/roster": "P-4",
     "GET /api/notes/meetings/{}/live/session": "P-4",
     "GET /api/notes/meetings/{}/note": "P-4",
-    "DELETE /api/notes/glossary/{}": "P-4",
     "DELETE /api/notes/meetings/{}": "P-4",
     "PATCH /api/notes/meetings/{}": "P-4",
     "POST /api/notes/actions/{}/approve": "P-4",
@@ -1121,7 +1127,6 @@ DEBT: dict[str, str] = {
     "POST /api/notes/actions/{}/reject": "P-4",
     "POST /api/notes/bot/identity/interactive": "P-4",
     "POST /api/notes/bot/identity/sign-in": "P-4",
-    "POST /api/notes/glossary": "P-4",
     "POST /api/notes/meetings": "P-4",
     "POST /api/notes/meetings/bot-join": "P-4",
     "POST /api/notes/meetings/{}/actions/approve-all": "P-4",
@@ -1137,14 +1142,12 @@ DEBT: dict[str, str] = {
     "POST /api/notes/meetings/{}/share/email/draft": "P-4",
     "POST /api/notes/meetings/{}/summarize": "P-4",
     "POST /api/notes/meetings/{}/upload": "P-4",
-    "PUT /api/notes/copilot/instructions": "P-4",
     "PUT /api/notes/meetings/{}/agenda": "P-4",
     "PUT /api/notes/meetings/{}/attendees": "P-4",
     "PUT /api/notes/meetings/{}/brief": "P-4",
     "PUT /api/notes/meetings/{}/note": "P-4",
     "PUT /api/notes/meetings/{}/scratch": "P-4",
     "PUT /api/notes/meetings/{}/speakers": "P-4",
-    "PUT /api/notes/settings": "P-4",
     # ── WhatsApp ──
     "DELETE /api/whatsapp/accounts/{}": "P-4",
     "POST /api/me/whatsapp-link/code": "P-4",
@@ -1351,7 +1354,7 @@ DEBT_CEILING: dict[str, int] = {
     "calendar": 2,  # CE-10c (task 66) added the list read, Sync now and Disconnect of the calendar connections, paid by P-1 (1 to 4). The switch of CE-10c follow-up (task 66) added the PATCH, paid by P-1 (5). P-1a (task 3112) paid the list read (5 to 4). P-1c (task 3923) paid Sync now and the switch (4 to 2). Disconnect waits for the owner's decision on C-04. Paid by task 3923. The day-state read is task 1680.
     "email": 5,  # SG-1 (task 2177, 2026-11-07) added the signature image upload, paid by SG-6 (task 2182). Paid by task 3111. P-2c (task 3919) exempted drafts/save, reply-card/bcc and reply-card/discard as the chat's own cards, and paid rules/patterns/review (14 to 10). P-2a (task 3111) paid the search, the facets, the folders, the older-mail read and the org counts (10 to 5).
     "crm": 52,  # CRM-M2a: the manifest decides. The count is UI actions with no built tool. Field Studio GET /fields reaches crm_list_fields, so it left the debt (73 to 72). Task 3951 (CRM-M2e) paid the add, change and order reset of a stage and the add and change of a lost reason with crm_edit_status and crm_edit_lost_reason (72 to 67). The two DELETE rows and the PUT of the order stay debt: the agent sends no DELETE and no PUT (apps/AGENTS.md). Task 3954 (P-3) paid the suggestions of the field map (list, preview, approve, undo, dismiss) and the AI analysis (status, re-run) with five CRM agent tools (67 to 60). Task 3953 (CRM-M2f, CRM-M2i) paid the Field map read, a rule add and decide, and the five plan routes with six tools (eight rows, 60 to 52).
-    "notes": 45,  # Task 3963 paid the 6 GET rows of Notes that are owner-checked or per member with 6 read tools (51 to 45). Paid by task 3963.
+    "notes": 41,  # Task 3963 paid the 6 GET rows of Notes that are owner-checked or per member with 6 read tools (51 to 45). Task 4117 paid the 4 writes of the member's own setup (45 to 41).
     "whatsapp": 6,  # P-4a (task 3960) paid the 12 read rows of WhatsApp with 12 read tools (25 to 13). P-4b (task 3961) paid the saved reply add and delete, the category change, the default categories, the snooze, the wake and the task capture with seven card tools (13 to 6). The link code of the phone (POST /api/me/whatsapp-link/code) stays: it is a credential. Paid by task 3961.
     "people": 7,  # P-5b-1 (task 3114) paid the directory, my row, my work, the work of a person, and the Reach status and preview (19 to 13). P-5b-6 (task 3947, owner answer OD3 A) deleted the dead client code that created a person, so POST /api/tasks/people left the UI (13 to 12). The gateway route stays. P-5b-2 (task 3943) paid the self writes: the profile PATCH, the skills and credentials PUTs, and the absence add and remove (12 to 7).
     "knowledge": 4,  # PAR-3 (task 3105) built create_page, edit_page, create_space and edit_space, which pay POST and PATCH of a page and of a space (19 to 15). PAR-3b (task 3901) built move_page, revert_page and eight reads (15 to 4). Publish, archive, restore (chat_parity.md §7 item 7) and the search (AD-11) stay.

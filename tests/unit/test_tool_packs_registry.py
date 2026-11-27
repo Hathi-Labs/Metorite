@@ -1508,10 +1508,15 @@ PEOPLE_WRITES = ("update_my_profile", "set_my_skills", "set_my_credentials",
 #: Each tool of the people pack, in the order of the family.
 PEOPLE_TOOLS = PEOPLE_READS + PEOPLE_WRITES
 
-#: The six reads of the notes pack (task 3963), in the order of the family.
-NOTES_TOOLS = (
+#: The six reads of the notes pack (task 3963) and the four writes (task 4117),
+#: in the order of the family.
+NOTES_READS = (
     "notes_meetings", "notes_meeting", "notes_settings",
     "notes_templates", "notes_glossary", "notes_copilot_instructions")
+NOTES_WRITES = (
+    "notes_update_settings", "notes_set_copilot_instructions",
+    "notes_add_glossary_term", "notes_delete_glossary_term")
+NOTES_TOOLS = NOTES_READS + NOTES_WRITES
 
 
 def test_the_people_family_is_a_pack_of_org_admin() -> None:
@@ -1604,8 +1609,9 @@ def test_the_notes_family_is_a_pack_of_org_admin() -> None:
             assert not set(NOTES_TOOLS) & set(fam["tools"]), slug
 
 
-def test_the_pack_loader_builds_the_notes_tools_as_read_only_coroutines() -> None:
-    """Mutation: the owner module drops a tool, or a tool says it writes -> red."""
+def test_the_pack_loader_builds_the_notes_tools_with_their_hints() -> None:
+    """Mutation: the owner module drops a tool, a read says it writes, or a write
+    says it reads -> red."""
     import inspect
 
     from acb_skills.tool_annotations import get_annotations
@@ -1616,7 +1622,8 @@ def test_the_pack_loader_builds_the_notes_tools_as_read_only_coroutines() -> Non
     assert all(inspect.iscoroutinefunction(fn) for fn in tools)
     for name in NOTES_TOOLS:
         hints = get_annotations(name)
-        assert hints and hints["read_only"] is True and hints["open_world"] is False, name
+        assert hints and hints["open_world"] is False, name
+        assert hints["read_only"] is (name in NOTES_READS), name
 
 
 def test_the_notes_pack_stays_dark_and_names_only_its_tools() -> None:
@@ -1640,7 +1647,7 @@ def test_no_notes_tool_takes_an_organization_a_caller_or_an_address() -> None:
                 "member", "member_email", "user", "user_email", "acting_user", "actor",
                 "email", "email_address", "owner_email", "as_user", "impersonate", "admin"}
     tools = tp.owner_tools("notes", load_agent_module(ORG_ADMIN_DIR))
-    assert len(tools) == len(NOTES_TOOLS) == 6
+    assert len(tools) == len(NOTES_TOOLS) == 10
     for fn in tools:
         params = set(inspect.signature(inspect.unwrap(fn)).parameters)
         assert not params & identity, (fn.__name__, sorted(params & identity))

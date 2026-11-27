@@ -1485,17 +1485,27 @@ _CALENDAR_CONNECTIONS_DELEGATION_REFUSED = (
 
 # ── The notes pack (task 3963, chat_parity.md section 6.4, P-4d) ───────────
 
-#: The rules of the ``notes`` pack: the six notes read tools. The owner
+#: The rules of the ``notes`` pack: the six read tools and the four writes. The owner
 #: (``org-admin``) has no persona text, and it never runs as an agent. The
 #: routes decide what each member sees, so the rules claim no right.
-_NOTES_RULES = """NOTES TOOLS. You hold six reads of the Notes app. Use them yourself.
-No notes agent exists to hand a task to.
+_NOTES_RULES = """NOTES TOOLS. You hold six reads of the Notes app, and four writes of the
+member's own Note Taker setup. Use them yourself. No notes agent exists to
+hand a task to.
 - notes_meetings lists the meetings of the member and gives the id of each.
 - notes_meeting reads one meeting of the member: the summary, the attendees and
   one page of the transcript.
 - notes_settings, notes_templates, notes_glossary and notes_copilot_instructions
   read the settings of the Note Taker.
 - Each tool acts as the member, and shows only what the Notes app shows.
+- notes_update_settings changes the Note Taker settings. Send only the
+  settings to change. If it says that it cannot tell the saved settings from
+  a failed read, tell the member to use the Notes app settings.
+- notes_set_copilot_instructions replaces the whole text of the standing
+  instructions. Read them first when the member adds to them.
+- notes_add_glossary_term adds one term. notes_delete_glossary_term removes
+  one term by its id.
+- Each write shows one card first, and saves only when the member approves.
+  These four things are all that you can change.
 - No tool changes a meeting, joins a call or sends a bot. Tell the member to do
   that in the Notes app.
 - The notes, the agenda, the actions, the bot and the live state of a meeting
@@ -1511,6 +1521,9 @@ _NOTES_WORDS = (
     "meeting library", "notetaker", "note taker",
     "copilot instructions", "note taker settings", "meeting templates",
     "notes glossary", "transcript glossary", "what was said in the meeting",
+    # Task 4117: the writes of the Note Taker setup.
+    "note taker setting", "notetaker setting", "live transcription",
+    "copilot sensitivity",
 )
 
 #: The answer to a hand-off to the owner of the ``notes`` pack. It is modelled
@@ -1804,12 +1817,14 @@ PACKS: dict[str, Pack] = {
         words=_CALENDAR_CONNECTIONS_WORDS,
         delegation_refusal=_CALENDAR_CONNECTIONS_DELEGATION_REFUSED,
     ),
-    # Task 3963 (P-4d): six reads of the Notes app. Owned by org-admin. Last, so
+    # Task 3963 (P-4d): six reads of the Notes app. Task 4117 adds four writes of
+    # the member's own Note Taker setup. Owned by org-admin. Last, so
     # the cap drops it first. It has no surface, and it is NOT in FOLLOWS: a run
     # loads it where the owner lists it in TOOL_PACKS, or where TOOL_PACKS is "*".
     "notes": Pack(
         slug="notes",
-        when="Load for your meetings, a meeting transcript or the Note Taker settings.",
+        when=("Load for your meetings or a transcript, or to read or change Note Taker "
+              "settings, copilot instructions or glossary."),
         rules=_NOTES_RULES,
         words=_NOTES_WORDS,
         delegation_refusal=_NOTES_DELEGATION_REFUSED,

@@ -367,6 +367,7 @@
       "tests/unit/test_notes_fk_same_org_r8.py",
       "tests/unit/test_notes_keys_per_org_r8.py",
       "tests/unit/test_notes_tenant_isolation_r8.py",
+      "tests/unit/test_notes_write_tools_r8.py",
       "tests/unit/test_observability_two_org_r8.py",
       "tests/unit/test_operator_activity.py",
       "tests/unit/test_operator_admin.py",
