@@ -1505,8 +1505,10 @@ PEOPLE_READS = ("people_directory", "people_me", "people_work", "reach_preview")
 #: The five self writes of P-5b-2 (task 3943), in the order of the family.
 PEOPLE_WRITES = ("update_my_profile", "set_my_skills", "set_my_credentials",
                  "add_my_absence", "remove_my_absence")
+#: P-5b-5 (task 3946): the one send of the pack, my own brief on one card.
+PEOPLE_SEND = "reach_send_brief"
 #: Each tool of the people pack, in the order of the family.
-PEOPLE_TOOLS = PEOPLE_READS + PEOPLE_WRITES
+PEOPLE_TOOLS = (*PEOPLE_READS, *PEOPLE_WRITES, PEOPLE_SEND)
 
 #: The six reads of the notes pack (task 3963), in the order of the family.
 NOTES_TOOLS = (
@@ -1528,8 +1530,10 @@ def test_the_people_family_is_a_pack_of_org_admin() -> None:
 
 def test_the_pack_loader_builds_the_people_tools_as_coroutines() -> None:
     """The four reads say read-only. The five self writes of P-5b-2 (task 3943)
-    say they write, so a held chat holds them off. Mutation: the owner module
-    drops a tool, a read says it writes, or a write says it reads -> red."""
+    say they write, so a held chat holds them off. The send of P-5b-5 (task
+    3946) says it writes and reaches the open world, so a held chat holds it
+    off too. Mutation: the owner module drops a tool, a read says it writes, a
+    write says it reads, or the send says ``open_world=False`` -> red."""
     import inspect
 
     from acb_skills.tool_annotations import get_annotations
@@ -1541,6 +1545,8 @@ def test_the_pack_loader_builds_the_people_tools_as_coroutines() -> None:
     for name in PEOPLE_READS:
         hints = get_annotations(name)
         assert hints and hints["read_only"] is True and hints["open_world"] is False, name
+    hints = get_annotations(PEOPLE_SEND)
+    assert hints and hints["read_only"] is False and hints["open_world"] is True
     for name in PEOPLE_WRITES:
         hints = get_annotations(name)
         assert hints and hints["read_only"] is False and hints["open_world"] is False, name
@@ -1568,7 +1574,7 @@ def test_no_people_tool_takes_an_organization_a_caller_or_an_address() -> None:
                 "member", "member_email", "user", "user_email", "acting_user", "actor",
                 "email", "email_address", "owner_email", "as_user", "impersonate", "admin"}
     tools = tp.owner_tools("people", load_agent_module(ORG_ADMIN_DIR))
-    assert len(tools) == len(PEOPLE_TOOLS) == 9
+    assert len(tools) == len(PEOPLE_TOOLS) == 10
     for fn in tools:
         params = set(inspect.signature(inspect.unwrap(fn)).parameters)
         assert not params & identity, (fn.__name__, sorted(params & identity))

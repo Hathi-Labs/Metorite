@@ -89,10 +89,11 @@ WHEN = {
         "Load for org members, seats, sign-in requests, groups, roles, overrides or name, or "
         "integrations, MCP servers, plugins, GitHub."),
     # P-5b-1 (task 3114): the dark people pack of the same owner. P-5b-2 (task
-    # 3943) added the changes of your own row and your absences.
+    # 3943) added the changes of your own row and your absences. P-5b-5 (task
+    # 3946) added the send of my brief.
     "people": (
-        "Load for the people directory, your own row or its changes, your absences, the open "
-        "work of a colleague, or the Reach preview."),
+        "Load for the people directory, your row or its changes, your absences, a "
+        "colleague's work, the Reach preview, or to send my brief."),
     # P-1c (task 3923): the dark calendar-connections pack of the same owner.
     "calendar-connections": (
         "Load to sync a connected Google or Outlook calendar now, or to show or hide "

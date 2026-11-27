@@ -1177,7 +1177,9 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     # P-5b-1 (chat_parity.md section 6.4, task 3114, owner answer OD4 A of
     # 2026-11-25): four reads of the People app and of the Reach preview. Each
     # tool calls a route as the member, and the route projects each field by
-    # the right of the member (D-PC-10). The owner is org-admin, which never
+    # the right of the member (D-PC-10). P-5b-5 (task 3946, OD7 A) adds one
+    # send: reach_send_brief sends the member's own brief to the member's own
+    # WhatsApp, after one card each time. The owner is org-admin, which never
     # runs as an agent. It is NOT in FOLLOWS: only the owner's pack list turns
     # it on (tool_packs.packs_on). Fence: test_people_tools.py.
     # P-5b-2 (task 3943, owner answer OD1 B): five writes of the member's own
@@ -1186,17 +1188,20 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "label": "People directory",
         "summary": (
             "Read the people directory, your own row, the open work of a person and "
-            "what Reach would send you now, and change your own row after one card."
+            "what Reach would send you now, change your own row, and send your own "
+            "brief to your WhatsApp, each write after one card."
         ),
         "description": (
             "A tool pack: four reads of the People app and of the Reach preview, for the "
             "main assistant to load when a turn asks about the people of the "
-            "organization. Each tool calls the routes as the member, so the member sees "
-            "only the fields that the People app shows to that member. Five writes change "
-            "only the member's own record: the profile, the skills, the credentials and "
-            "the absences. Each write shows one card first, and no write changes the "
-            "email address. A run loads a pack only where tool packs are on, so until "
-            "then this switch has no effect."
+            "organization or about the brief. Each tool calls the routes as the member, "
+            "so the member sees only the fields that the People app shows to that "
+            "member. Five writes change only the member's own record: the profile, the "
+            "skills, the credentials and the absences. Each write shows one card first, "
+            "and no write changes the email address. One send sends the member's own "
+            "brief only to the member's own WhatsApp, and it shows one card first, each "
+            "time. A run loads a pack only where tool packs are on, so until then this "
+            "switch has no effect."
         ),
         "tools": (
             "people_directory",
@@ -1208,6 +1213,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "set_my_credentials",
             "add_my_absence",
             "remove_my_absence",
+            "reach_send_brief",
         ),
         "owner": "org-admin",
         "core": False,

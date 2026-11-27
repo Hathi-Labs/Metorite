@@ -4558,6 +4558,8 @@ Owner decision, 2026-10-25, in chat: "For now, we're deprioritizing the WhatsApp
 
 **Revisit.** Only the owner reopens this. A new decision that reopens it names D115.
 
+**Lifted for one tool, 2026-11-26.** The owner lifted D115 for the one tool `reach_send_brief` on task 3946 (answer 15159660, 2026-11-26 14:15 UTC). It covers nothing else.
+
 **Fence:** advisory. No test enforces a priority.
 
 

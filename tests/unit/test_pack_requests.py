@@ -401,6 +401,8 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "notes_templates": ("list the meeting templates",),
     "notes_glossary": ("show my notes glossary",),
     "notes_copilot_instructions": ("show my copilot instructions",),
+    # P-5b-5 (task 3946): the send of my own brief, on one card each time.
+    "reach_send_brief": ("send my brief now", "send the brief to my whatsapp"),
     # -- studio-repair: the repair of a skill (TOF-3a F12c) --
     "studio_skill_repair": ("fix my skill, it failed", "the skill was wrong, repair the skill"),
     "studio_skill_undo": ("undo my skill to the version before",),
