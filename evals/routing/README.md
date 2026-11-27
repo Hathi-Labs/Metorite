@@ -50,6 +50,8 @@ and a delegation loads two. `harness.py` is a harness for many agents. It reuses
 - The CRM mode read of run assembly. It answers `native`.
 - The Custom Apps granted to an agent. It answers none.
 - The Redis relay. The harness records each line with its thread.
+- Scripted runs only: each other Redis command. `memory_redis.py` holds it in
+  memory, and no connect leaves the process. A live run is as before.
 - Scripted: the model of each agent. Each other host HTTP send fails the run.
 - Live: the specialists. A stand-in records the agent and the message, and
   answers with a fixed line. No specialist runs, writes or spends.

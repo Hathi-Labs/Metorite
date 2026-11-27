@@ -940,6 +940,7 @@ _PURGE_LOSSES: dict[str, str] = {
     "goal_records": "own", "member_settings": "own", "push_devices": "own",
     "calendar_entries": "own", "calendar_attendances": "own", "connection_asks": "own",
     "member_actions": "own",
+    "focus_sessions": "own",
 }
 
 

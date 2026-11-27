@@ -123,6 +123,10 @@ _PLANNER_REASON = (
     "The day planner is the Calendar app's and the Tasks assistant's (calendar_ai_review.md §4). "
     "The chat reaches it through the calendar-day pack (my_tasks_plan_day and its siblings)."
 )
+#: WS-MDC CC-5a ships the focus-session log with no chat tool. CC-10 adds the
+#: tools (``my_day_command_centre.md`` §9.3), and `test_projects_chat_x_pin.py`
+#: holds these rows as pending for that slice.
+_FOCUS_LOG_REASON = "The tools come with CC-10 (my_day_command_centre.md §9.3)."
 #: A file import is an admin's upload through a wizard (project_import.md §7.7).
 _IMPORT_REASON = (
     "A file import is an admin's upload and review through the import wizard "
@@ -287,6 +291,10 @@ MANIFEST: tuple[Route, ...] = (
     # SW-45: the free tasks of the member's own apps. The MCP `my_work` reads
     # it. The chat `my_work` does not read it yet, so its tool is PLANNED.
     Route("GET", "/projects/my/own-app-free", "own_app_free", "A"),
+    # LBB-2: the open PRs to land of an agent session. The MCP `my_work`
+    # reads it. A person's chat holds no PR of an agent label, so the chat
+    # `my_work` never reads it, and the route answers no row for a person.
+    Route("GET", "/projects/agent-work/landing", "land_your_pr", "A"),
     Route("GET", "/projects/my/project", "my_work", "A"),
     Route(
         "POST",
@@ -404,6 +412,10 @@ MANIFEST: tuple[Route, ...] = (
     Route("POST", "/projects/my/calendar/replan", "", "X", _PLANNER_REASON),
     Route("POST", "/projects/my/calendar/rollover", "", "X", _PLANNER_REASON),
     Route("GET", "/projects/my/calendar/estimate-stats", "", "X", _PLANNER_REASON),
+    # ── focus_sessions.py (WS-MDC CC-5a) ─────────────────────────────────
+    Route("POST", "/projects/my/focus-sessions", "", "X", _FOCUS_LOG_REASON),
+    Route("PATCH", "/projects/my/focus-sessions/{session_id}", "", "X", _FOCUS_LOG_REASON),
+    Route("GET", "/projects/my/focus-sessions", "", "X", _FOCUS_LOG_REASON),
     # ── calendar.py · search.py · export.py · delta.py ───────────────────
     Route("GET", "/projects/calendar", "calendar", "A"),
     Route("GET", "/projects/search", "find_tasks", "A"),
@@ -686,6 +698,10 @@ PLANNED: dict[str, str] = {
     # SW-45 (task 1878): the route is built, and the MCP `my_work` reads it.
     # The chat `my_work` does not show the group yet (agent_coordination.md SW-45).
     "own_app_free": "WS-MCP SW-45 follow-up, chat parity for the own_app_free group of my_work",
+    # LBB-2 (task 4041): the route is built, and the MCP `my_work` reads it with the
+    # agent label of the session. A person's chat holds no PR of an agent label, so
+    # the chat tool waits (engineering_practice.md section 7b.2).
+    "land_your_pr": "LBB-2 follow-up, chat parity for the land_your_pr rows of my_work",
     # S2 (2026-09-22) shipped the fifteen daily class B verbs. S2b
     # (2026-09-23) shipped the rest of class B and the two reads it needed
     # (`recurrence`, `my_task`).
@@ -1560,6 +1576,17 @@ _AGENT_OVERVIEW_REASON = (
 
 FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
     ("GET", "/projects/assignable-members"): {"project_id": _MEMBERS_ROUTE_REASON},
+    # LBB-2 (engineering_practice.md section 7b.2): the label of an agent session. A
+    # person's chat has no session label and holds no PR of a lane.
+    ("GET", "/projects/agent-work/landing"): {
+        "agent_label": "The label of an outside agent session (LBB-2). The MCP `my_work` sends it. A chat has no session label.",
+    },
+    # LBB-2: the landing mark of a pull request. A lane sends it over the MCP
+    # `add_task_reference` after a hand-over to a merger. The chat hands
+    # nothing to a merger.
+    ("POST", "/projects/tasks/{task_id}/refs"): {
+        "landing": "The landing mark of a PR that a lane handed to a merger (LBB-2). Only the MCP `add_task_reference` sends it.",
+    },
     # SP-12: `get_plan` and the MCP tool plan from today. A first working day
     # is a web planner override, and the chat has no use for it.
     ("GET", "/projects/plan/analysis"): {

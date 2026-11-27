@@ -566,6 +566,21 @@ def test_the_shared_mailbox_tables_are_tenant_scoped(table: str) -> None:
     assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
 
 
+def test_the_focus_sessions_table_is_tenant_scoped() -> None:
+    """WS-MDC CC-5a (``my_day_command_centre.md`` §9.3, D-MD-5). A focus
+    session holds the minutes of one member of one organization. It may not
+    be exempt, and the committed policy phase must carry it (R5). RLS covers
+    the org, and the routes add the member."""
+    gen = _generator()
+    assert "focus_sessions" in gen.discover_tables()
+    assert "focus_sessions" not in gen.EXEMPT
+    assert "focus_sessions" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE focus_sessions FORCE  ROW LEVEL SECURITY" in policies
+
+
 def test_the_signature_image_table_is_tenant_scoped() -> None:
     """WS-17 SG-1 (``email_app_master_plan.md`` §23.4). A hosted signature
     image is served to anybody with its token, so RLS is what keeps the token

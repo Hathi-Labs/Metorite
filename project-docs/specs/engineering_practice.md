@@ -270,10 +270,12 @@ owner sees a missing preview, because no approval arrives.
 
 #### 1.3.1 The production copy on this PC (LD-8a, LD-8b, LD-8c)
 
-**Status, 2026-10-31:** 🟡 LD-8c is built (PR 1554), and it reaches
-production at the 21:30 UTC release. LD-8b is built on its branch, and the
-branch is now in a pull request. It was tested on a fake copy only. LD-8a is in
-build. The spec-auditor gave GO-NARROWED and split LD-8 into three slices.
+**Status, 2026-11-27:** 🟡 LD-8c is merged (PR 1554), and LD-8b is merged
+(PR 2771). LD-8a is built: `scripts/prod_copy.sh`, with the fence
+`tests/unit/test_prod_copy.py`, in PR 1555. It matches the export path and the
+five file names of `scripts/staging_export.sh` on main. No copy came to this PC
+yet. A run waits for a backup that logs "restore verified" after LD-8c. The
+spec-auditor gave GO-NARROWED and split LD-8 into three slices.
 
 **Owner approval, 2026-10-31, in chat.** Production writes a reduced copy each
 night (`scripts/staging_export.sh`). It holds the organizations in
@@ -313,19 +315,41 @@ no sudo.
 - Proof: the backup at 02:30 UTC on 2026-11-01 logs "restore verified", and a
   new `current` copy appears.
 
-**LD-8a: `scripts/prod_copy.sh`. AGENT-SAFE, HIGH.**
+**LD-8a: `scripts/prod_copy.sh`. AGENT-SAFE, HIGH. Built 2026-10-31.**
 
-- It pulls the copy over `ssh metorite` with `scp` or `ssh ... tar`, because
-  Git Bash has no `rsync`. The target is `~/.metorite/prod-copy/<UTC date>/`.
-- It limits the folder to the current user with `icacls`: no inheritance, one
-  principal. NTFS ignores a POSIX mode, so the test checks the ACL.
-- It checks `SHA256SUMS`. It takes the age from the remote `stat -c %Y` of
-  `staging.dump`, prints it, and refuses a copy older than 36 hours.
+- It pulls the copy over `ssh metorite` with `ssh ... tar`, because Git Bash
+  has no `rsync`.
+- `current` is a symlink to one `r.<stamp>` folder. The pull follows it with
+  `readlink -f` first. So the age and the files come from the same folder.
+- It limits the base folder and each copy folder to the current user. It does
+  this before data goes into them. On Windows it uses `icacls`, with no
+  inheritance and one principal. NTFS ignores a POSIX mode, so the test checks
+  the ACL. On Linux it uses mode 700 and `umask 077`.
+- It checks `SHA256SUMS`, which must name the four data files, each one time.
+- It takes the age from the remote `stat -c %Y` of `staging.dump`, and prints
+  it. It refuses a copy more than 36 whole hours old, as `staging_refresh.sh`
+  does.
 - It keeps the 2 newest copies. It refuses a target inside a git work tree. It
   never prints the content of a file.
+- Exit 0 means done. Exit 1 is a refusal. Exit 2 is a usage or environment
+  error.
 - Fence: `tests/unit/test_prod_copy.py`, with `ssh` replaced by a stub
-  (`PROD_COPY_SSH`). It covers a bad checksum, a stale copy, the retention of
-  2, and a target inside a git work tree.
+  (`PROD_COPY_SSH`). It covers a bad checksum, a stale copy and the retention
+  of 2. It also covers a git work tree, the symlink, the ACL and the output.
+
+**The copy layout. LD-8b reads it, so no slice may change it.**
+
+- The base folder is `~/.metorite/prod-copy/`. A test sets `PROD_COPY_DIR` in
+  its place.
+- Each copy is one folder, named for the UTC time of the export, for example
+  `20261101T023814Z`. The name comes from the mtime of `staging.dump`.
+- The names sort by time, and LD-8b takes the newest name.
+- A copy folder holds exactly five files: `staging.dump`, `roles.txt`,
+  `extensions.txt`, `flags.env` and `SHA256SUMS`.
+- The pull writes into a `.partial-<stamp>.<pid>` folder first. It checks that
+  folder, and then renames it. When a pull fails, no folder gets a copy's name.
+- A name that starts with `.` is never a copy, and LD-8b ignores it. The
+  script keeps its lock in `.lock`.
 
 **LD-8b: `bash scripts/dev_up.sh --data prod --as <email>`. AGENT-SAFE, HIGH.**
 
@@ -728,8 +752,9 @@ cannot drift.
 
 ## 7b. Land before build (owner directive, 2026-11-26)
 
-**Status: ACTIVE spec. No slice is built (verified against code
-2026-11-26).** Each slice ships dark when it is built. Epic: WS-CIV task 1628.
+**Status: ACTIVE spec. LBB-2, the claim gate, is BUILT DARK (2026-11-27,
+task 4041). Both of its flags are empty, and no flip is done. The other
+slices are not built.** Each slice ships dark when it is built. Epic: WS-CIV task 1628.
 Spec task: 4040 (LBB-0). Part A, the backlog itself, is task 4019 (lane-land)
 and task 4039 (pc-land-core). `ci_velocity.md` points here.
 
@@ -852,6 +877,10 @@ opens a fix task.
   thresholds) and `tests/unit/test_built_not_live_r8.py` (the My Day row).
 
 ### 7b.2 The claim gate (rule 2)
+
+**Status: BUILT DARK, 2026-11-27 (task 4041).** Find the migration by its
+CHECK name, `pm_task_refs_landing_state_known`, never by a number (R1). The
+flip of §7b.2 "The flip" is not done.
 
 **What it is, and what it is not.** The gate guides agents that cooperate.
 It is not a security control. It reads `pm_agent_runs.agent_label`, which is
@@ -1041,7 +1070,8 @@ each slice. Each flip or `on` mode is OWNER-GATE.
 |---|---|---|---|---|---|---|---|
 | 1 | 1 | LBB-2 the claim gate and the `land_your_pr` row | 4041 | HIGH | `CLAIM_GATE_SHADOW_ORGS`, `CLAIM_GATE_ORGS` | §7b.2 | build AGENT-SAFE, flip `enforcement-flip` |
 | 2 | 1 | LBB-4 zero orphans at a stop | 4042 | STANDARD | `STOP_DISPOSITION_PRS` | `.claude/hooks/stop-disposition.mjs`, `~/lanes/winddown.sh` | build AGENT-SAFE, `block` by the owner |
-| 3 | 1 | LBB-3 the landing sweeper | 4043 | HIGH (merge path) | `LANDING_SWEEPER_MODE` | `scripts/home_server/lane_handover.sh`, `merge_bot.sh` | build AGENT-SAFE, `on` and the timer are `deploy` |
+| 3 | 1 | LBB-3a the landing sweeper, a dry report (§7b.5) | 4043 | STANDARD | `LANDING_SWEEPER_MODE=dry` | `scripts/home_server/merge_bot.sh`, `scripts/hand_over.sh`, `scripts/release_freeze.sh` | build AGENT-SAFE, the timer and `dry` are `deploy` |
+| 3b | 1 | LBB-3b the sweeper's actions | (to make) | HIGH (merge path) | `LANDING_SWEEPER_MODE=on` | §7b.5 rules | NO-GO until metorite-78 takes the two decisions of §7b.5 |
 | 4 | 2 | LBB-1 done means live | 4044 | STANDARD | `LIVE_CHECK_MODE` | `GET /version`, the merger steps of `lane-merge.md` | build AGENT-SAFE, `on` is `deploy` |
 | 5 | 2 | LBB-6 built, not live, in My Day and the review | 4045 | STANDARD, UI | `BUILT_NOT_LIVE_ORGS` | `.claude/commands/delivery-review.md`, My Day "Needs you" (WS-58) | build AGENT-SAFE, D145 preview before the flip |
 | 6 | 2 | LBB-5 merge capacity follows build capacity | 4046 | HIGH (merge path) | `PREMERGE_MERGE_TEST=auto` | `scripts/premerge.sh` step 4 | build AGENT-SAFE, the default flip is the owner's |
@@ -1155,6 +1185,269 @@ PYTEST_ADDOPTS="-o timeout_method=thread" uv run pytest -p no:cacheprovider \
 **Gate.** The build is AGENT-SAFE. `warn` and then `block` on the box lanes
 are gate `enforcement-flip` (a dated grant or the owner). `warn` comes first,
 then `block` after one day with no false block.
+
+### 7b.5 LBB-3: the landing sweeper (task 4043)
+
+**Status: LBB-3a built (dry only).** LBB-3b is not built. The audit of 2026-11-27 found that the sweeper's
+actions are unsafe until two decisions are taken, so LBB-3 has two parts.
+- **LBB-3a (this build): a dry report.** The sweeper reads every open PR and
+  writes what it WOULD do to its own file. It calls no GitHub write, writes
+  no queue line, and hands nothing over. Tier STANDARD.
+- **LBB-3b (later, HIGH): the actions.** It waits on two decisions by
+  metorite-78 or the owner:
+  1. Whether `~/lanes/merge-queue.tsv` is the HIGH queue again. The box
+     merger lane reads it today (its lane notes), but `lane-merge.md`,
+     `lane_handover.sh`, `merge_bot.sh` and `docs/home_box.md` say nothing
+     reads it.
+  2. A limit on the GitHub runs that updates may spend.
+  The rules below are the rules that LBB-3b will act on. LBB-3a reports them,
+  so one day of its report shows what LBB-3b would do.
+
+**What runs.** `scripts/home_server/landing_sweeper.py` (Python standard
+library, plus `gh` and `git`). The units
+`scripts/home_server/metorite-landing-sweeper.service` and `.timer` run it
+every 2 hours, in the shape of `metorite-answer-watcher.service`:
+`Type=oneshot`, `EnvironmentFile=-%h/.config/metorite/landing-sweeper.env`,
+`ExecStart=/usr/bin/python3 %h/.local/lib/metorite/landing_sweeper.py` (an
+install copies the script there, as for the answer watcher),
+`TimeoutStartSec=900`. The script keeps its own clone,
+`~/lanes/sweeper-src`, and makes it with `git clone` when it is missing. It
+runs `gh` from that clone.
+
+**The mode.** `LANDING_SWEEPER_MODE` from the env file. A missing file or
+`off` (the default): the script exits 0 and calls nothing. `dry`: it writes
+its report. LBB-3a has no `on`: any other value is read as `off`, and logs
+one line that says so.
+
+**The report.** One line for each open PR in each run, appended to
+`~/lanes/landing-sweeper.tsv` (only the sweeper writes this file, and
+lane-land reads it):
+`<UTC time><TAB><N><TAB><head sha><TAB><would><TAB><reason>`.
+`would` is one of `SKIP`, `UPDATE`, `HANDOVER`, `REQUEUE`, `LAND` or `WAIT`.
+
+**What it reads.**
+- `gh pr list --state open --limit 300 --json number,author,headRefName,headRefOid,baseRefName,isDraft,isCrossRepository,mergeable,title,body,createdAt`.
+- For each PR not skipped by the name rules: the `committedDate` of its last
+  commit (`gh pr view N --json commits`), and its checks (`gh pr checks N`),
+  read with the newest-row rule of `PY_CHECKS` in `merge_bot.sh` and its
+  list of required checks.
+- The box queues: `~/lanes/merge-bot-queue.tsv`, its result log
+  `~/lanes/merge-bot.log`, and `~/lanes/merge-queue.tsv`.
+- Its clone: each run fetches `main` and `refs/pull/N/head` for each PR that
+  rule 5 reaches. A short `<sha>` resolves only from those objects. Else the
+  PR gets `SKIP` with reason `error verify sha`.
+- `scripts/release_freeze.sh` (exit 75 means a freeze window).
+
+**The rules, first match wins.**
+1. `SKIP`: the author is `ishaanpilar`; the head branch starts with `ishaan-`
+   or `auto-revert/`, or matches `PROTECTED_HEAD_RE` of `merge_bot.sh`; a
+   draft; a base other than `main`; a fork; the head is the base of another
+   open PR; `mergeable` is `UNKNOWN`; or the last commit is less than 24 hours
+   old ("pushed" in rule 3 means the `committedDate` of the last commit).
+2. `WAIT`: the PR is held by a merger. That is one of these:
+   - its hand-overs in `~/lanes/merge-bot-queue.tsv` outnumber its DONE and
+     BACK lines in `~/lanes/merge-bot.log`, and it has no DONE (the count rule
+     of `read_script` in `hand_over.sh`);
+   - any `REQUEUE` line for N in `~/lanes/merge-queue.tsv`, while N is open. A
+     real line: `REQUEUE<TAB>2487<TAB>3590<TAB>box-loop<TAB>CI red cause found: ...`
+     (keyword, PR, task, lane, note).
+   Also `WAIT`, for every rule below, while `release_freeze.sh` exits 75 or 1
+   (a freeze, or an answer it cannot read).
+3. `LAND`: `mergeable` is `CONFLICTING`, or a required check is red, and the
+   PR is older than 48 hours. The reason names the conflict or the red checks.
+4. `UPDATE`: the head does not hold main
+   (`git merge-base --is-ancestor origin/main <head>` fails in the clone),
+   and no required check is green on the head. A head that is green but
+   behind is not updated: the merger merges it (lane-merge.md "do not merge
+   main into a green branch").
+5. `HANDOVER` or `REQUEUE`: every required check is green, the body has the
+   line `VERIFY: PASS <sha>` (regex `^VERIFY: PASS ([0-9a-f]{7,40})`, the last
+   such line wins), and the own diff of the head has the same
+   `git patch-id --stable` as the own diff of `<sha>`. The own diff of a
+   commit C is `git diff $(git merge-base origin/main C) C`.
+   - `HANDOVER` only when `~/lanes/merge-bot-queue.tsv` holds an earlier
+     hand-over of this PR by a lane at the same patch-id (so a person's
+     approval step ran once). Else `REQUEUE`, so the merger lane checks the
+     loop.
+   - The tier comes from a body line `Tier: <LOW|STANDARD|HIGH>`, else from
+     the title (`(HIGH`, `(STANDARD` or `(LOW`). With neither, the tier is
+     HIGH, on purpose: most PRs name no tier, and HIGH goes to a person.
+     HIGH is always `REQUEUE`.
+6. `LAND` with reason `no verify sha`: green, older than 48 hours, and no
+   `VERIFY: PASS` line.
+7. Else `SKIP` with reason `nothing to do`.
+
+**Test seams.** `LANDING_SWEEPER_GH` (the `gh` command), `LANDING_SWEEPER_FREEZE_CMD`
+(the freeze check), `LANDING_SWEEPER_LANES` (the folder of the queue files and
+the report) and `LANDING_SWEEPER_SRC` (the clone).
+
+**Fails safe.** A `gh` or `git` call that fails gives that PR a `SKIP` line with
+reason `error <step>`. An answer that does not parse ends the run with exit 0
+and one log line.
+
+**Done when** (each with a test in `tests/unit/test_landing_sweeper.py`, with
+a fake `gh` that records every call, a temp git repo for the ancestry and the
+patch-ids, and temp queue files):
+1. `off`, a missing env file, or any value other than `dry`: no `gh` call.
+2. `dry`: one report line for each open PR, and no `gh` call other than the
+   reads above (no `api -X`, no `pr merge`, no `pr edit`, no `pr comment`),
+   and no write to a queue file.
+3. Each rule above, in its order, with one test for each `would` value and
+   each skip reason.
+4. A freeze (`release_freeze.sh` exit 75, through a fake) turns every action
+   into `WAIT`.
+5. A different patch-id gives no `HANDOVER` or `REQUEUE`.
+6. The units: the timer runs every 2 hours, the service reads the env file
+   with a `-`, and holds no secret.
+
+**Verify with.**
+
+```
+PYTEST_ADDOPTS="-o timeout_method=thread" uv run pytest -p no:cacheprovider \
+  tests/unit/test_landing_sweeper.py
+uv run ruff check scripts/home_server/landing_sweeper.py tests/unit/test_landing_sweeper.py
+```
+
+**Rollout (not in the build).** Install the units on the box and set
+`LANDING_SWEEPER_MODE=dry`: gate `deploy`. Read one day of
+`~/lanes/landing-sweeper.tsv`, then take the two decisions above for LBB-3b.
+
+### 7b.6 LBB-1: done means live (task 4044)
+
+**Status: LBB-1a built (report only). LBB-1b not built (verified against code 2026-11-27).** Rung 1. The demo:
+the owner reads `~/lanes/live-check.tsv` on the box and sees, for each merge
+of the last three days, whether production runs it. LBB-1 has two parts.
+- **LBB-1a (this build): a report.** After each release slot, a box script
+  lists each recent merge and says whether production runs it. It writes only
+  its own file. Tier STANDARD. The build is AGENT-SAFE.
+- **LBB-1b (later): the board.** The merger lane moves a task to Done only
+  when the report says LIVE, and leaves a "merged, not live" comment before
+  that. This changes step f of `scripts/home_server/lanes/lane-merge.md`.
+  metorite-78 makes that change after one day of the report. A script cannot
+  write the board yet: the box has no Metorite credential (task 1819).
+
+**What runs.** `scripts/home_server/live_check.py` (Python standard library,
+plus `git`). The units `scripts/home_server/metorite-live-check.service` and
+`.timer` run it at 06:00, 14:00 and 22:00 UTC, 30 minutes after each slot, in
+the shape of `metorite-answer-watcher.service`:
+`EnvironmentFile=-%h/.config/metorite/live-check.env`,
+`ExecStart=/usr/bin/python3 %h/.local/lib/metorite/live_check.py`,
+`Type=oneshot`, `TimeoutStartSec=300`. The timer ships disabled, as the
+answer-watcher timer does.
+
+**The env file** (mode 0600, no secret). Its full key set:
+- `LIVE_CHECK_MODE`: a missing file or `off` (the default) exits 0 with no
+  call. `dry` writes the report. Any other value reads as `off` and logs one
+  line to stderr, which journald keeps.
+- `LIVE_CHECK_GATEWAY_URL`: the production gateway, with no default. When it
+  is missing, the run writes one `UNKNOWN` line and exits 0.
+
+**What it reads.**
+- `GET <LIVE_CHECK_GATEWAY_URL>/version`, a read with no credential, as
+  `scripts/ci_deploy_reach.sh` does. The deployed SHA is `applied_sha` only:
+  `sha` names the gateway checkout, and a failed web build could then read
+  LIVE. A null `applied_sha` or a failed call gives one `UNKNOWN` line and
+  exit 0. The value may be short, so the script resolves it with
+  `git rev-parse` in its clone.
+- The merges, from two logs. It ignores every other line type:
+  - `~/lanes/merge-bot.log`: the line `DONE <pr> <sha>`, split on spaces, with
+    the full 40-character merge SHA. Its task is `-`.
+  - `~/lanes/merge-queue.log`: the line `DONE<TAB><pr><TAB><sha><TAB>(...)`,
+    split on tabs. The task comes from the regex `task (\d+)` in the last
+    field, else `-`.
+  - One report line for each (pr, sha) in each run, even when both logs name
+    it.
+- Its clone `~/lanes/live-check-src`. Each run fetches `main` and the
+  deployed SHA. The script makes the clone with `git clone` when it is
+  missing.
+
+**The time of a merge** is the committer date of its SHA in the clone. A
+merge is in the report when that date is within 72 hours of now. A SHA that
+the clone cannot fetch has no date: it gives `UNKNOWN` and is always
+written.
+
+**The states, for each merge.**
+- `LIVE`: `git merge-base --is-ancestor <merge> <deployed>` succeeds.
+- `WAITING`: not live, and fewer than two slot instants lie in the interval
+  (merge time, now].
+- `STUCK`: not live, and two or more slot instants lie in that interval. The
+  slot instants are 05:30, 13:30 and 21:30 UTC each day. The script counts
+  them in epoch UTC seconds, so midnight needs no special case.
+- `UNKNOWN`: the merge SHA or the deployed SHA cannot be fetched or resolved.
+
+A slot ships `green/main` (deploy.yml, CIV-30), not the tip of `main`. So a
+merge that came after `green/main` stays unreleased through a slot. The
+states count the slots that ran, not the slots that could ship this merge. A
+merge after `green/main` can be `STUCK`, and that is correct: it is built
+work that is not live.
+
+**The report.** One line for each merge in each run, appended to
+`~/lanes/live-check.tsv`:
+`<UTC time><TAB><pr><TAB><merge sha><TAB><task or -><TAB><state><TAB><deployed sha or ->`.
+A run-level `UNKNOWN` line (a null `applied_sha`, a failed read or a missing
+URL) holds `-` in the pr, merge SHA and task columns. Its time is now, in UTC.
+
+**Test seams** (read from the environment; the env file sets only the two keys
+above). `LIVE_CHECK_VERSION_CMD` (the `/version` read),
+`LIVE_CHECK_LANES` (the folder of the logs and the report),
+`LIVE_CHECK_SRC` (the clone), `LIVE_CHECK_NOW` (now, epoch seconds).
+
+**Fence (R7).** `tests/unit/test_live_check.py` holds the rules of this
+section. No rule here is advisory.
+
+**Done when** (each with a test in `tests/unit/test_live_check.py`, with a
+temp git repo and temp log files):
+1. `off`, a missing env file, or another value: no read and no write.
+2. `dry`: one report line for each (pr, sha) of both log shapes, with the
+   task read from the queue shape, and none for a merge older than 72 hours.
+3. Each state. An ancestor is `LIVE`. A merge after the deployed SHA is
+   `WAITING` with one slot instant in its interval, and `STUCK` with two (one
+   test crosses 21:30 and then 05:30). A SHA that cannot be fetched is
+   `UNKNOWN`.
+4. A `/version` with a null `applied_sha`, a failed read, or a missing URL
+   gives one `UNKNOWN` line and exit 0.
+5. The unit text: the timer's `OnCalendar` lines are 06:00, 14:00 and 22:00
+   UTC. The service has `EnvironmentFile=-` and holds no secret. The test
+   parses the files, because no systemd runs in a unit test.
+
+**Verify with.**
+
+```
+PYTEST_ADDOPTS="-o timeout_method=thread" uv run pytest -p no:cacheprovider \
+  tests/unit/test_live_check.py
+uv run ruff check scripts/home_server/live_check.py tests/unit/test_live_check.py
+```
+
+**Rollout (not in the build).** Install and enable the units, and set
+`LIVE_CHECK_MODE=dry` with the production gateway URL: gate `deploy`. After
+one day, metorite-78 changes lane-merge.md step f (LBB-1b).
+
+### 7b.7 LBB-6: visibility (task 4045)
+
+**Status: LBB-6a built (the review metric). LBB-6b not built: the My Day row,
+dark behind `BUILT_NOT_LIVE_ORGS`, with a D145 owner preview before the flip.**
+
+**Done when** (LBB-6a):
+1. `scripts/delivery_metrics.py` gives the key `built_not_live`: `open_prs`
+   (open PRs that are not drafts), `over_24h` (each open PR older than 24
+   hours: `number`, `title`, `age_days`, oldest first) and `oldest_days`. It
+   reuses the paging of `_old_prs`. A failing `gh` call gives `null` and an
+   `errors` entry.
+2. `.claude/commands/delivery-review.md` lists `built_not_live` in its metric
+   list. It adds two threshold rows: `built_not_live.open_prs` over 30, and
+   `built_not_live.oldest_days` over 5. Each breach opens one fix task.
+3. Tests in `tests/unit/test_delivery_metrics.py` cover the key (a draft is
+   not counted, a PR of 23 hours is not in `over_24h`, the order), the failing
+   call, and the command file that names the key.
+4. This section holds the status above.
+
+**Fence.** `tests/unit/test_delivery_metrics.py`.
+
+**Verify with.**
+
+```
+PYTEST_ADDOPTS="-o timeout_method=thread" uv run pytest -p no:cacheprovider   tests/unit/test_delivery_metrics.py
+```
 
 ## 8. What to fix before customer #1 — in order
 

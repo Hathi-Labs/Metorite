@@ -65,6 +65,16 @@ each file, so a module-level skip is no longer absent. CIV-5 and §8.8 hold it.
 HIGH tier. lane-merge sets the migration number at merge with
 `merge_bot.sh --renumber <pr> <sha>`. §8.10 holds the rule and the fence.
 
+**CIV-ORCH is BUILT on 2026-11-27** (task 4058, branch `devx-orch-off-pc`).
+HIGH tier (the box path). The orchestrator watch runs on the box, and the lane
+keeper wakes `lane-orch` for each new batch of events. The timer ships
+disabled. §5 CIV-ORCH holds it.
+
+**CIV-LIVE is BUILT on 2026-11-27** (task 4060, branch `devx-lane-liveness`,
+stacked on CIV-ORCH). HIGH tier (the box path). The lane keeper names why a
+lane stopped, and it wakes a lane after a network error or a usage reset. The
+weekly review shows the time lost. §5 CIV-LIVE holds it.
+
 **Shell manifest:** none. This is CI, not an app, so R9 does not apply.
 
 **Owning spec** for how much CI runs, and where. `engineering_practice.md` §7a
@@ -801,6 +811,70 @@ supplies it.
 `scripts/home_server/metorite-lane-keeper.timer`.
 **Fence:** `tests/unit/test_lane_keeper.py`.
 
+### CIV-ORCH: the orchestrator watch on the box (task 4058)
+
+**Status: BUILT 2026-11-27** (task 4058). HIGH tier, because it changes the
+box path. The timer ships disabled.
+
+The orchestrator and its watch loop ran on the owner's PC. When the PC shut
+down, nothing watched the lanes. Now the box does it, in two parts.
+
+`metorite-orch-watch.timer` runs `orch_watch.py` every 5 minutes. One pass
+checks three rules. (a) A listed lane is idle for more than 30 minutes, or
+active for more than 60, and it is not on `~/lanes/orch_resting.txt`. (b) A
+new `BACK`, `HOLD` or `RED` line is in `~/lanes/merge-queue.log`, or a new
+`BACK` or `RED` line is in `~/lanes/merge-bot.log`. (c) Lane-merge
+wrote no NOTE line and no transcript record for 90 minutes.
+
+Each new event is one line in `~/lanes/orch-events.log`. A state file stops a
+repeat while the condition stays the same.
+
+The lane keeper wakes `lane-orch` when that log has lines after the cursor of
+lane-orch. It wakes it one time for each new batch, and never while it is
+busy. Only events wake lane-orch. The plain keeper wake leaves it out. `lanes/lane-orch.md` is its role. It never merges, deploys or flips a flag.
+
+To start it, the owner or lane-devx installs and enables the timer, and adds
+`lane-orch` to `keeper-lanes.txt` (`docs/home_box.md` §3.10).
+
+**Files:** `scripts/home_server/orch_watch.py`, `orch_watch.sh`,
+`metorite-orch-watch.service`, `metorite-orch-watch.timer`, `lane_keeper.py`,
+`lanes/lane-orch.md`.
+**Fence:** `tests/unit/test_orch_watch.py` and the `test_civ_orch_*` tests of
+`tests/unit/test_lane_keeper.py`. The first file tests each rule, the repeat,
+the resting list and the timer. The keeper tests check one wake for each batch.
+
+### CIV-LIVE: the lane keeper brings a lane back by itself (task 4060)
+
+**Status: BUILT 2026-11-27** (task 4060). HIGH tier, because it changes the
+box path. Stacked on CIV-ORCH.
+
+Owner, 2026-11-26: lanes stopped on usage limits, network drops, memory kills
+and sign-outs, and each one waited for a person. Now the keeper reads why the
+last turn of a lane ended. `stop_cause()` reads the transcript tail. The
+causes are `network`, `usage`, `signout`, `memory` and `normal`.
+
+- `network`: a wake at the first keeper pass after 2, 5, 15 and 30 minutes,
+  for each lane. The timer runs every 10 minutes. A good turn resets the wait.
+- `usage`: no wake before the reset time plus 2 minutes, or 60 minutes with no
+  reset time.
+- `signout`: no wake, and one NOTE line in `~/lanes/merge-queue.log`. The
+  NOTE names §5.1 of `docs/home_box.md` for a Claude account, and §5.2 and
+  §5.3 for the Metorite MCP. Only an error result of a `mcp__metorite__*`
+  tool counts.
+- `memory` and `normal`: the CIV-19 rules.
+
+- `lane-orch` keeps its event wake, but not on a sign-out or before a usage
+  reset.
+
+The keeper writes `~/lanes/lane-stops.tsv`, one row for each stop of a fault
+cause. It removes a closed row after 30 days. The weekly review (CIV-10) puts
+a table of the hours lost by lane and cause into the prompt of its session. `docs/home_box.md` §3.7 holds the operator view.
+
+**Files:** `scripts/home_server/lane_keeper.py`,
+`scripts/home_server/delivery_review.sh`, `.claude/commands/delivery-review.md`.
+**Fence:** the `test_civ_live_*` tests of `tests/unit/test_lane_keeper.py`, and
+`tests/unit/test_delivery_review.py`.
+
 ### CIV-10: the weekly delivery review (task 1643)
 
 **Status: BUILT 2026-11-07** (task 1643, branch `civ10-review`). STANDARD tier.
@@ -886,6 +960,8 @@ AGENT-SAFE. STANDARD tier, with an Opus diff review.
 | CIV-20 | 2207 | | |
 | CIV-22 | 2288 | | |
 | CIV-19 | 2206 | | |
+| CIV-ORCH | 4058 | | |
+| CIV-LIVE | 4060 | | |
 
 The slices of §8 have their own table in §8.5.
 
@@ -1002,6 +1078,7 @@ Each rung ends in a demo (D211). Each slice of a rung blocks its demo task.
 | CIV-33 | 3058 | 2 | STANDARD | Profile the shards, then a sharper selection. CIV-33a BUILT 2026-11-13 (task 3071): one `tests/unit` argument plus `scripts/pytest_only_selected.py`. CIV-33d BUILT 2026-11-13 (task 3074): the scan fences of six large files moved to `*_scan.py` files, and `test_scanner_budget.py` caps a scanner file at 30 s. The scanner set costs 1,748 s, down from 2,333 s. `test_affected_tests.py` (381 s) waits for PR 2205. CIV-33c-1 BUILT 2026-11-13 (task 3073): a hub selects its importers up to 20% of the test files, a flag-only diff of `settings.py` or `env_guard.py` selects the tests that name the flag, and `scripts/replay_gate.py` measures the FULL share. For a hub or a flag diff, an app entry, or a test helper that builds an app, selects its test importers. The closure over test imports starts from the import picks, not from the scanners or the SAFETY fences. CIV-33c-2 BUILT 2026-11-14 (task 3073): the R8 must-run, never-skip and disarmed lists moved from the two workflows to the `r8` key of `tests/fences.json`. A workflow or a composite action stays FULL. Any other file under `.github/` is not FULL. An edit of `tests/fences.json` selects the files it adds to a list and the guard's own tests, and a file that does not parse is FULL. The replay of 300 main commits shows 96 FULL (32.0%), and 38 of the 43 commits whose only FULL reason was `.github/` edited a list only. With those edits in `tests/fences.json`, the projected share is 58 of 300 (19.3%). `packages/acb_common/` is the next cause (37 commits). CIV-33c-3 BUILT 2026-11-14 (task 3073): an acb_common change selects each test that imports it at any depth, and the projected FULL share is 19.3%. The target of 15% is not met. CIV-33e BUILT 2026-11-14 (task 3075): `SHARD_TARGET_S` is 300 and `ALL_SHARDS` is 8, and `test_board_stats_r8.py` split into three files of 300 s or less. |
 | CIV-34 | 3059 | 2 | STANDARD | Conflict rules in the merge bot, tested on the merged tree. CIV-34a BUILT 2026-11-14 (§8.9): the rules, the checks on the merged tree, and the trailer. The fix round of the PR 2266 review (same day) removed `rerere`, `rebuild` and the markdown `union`, and added the ref checks and the `ls-remote` check. CIV-34b (a model proposal) is open |
 | CIV-35 | 3060 | 2 | LOW | A proposal: review depth by file class. It needs an owner decision |
+| CIV-SMOKE-TURN | 4061 | 0 | HIGH | **BUILT 2026-11-27, dark.** The release smoke runs one real model turn with tools on, in the smoke org. It checks the `done` event and a saved answer with text. A Traceback of the turn's own thread id is red with `LOG_FORMAT=json` only. Today T4 warns, and another Traceback is a warning. Two guards hold a monthly cap: the smoke's own count of turns, and the metered spend. `SMOKE_CHAT_TURN` is off, and the owner sets `SMOKE_CHAT_TURN_CAP_USD` before it goes on. `projects_ai_chat.md` §21.10 holds the design |
 
 The demo tasks: rung 0 is task 3064, rung 1 is task 3065, and rung 2 is task
 3066. Each slice task holds its full done-when and its fence.

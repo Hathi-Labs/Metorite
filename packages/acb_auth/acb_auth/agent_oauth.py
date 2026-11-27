@@ -1224,6 +1224,10 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # SW-45: the free tasks of the member's own apps, for `my_work`. A read. It
     # answers no rows while `AGENT_CLAIM_SCOPE_MODES` is off for the org.
     ("GET", "/projects/my/own-app-free"),
+    # LBB-2 (engineering_practice.md §7b.2): the open PRs to land of the
+    # caller, for the `land_your_pr` rows of `my_work`. A read. It answers no
+    # rows while both claim gate flags are off for the org.
+    ("GET", "/projects/agent-work/landing"),
     # MCP-G21: the members that `set_assignees` would accept, for `list_members`.
     ("GET", "/projects/assignable-members"),
     # SP-12: the order of work under one goal, epic or project, for `get_plan`.

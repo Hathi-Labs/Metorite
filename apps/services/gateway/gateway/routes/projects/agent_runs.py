@@ -125,6 +125,7 @@ from acb_common.image_probe import RASTER_MIMES
 from acb_common.no_person import NO_PERSON_PRESENT, NO_PERSON_TEXT, no_person_present
 from fastapi import Depends, HTTPException, Query, Response
 from gateway.routes.projects.attachments import served_url
+from gateway.routes.projects.claim_gate import check_claim_gate
 from gateway.routes.projects.claim_scope import (
     apply_warning,
     check_claim_scope,
@@ -2688,7 +2689,8 @@ async def start_agent_run(
         # SW-45 (review P1): an agent's start on a task that does not hold
         # the member holds it as a claim does. So the claim's ONE check runs here, before
         # any write, and `refuse` has no second door.
-        scope_note = await _start_scope(db, user, via, task, vis)
+        # LBB-2: the claim gate runs in it too, right after the scope check.
+        scope_note = await _start_scope(db, user, via, task, vis, label)
 
         # EA-14a: ONE AI for each task. The gate returns this caller's own
         # open run, or None for a free task, or it raises 409 `task_held`.
@@ -2770,11 +2772,15 @@ async def start_agent_run(
 
 
 async def _start_scope(db: Any, user: UserContext, via: str | None, task: Any,
-                       vis: Any) -> dict[str, Any] | None:
+                       vis: Any, label: str | None = None) -> dict[str, Any] | None:
     """SW-45: the scope check of an agent's start, or ``None`` for a member.
     It reads the assignees of the task. Only the session member among them
     is a pass (review P1 of 2026-11-17). The other passes are in
-    ``check_claim_scope``."""
+    ``check_claim_scope``.
+
+    LBB-2 (``engineering_practice.md`` §7b.2): then the claim gate of the
+    start, with the start's *label*, before any write. A member's start is
+    never checked, and a start on the agent's own open run passes (trap 2)."""
     if via is None:
         return None
     current = {
@@ -2783,7 +2789,9 @@ async def _start_scope(db: Any, user: UserContext, via: str | None, task: Any,
             {"tid": str(task.id)},
         )).fetchall()
     }
-    return await check_claim_scope(db, user, task, current, vis)
+    note = await check_claim_scope(db, user, task, current, vis)
+    await check_claim_gate(db, user, str(task.id), vis, label)
+    return note
 
 
 def _with_scope_warning(result: dict[str, Any],
