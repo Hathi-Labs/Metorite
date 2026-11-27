@@ -42,7 +42,8 @@ field changed, in BOTH columns: in
 the loader does not offer it.
 
 P-5b-1 (task 3114) added the dark pack ``people`` of four tools, with no
-surface and another owner. :func:`_allowed` leaves it out, as it leaves out
+surface and another owner. Task 3963 added the pack ``notes`` of six tools,
+with the same owner. :func:`_allowed` leaves each out, as it leaves out
 ``org-admin``, so no row of the golden file changed.
 
 P-1b (task 3922) added the pack ``mail-tasks`` of two tools. It follows
@@ -225,10 +226,12 @@ def _allowed(workflows: bool) -> frozenset[str]:
     The dark ``org-admin`` (PAR-2a, four tools, no surface, another owner) is out
     for the same reason. The dark ``people`` (P-5b-1, task 3114, four tools, no
     surface, owner ``org-admin``) is out for the same reason. The dark
-    ``calendar-connections`` (P-1c, task 3923, one tool, no surface, owner
+    ``studio-apps`` (PAR-9, task 3950, six tools, no surface) is out for the same
+    reason. ``calendar-connections`` (P-1c, task 3923, one tool, no surface, owner
     ``org-admin``) is out for the same reason."""
     every = frozenset(sf.pack_slugs()) - {"studio-share", "studio-repair", "org-admin",
-                                          "people", "calendar-connections"}
+                                          "people", "studio-apps", "calendar-connections",
+                                          "notes"}
     if workflows:
         return every
     named = every - frozenset(tp.FOLLOWS) - {"studio-workflows"}

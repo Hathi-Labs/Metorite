@@ -49,6 +49,7 @@ export function ModeSwitch<Id extends string>({
   layout = "toolbar",
   label = "View mode",
   iconOnly = false,
+  labelClass,
 }: {
   modes: readonly ModeOption<Id>[];
   /**
@@ -65,6 +66,11 @@ export function ModeSwitch<Id extends string>({
    * accessible name and the option's `title` as its tooltip.
    */
   iconOnly?: boolean;
+  /**
+   * Classes for the words of each option, so a caller can hide them by the
+   * width of its own box. Use a class that keeps them for a screen reader.
+   */
+  labelClass?: string;
 }) {
   const sheet = layout === "sheet";
   return (
@@ -88,7 +94,11 @@ export function ModeSwitch<Id extends string>({
           layout={sheet ? "flex w-full items-center justify-start gap-2.5" : undefined}
           onClick={() => onPick(entry.id)}
         >
-          {iconOnly && !sheet ? null : (entry.label ?? sentenceCase(entry.id))}
+          {iconOnly && !sheet ? null : labelClass ? (
+            <span className={labelClass}>{entry.label ?? sentenceCase(entry.id)}</span>
+          ) : (
+            (entry.label ?? sentenceCase(entry.id))
+          )}
         </Button>
       ))}
     </div>

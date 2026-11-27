@@ -17,7 +17,8 @@
 import { spawnSync, spawn } from 'node:child_process'
 import http from 'node:http'
 import { fileURLToPath } from 'node:url'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, copyFileSync, chmodSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -33,7 +34,9 @@ function run(handoff) {
     }
     // SW-19a: a box that runs the tests holds a real token. The hook must never
     // call the real server from a test, so the sync cases run with no credential.
-    const env = { ...process.env, CLAUDE_PROJECT_DIR: root }
+    // EA-19g: HOME is the temp root, so the hook never runs the real header
+    // helper of this box.
+    const env = { ...process.env, CLAUDE_PROJECT_DIR: root, HOME: root }
     delete env.METORITE_BOX_TOKEN
     delete env.METORITE_MCP_URL
     const r = spawnSync(process.execPath, [HOOK], { env, encoding: 'utf-8' })
@@ -186,7 +189,9 @@ function runLive(edge, extraEnv = {}, handoff = HANDOFF) {
     mkdirSync(path.join(root, 'project-docs'), { recursive: true })
     writeFileSync(path.join(root, 'project-docs', 'HANDOFF.md'), handoff, 'utf-8')
   }
-  const env = { ...process.env, CLAUDE_PROJECT_DIR: root, METORITE_BOX_TOKEN: TOKEN, ...extraEnv }
+  // EA-19g: HOME is the temp root unless a case gives one, so the hook never
+  // runs the real header helper of this box.
+  const env = { ...process.env, CLAUDE_PROJECT_DIR: root, HOME: root, METORITE_BOX_TOKEN: TOKEN, ...extraEnv }
   if (edge) env.METORITE_MCP_URL = `http://127.0.0.1:${edge.server.address().port}/mcp`
   const t0 = Date.now()
   return new Promise((resolve) => {
@@ -203,6 +208,26 @@ function runLive(edge, extraEnv = {}, handoff = HANDOFF) {
 }
 
 const noToken = (r) => !r.out.includes(TOKEN) && !r.err.includes(TOKEN)
+
+const HELPER_SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'metorite_box_headers.sh')
+
+/** A temp HOME with the installed helper and a box.env of `mode`. */
+function helperHome(mode) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'handoff-home-'))
+  const bin = path.join(dir, '.local', 'bin')
+  const cfg = path.join(dir, '.config', 'metorite')
+  mkdirSync(bin, { recursive: true })
+  mkdirSync(cfg, { recursive: true })
+  const helper = path.join(bin, 'metorite-box-headers')
+  copyFileSync(HELPER_SRC, helper)
+  chmodSync(helper, 0o700)
+  // Built at run time: the repo holds no token literal.
+  const token = 'mbt' + '_' + randomBytes(32).toString('base64url')
+  const envFile = path.join(cfg, 'box.env')
+  writeFileSync(envFile, `METORITE_BOX_TOKEN=${token}\n`, 'utf-8')
+  chmodSync(envFile, mode)
+  return { dir, token }
+}
 
 const ROWS = [
   { task_number: 41, reason: 'held_by_you', title: { untrusted_text: 'My open work' } },
@@ -313,6 +338,43 @@ const ASYNC_CASES = [
     try {
       const r = await runLive(edge)
       return /no work that waits/.test(r.context)
+    } finally { edge.server.close() }
+  }],
+
+  // EA-19g (task 1819). A lane does not load box.env, so the hook asks the
+  // installed header helper. The helper is the real script of this repo.
+  ['helper: with no env var, the bearer of the header helper is sent', async () => {
+    const home = helperHome(0o600)
+    const edge = await fakeEdge(goodEdge(ROWS))
+    try {
+      const r = await runLive(edge, { METORITE_BOX_TOKEN: '', HOME: home.dir })
+      return r.status === 0
+        && edge.seen.length > 0
+        && edge.seen.every((s) => s.headers.authorization === `Bearer ${home.token}`)
+        && r.context.includes('#123 [check_due]')
+        && !r.out.includes(home.token) && !r.err.includes(home.token)
+    } finally { edge.server.close(); rmSync(home.dir, { recursive: true, force: true }) }
+  }],
+
+  ['helper: a refusal (box.env 0644) is no credential, and nothing is sent', async () => {
+    const home = helperHome(0o644)
+    const edge = await fakeEdge(goodEdge(ROWS))
+    try {
+      const r = await runLive(edge, { METORITE_BOX_TOKEN: '', HOME: home.dir })
+      return r.status === 0
+        && edge.seen.length === 0
+        && r.context.includes('no credential')
+        && r.context.includes('snapshot entry')
+        && !r.out.includes(home.token) && !r.err.includes(home.token)
+        && !r.out.includes('box-token-helper-refused')
+    } finally { edge.server.close(); rmSync(home.dir, { recursive: true, force: true }) }
+  }],
+
+  ['helper: no helper installed is no credential, and nothing is sent', async () => {
+    const edge = await fakeEdge(goodEdge(ROWS))
+    try {
+      const r = await runLive(edge, { METORITE_BOX_TOKEN: '' })
+      return r.status === 0 && edge.seen.length === 0 && r.context.includes('no credential')
     } finally { edge.server.close() }
   }],
 

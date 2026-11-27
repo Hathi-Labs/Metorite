@@ -132,6 +132,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "filters": { label: "Filters" },
   "first due": { label: "First due" },
   "flexible": { label: "Flexible", kind: "flag" },
+  // WS-MDC CC-2: the member's mark of today's focus, a date or cleared.
+  "focus_on": { label: "Today's focus", kind: "date" },
   // WS-64 OP-10: the folder that `convert_folder_to_project` turns into a project.
   "folder": { label: "Folder" },
   "from": { label: "From", kind: "task" },
@@ -188,6 +190,12 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "parent_project_id": { label: "Parent project" },
   "parent_task_id": { label: "Parent task" },
   "place": { label: "Place" },
+  // WS-CRM CRM-M2i (task 3953): an item of the mapping plan that is not a
+  // field rule, such as the module that plays a slot, on an approve or a restore.
+  "plan item N": { label: "Plan item", plural: "Plan items" },
+  // The field rules of the same cards, one row each. The key is "rule N" and
+  // never "field N": `cardKey` reads `field <Name>` as a custom field.
+  "rule N": { label: "Rule", plural: "Rules" },
   "people on the list now": { label: "On the list now" },
   "person": { label: "Person" },
   // WS-CRM CRM-M3a: the card of `crm_create_pipeline`.

@@ -9,6 +9,8 @@ import type { Email, EmailAccount } from "../lib/types";
 import { timeLabel } from "../lib/utils";
 import { useEmailStore, isRealFolder, foldersInScope, scopeBusy, checkedRows } from "../lib/emailStore";
 import { MailboxChip } from "./MailboxChip";
+import { useMarkDone } from "./useMarkDone";
+import { markDoneItemLabel } from "../lib/markDone";
 import { UnreadBar, UnreadLabel, ReadToggle, readTone, rowButtonClass } from "./UnreadMark";
 import { LabelChip, ColorSwatch, LabelColorGrid } from "./LabelChip";
 import { presetForLabel } from "../lib/labelColors";
@@ -171,6 +173,7 @@ export function EmailList({
   const mailboxOfRow = (accountId: string) =>
     viewAll && accounts.length > 1 ? accounts.find((a) => a.id === accountId) ?? null : null;
   const { isMobile } = useViewMode();
+  const { enabled: canMarkDone, markDone } = useMarkDone();
   // Treat the post-sync "processing" window (background rules/labels pipeline)
   // as busy too, so the pull-to-refresh spinner keeps turning until it settles.
   const syncing = scopeBusy({ viewAll, selectedAccountId, accounts, syncStatus });
@@ -209,6 +212,11 @@ export function EmailList({
   const clearSelection = clearEmailSelection;
   const bulkUpdate = bulkUpdateSelected;
   const bulkDelete = bulkDeleteSelected;
+  // Mark done acts on the conversations of the checked rows (task 3995).
+  const markCheckedDone = () => {
+    void markDone(emails.filter((e) => checked.includes(e.id)));
+    clearEmailSelection();
+  };
 
   const openContextAt = (px: number, py: number, email: Email) => {
     // Clamp so the menu stays on-screen.
@@ -375,6 +383,11 @@ export function EmailList({
             {checked.length} selected
           </span>
           <div className="flex-1" />
+          {canMarkDone && (
+            <Button variant="ghost" size="sm" icon="Check" onClick={markCheckedDone} className="flex-shrink-0">
+              Mark done
+            </Button>
+          )}
           <ToolbarBtn icon={themedIcon("MailOpen")} label="Mark read" onClick={() => bulkUpdate({ isRead: true })} />
           <ToolbarBtn icon={themedIcon("Mail")} label="Mark unread" onClick={() => bulkUpdate({ isRead: false })} />
           <ToolbarBtn icon={themedIcon("Flag")} label="Flag" onClick={() => bulkUpdate({ isFlagged: true })} />
@@ -722,6 +735,11 @@ export function EmailList({
             clearCategories(ctx.bulk ? checked : [ctx.email.id])
           }
           onClose={() => setCtx(null)}
+          onMarkDone={
+            !canMarkDone || (!ctx.bulk && !ctx.email.threadId)
+              ? undefined
+              : ctx.bulk ? markCheckedDone : () => void markDone([ctx.email])
+          }
           snoozedView={selectedFolder === "snoozed"}
           onSnooze={(until) =>
             (ctx.bulk ? checked : [ctx.email.id]).forEach((id) =>
@@ -762,7 +780,8 @@ export function EmailList({
   );
 }
 
-function ContextMenu({
+export function ContextMenu({
+  onMarkDone,
   ctx,
   folders,
   colorAccountId,
@@ -781,6 +800,8 @@ function ContextMenu({
   onBulkDelete,
   onFix,
 }: {
+  /** Mark done (task 3995), or undefined when the app does not offer it. */
+  onMarkDone?: () => void;
   ctx: CtxState;
   folders: { key: string; label: string }[];
   /** The mailbox whose label colours this menu may change, or null for none. */
@@ -841,11 +862,23 @@ function ContextMenu({
         className="fixed z-[81] w-52 bg-popover border border-border rounded-lg shadow-xl py-1 text-xs"
         style={{ left: menuPos.x, top: menuPos.y, ...(menuMax ? { maxHeight: menuMax, overflowY: "auto" as const } : {}) }}
       >
-        {bulk ? (
+        {bulk && (
           <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-muted-foreground border-b border-border mb-1">
             {count} selected
           </div>
-        ) : (
+        )}
+        {/* Mark done is the FIRST item, for one mail and for a selection. */}
+        {onMarkDone && (
+          <>
+            <CtxItem
+              icon={themedIcon("Check")}
+              label={markDoneItemLabel(Boolean(bulk), count)}
+              onClick={() => run(onMarkDone)}
+            />
+            <CtxDivider />
+          </>
+        )}
+        {!bulk && (
           <>
             <CtxItem icon={themedIcon("Reply")} label="Reply" onClick={() => run(() => onReply("reply"))} />
             <CtxItem icon={themedIcon("ReplyAll")} label="Reply All" onClick={() => run(() => onReply("reply-all"))} />

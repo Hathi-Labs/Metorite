@@ -85,6 +85,9 @@ EXPECTED_WITHHELD: dict[str, frozenset[str]] = {
         # RX-1 (D169): the four record writes stay, each behind its own card.
         "web_search", "fetch_page", "run_workflow",
         "save_memory", "save_note",
+        # Task 3953: the approve of a mapping plan is class C and approves the
+        # field map of the whole org. No owner decision keeps it in a held run.
+        "crm_approve_mapping_plan",
     }),
     "projects-assistant": frozenset({
         "web_search", "fetch_page", "save_memory", "save_note",

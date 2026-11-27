@@ -120,7 +120,7 @@ def test_the_flag_has_one_reader() -> None:
     )
     assert readers == [
         "apps/services/gateway/gateway/routes/crm/flags.py",
-        "packages/acb_common/acb_common/settings.py",
+        "packages/acb_common/acb_common/flag_registry.py",
     ]
 
 

@@ -1347,8 +1347,12 @@ class TestTheLearningFlagOff:
         assert (made, keys) == ([], [])
         # Non-vacuity: the same store, with the org listed, changes the answer.
         monkeypatch.setattr(get_settings(), "my_day_learn_orgs", ORG)
-        assert json.dumps(run_feed(user), default=str) != before
+        learned = run_feed(user)
+        assert json.dumps(learned, default=str) != before
         assert made == ["prefs", "counts"] and keys
+        # LOOP-4b (W1): each card of a listed org says why, and no card before.
+        assert "why_seen" not in before
+        assert learned["cards"] and all(c["why_seen"] for c in learned["cards"])
 
     def test_the_score_of_a_provider_card_holds_no_affinity(self):
         """Only the state join adds the member's term, so a card with no

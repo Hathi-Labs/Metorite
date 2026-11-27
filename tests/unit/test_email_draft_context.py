@@ -167,6 +167,7 @@ async def test_resolve_draft_replace_when_unmodified() -> None:
     db = AsyncMock()
     db.execute.side_effect = [
         _one(SimpleNamespace(id="d1", provider_message_id="pd1",
+                             internet_message_id=None,  # task 4100
                              body_text="Hi there,\n\nThanks!\n\nBest")),
         _one(SimpleNamespace(draft_text="Hi there,\n\nThanks!\n\nBest")),
         MagicMock(),  # DELETE

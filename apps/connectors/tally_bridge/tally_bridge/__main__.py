@@ -321,7 +321,7 @@ def _link_command(args: argparse.Namespace) -> int:
         settings = _stores(args)[0].load()
         if args.command == "pair":
             return linkcli.do_pair(args, settings, store)
-        return linkcli.do_unlink(settings, store)
+        return linkcli.do_unlink(settings, store, delete_copy=_copy_deleter(args, settings))
     except SettingsError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -361,6 +361,16 @@ def _uninstall_windows(args: argparse.Namespace, runner: Any = None) -> int:
         CopyStore(copy_dir, DevFileKeyProvider("")).delete_all()
     print("Removed the sign-in task, the firewall rule, the stored secrets and the local copy.")
     return 0
+
+
+def _copy_deleter(args: argparse.Namespace, settings: Settings) -> Any:
+    """TLY-4: the delete of the local copy, or None when the copy is off or its
+    key is missing (then the copy cannot be read and ``delete-copy`` clears it)."""
+    try:
+        copy = _copy_store(args, settings)
+    except SettingsError:
+        return None
+    return copy.delete_all if copy is not None else None
 
 
 def _unlink_quietly(args: argparse.Namespace, settings_store: SettingsStore) -> None:
@@ -508,7 +518,17 @@ def _serve(args: argparse.Namespace, stop: Any = None, need_secret: bool = True)
     server = uvicorn.Server(uvicorn.Config(app, **_server_options(settings)))
     _awake_while(
         settings.keep_awake,
-        lambda: asyncio.run(_serve_with_copy(server, reader, copy, live, stop, link)),
+        lambda: asyncio.run(
+            _serve_with_copy(
+                server,
+                reader,
+                copy,
+                live,
+                stop,
+                link,
+                controller.copy_allowed if controller is not None else None,
+            )
+        ),
         awake=awake,
     )
     return 0
@@ -556,6 +576,7 @@ async def _serve_with_copy(
     live: Any,
     stop: Any = None,
     link: Any = None,
+    copy_allowed: Any = None,
 ) -> None:
     """Run the server, and the copy loop beside it when the copy is on. With
     *stop* (a ``threading.Event``), the server ends when it is set: the
@@ -563,7 +584,7 @@ async def _serve_with_copy(
     loop runs beside them, and it ends with the server."""
     from tally_bridge.localcopy.schedule import run_forever
 
-    loop_task = asyncio.create_task(run_forever(reader, copy, live)) if copy else None
+    loop_task = asyncio.create_task(run_forever(reader, copy, live, copy_allowed)) if copy else None
     link_stop = asyncio.Event()
     stop_task = (
         asyncio.create_task(_stop_when(stop, server, link_stop.set)) if stop is not None else None

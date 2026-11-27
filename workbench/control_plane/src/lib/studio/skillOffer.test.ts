@@ -12,6 +12,9 @@
  * - return `read.enabled` alone from `provenSolo`: "solo needs proof";
  * - drop `!prompt.typed` from `offerAsks`: "a prompt with no typed mark gives none";
  * - set `MIN_CALLS` to 2: "two calls give none";
+ * - fold a repeated tool in `mapCalls` again (a `seen` set): "each call is its own row and step";
+ * - read a target from `call.args` with no id shape (`skillDraft.targetOf`): the marker tests;
+ * - drop the `skillRan` line of `skillOffer`: "task 3830".
  * - return true at the end of `succeededCall`: "each plain-text refusal gives none";
  * - match a line mark with `text.includes(mark)`: "a mark counts only at its fixed place";
  * - drop the count of "'): " of `workflowSucceeded`: "a run whose name, error
@@ -40,7 +43,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { soloRoom } from "@/lib/rooms";
 
 import { NAME_TAKEN, WORDS } from "./skillErrors";
-import { starterFor } from "./skillStarter";
+import { jobDescription, jobInstructions, jobName } from "./skillDraft";
 import type { CatalogAction } from "./skillsApi";
 import {
   MIN_CALLS,
@@ -84,6 +87,7 @@ const WF = "0f1e2d3c-4b5a-4968-8776-655443322110";
 const WF2 = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
 const PKG = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d";
 const PAGE = "7c6d5e4f-3a2b-4c1d-9e8f-7a6b5c4d3e2f";
+const PAGE2 = "2f3e4d5c-6b7a-4980-9a1b-0c1d2e3f4a5b";
 const MARKER = "ZZ-INJECTED-MARKER-ZZ";
 const WORDS_TYPED = "Find the onboarding page and propose a short summary page";
 
@@ -140,13 +144,18 @@ describe("rule 4: three mapped calls give one offer", () => {
     expect(offer).not.toBeNull();
     expect(offer!.actions.map((a) => a.id)).toEqual(["knowledge.list_spaces", "knowledge.get_page", "knowledge.propose"]);
     expect(offer!.actions.map((a) => a.cls)).toEqual(["A", "A", "B"]);
-    const fields = starterFor(WORDS_TYPED);
+    const steps = [
+      { tool: "list_spaces", target: "" },
+      { tool: "read_page", target: PAGE },
+      { tool: "propose_page", target: "" },
+    ];
+    const description = jobDescription(WORDS_TYPED, steps);
     expect(offer!.draft).toEqual({
-      name: fields.name,
-      description: fields.description,
+      name: jobName(WORDS_TYPED),
+      description,
       body: {
-        description: fields.description,
-        instructions: fields.instructions,
+        description,
+        instructions: jobInstructions(WORDS_TYPED, steps),
         actions: ["knowledge.list_spaces", "knowledge.get_page", "knowledge.propose"],
       },
     });
@@ -157,11 +166,74 @@ describe("rule 4: three mapped calls give one offer", () => {
     expect(skillOffer(turn({ calls }), CATALOG, false)?.actions).toHaveLength(3);
   });
 
-  it("a repeated action is one action of the draft, in the order of its first call", () => {
-    const calls = [call("read_page"), call("list_spaces"), call("read_page"), call("propose_page")];
-    expect(skillOffer(turn({ calls }), CATALOG, false)?.draft.body.actions).toEqual([
-      "knowledge.get_page", "knowledge.list_spaces", "knowledge.propose",
+  it("a repeated action is one action of the skill, in the order of its first call, and each call is its own row and step (task 3832)", () => {
+    const calls = [call("read_page", { page_id: PAGE }), call("list_spaces"), call("read_page", { page_id: PAGE2 }), call("propose_page")];
+    const offer = skillOffer(turn({ calls }), CATALOG, false);
+    expect(offer?.draft.body.actions).toEqual(["knowledge.get_page", "knowledge.list_spaces", "knowledge.propose"]);
+    // Four calls, four rows, in call order. The second read is no fold.
+    expect(offer?.actions.map((a) => [a.id, a.target])).toEqual([
+      ["knowledge.get_page", PAGE], ["knowledge.list_spaces", ""], ["knowledge.get_page", PAGE2], ["knowledge.propose", ""],
     ]);
+    const steps = offer!.draft.body.instructions.split("\n").filter((l) => /^\d+\. /.test(l));
+    expect(steps).toEqual([
+      `1. Read page ${PAGE} (tool read_page)`,
+      "2. List spaces (tool list_spaces)",
+      `3. Read page ${PAGE2} (tool read_page)`,
+      "4. Propose page (tool propose_page)",
+    ]);
+  });
+
+  it("a turn of list spaces, read page, read page gives three rows and three steps (task 3832)", () => {
+    const calls = [call("list_spaces"), call("read_page", { page_id: PAGE }), call("read_page", { page_id: PAGE2 })];
+    const offer = skillOffer(turn({ calls }), CATALOG, false);
+    expect(offer?.actions).toHaveLength(3);
+    expect(offer?.draft.body.actions).toEqual(["knowledge.list_spaces", "knowledge.get_page"]);
+    expect(offer?.draft.body.instructions).toContain(`3. Read page ${PAGE2} (tool read_page)`);
+  });
+
+  it("MIN_CALLS counts calls, not distinct tools: three reads of one tool give an offer", () => {
+    const calls = [call("read_page", { page_id: PAGE }), call("read_page", { page_id: PAGE2 }), call("read_page", { page_id: PAGE })];
+    const offer = skillOffer(turn({ calls }), CATALOG, false);
+    expect(offer?.actions).toHaveLength(3);
+    expect(offer?.draft.body.actions).toEqual(["knowledge.get_page"]);
+  });
+});
+
+describe("task 3829: the saved draft has a short name, a description and numbered steps", () => {
+  it("the demo sentence gives a short name with no question mark, and no empty placeholder", () => {
+    const words = "Please look through the knowledge spaces?";
+    const offer = skillOffer(turn({ prompt: { words, typed: true, byViewer: true } }), CATALOG, false);
+    expect(offer?.draft.name).toBe("Look through the knowledge spaces");
+    expect(offer?.draft.description).toContain("look through the knowledge spaces");
+    expect(offer?.draft.description).toMatch(/Use this when/);
+    const text = JSON.stringify(offer);
+    expect(text).not.toContain("?");
+    expect(offer?.draft.body.instructions).not.toMatch(/^1\. $/m);
+    expect(offer?.draft.body.instructions).not.toMatch(/^- $/m);
+  });
+
+  it("a three-call turn gives one numbered step for each call, with the target named", () => {
+    const calls = [call("list_spaces"), call("read_page", { page_id: PAGE }), call("read_page", { page_id: PAGE2 })];
+    const instructions = skillOffer(turn({ calls }), CATALOG, false)!.draft.body.instructions;
+    const steps = instructions.split("\n").filter((l) => /^\d+\. /.test(l));
+    expect(steps).toHaveLength(3);
+    expect(steps[1]).toContain(PAGE);
+    expect(steps[2]).toContain(PAGE2);
+  });
+
+  it("the name is at most five words, and the saved body carries it", () => {
+    const words = "Could you find the onboarding page for the new hire and then propose a short summary page?";
+    const offer = skillOffer(turn({ prompt: { words, typed: true, byViewer: true } }), CATALOG, false)!;
+    expect(offer.draft.name.split(" ").length).toBeLessThanOrEqual(5);
+    expect(saveInput(offer, offer.draft.name)?.name).toBe(offer.draft.name);
+  });
+});
+
+describe("task 3830: no offer on a turn that ran a saved skill", () => {
+  it("a matched skill shows none, an unknown answer shows none, and no match shows the offer", () => {
+    expect(skillOffer(turn(), CATALOG, false, false)).not.toBeNull();
+    expect(skillOffer(turn(), CATALOG, false, true)).toBeNull();
+    expect(skillOffer(turn(), CATALOG, false, null)).toBeNull();
   });
 });
 
@@ -442,7 +514,7 @@ describe("no argument and no result reaches the draft", () => {
 
   it("mapCalls keeps the title of the catalog row, never a word of the call", () => {
     const rows = mapCalls([call("read_page", { title: MARKER })], CATALOG);
-    expect(rows).toEqual([{ id: "knowledge.get_page", title: "Read one page, with its body, versions and links.", cls: "A" }]);
+    expect(rows).toEqual([{ id: "knowledge.get_page", title: "Read one page, with its body, versions and links.", cls: "A", tool: "read_page", target: "" }]);
   });
 });
 

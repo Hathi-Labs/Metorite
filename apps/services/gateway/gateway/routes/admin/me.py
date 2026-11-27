@@ -25,6 +25,7 @@ from acb_common import get_logger
 from acb_common.app_manifests.shell_manifest import load_vocabulary
 from acb_common.guide_flags import guide_allowed
 from fastapi import APIRouter, Body, Depends, HTTPException
+from gateway.agent_lenses_flag import agent_lenses_allowed
 from gateway.chat_session_member import pin_allowed
 from gateway.chat_topic import topics_allowed
 from gateway.module_runs import module_runs_allowed
@@ -549,7 +550,8 @@ _SET_BY_MODE = {
 #: tab on an older bundle spreads the whole answer back into its save, so the
 #: PUT drops these before it validates, and never stores them.
 READ_ONLY_ANSWER_KEYS: tuple[str, ...] = (
-    "guide", "module_runs", "skill_offer", "chat_pin", "chat_topics")
+    "guide", "module_runs", "skill_offer", "chat_pin", "chat_topics",
+    "agent_lenses")
 
 
 def _server_stamp() -> str:
@@ -601,7 +603,7 @@ def stored_shell(raw: Any, installs: bool = False) -> dict[str, Any]:
 
 
 def _answer(layout: dict[str, Any], user: UserContext) -> dict[str, Any]:
-    """The layout, and five facts of the server about the session's org.
+    """The layout, and six facts of the server about the session's org.
 
     ``guide`` is true when ``GUIDE_ORGS`` holds it (WS-OB GD-5a).
     ``module_runs`` is true when ``MODULE_RUN_ORGS`` holds it (WS-STU
@@ -612,9 +614,10 @@ def _answer(layout: dict[str, Any], user: UserContext) -> dict[str, Any]:
     ``chat_pin`` is true when ``CHAT_PIN_ORGS`` holds it (WS-CO CO-11), and the
     chat list shows Pin and the Pinned group only then. ``chat_topics`` is
     true when ``CHAT_TOPICS_ORGS`` holds it (WS-CO CO-2b), and the chat list
-    shows the topic groups and the chat shows the topic chip only then. None
-    of the five is a fact of the layout, so ``ShellPrefs`` refuses each in a
-    body."""
+    shows the topic groups and the chat shows the topic chip only then.
+    ``agent_lenses`` is true when ``AGENT_LENSES_ORGS`` holds it (WS-MCP
+    AMR-1), and the Agents view draws its new lenses only then. None of the six
+    is a fact of the layout, so ``ShellPrefs`` refuses each in a body."""
     org = getattr(user, "organization_id", None)
     bound = str(org) if org else None
     return {
@@ -624,6 +627,7 @@ def _answer(layout: dict[str, Any], user: UserContext) -> dict[str, Any]:
         "skill_offer": studio_allowed(bound) and skill_offer_allowed(bound),
         "chat_pin": pin_allowed(bound),
         "chat_topics": topics_allowed(bound),
+        "agent_lenses": agent_lenses_allowed(bound),
     }
 
 
@@ -797,7 +801,7 @@ async def put_my_shell(
     keep: tuple[str, ...] = ()
     if body is not None:
         # An old tab sends back the answer it read, ``guide``, ``module_runs``,
-        # ``skill_offer``, ``chat_pin`` and ``chat_topics`` included.
+        # ``skill_offer``, ``chat_pin``, ``chat_topics`` and ``agent_lenses`` included.
         body = {k: v for k, v in body.items() if k not in READ_ONLY_ANSWER_KEYS}
         # The hello route is the ONLY writer of ``buddy_hello_at`` (BUD-1).
         # A client PUT never claims it, so it never blocks the hello.
