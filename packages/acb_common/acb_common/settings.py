@@ -966,6 +966,13 @@ class Settings(BaseSettings):
     # Reader: `acb_common.studio_residency.residency_on`.
     # The flip is the owner's (`enforcement-flip`). Spec: ai_studio.md J10.
     studio_residency_orgs: str = ""
+    # WS-MDC CC-5a: FOCUS_LOG_ORGS lists the org ids that may use the
+    # focus-session log (/projects/my/focus-sessions). `*` opens every org.
+    # Empty opens none, and each route then answers 404 before any database
+    # work. Reader: `gateway.routes.projects.flags.focus_log_allowed`. A flip
+    # on a box is gate `enforcement-flip`. Spec: my_day_command_centre.md
+    # section 9.3.
+    focus_log_orgs: str = ""
     # WS-OB GD-5a: GUIDE_ORGS lists the org ids whose members see the entries
     # of the guide's tour (the welcome button and the account menu row). `*`
     # opens every org. Empty opens none. Reader: `acb_common.guide_flags.

@@ -1,8 +1,8 @@
 # My Day command centre — capture, plan, start, focus and close from one page (WS-MDC)
 
-**Product:** Metorite · **Feature:** My Day runs the whole day of one member · **Updated:** 2026-11-07 · **Owner:** vjvarada
+**Product:** Metorite · **Feature:** My Day runs the whole day of one member · **Updated:** 2026-11-27 · **Owner:** vjvarada
 
-**Status:** ✅ **ACTIVE** (owner decision 2026-11-07, task 1946). No slice is built. The owner approved MD-Q1 to MD-Q8 as recommended, and added the "Needs you" tabs (D-MD-9).
+**Status:** ✅ **ACTIVE** (owner decision 2026-11-07, task 1946). Built on main: CC-1, CC-2 (dark, `TODAY_RULE_ORGS`), CC-4 and CC-11. CC-5a, the server half of the focus-session log, is built dark behind `FOCUS_LOG_ORGS` (task 1972, PR 1824, migration 509). The owner approved MD-Q1 to MD-Q8 as recommended, and added the "Needs you" tabs (D-MD-9).
 
 **Verified against code on 2026-11-07** at `origin/main` `f2671c706`. Each anchor in §2 comes from the research on task 1946. Re-check each anchor at dispatch.
 
@@ -327,7 +327,7 @@ CC-5 ships in two parts. **CC-5a** is the server log. **CC-5b** is the check-in 
 
 **What exists.** One `actual_start` and `actual_end` pair on `pm_task_personal` (`infra/postgres/187`). Each session writes over the pair. No row holds a session, a pause or an outcome. `estimate-stats` learns from the pair (`routes/projects/planning.py:187-199`).
 
-**CC-5a, storage (migration 350, expand only).** A new table `focus_sessions`:
+**CC-5a, storage (migration 509, expand only).** A new table `focus_sessions`:
 
 - `id uuid` primary key, `member_email text NOT NULL`, and `task_id uuid NOT NULL REFERENCES pm_tasks(id) ON DELETE CASCADE`. A deleted task takes its sessions with it.
 - `organization_id uuid NOT NULL REFERENCES organization(id) DEFAULT current_setting('app.tenant_id', true)::uuid`, in the idiom of migration 340. A guarded `DO` block enables and forces RLS, with the policy `focus_sessions_tenant_isolation` on `app.tenant_id` for USING and WITH CHECK. `test_tenant_coverage.py` and `test_tenancy_boundary.py` must pass with no exemption.
@@ -338,7 +338,7 @@ CC-5 ships in two parts. **CC-5a** is the server log. **CC-5b** is the check-in 
 - A partial unique index on `(organization_id, member_email) WHERE ended_at IS NULL`. A member has at most one open session.
 - The DDL is idempotent, as `infra/postgres/README.md` asks.
 
-A new table can have NOT NULL columns and defaults, because no old code reads it (R6). The build books a number above main's highest, with reserve_migration.sh. CC-2 holds 507. Re-check at merge (R1).
+A new table can have NOT NULL columns and defaults, because no old code reads it (R6). The build books a number above main's highest, with reserve_migration.sh. CC-2 holds 507. CC-5a holds 509, booked on 2026-11-27. Re-check at merge (R1).
 
 **CC-5a, privacy.** A session row belongs to its member. Every route reads and writes only the rows of the session's member. Identity comes from the session, never from the request (R5). A manager sees no other member's minutes (D-MD-5).
 
@@ -349,8 +349,12 @@ The RLS of the table is tenant RLS only, as on `pm_task_personal`. The routes fi
 - `POST /projects/my/focus-sessions` starts a session for a task that the member can see. A task that the member cannot see answers 404. In one transaction, it ends any open session of the member with the outcome `replaced`, then inserts the new row. On a unique violation of the open-session index, it retries once.
 - `PATCH /projects/my/focus-sessions/{id}` pauses, resumes, extends (`+10 min` moves `planned_end`) or ends a session with an outcome. Only the session's member can write it.
 - `GET /projects/my/focus-sessions?day=` lists the member's sessions of one local day, with the minutes of each and the total. The minutes are the end minus the start minus the paused seconds. The day is the member's local day, in the zone that the Today predicate of CC-2 uses.
-- **Auto close.** No job runs. A read or a start first runs ONE statement: `UPDATE … SET ended_at = planned_end, outcome = 'auto_closed' WHERE` the member's row is open and `planned_end` is more than 15 minutes ago. A second reader at the same time updates no row. Never read first and then write.
-- **The overlay pair.** The routes own the `actual_start` and `actual_end` stamps of a session: a start stamps `actual_start`, and an end stamps `actual_end`. A replaced session stamps the end of its own task. An auto-closed session stamps `planned_end`. Until CC-5b, no client calls these routes, so the room's own stamp stays the only writer. CC-5b removes the room's stamp in the same change that calls the routes. So the two never write the same pair.
+- **Auto close.** No job runs. Each read, each start and each PATCH first runs ONE statement, `AUTO_CLOSE_SQL` in `focus_sessions.py`. It writes `outcome = 'auto_closed'` on the member's open row in two cases:
+  1. The timer runs, and `planned_end` is more than 15 minutes ago. The session ends at `planned_end`.
+  2. A pause runs for more than 60 minutes. The session ends at `paused_at`.
+
+  A pause stops the timer. While a pause runs, the effective planned end is `planned_end + (now() - paused_at)`, and the 15-minute rule reads it. A resume adds the pause to `paused_seconds` and moves `planned_end` by the same length. A second reader at the same time waits on the row lock, finds `ended_at` set and updates no row. Never read first and then write.
+- **The overlay pair.** The routes own the `actual_start` and `actual_end` stamps of a session: a start stamps `actual_start`, and an end stamps `actual_end`. A replaced session stamps the end of its own task. An auto-closed session stamps its end: `planned_end`, or `paused_at` after a long pause. Until CC-5b, no client calls these routes, so the room's own stamp stays the only writer. CC-5b removes the room's stamp in the same change that calls the routes. So the two never write the same pair.
 - Each new route gets a row in `skill_projects/manifest.py` as class X, with the reason "the tools come with CC-10", so `test_projects_chat_coverage.py` passes.
 
 **CC-5a, flag.** `FOCUS_LOG_ORGS`, default empty, reloaded by SIGHUP. With it off, each route answers 404 before any database work, and nothing writes the overlay. The flag work:

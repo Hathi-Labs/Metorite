@@ -521,6 +521,11 @@ Its one reader is `gateway.retrieval.find.find_allowed`, and each search
 asks it. A reload applies a change. The flip is AGENT-SAFE under the
 `enforcement-flip` grant, after the FIND-1 eval.
 
+`FOCUS_LOG_ORGS` opens the focus-session log of My Day for an org
+(`my_day_command_centre.md` §9.3). With the org off the list, each
+`/projects/my/focus-sessions` route answers 404 before any database work. A
+reload applies it. The flip stays OWNER-GATE (`enforcement-flip`).
+
 `GITHUB_APP_ORGS` turns the Metorite GitHub App on for each named org
 (`agent_coordination.md` SW-53). `GITHUB_APP_ENABLED` stays the master, and a
 reload does not apply the master. With the master on, an empty list turns
