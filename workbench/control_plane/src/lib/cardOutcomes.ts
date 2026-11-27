@@ -42,7 +42,7 @@ export const CARD_OUTCOME_TEXTS: Readonly<Record<CardOutcome, CardOutcomeText>> 
   "no card": { lead: "Not shown", happened: "a card cannot show here, so nothing was done.", next: "Tell the member that this needs their approval on a card. Ask them to ask for it again in the Metorite web app, where a card can show." },
   "another member answered": { lead: "Answered by another member", happened: "someone other than the member who asked answered the card, so nothing was done.", next: "Tell the member that only they can approve this card. Ask whether to show it again." },
   parked: { lead: "Parked", happened: "the card waits in the chat for the member's answer, and nothing was done yet.", next: "Tell the member that the card waits for them. Do not say that it is done." },
-  "changed since": { lead: "Changed since the card", happened: "the item changed after the card showed, so nothing was done.", next: "Read the item again. Then show a new card with what is true now." },
+  "changed since": { lead: "Changed since the card", happened: "the item changed after the card showed, so nothing was done.", next: "Tell the member what changed. Show a new card only if the member asks for it." },
 };
 
 const OUTCOMES = Object.keys(CARD_OUTCOME_TEXTS) as CardOutcome[];
@@ -80,6 +80,19 @@ export const CARD_OUTCOME_MEMBER_LINES: Readonly<Record<CardOutcome, string>> = 
 };
 
 /**
+ * Task 3978 (`email_app_master_plan.md` §18.13.1): the text of a card that the
+ * member declined and then answered "Delete it" for a draft that the chat
+ * saved (`ask_tools.DECLINED_DRAFT`). The lead stays "Declined", so the outcome
+ * is still "declined". What happened differs: nothing was sent or saved, and
+ * the act sentence says what became of the draft. So the member line never
+ * says "nothing was changed" over a delete. `test_email_draft_decline.py`
+ * holds the words equal to the Python ones.
+ */
+export const DECLINED_DRAFT: CardOutcomeText = { lead: "Declined", happened: "the member said no on the card, so nothing was sent or saved. The card is closed, and no decision is open.", next: "Tell the member what became of the draft, as the line before this step says. Do not say that the draft did not change. Show the card again only if the member asks for it." };
+/** Task 3978: the member line of `DECLINED_DRAFT`, before its act sentence. */
+export const DECLINED_DRAFT_MEMBER_LINE = "You said no, so nothing was sent or saved.";
+
+/**
  * The words of a result that a member reads. For a card outcome that is the
  * member line of the outcome (`CARD_OUTCOME_MEMBER_LINES`), then the act
  * sentence that the server put between what happened and the next step
@@ -96,10 +109,12 @@ export function memberLineOf(text: string | null | undefined): string {
   const t = raw.trim();
   const outcome = cardOutcomeOf(t);
   if (outcome === null) return raw;
-  const row = CARD_OUTCOME_TEXTS[outcome];
+  // Task 3978: a decline whose draft the member asked to delete has words of its own.
+  const draft = outcome === "declined" && t.startsWith(`${DECLINED_DRAFT.lead}: ${DECLINED_DRAFT.happened}`);
+  const row = draft ? DECLINED_DRAFT : CARD_OUTCOME_TEXTS[outcome];
   const head = `${row.lead}: ${row.happened}`;
   if (!t.startsWith(head)) return raw;
-  const line = CARD_OUTCOME_MEMBER_LINES[outcome];
+  const line = draft ? DECLINED_DRAFT_MEMBER_LINE : CARD_OUTCOME_MEMBER_LINES[outcome];
   const at = t.indexOf(row.next, head.length);
   const act = at >= 0 ? t.slice(head.length, at).trim() : "";
   return act ? `${line} ${act}` : line;

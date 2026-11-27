@@ -28,6 +28,6 @@ ExecStart=/bin/bash /opt/acb/app/deploy/smoke_chat.sh
 # Exit 1 (chat does not save) and exit 2 (the environment is wrong) leave the
 # unit FAILED. vps-health.yml reads `systemctl is-failed` for it and goes red.
 SuccessExitStatus=75
-# The script bounds itself at 935 s (its header gives the sum). This is a
+# The script bounds itself at 1175 s (its header gives the sum). This is a
 # backstop above that bound.
-TimeoutStartSec=1200
+TimeoutStartSec=1500

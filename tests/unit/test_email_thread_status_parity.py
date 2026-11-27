@@ -21,12 +21,21 @@ from gateway.routes.email.automation import runner as r
 # ── both paths must do the two thread-level writes ──────────────────────────
 
 
+def _with_seam(src: str) -> str:
+    """A path that calls ``project_and_reconcile`` (task 3995) does both writes
+    through it, so its source counts as part of the path."""
+    if "project_and_reconcile(" in src:
+        src += inspect.getsource(rz.project_and_reconcile)
+    return src
+
+
 def test_both_jobs_record_thread_status_and_reconcile_labels() -> None:
     """The status row and the labels are two views of ONE decision. A path that
     writes only one of them is how they came to disagree."""
-    live = inspect.getsource(r._run_rules_job)
-    backfill = (inspect.getsource(r._process_past_emails_job)
-                + inspect.getsource(r._project_thread_status_for_backfill))
+    live = _with_seam(inspect.getsource(r._run_rules_job)
+                      + inspect.getsource(r._project_and_stamp))
+    backfill = _with_seam(inspect.getsource(r._process_past_emails_job)
+                          + inspect.getsource(r._project_thread_status_for_backfill))
     for name, src in (("live", live), ("backfill", backfill)):
         assert "project_reply_status_from_matches" in src, (
             f"{name} path no longer records Reply Zero thread status"
@@ -40,7 +49,7 @@ def test_the_periodic_classifier_also_reconciles() -> None:
     """_maybe_classify_threads wrote the status row but never reconciled the
     labels — 68 threads on the live account ended up with messages disagreeing
     with each other."""
-    src = inspect.getsource(rz._maybe_classify_threads)
+    src = _with_seam(inspect.getsource(rz._maybe_classify_threads))
     assert "project_reply_status_from_matches" in src
     assert "_reconcile_thread_labels" in src, (
         "the periodic classifier no longer collapses stale conversation labels"

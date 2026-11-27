@@ -68,6 +68,8 @@ __all__ = [
     "response_body",
     "route_template",
     "safe_detail",
+    "scrub_text",
+    "strip_kind_prefix",
 ]
 
 #: The first word of every refusal the model reads. The instructions name it.
@@ -123,6 +125,50 @@ class GatewayRefusal(RuntimeError):
         self.fields = fields
         self.fixable = fixable
         self.route = route
+
+
+#: The kinds that ``search_company`` prints before a colon in a ``full_id``
+#: line (``task:<id>``). ``gateway/retrieval/sources.py`` makes them.
+SEARCH_KINDS = frozenset(
+    {"task", "email", "person", "lead", "deal", "contact", "company",
+     "artifact", "whatsapp", "page", "studio"}
+)
+
+
+_ID_LABEL = re.compile(r"^id\s*=\s*", re.IGNORECASE)
+
+
+def strip_id_label(value: Any) -> str:
+    """*value* without the ``id=`` label that the list tools print (task 3882).
+
+    It trims space and quotes, cuts one leading ``id=`` (any case, space
+    allowed), and trims again. It changes nothing else.
+    """
+    text = str(value if value is not None else "").strip().strip("\"'`").strip()
+    text = _ID_LABEL.sub("", text, count=1)
+    return text.strip().strip("\"'`").strip()
+
+
+def strip_kind_prefix(value: Any, *own: str, read_tool: str = "search_company") -> str:
+    """*value* without a known ``kind:`` prefix of the tool's own kind (HRD-2).
+
+    ``search_company`` prints ``full_id: task:<id>`` and the model copies the
+    whole line. A prefix that matches one of *own* is cut. A known prefix of
+    another kind is a refusal that names the kind and a read tool. Any other
+    text comes back as it is, trimmed, for the caller's own id check.
+    """
+    raw = str(value or "").strip()
+    head, sep, rest = raw.partition(":")
+    kind = head.strip().lower()
+    if not sep or kind not in SEARCH_KINDS:
+        return raw
+    if kind in own:
+        return rest.strip()
+    takes = f"a {' or '.join(own)} id" if own else "another kind of id"
+    raise GatewayRefusal(
+        f"{raw[:60]!r} is the id of a {kind}, and this tool takes {takes}. "
+        f"Get the right id from {read_tool}."
+    )
 
 
 def data(value: Any) -> str:
@@ -229,7 +275,18 @@ def safe_detail(
     named = tuple(dict.fromkeys(fields))
     if any(marker in text.lower() for marker in _LEAK_MARKERS):
         return "", named
-    text = _URL.sub("<link removed>", text)
+    return scrub_text(text, member, limit=limit), named
+
+
+def scrub_text(text: str, member: str = "", *, limit: int = DETAIL_MAX) -> str:
+    """*text* with each URL, DSN, bearer, key, JWT and absolute path removed,
+    and each email address except *member*'s own. The text is then one line,
+    cut to *limit* characters.
+
+    The cut comes last, so it never leaves half of a key. :func:`safe_detail`
+    uses it for the gateway's words. ``orchestrator._maf_mcp`` uses it for the
+    error text of an outside MCP server (task 3896)."""
+    text = _URL.sub("<link removed>", str(text or ""))
     for _rx in _SECRETS:
         text = _rx.sub("<secret removed>", text)
     own = member.strip().lower()
@@ -241,7 +298,7 @@ def safe_detail(
     text = " ".join(text.split())
     if len(text) > limit:
         text = text[: limit - 1].rstrip() + "…"
-    return text, named
+    return text
 
 
 #: A path segment that is an id, not a word of the route: it holds a digit,
@@ -342,6 +399,16 @@ def _one_line(text: str) -> str:
     return " ".join(str(text or "").split())
 
 
+#: ARC-2b (spec ``one_projects_app.md`` 9b.6 rule 2). The 409 detail of a task
+#: write into an archived project. ONE source: the gateway raises it
+#: (``projects.core``), the chat's refusal text and the MCP edge match it.
+ARCHIVED_PROJECT_REFUSAL = "This project is archived. Restore it to change its work."
+ARCHIVED_PROJECT_NEXT = (
+    "Ask the member to restore the project first, or work in a live project. "
+    "Do not try the same write again."
+)
+
+
 def refusal_text(exc: GatewayRefusal, voice: RefusalVoice) -> str:
     """The text the model reads for *exc*, in the shape of the module doc.
 
@@ -374,8 +441,10 @@ def refusal_text(exc: GatewayRefusal, voice: RefusalVoice) -> str:
             f"Fix the value for {', '.join(fields)}, and call the tool once more. "
             "If it is refused again, tell the member what the gateway said."
         )
-    lines = [f"{REFUSED} {what}"]
     detail = getattr(exc, "detail", "") or ""
+    if status == 409 and detail == ARCHIVED_PROJECT_REFUSAL:
+        nxt = ARCHIVED_PROJECT_NEXT
+    lines = [f"{REFUSED} {what}"]
     if detail:
         lines.append(f"Gateway said: {data(detail)}")
     lines.append(f"Next: {nxt}")
@@ -401,6 +470,21 @@ def is_refusal(value: Any) -> bool:
     return False
 
 
+def _record_auth_401(exc: GatewayRefusal, tool: str) -> None:
+    """The capture site C4 (``tool_failure_log.md`` §4.2): a 401 of the
+    gateway is our own service call that could not sign in. Every other
+    refusal is an answer (§4.1), or a 5xx that the gateway writes itself.
+    Hands ONE record to the one writer. Never raises, and changes no text."""
+    try:
+        from acb_common import failure_log
+
+        failure_log.record_tool_failure(
+            exc, source="chat_tool", error_code="auth_401", tool=tool,
+            **failure_log.run_fields())
+    except Exception as err:  # the class only: the refusal text stays
+        _log.debug("tool_refusals.capture_failed", error_type=type(err).__name__)
+
+
 def refusals_as_text(
     fn: Callable[..., Awaitable[Any]], voice: RefusalVoice,
 ) -> Callable[..., Awaitable[Any]]:
@@ -415,6 +499,9 @@ def refusals_as_text(
     The log line holds no detail and no message, because those can hold
     text that a member typed. A *fn* that is already wrapped comes back as
     it is.
+
+    A 401 also writes ONE failure record (TOF-2c, C4). The text does not
+    change.
     """
     if getattr(fn, WRAPPED_ATTR, False):
         return fn
@@ -431,6 +518,8 @@ def refusals_as_text(
                 status=getattr(exc, "status", None),
                 route=getattr(exc, "route", "") or "",
             )
+            if getattr(exc, "status", None) == 401:
+                _record_auth_401(exc, tool)  # C4 (TOF-2c)
             return refusal_text(exc, voice)
 
     setattr(wrapper, WRAPPED_ATTR, True)

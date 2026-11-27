@@ -205,7 +205,7 @@ _BASELINE: dict[str, _Entry] = {
         "acompletion_with_fallback calls litellm when ROUTER_SERVING_ENABLED "
         "is off (H-171), on a dev box only: elsewhere refuse_direct_arm raises "
         "first (task 3554). acompletion_stream_text does the same since task "
-        "3541: with routing on it takes one answer from the Router. Each of "
+        "3541: with routing on it streams from the Router (task 3542). Each of "
         "the two calls imports litellm and the verb, and token_counter is the "
         "fifth import [2449 S3]",
     ),
@@ -266,10 +266,8 @@ _BASELINE: dict[str, _Entry] = {
     # gateway. A new file, or a client with no provider, goes to GitHub.
     # Each row goes in 2449 S5, which removes every native Copilot session.
     "agents.py": _Entry(
-        {
-            "sdk agent_framework_github_copilot": 1, "sdk copilot": 1,
-            "client GitHubCopilotAgent": 1,
-        },
+        # Task 560 (H-211) took the ``copilot`` import of ``approve_all`` out.
+        {"sdk agent_framework_github_copilot": 1, "client GitHubCopilotAgent": 1},
         "The root agents.py builds one GitHubCopilotAgent [2449 S5]",
     ),
     "apps/agents/agent-app-builder/agents.py": _Entry(

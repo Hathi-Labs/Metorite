@@ -2,7 +2,7 @@
 
 Spec: ``project-docs/specs/personalization.md`` §19.4 and §19.10, and
 ``project-docs/specs/proactive_loop.md`` §5.3. Table: migration
-``member_action`` (453 at build). ``tests/unit/test_member_action_r8.py`` runs
+``member_action`` (510 after the merge renumber). ``tests/unit/test_member_action_r8.py`` runs
 this SQL on a real Postgres.
 
 **What a row is.** One act of one member: a send, a reply, a forward, a done,
@@ -23,10 +23,13 @@ OFF), when the act is in a shared mailbox (§19.4), or when the member turned
 ``learning`` off (D-PZ-7).
 
 **``via`` is the seam's word.** A route seam says ``app``. A chat card that
-calls the same route is also recorded as ``app`` by the route, and the card
-answer is its own row (``card_approve``, ``via=card``, ``gateway/card_act.py``,
-MM-1b). The two rows are by design. The card row has no features, so a habit
-never counts it with the route row.
+calls the same route is also recorded as ``app`` until MM-1b (task 3614) adds
+a card marker, so that one yes is one row.
+
+**A job is not the member.** A job that calls a route seam as the member, for
+example the send-later sweep, runs inside :func:`job_acts`. The writer then
+records nothing, because the member did not press anything at that time.
+Fence: ``tests/unit/test_member_action_writer.py`` section f.
 
 **Tenancy (R5).** The caller opens ``acb_common.db.tenant_session(org)`` and
 passes the session. The INSERT writes no ``organization_id``: the column
@@ -52,6 +55,9 @@ from __future__ import annotations
 import json
 import math
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 from sqlalchemy import text
@@ -124,6 +130,32 @@ PURGE_WHERE = (
 
 class ActError(ValueError):
     """The act does not fit the record. The message holds no value of the act."""
+
+
+#: True while a job acts as a member (:func:`job_acts`). Server state only:
+#: no request value can set it.
+_IN_JOB: ContextVar[bool] = ContextVar("member_actions_in_job", default=False)
+
+
+@contextmanager
+def job_acts() -> Iterator[None]:
+    """Mark the acts inside the block as the acts of a job, not of the member.
+    :func:`record_act` writes nothing inside it. The send-later sweep wraps
+    each send in it (``send_later._send_one``)."""
+    token = _IN_JOB.set(True)
+    try:
+        yield
+    finally:
+        _IN_JOB.reset(token)
+
+
+def sent_to(addresses: Any, refused: Any = ()) -> list[str]:
+    """The addresses of a send that the mail server took: each address with
+    an "@", less each address in *refused*. *refused* is the ``last_refused``
+    set of the SMTP provider, in lower case. Only the SMTP path fills it."""
+    gone = {str(a).strip().lower() for a in (refused or ())}
+    return [a for a in (addresses or ())
+            if isinstance(a, str) and "@" in a and a.strip().lower() not in gone]
 
 
 def org_of(user: Any) -> str:
@@ -285,13 +317,14 @@ async def record_act(db: Any, *, org: str, member: str, app: str, act: str,
     """Record one act of *member*. True when a row was written.
 
     *db* is the session of the caller, bound to *org* by
-    ``tenant_session``. It writes nothing, and answers False, when
-    ``MEMBER_ACTIONS_ORGS`` does not hold *org* or the member turned
-    ``learning`` off. It never raises: the log names the class of a failure
-    only, and a savepoint keeps the transaction of the caller usable.
+    ``tenant_session``. It writes nothing, and answers False, inside
+    :func:`job_acts`, when ``MEMBER_ACTIONS_ORGS`` does not hold *org*, or
+    when the member turned ``learning`` off. It never raises: the log names
+    the class of a failure only, and a savepoint keeps the transaction of the
+    caller usable.
     """
     try:
-        if not enabled_for(org):
+        if _IN_JOB.get() or not enabled_for(org):
             return False
         row = build_row(
             member=member, app=app, act=act, via=via, item_kind=item_kind,

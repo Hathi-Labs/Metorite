@@ -331,7 +331,7 @@ The owner chose the layered model on 2026-10-31 (STU-Q1). The layers grow in pow
 |---|---|---|---|
 | **1 · Manifest** | Objects, relations, product lines, views, workflows, permissions | Validated data. No code | A2, C1, D, E |
 | **2 · Rules** | Formula fields, roll-ups (stock on hand is the sum of the moves), state machines (a PO goes draft → approved → sent), constraints | A closed JSON tree with no I/O, no loops and a step cap | C6, C7a, C7b |
-| **3 · Logic modules** | Computation: an MRP run, a cost roll-up, reorder suggestions, a schedule | A typed function that the catalog serves as an action. It gets its input through the door and returns **proposed** writes. The platform applies them in one transaction, with an audit row and the member's card for class B or C | B4 first-party, B5 member-authored |
+| **3 · Logic modules** | Computation: an MRP run, a cost roll-up, reorder suggestions, a schedule | A typed function that the catalog serves as an action. It gets its input through the door and returns **proposed** writes. The platform applies them in one transaction, with an audit row and the member's card for class B or C. (Amended 2026-11-27 for a B5 module, task 3802, answer `55b542fc`.) The door holds each write of a B5 module for the member's card. The gateway runs each approved row as the member, one by one, not in one transaction (`agent_sandbox.md` §12.5) | B4 first-party, B5 member-authored |
 | **4 · Custom UI block** | A shop-floor screen, a barcode scanner, a 3D scene. D202 calls it a custom screen | Code from the UI kit, in a sandboxed frame in the viewer's browser, with the `--cc-*` tokens only. Every call goes through the door (§5.4) | L1, L4 |
 
 **Two kinds of logic module.** A **first-party** module (B4) is reviewed code in the repository, written by Metorite engineers. The MRP run of template K4 is one. A **member-authored** module (B5) runs only on the off-box sandbox, after SBX-9, because D127.2 keeps member code off the box. The workflow Module Studio (`workflows_app.md` §5) keeps its own scope and does not grow into this layer.
@@ -666,7 +666,7 @@ The skill creator replaces the Agent Workshop (D141). A member does not build a 
 3. **Try.** A test chat beside the draft runs the skill on a dry-run door: reads are real, writes and sends are simulated.
 4. **Test cases.** Each test is a prompt and the action it should call. The member saves a good try as a test in one click.
 5. **Publish.** Private first. Sharing with the organization needs an approval (§9).
-6. **Improve.** Mira proposes an edit from failed turns, with the evidence. The member approves the diff.
+6. **Improve.** Mira proposes an edit from failed turns, with the evidence. The member approves the diff. Row F12 of §14 (TOF-3a, task 3418) specifies the build. Its store (F12a) is built, and the writers and the repair are not.
 
 **States (F2a).** A skill is in one of four states. The route `PATCH /studio/skills/{id}/state` owns the moves, and `skills.TRANSITIONS` holds them:
 
@@ -682,7 +682,7 @@ The skill creator replaces the Agent Workshop (D141). A member does not build a 
 - A publish runs the catalog check again on the newest version. An action that the catalog no longer serves is 422.
 - **A new version of a published skill returns it to `draft`**, in the same transaction. So a published skill always runs a version that its owner published.
 - **Two moves at once.** A move reads the skill row `FOR UPDATE`. So a second move waits for the first one, reads the new state, and the table decides on that state. A move that the new state does not allow is 409.
-- No move changes the visibility. J2 adds the share, and until then a skill is private.
+- No move changes the visibility. The share of J2c (§14) changes it: the owner asks for one version, and a holder of `studio:publish` approves it. Other members then load that pinned version. Until an approval, a skill is private.
 
 **Format.** A skill exports as an Agent Skills folder (`SKILL.md`, its resources). So an outside agent such as Claude Code can load a company's skill over the MCP (F8). A `SKILL.md` can also be imported, and the importer keeps only actions that the catalog serves.
 
@@ -955,7 +955,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **B1c** | 🔨 BUILT, dark (2026-11-02) | STD | AGENT-SAFE | [row](ai_studio_rows/B1c.md) |
 | **B1b-1** | 🔨 BUILT (2026-11-14, task 3278) | HIGH | AGENT-SAFE | [row](ai_studio_rows/B1b-1.md) |
 | **B1b-2** | 🔨 BUILT (2026-11-14, task 3279) | HIGH | AGENT-SAFE | [row](ai_studio_rows/B1b-2.md) |
-| **B1b-3** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/B1b-3.md) |
+| **B1b-3** | 🔨 BUILT (2026-11-15, task 3280) | HIGH | AGENT-SAFE | [row](ai_studio_rows/B1b-3.md) |
 | **B2a** | 🔨 BUILT, dark (2026-11-01) | HIGH | AGENT-SAFE | [row](ai_studio_rows/B2a.md) |
 | **B2b-1** | 🔨 BUILT, dark (2026-11-02) | HIGH | AGENT-SAFE | [row](ai_studio_rows/B2b-1.md) |
 | **B2b-2** | 🔨 BUILT, dark (2026-11-11) | HIGH | AGENT-SAFE | [row](ai_studio_rows/B2b-2.md) |
@@ -990,6 +990,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **TOF-1b** | 🔨 BUILT, dark (2026-11-16, task 3411) | HIGH | AGENT-SAFE | [row](ai_studio_rows/TOF-1b.md) |
 | **TOF-1c** | 🔨 BUILT, dark (2026-11-16, task 3412) | HIGH | AGENT-SAFE | [row](ai_studio_rows/TOF-1c.md) |
 | **TOF-1d** | 🔨 BUILT, dark (2026-11-16, task 3413) | STD | AGENT-SAFE | [row](ai_studio_rows/TOF-1d.md) |
+| **TOF-5a** | 🔨 BUILT, dark: TOF-5a-1 (2026-11-18, task 3423). TOF-5a-2 open | HIGH | AGENT-SAFE | [row](ai_studio_rows/TOF-5a.md) |
 
 ### Group C — Objects
 
@@ -1105,6 +1106,7 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **AF-3b** | open | STD | AGENT-SAFE | [row](ai_studio_rows/AF-3b.md) |
 | **AF-4** | open | STD | AGENT-SAFE | [row](ai_studio_rows/AF-4.md) |
 | **AF-5** | open | STD | AGENT-SAFE | [row](ai_studio_rows/AF-5.md) |
+| **AF-5b** | open | STD | AGENT-SAFE | [row](ai_studio_rows/AF-5b.md) |
 | **AF-6** | open | STD | AGENT-SAFE | [row](ai_studio_rows/AF-6.md) |
 | **AF-7** | open | LOW | AGENT-SAFE | [row](ai_studio_rows/AF-7.md) |
 | **AF-8a** | open | STD | AGENT-SAFE | [row](ai_studio_rows/AF-8a.md) |
@@ -1127,8 +1129,11 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **E4** | open | STD | AGENT-SAFE | [row](ai_studio_rows/E4.md) |
 | **E5** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/E5.md) |
 | **E6** | open | LOW | AGENT-SAFE | [row](ai_studio_rows/E6.md) |
+| **E7c-1** | 🔨 BUILT (2026-11-15, task 3342) | STD | AGENT-SAFE | [row](ai_studio_rows/E7c-1.md) |
 | **E7** | open | STD | AGENT-SAFE | [row](ai_studio_rows/E7.md) |
+| **E7a** | 🔨 BUILT (2026-11-15, task 3341) | STD | AGENT-SAFE | [row](ai_studio_rows/E7a.md) |
 | **E7f** | 🔨 BUILT (2026-11-15, task 3382) | STD | AGENT-SAFE | [row](ai_studio_rows/E7f.md) |
+| **E7b** | 🔨 BUILT (2026-11-15, task 3340) | STD | AGENT-SAFE | [row](ai_studio_rows/E7b.md) |
 | **E8a** | 🔨 BUILT, dark (2026-11-13, task 3095) | HIGH | AGENT-SAFE | [row](ai_studio_rows/E8a.md) |
 | **E8b** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/E8b.md) |
 | **E8c** | open | STD | AGENT-SAFE | [row](ai_studio_rows/E8c.md) |
@@ -1140,6 +1145,9 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **E11** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/E11.md) |
 | **E12** | 🔨 E12a BUILT, dark (2026-11-13, task 2379), the rest open | HIGH | AGENT-SAFE | [row](ai_studio_rows/E12.md) |
 | **E12a** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/E12a.md) |
+| **E13a** | 🔨 BUILT (2026-11-13, task 3117) | HIGH | AGENT-SAFE | [row](ai_studio_rows/E13a.md) |
+| **E13b** | 🔨 BUILT, dark (2026-11-13, task 3118) | HIGH | OWNER-GATE | [row](ai_studio_rows/E13b.md) |
+| **E13c** | 🔨 Route and Save gate BUILT (task 3119), chat tool open | HIGH | AGENT-SAFE | [row](ai_studio_rows/E13c.md) |
 | **WFC-0** | open | LOW | AGENT-SAFE | [row](ai_studio_rows/WFC-0.md) |
 | **WFC-1** | open | LOW | AGENT-SAFE | [row](ai_studio_rows/WFC-1.md) |
 | **WFC-2** | open | STD | AGENT-SAFE | [row](ai_studio_rows/WFC-2.md) |
@@ -1153,6 +1161,8 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **WFC-5** | open | STD | AGENT-SAFE | [row](ai_studio_rows/WFC-5.md) |
 | **WFC-6** | open | LOW | AGENT-SAFE | [row](ai_studio_rows/WFC-6.md) |
 | **E12** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/E12-dup2.md) |
+
+**Open items for E13a to E13c (STB-6, task 2134).** All three are open. (1) The F13 `list_workflows` output is not in an `UntrustedFrame`. This is known debt. No row fixes it yet, and E13a does not touch it. (2) The room fence pins `PROD_BASE` = 56 and has zero slack. Any new floor tool breaks it. No test ties `_pack_base_count` to 56. (3) These rows have no D-number yet. The owner decision of 2026-11-13 (run answer 09bcb706, option `order_a`) gets one when a collision-free number is free. The research row `studio-builders.md` STB-6 is reference and owns no work.
 
 **The owner questions of the WFC rows (2026-11-14, task 3287).** Both are open.
 
@@ -1170,7 +1180,7 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **F2c** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/F2c.md) |
 | **F2d** | 🔨 BUILT, dark (2026-11-03) | HIGH | AGENT-SAFE | [row](ai_studio_rows/F2d.md) |
 | **F3** | 🔨 BUILT, dark (2026-11-11, Metorite task 1181) | HIGH | AGENT-SAFE | [row](ai_studio_rows/F3.md) |
-| **F4** | open | STD | AGENT-SAFE | [row](ai_studio_rows/F4.md) |
+| **F4** | F4a built 2026-11-18, F4b server built 2026-11-19 (dark, no cap set), UI open | STD | AGENT-SAFE | [row](ai_studio_rows/F4.md) |
 | **F5a** | 🔨 BUILT, dark (2026-11-13, task 1183) | STD | AGENT-SAFE | [row](ai_studio_rows/F5a.md) |
 | **F5b** | open | STD | AGENT-SAFE | [row](ai_studio_rows/F5b.md) |
 | **F5c** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/F5c.md) |
@@ -1183,6 +1193,7 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **F9** | open | LOW | AGENT-SAFE | [row](ai_studio_rows/F9.md) |
 | **F10** | 🔨 F10a BUILT (2026-11-12, Metorite task 1423) | HIGH | AGENT-SAFE | [row](ai_studio_rows/F10.md) |
 | **F11** | open | STD | AGENT-SAFE | [row](ai_studio_rows/F11.md) |
+| **F12** | F12a built 2026-11-20, F12b and F12c open | HIGH | AGENT-SAFE | [row](ai_studio_rows/F12.md) |
 
 ### Group G — The builder
 
@@ -1247,7 +1258,7 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **I3** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/I3.md) |
 | **I4** | open | LOW | AGENT-SAFE | [row](ai_studio_rows/I4.md) |
 | **I5** | 🔨 BUILT, dark: the backend seam only (2026-11-11) | STD | AGENT-SAFE | [row](ai_studio_rows/I5.md) |
-| **I6** | open | HIGH | OWNER-GATE | [row](ai_studio_rows/I6.md) |
+| **I6** | 🔨 FHIR map BUILT (2026-11-11), ABDM link open | HIGH | OWNER-GATE | [row](ai_studio_rows/I6.md) |
 | **I7** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/I7.md) |
 | **I8** | open | STD | AGENT-SAFE | [row](ai_studio_rows/I8.md) |
 | **I8a** | 🔨 BUILT, dark (2026-11-14), task 3168 | STD | AGENT-SAFE | [row](ai_studio_rows/I8a.md) |
@@ -1284,6 +1295,8 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **J2b-4b** | open | STD | see row | [row](ai_studio_rows/J2b-4b.md) |
 | **J2b-4** | open | STD | AGENT-SAFE | [row](ai_studio_rows/J2b-4.md) |
 | **J2b-5** | 🔨 BUILT, dark (2026-11-13, task 3103) | HIGH | AGENT-SAFE | [row](ai_studio_rows/J2b-5.md) |
+| **J2c** | 🔨 BUILT, dark (2026-11-18, task 3421) | HIGH | AGENT-SAFE | [row](ai_studio_rows/J2c.md) |
+| **J2d** | 🔨 BUILT, dark (2026-11-19, task 3765) | HIGH | AGENT-SAFE | [row](ai_studio_rows/J2d.md) |
 | **J3** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/J3.md) |
 | **J3a** | 🔨 BUILT, dark (2026-11-11, task 1201) | HIGH | AGENT-SAFE | [row](ai_studio_rows/J3a.md) |
 | **J3b** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/J3b.md) |
@@ -1610,7 +1623,7 @@ The same gates bind a skill (a tool set), a workflow and an app.
 | Stage | The gate | State |
 |---|---|---|
 | **Build** | The A2 validator, catalog actions only, no class X, the secret scan, the caps, the plan card (G2) | Built |
-| **Build** | Preview on sample data (G4), dry-run tests with no real write (F4) | G4: server built, client built (G4b). F4: not built |
+| **Build** | Preview on sample data (G4), dry-run tests with no real write (F4) | G4: server built, client built (G4b). F4a (the test shape, the pass rule, the hold-and-record middleware, the carry-forward of `tests`) built 2026-11-18. F4b (the run, the caps, the route, the flag) built 2026-11-19, dark behind `STUDIO_SKILL_TESTS_ORGS` with no credit cap set. The F4b UI is not built |
 | **Publish** | One immutable version (A4). A review of the manifest diff by a holder of `studio:publish` (J2) | Version built, review not built |
 | **Install** | The consent screen (J6): what the app reads, what it writes, what it sends, who sees it, its runtime kind and its sensitive fields | Not built |
 | **Run** | One door, the viewer's rights, approval by action class, the trust ladder (D131), a credit cap, the kill switch (J3), the audit row | Door and audit built for class A. The stop of a package is built dark (J3a). The reads of a run with no viewer are built dark (B6a). The rest are not built |
@@ -1653,9 +1666,9 @@ A new `runtime` key names one of four kinds. No key means `none`. The builder pi
 **Run-time rules that do not bend.**
 
 - **No network at run time.** D130.2 says that a step that can read Metorite data never gets a host. So `runtime` has no `hosts` key. A call to an outside API goes through `integration:<action>` or an MCP tool, and the platform holds the credential.
-- **Input in, proposed writes out.** The code gets one JSON input through the door. It holds no database credential and no token. It returns proposed writes, and the platform applies them (§3.7).
+- **Input in, held writes out.** The code gets one JSON input through the door. It holds no database credential and no token. (Amended 2026-11-27, task 3802, answer `55b542fc`.) It sends each write as a row of the door batch, `POST /sandbox/v1/batch`. The door holds the rows for the member's card. The gateway runs each approved row as the member, one by one (`agent_sandbox.md` §12.5).
 - **A restricted field does not enter a sandbox** unless the logic names it and the reviewer approves that name.
-- **The limits are ceilings, and they are the broker's** (`settings.py:1418-1436`): 1 CPU, 1 GiB of memory, 300 s, 256 processes, 2 GiB of disk. New: at most 5 MiB of input, 5 MiB of output and 5,000 proposed writes.
+- **The limits are ceilings, and they are the broker's** (`settings.py:1418-1436`): 1 CPU, 1 GiB of memory, 300 s, 256 processes, 2 GiB of disk. New: at most 5 MiB of input and 5 MiB of output. Writes follow the door: at most 25 rows in a batch, and 600 door calls in a step (`agent_sandbox.md` §12.5).
 - **Cost.** A step costs at least 1 credit (D130.4). No sandbox meter exists yet, so sandbox runs stay off until one does.
 
 **⚠️ Where it runs today: nowhere.** BH-3 and SBX-9 are on the same box, and SBX-9 is an owner gate. The true off-box step is SBX-10, on a hosted microVM service. It needs an account (SBX-G3) and a data processing agreement before tenant data goes there (SBX-Q7). Each box has 2 vCPU, about 7 GB and no `/dev/kvm`. So plan each Stage 2 and Stage 3 template at kind `none`.
@@ -1836,6 +1849,8 @@ The owner accepted choice 3 of task 2326 on 2026-11-08. Before it, the rules sat
 
 **The limits for each version (proposed).** Dynamic Apps sets 64 MB of heap, a 30 s run, a 1 MiB request and a 4 MiB response. It also sets 4 MiB of source, 2,000 files and 256 dependencies. The numbers below stay inside the ceilings that the spec already holds. They stay proposals until L6 measures them.
 
+**Status (L6a, task 2417).** The limits and the codes are data only, in `studio_limits.py`, `limits.ts` and `codeErrors.ts`, with a golden file. Only the source size has a refusal test today. The other limits wait on L1, L7, SBX-9 and B5. The code still holds `writes_per_call` 5000 until task 4085 changes it.
+
 | Limit | Screen (kind `browser`) | Server code (kinds `sandbox` and `packages`) | Ceiling today |
 |---|---|---|---|
 | Source of one version | 256 KiB in at most 100 files | 256 KiB in at most 100 files | `app_versions.files` holds 262,144 bytes (`agent_sandbox.md` §7.2) |
@@ -1844,7 +1859,7 @@ The owner accepted choice 3 of task 2326 on 2026-11-08. Before it, the rules sat
 | One call | No limit of its own. Each door call keeps the limits of the door | 30 s | 300 s (§19.3) |
 | Input of one call | 1 MiB for each door call | 1 MiB | 5 MiB (§19.3) |
 | Output of one call | 4 MiB for each door answer | 4 MiB | 5 MiB (§19.3) |
-| Proposed writes of one call | The class rules of the door (§3.2) | 5,000 | 5,000 (§19.3) |
+| Writes of one call | The class rules of the door (§3.2) | 25 rows in a batch | 25 rows in a batch, and 600 door calls in a step (`agent_sandbox.md` §12.5) |
 | Queue | 20 door calls a second for each frame | 16 calls for each runtime | None yet |
 | Warm runtimes | None | 1 for each org, and an idle runtime stops after 10 minutes | 1 container of this target for each org (`agent_sandbox.md` §5.6) |
 | Packages | The standard set only (§5.4) | 20 direct and 150 in all | §19.5 |

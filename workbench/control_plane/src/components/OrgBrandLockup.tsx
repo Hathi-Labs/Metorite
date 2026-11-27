@@ -33,6 +33,7 @@ import {
   lockup,
   logoBoxWidth,
   readCachedBranding,
+  safeLocalStorage,
   writeCachedBranding,
 } from "@/lib/orgBranding";
 import { useLogoMark } from "@/lib/logoMark";
@@ -66,10 +67,8 @@ export function invalidateOrgBranding(next?: OrgBranding): void {
 
 const listeners = new Set<(b: OrgBranding | null) => void>();
 
-/** `undefined` on the server — every storage helper is written to accept that. */
-function storage(): Storage | undefined {
-  return typeof window === "undefined" ? undefined : window.localStorage;
-}
+/** `undefined` on the server or when storage is blocked (H-206). */
+const storage = safeLocalStorage;
 
 export function useOrgBranding(): OrgBranding | null {
   const [branding, setBranding] = useState<OrgBranding | null>(cached);

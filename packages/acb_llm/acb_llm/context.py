@@ -441,8 +441,10 @@ async def _complete_with_fallback(
 # ── The three bounds of a model stream (WS-17 EM-T17 PR-A) ─────────────────
 # `email_app_master_plan.md` §17.3.7. Before them a stream had no timeout: a
 # provider that sent no chunk, or stopped half-way, held the email composer
-# open with no end (§17.1.3, cause S1). The Router's 120 s bound does not
-# cover this path, because it calls litellm directly (H-287).
+# open with no end (§17.1.3, cause S1). With routing off, this path calls
+# litellm directly, so no Router bound covers it (H-287). With routing on, it
+# streams through the Router (task 3542, `_routed_text`), and the same three
+# bounds hold there.
 #
 # A test makes a bound short by setting the constant. `_stream_text` reads
 # each one at call time for that reason. Fence: tests/unit/test_llm_stream_bounds.py.
@@ -518,11 +520,16 @@ async def acompletion_stream_text(
 
     No model-fallback chain here: a streaming caller has usually already
     surfaced partial output, so silently restarting on another model would
-    duplicate it. On failure the error propagates and the caller decides
-    (drafting falls back to its non-streaming path / neutral template).
+    duplicate it. On failure the error propagates and the caller decides.
+    The email drafters make no second model call. An interactive draft raises
+    with copy for the member (task 3541). The rule path returns its NO_DRAFT
+    sentinel. ``_llm_compose_assist`` raises for a Router refusal, an outage
+    or a stream timeout, and keeps the owner's own text for any other failure.
 
     Usage is emitted post-stream via ``litellm.stream_chunk_builder`` so
     streamed calls stay visible in observability like non-streamed ones.
+    With routing on, the call streams from our Router instead (task 3542,
+    :func:`_routed_text`), and the Console meters it.
 
     ``feature`` names the call, as :func:`acompletion_with_fallback` takes it.
 
@@ -590,54 +597,98 @@ async def _routed_text(
     on_delta: Any,
     source: str | None,
     extra: dict[str, Any],
+    first_chunk_s: float | None,
+    idle_s: float | None,
     total_s: float | None,
     job: str | None,
 ) -> tuple[str, str]:
-    """The streaming arm when routing is on: ONE answer from our Router.
+    """The streaming arm when routing is on: it STREAMS from our Router.
 
-    The Router streams (CP-4b), but ``acb_llm`` has no client that parses its
-    frames yet (``stream_completion_on_console`` feeds only the ``/v1``
-    relay). So this asks for the whole answer and hands it to ``on_delta`` as
-    one delta: the reasoning first, if the model sent any, then the content.
-    Task 3542 makes it stream. The total bound still
-    holds. An answer past it raises :class:`StreamTotalTimeout`, as a stream
-    past it does. The first-chunk and idle bounds do not apply, because a
-    whole answer has no chunks.
+    Task 3542. :func:`acb_llm.routed.stream_on_router` reads the Router's
+    frames (CP-4b), and each delta goes to ``on_delta`` as it comes: the
+    reasoning first, then the content, as :func:`_stream_text` sends them.
+    The three bounds are the ones of :func:`_stream_text`, read at call time
+    from the same constants. ANY data frame resets the idle bound, the role
+    frame and the usage frame too. A keepalive comment is not a frame, so it
+    does not.
+
+    The Console meters the stream (``acb_llm.routed``, the note above
+    :data:`~acb_llm.routed.MAX_STREAM_FRAME_BYTES`). So this arm emits no
+    usage, as :func:`_complete_with_fallback` emits none on its routed arm.
 
     ⚠️ D57.7: a routed call that fails, FAILS. ``RoutedRefusal`` and
     ``ConsoleRouterUnavailable`` propagate, and nothing falls back to litellm.
+    The ``finally`` closes the Router stream on every exit: a bound, an error,
+    and a cancel from the caller (the member closed the composer).
     """
-    from acb_llm.routed import completion_on_router
+    from acb_llm.jobs import note_empty_answer
+    from acb_llm.routed import stream_on_router
 
-    whole_s = STREAM_TOTAL_S if total_s is None else total_s
     fitted, _ = fit_messages_to_context(messages, model, max_output_tokens=max_tokens)
-    started = asyncio.get_running_loop().time()
+    first_s = STREAM_FIRST_CHUNK_S if first_chunk_s is None else first_chunk_s
+    gap_s = STREAM_IDLE_S if idle_s is None else idle_s
+    whole_s = STREAM_TOTAL_S if total_s is None else total_s
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    total_deadline = started + whole_s
+    frames = stream_on_router(
+        tier=model, messages=fitted, max_tokens=max_tokens,
+        temperature=temperature, source=source, extra=extra, job=job,
+    )
+    content_parts: list[str] = []
+    count = 0
+    used = ""
+    finish: str | None = None
+    usage: dict[str, Any] | None = None
+    # The bound of the next wait: the first frame, then the gap after each one.
+    # The open of the stream is part of the first wait, as on the direct arm.
+    phase_deadline, phase_cls, phase_s = started + first_s, StreamFirstChunkTimeout, first_s
     try:
-        resp, used = await asyncio.wait_for(
-            completion_on_router(
-                tier=model, messages=fitted, max_tokens=max_tokens,
-                temperature=temperature, source=source, extra=extra, job=job,
-            ),
-            timeout=whole_s,
-        )
-    except TimeoutError:
-        raise _stream_timed_out(
-            StreamTotalTimeout, whole_s, model=model, chunks=0,
-            started=started) from None
-    try:
-        message = resp.choices[0].message
-    except (AttributeError, IndexError, TypeError):
-        message = None
-    reasoning = getattr(message, "reasoning_content", None) if message is not None else None
-    text = str(getattr(message, "content", None) or "") if message is not None else ""
-    if on_delta is not None:
-        for kind, piece in (("reasoning", reasoning), ("content", text)):
-            if not piece:
-                continue
+        while True:
+            deadline = min(phase_deadline, total_deadline)
             try:
-                await on_delta(kind, str(piece))
-            except Exception:  # noqa: BLE001 — progress is best-effort
-                pass
+                frame = await asyncio.wait_for(
+                    frames.__anext__(), timeout=max(0.0, deadline - loop.time()))
+            except StopAsyncIteration:
+                break
+            except TimeoutError:
+                if total_deadline <= phase_deadline:
+                    raise _stream_timed_out(
+                        StreamTotalTimeout, whole_s, model=model, chunks=count,
+                        started=started) from None
+                raise _stream_timed_out(
+                    phase_cls, phase_s, model=model, chunks=count,
+                    started=started) from None
+            phase_deadline = loop.time() + gap_s
+            phase_cls, phase_s = StreamIdleTimeout, gap_s
+            count += 1
+            used = frame.model or used
+            finish = frame.finish_reason or finish
+            usage = frame.usage or usage
+            # Progress is best-effort, as on the direct arm. A cancel is not an
+            # Exception, so it still ends the call.
+            if frame.reasoning and on_delta is not None:
+                with contextlib.suppress(Exception):
+                    await on_delta("reasoning", frame.reasoning)
+            if frame.content:
+                content_parts.append(frame.content)
+                if on_delta is not None:
+                    with contextlib.suppress(Exception):
+                        await on_delta("content", frame.content)
+    finally:
+        # Every exit. At the end of the stream it is already closed, and this
+        # does nothing. After a cancel in `on_delta` it closes the Router
+        # stream, which the stream generator does in its own `finally`.
+        await _close_stream(frames)
+    used = used or model
+    text = "".join(content_parts)
+    if not text.strip():
+        # A blank stream is a failure that the caller reads as "no draft".
+        # Log it, as the direct arm does. The line holds no text.
+        note_empty_answer(
+            {"model": used, "usage": usage,
+             "choices": [{"message": {"content": text}, "finish_reason": finish}]},
+            model=used, job=job, max_tokens=max_tokens)
     return text, used
 
 
@@ -700,7 +751,8 @@ async def _stream_text(
         return await _routed_text(
             model=model, messages=messages, max_tokens=max_tokens,
             temperature=temperature, on_delta=on_delta, source=_source,
-            extra=extra, total_s=total_s, job=job,
+            extra=extra, first_chunk_s=first_chunk_s, idle_s=idle_s,
+            total_s=total_s, job=job,
         )
 
     refuse_direct_arm("acompletion_stream_text")
