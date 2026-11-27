@@ -2633,18 +2633,24 @@ async def _inbox_card_parts(message_ids: list[str]) -> tuple[str, str, str]:
         rows = []
     if not rows:
         return mailbox, where, ""
-    lines = ["Each message:"]
-    lines += [
+    each = [
         f"- {_card_text(s.get('from') or '(unknown sender)', 80)}: "
         f"{_card_text(s.get('subject') or '(no subject)', 120)}"
-        for s in rows[:_CARD_MESSAGE_LINES]
+        for s in rows
     ]
-    if len(rows) > _CARD_MESSAGE_LINES:
-        lines.append(f"+{len(rows) - _CARD_MESSAGE_LINES} more")
     unknown = len(set(message_ids)) - len(rows)
-    if unknown > 0:
-        lines.append(f"- {unknown} id(s) that name no message of yours")
-    return mailbox, where, "\n".join(lines)
+    tail = [f"- {unknown} id(s) that name no message of yours"] if unknown > 0 else []
+
+    def body(shown: int) -> str:
+        return "\n".join(["Each message:", *_capped_lines(each, shown), *tail])
+
+    # Task 4026: ``request_confirmation`` clips the context at
+    # ``_CARD_CONTEXT_MAX`` with no count. So a long card lists fewer
+    # messages and counts the rest, and each message has a line or a count.
+    shown = _CARD_MESSAGE_LINES
+    while shown > 0 and len(body(shown)) > _CARD_CONTEXT_MAX:
+        shown -= 1
+    return mailbox, where, body(shown)
 
 
 async def _inbox_card(
@@ -2805,22 +2811,37 @@ class _TrashPlan:
                      "nothing happens to them.")
         return text
 
+    def items(self, drafts: list[dict[str, Any]],
+              others: list[dict[str, Any]]) -> list[tuple[str, str, str]]:
+        """``(who, subject, hint)`` of each draft, then of each other message.
+        Task 4026: who and subject stay apart, so a card cuts each one by
+        itself (``_short_label``), also when a sender name holds ": "."""
+        out = []
+        for m in drafts:
+            out.append((*self.rule.draft_parts(m), self.rule.describe(m)[1]))
+        for m in others:
+            when = str(m.get("received_at") or "")[:16].replace("T", " ")
+            facts = ["not a draft", self.box(m), when]
+            out.append((*self.rule.message_parts(m), " · ".join(f for f in facts if f)))
+        return out
+
     def pairs(self, drafts: list[dict[str, Any]],
               others: list[dict[str, Any]]) -> list[tuple[str, str]]:
         """``(label, hint)`` of each draft, then of each other message. No
         two pairs read the same (``draft_choice.unique``)."""
-        out = [self.rule.describe(m) for m in drafts]
-        for m in others:
-            when = str(m.get("received_at") or "")[:16].replace("T", " ")
-            facts = ["not a draft", self.box(m), when]
-            out.append((self.rule.message_label(m), " · ".join(f for f in facts if f)))
-        return self.rule.unique(out)
+        return self.rule.unique(
+            [(f"{who}: {subject}", hint) for who, subject, hint in self.items(drafts, others)])
 
     def already_lines(self, cap: int = _CARD_MESSAGE_LINES) -> list[str]:
+        """The named messages already in Trash, one line each. Task 4026: the
+        cut comes first, then ``draft_choice.unique``, so two long subjects
+        that differ only past the cut never read as one line."""
         if not self.already:
             return []
+        cut = self.rule.unique(
+            [(_card_text(self.rule.message_label(m), 180), "") for m in self.already])
         return ["Already in Trash, so nothing happens to them:", *_capped_lines(
-            [f"- {_card_text(self.rule.message_label(m), 180)}" for m in self.already], cap)]
+            [f"- {label} · {hint}" if hint else f"- {label}" for label, hint in cut], cap)]
 
 
 async def _trash_drafts(rule: Any, message_ids: list[str]) -> str | None:
@@ -2891,12 +2912,11 @@ def _trash_title(drafts: int, others: int) -> str:
     return text + " to Trash?"
 
 
-def _short_label(label: str) -> str:
+def _short_label(who: str, subject: str) -> str:
     """"From sender: subject" or "To people: subject" with each part cut by
-    itself, so a long sender never takes the subject off the line."""
-    who, sep, subject = label.partition(": ")
-    if not sep:
-        return _card_text(label, 100)
+    itself, so a long sender never takes the subject off the line. Task 4026:
+    the parts come apart from ``draft_choice``, so a ": " in a sender name
+    never moves the cut."""
     return f"{_card_text(who, 45)}: {_card_text(subject, 55)}"
 
 
@@ -2908,13 +2928,15 @@ def _plain_card_context(
     Each message that moves has its own line. A long card first shortens each
     line. Then it lists fewer of the messages that do not move, and counts
     the rest."""
+    items = plan.items(drafts + staying, plan.others)
     pairs = plan.pairs(drafts + staying, plan.others)
     kept_cap, already_cap = plan.rule.MAX_DRAFTS, _CARD_MESSAGE_LINES
     short = False
     while True:
         if short:
             cut = plan.rule.unique(
-                [(_short_label(a), _card_text(b, 70)) for a, b in pairs])
+                [(_short_label(who, subject), _card_text(hint, 70))
+                 for who, subject, hint in items])
             shown = [f"- {' · '.join(p)}" for p in cut]
         else:
             shown = [f"- {_card_text(' · '.join(p), 300)}" for p in pairs]
@@ -2933,6 +2955,7 @@ def _plain_card_context(
             lines += ["These matching drafts stay in Drafts:",
                       *_capped_lines(kept, kept_cap)]
         lines += plan.already_lines(already_cap)
+        lines += _plain_card_end(plan, bool(kept))
         text = "\n".join(lines)
         if len(text) <= _CARD_CONTEXT_MAX or (short and not (kept_cap or already_cap)):
             return text
@@ -2942,6 +2965,22 @@ def _plain_card_context(
             kept_cap -= 1
         else:
             already_cap -= 1
+
+
+#: The last line of a plain draft card with no draft that stays (task 4026).
+_NONE_STAYS = "No other matching draft is in Drafts, as Metorite last synced it."
+_MORE_CAN_EXIST = "The Drafts list is longer than one page, so more matching drafts can exist."
+
+
+def _plain_card_end(plan: _TrashPlan, kept: bool) -> list[str]:
+    """The last line of the plain card: what stays in Drafts, when no list
+    names it. Task 4026: a card of one line read as a ``key: value`` row,
+    because "To people: subject" is one (``parseCardBody`` in
+    ``ConfirmationCard.tsx``). This line holds no ": ", so the card is never
+    rows, and the chat draws it as the list that it is."""
+    if plan.cut:
+        return [_MORE_CAN_EXIST]
+    return [] if kept else [_NONE_STAYS]
 
 
 async def _plain_drafts_card(plan: _TrashPlan, named_ids: set[str]) -> set[str] | str:
@@ -2973,9 +3012,11 @@ async def _pick_drafts(plan: _TrashPlan) -> set[str] | str:
 
     rule = plan.rule
     drafts = plan.ordered[:rule.MAX_DRAFTS]
-    pairs = plan.pairs(drafts, plan.others)
-    rows = [{"id": str(m["id"]), "label": _card_text(label, 200),
-             "hint": _card_text(hint, 300), "checked": not rule.is_draft(m)}
+    # Task 4026: the cut comes before ``unique``, so no two rows read the same.
+    pairs = rule.unique([(_card_text(label, 200), _card_text(hint, 300))
+                         for label, hint in plan.pairs(drafts, plan.others)])
+    rows = [{"id": str(m["id"]), "label": label, "hint": hint,
+             "checked": not rule.is_draft(m)}
             for m, (label, hint) in zip(drafts + plan.others, pairs, strict=True)]
     detail = plan.detail()
     if len(plan.ordered) > rule.MAX_DRAFTS:
