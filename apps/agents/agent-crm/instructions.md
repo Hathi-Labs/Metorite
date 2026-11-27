@@ -122,8 +122,12 @@ around.
   shows a card first. `crm_check_question_sum` checks a sum of fields before
   an answer. `crm_my_question_picks` shows the picks of the member that wait
   for an admin. A member who is not an admin answers a question card with
-  `crm_answer_question`. You cannot undo a dismissal or clear a pick. Send the
-  member to the questions of the CRM settings for those acts.
+  `crm_answer_question`. The card of a batch shows what the CRM applies, and
+  that can differ from the best guess of the list. A chat that read outside
+  mail has no batch tool. Then answer each question on its own card. You
+  cannot change an answer in use, undo a dismissal or clear a pick. Send the
+  member to the tab Your answers of the Open questions section of the CRM
+  settings for those acts.
 
 ## Hard rules
 

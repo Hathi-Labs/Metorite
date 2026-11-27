@@ -6,7 +6,7 @@
 
 A chat that read outside mail does not keep the approve of a plan. The member then approves the plan in the Field mapping section of the CRM settings. The preview of a plan waits.
 
-**Task 3955 (2026-11-27, in review, no migration, no flag).** It built the open questions of CRM-M2h. The chat reads the questions, the member's own picks and the check of a sum. A CRM admin answers, dismisses or accepts a batch of best guesses on one card each. Three question rows wait for an owner decision on `DELETE` and `PUT`.
+**Task 3955 (2026-11-27, in review, no migration, no flag).** It built the open questions of CRM-M2h. The chat reads the questions, the member's own picks and the check of a sum. A CRM admin answers, dismisses or accepts a batch of best guesses on one card each. The card of a batch shows what the route applies, from its own dry run. A chat that read outside mail drops the batch. Three question rows wait for an owner decision on `DELETE` and `PUT`.
 
 Verified against code on 2026-11-02 at `main` `930839f2e`. The research notes are the comment "Research notes, 2026-11-02" on Metorite epic #477. They were made at `fc1b5edb6`.
 

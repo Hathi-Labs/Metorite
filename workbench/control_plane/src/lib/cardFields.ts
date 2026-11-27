@@ -199,6 +199,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   // never "field N": `cardKey` reads `field <Name>` as a custom field.
   "rule N": { label: "Rule", plural: "Rules" },
   "people on the list now": { label: "On the list now" },
+  // WS-CRM CRM-M2h (task 3955): the picks of members that an admin answer removes.
+  "picks that go": { label: "Picks that go" },
   "person": { label: "Person" },
   // WS-CRM CRM-M3a: the card of `crm_create_pipeline`.
   "pipeline": { label: "Pipeline" },

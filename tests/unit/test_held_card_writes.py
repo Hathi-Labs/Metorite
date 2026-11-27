@@ -82,12 +82,12 @@ KEPT_PROJECTS = frozenset({
     "update_reminder", "update_status", "update_tag", "update_task", "update_tasks",
     "update_type", "watch",
 })
-#: The seventeen CRM writes that a held chat keeps. Each says ``open_world=True``
+#: The sixteen CRM writes that a held chat keeps. Each says ``open_world=True``
 #: and keeps saying it. CRM-M2e (task 3951) added the two set-up writes of
 #: stages and lost reasons. Task 3954 added crm_decide_suggestion and
 #: crm_rerun_analysis. CRM-M2f and CRM-M2i (task 3953) added the three class B
-#: writes of the Field map. CRM-M2h (task 3955) added the three class B writes
-#: of the setup questions. 7 + 2 + 2 + 3 + 3 = 17.
+#: writes of the Field map. CRM-M2h (task 3955) added the answer and the
+#: dismissal of a setup question. 7 + 2 + 2 + 3 + 2 = 16.
 KEPT_CRM = frozenset({
     "convert_lead", "create_lead", "log_activity", "update_deal_status",
     # P-3 (task 3954): a suggestion of the field map, and a new AI analysis.
@@ -95,11 +95,13 @@ KEPT_CRM = frozenset({
     "crm_update_record", "crm_update_task", "crm_create_pipeline",
     "crm_edit_status", "crm_edit_lost_reason",
     "crm_edit_field_rule", "crm_draft_mapping_plan", "crm_restore_mapping_plan",
-    "crm_answer_setup_question", "crm_dismiss_question", "crm_accept_best_guesses",
+    "crm_answer_setup_question", "crm_dismiss_question",
 })
 #: The CRM writes that a held chat drops. The approve of a plan is class C and
 #: approves the field map of the whole org. No owner decision keeps it (task 3953).
-OFF_CRM = frozenset({"crm_approve_mapping_plan"})
+#: The batch of best guesses is a bulk act, and D169.3 keeps a bulk act off a
+#: held chat (task 3955).
+OFF_CRM = frozenset({"crm_approve_mapping_plan", "crm_accept_best_guesses"})
 
 #: The Projects writes that a held chat does not hold: every class C tool but
 #: ``promote_reminder``. A covered run still holds them. ``answer_decision``
@@ -813,13 +815,15 @@ def test_each_write_of_the_crm_agent_is_in_the_table() -> None:
 @pytest.mark.parametrize("name", sorted(OFF_CRM))
 def test_a_class_c_crm_write_stays_off_in_a_held_chat(name: str, crm_tools) -> None:
     """Task 3953: the approve of a plan is on no list, so a held chat drops it,
-    and the three other Field map writes stay. Mutation: put the approve on
-    ``HELD_CARD_WRITE_TOOLS`` -> red."""
+    and the three other Field map writes stay. Task 3955: the batch of best
+    guesses is a bulk act (D169.3), so it is off too. Mutation: put the
+    approve or the batch on ``HELD_CARD_WRITE_TOOLS`` -> red."""
     tool = crm_tools[name]
     assert name not in eg.HELD_CARD_WRITE_TOOLS and name not in eg.HELD_CLASS_C_TOOLS
     assert eg.is_held_card_write(tool) is False
     assert eg.is_held_chat_off(tool, owner=CRM) is True
-    for kept in ("crm_edit_field_rule", "crm_draft_mapping_plan", "crm_restore_mapping_plan"):
+    for kept in ("crm_edit_field_rule", "crm_draft_mapping_plan", "crm_restore_mapping_plan",
+                 "crm_answer_setup_question", "crm_dismiss_question"):
         assert eg.is_held_chat_off(crm_tools[kept], owner=CRM) is False, kept
 
 
@@ -842,12 +846,13 @@ def test_a_held_delegated_run_of_the_owner_drops_it(monkeypatch) -> None:
     assert agents[0].default_options["tools"] == []
 
 
-def test_the_owner_rule_drops_only_the_plan_approve_of_the_crm_agent(
+def test_the_owner_rule_drops_only_the_plan_approve_and_the_batch_of_the_crm_agent(
     crm_tools, monkeypatch,
 ) -> None:
     """Each other tool of the agent is a read or a listed write, so a held
-    delegated run keeps it. The class C approve of a plan leaves (task 3953).
-    Mutation: drop the read test -> the reads leave -> red."""
+    delegated run keeps it. The class C approve of a plan leaves (task 3953),
+    and so does the batch of best guesses (task 3955, D169.3). Mutation: drop
+    the read test -> the reads leave -> red."""
     monkeypatch.setattr(ti, "_run_covered", lambda *_a, **_k: False)
     agents = [_agent_with(list(crm_tools.values()))]
     with _bound(**{eg.CHAT_MARK_KEY: True}):

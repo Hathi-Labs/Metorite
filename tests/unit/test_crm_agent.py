@@ -307,6 +307,10 @@ def _question_routes(call: dict) -> Any:
         return {"id": _QUESTION["id"], "module": "Invoices", "fields": ["Grand_Total", "Tax"],
                 "records": 40, "covered": 40, "overlap": 0, "capped": False,
                 "line": "All 40 records set a part.", "pairs": [], "warnings": []}
+    if (call["json"] or {}).get("dry_run") is True:
+        return {"dry_run": True, "version": None, "items": [
+            {"id": _QUESTION["id"], "label": "Invoices", "part": "amount",
+             "value": "Grand_Total", "value_label": "Grand Total", "line": "x"}]}
     return {"id": _QUESTION["id"], "kind": "key_field", "version": 3, "dry_run": False,
             "items": []}
 

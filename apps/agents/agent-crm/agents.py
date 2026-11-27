@@ -3664,11 +3664,47 @@ _ANSWER_NOTE = (
     "the CRM that uses this part reads it from the next read on."
 )
 
+#: The first line of the card of an answer of a ``slot`` question: the route
+#: writes the module into the open draft of the field map, and nothing else.
+_DRAFT_ANSWER_NOTE = (
+    "This answer goes into the open draft of the field map. Nothing changes in "
+    "the CRM until an admin approves the draft."
+)
+
 #: The first line of the card of a dismissal.
 _DISMISS_NOTE = (
     "The CRM stops asking this question. It asks again when the Zoho data of "
     "this part changes."
 )
+
+#: Where a member changes or undoes an answer in use. The chat reads only the
+#: open questions, and the Undo is ``PUT /crm/catalogue/{module}``, which this
+#: agent does not send (``_ALLOWED_METHODS``).
+_CHANGE_PLACE = (
+    "To change or undo an answer, use the tab Your answers of the Open "
+    "questions section of the CRM settings."
+)
+
+
+def _picks_line(qs_: list[dict[str, Any]]) -> str:
+    """The card line of the members' picks that a write removes, or "".
+
+    An admin answer, a dismissal and a batch each clear the picks that wait
+    on their questions (``questions.clear_proposals``). The question wire
+    names each pick by its member's display name, never an email."""
+    parts: list[str] = []
+    count = 0
+    for q in qs_:
+        picks = [p for p in q.get("proposals") or [] if isinstance(p, dict)]
+        if not picks:
+            continue
+        count += len(picks)
+        who = ", ".join(f"{data(p.get('name'))} ({data(p.get('label'))})" for p in picks)
+        parts.append(f"{who} for {_question_label(q)}" if len(qs_) > 1 else who)
+    if not count:
+        return ""
+    noun = "pick" if count == 1 else "picks"
+    return f"{count} {noun} of members that wait for an admin go: {'; '.join(parts)}"
 
 
 def _question_segment(question_id: Any) -> str:
@@ -3778,8 +3814,10 @@ async def crm_list_questions(
     them.
 
     Each question shows its id, its choices, the best guess and the picks of
-    members. With ``include_answered``, the answers in use follow, for a
-    correction. The answer is one page. ``offset`` reads the next page, as
+    members. With ``include_answered``, the answers in use follow, to read
+    only: the chat answers open questions only. A member changes an answer in
+    use on the tab Your answers of the Open questions section of the CRM
+    settings. The answer is one page. ``offset`` reads the next page, as
     its last line says. Use it before crm_answer_setup_question,
     crm_dismiss_question and crm_accept_best_guesses."""
     body = await _read_questions(bool(include_answered))
@@ -4028,12 +4066,21 @@ async def crm_answer_setup_question(
     if plan is None:
         return refusal
     shown = plan["label"] if plan["label"] is not None else "None of these"
+    kind = str(q.get("kind"))
     card = {
-        "question": f"{_QUESTION_KINDS[str(q.get('kind'))]} · {_question_label(q)}"
-                    + (f" · {_part_words(q)}" if q.get("kind") == "key_field" else ""),
+        "question": f"{_QUESTION_KINDS[kind]} · {_question_label(q)}"
+                    + (f" · {_part_words(q)}" if kind == "key_field" else ""),
         "answer": shown,
         "what changes": _answer_effect(q, plan["label"]),
     }
+    picks = _picks_line([q])
+    if picks:
+        card["picks that go"] = picks
+    # A slot answer writes only the open draft, and "None of these" on a slot
+    # records a dismissal. Neither changes what a read gives now.
+    note = _ANSWER_NOTE
+    if kind == "slot":
+        note = _DRAFT_ANSWER_NOTE if plan["value"] is not None else _DISMISS_NOTE
 
     from acb_skills.ask_tools import request_confirmation
     answer = await request_confirmation(
@@ -4041,7 +4088,7 @@ async def crm_answer_setup_question(
         close_on_steer=True,
         title=f"Answer the CRM question about {_question_label(q)}?",
         detail=f"{_question_label(q)} · {shown}",
-        context=await _held_fields_block(card, note=_ANSWER_NOTE),
+        context=await _held_fields_block(card, note=note),
     )
     if not answer:
         return _not_written(answer, unchanged=f"The question about {_question_label(q)} "
@@ -4052,10 +4099,28 @@ async def crm_answer_setup_question(
         payload["version"] = body.get("plan")
     made = await _post(f"/crm/questions/{record}/answer", payload)
     row = made if isinstance(made, dict) else {}
-    out = f"Answered the question about {_question_label(q)}: {shown}. {card['what changes']}"
-    if row.get("version") is not None:
-        out += f" The field map is at version {row.get('version')} now."
-    return out
+    return _answered_text(q, shown, card["what changes"], plan["value"], row)
+
+
+def _answered_text(q: dict[str, Any], shown: str, change: str, value: Any,
+                   row: dict[str, Any]) -> str:
+    """The result of an answer, with the place that changes or undoes it."""
+    out = f"Answered the question about {_question_label(q)}: {shown}. {change}"
+    kind = str(q.get("kind"))
+    version = row.get("version")
+    if kind == "slot":
+        if value is None:
+            return out
+        # The version of a slot answer is the open DRAFT, not the field map.
+        draft = f" version {version}" if version is not None else ""
+        return (out + f" It went into the open draft{draft} of the field map. An admin "
+                "approves the draft in the Field mapping section of the CRM settings.")
+    if version is not None:
+        out += f" The field map is at version {version} now."
+    if kind == "stage_value":
+        return out + (" To undo it, restore the earlier version of the field map in the "
+                      "Field mapping section of the CRM settings.")
+    return f"{out} {_CHANGE_PLACE}"
 
 
 @_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
@@ -4081,6 +4146,9 @@ async def crm_dismiss_question(question_id: str) -> str:
                     + (f" · {_part_words(q)}" if q.get("kind") == "key_field" else ""),
         "what changes": "Not relevant: the CRM keeps what it uses now, and stops asking.",
     }
+    picks = _picks_line([q])
+    if picks:
+        card["picks that go"] = picks
 
     from acb_skills.ask_tools import request_confirmation
     answer = await request_confirmation(
@@ -4099,18 +4167,101 @@ async def crm_dismiss_question(question_id: str) -> str:
             "when the Zoho data of that part changes.")
 
 
-def _best_line(q: dict[str, Any], best: dict[str, Any]) -> str:
-    """One line of a batch card: the question and its best guess."""
-    return _answer_effect(q, data(best.get("label") or best.get("value")))
+#: The kind of a question from its id, for a line of the dry run.
+_ID_KINDS: dict[str, str] = {"purpose": "purpose", "key": "key_field"}
+
+#: The most questions that a batch with no ids tries one at a time, when the
+#: route refuses the batch of all of them.
+_BATCH_PROBE_MAX = 40
 
 
-def _best_of(q: dict[str, Any]) -> dict[str, Any] | None:
-    """The best guess of a question that joins a batch, or None. Only a
-    purpose or a key field with a best guess joins (``questions.batch_joins``)."""
-    if q.get("kind") not in ("purpose", "key_field"):
-        return None
-    return next((c for c in q.get("choices") or [] if isinstance(c, dict) and c.get("best")),
-                None)
+def _batch_kind(q: dict[str, Any]) -> bool:
+    """True for a question of a kind that can join a batch. The route decides
+    if it has a best guess (``questions._best_guesses``)."""
+    return q.get("kind") in ("purpose", "key_field")
+
+
+async def _dry_run(ids: list[str]) -> list[dict[str, Any]]:
+    """What the route applies for *ids*: its own dry run, which writes nothing
+    (``accept_best`` with ``dry_run``). The list of the open questions can
+    show a best guess that the business rules steered, and the batch applies
+    the guess before the steer. So a card follows this answer, never the
+    list. A 409 or a 422 of the route raises as a refusal."""
+    made = await _post("/crm/questions/accept-best", {"ids": ids, "dry_run": True})
+    items = (made or {}).get("items") if isinstance(made, dict) else None
+    return [i for i in items or [] if isinstance(i, dict)]
+
+
+async def _batch_items(ids: list[str]) -> tuple[list[dict[str, Any]], list[str]]:
+    """The dry run of *ids*, and the ids that the route does not take. With a
+    422 for the whole batch, each id is tried alone, so one question with no
+    best guess does not stop the others."""
+    try:
+        return await _dry_run(ids), []
+    except GatewayRefusal as refused:
+        if refused.status != 422 or len(ids) > _BATCH_PROBE_MAX:
+            raise
+    items: list[dict[str, Any]] = []
+    left: list[str] = []
+    for qid in ids:
+        try:
+            items += await _dry_run([qid])
+        except GatewayRefusal as refused:
+            if refused.status != 422:
+                raise
+            left.append(qid)
+    return items, left
+
+
+def _item_line(item: dict[str, Any]) -> str:
+    """One line of a batch card, from the route's own dry run."""
+    head = str(item.get("id") or "").split(":", 1)[0]
+    q = {"kind": _ID_KINDS.get(head, ""), "label": item.get("label"),
+         "part": item.get("part")}
+    value = data(item.get("value_label") or item.get("value"))
+    if q["kind"] not in _ID_KINDS.values():
+        return f"{data(item.get('label'))} now uses {value}."
+    return _answer_effect(q, value)
+
+
+def _listed_best(q: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The best guess that the list shows for *q*, or None."""
+    return next((c for c in (q or {}).get("choices") or []
+                 if isinstance(c, dict) and c.get("best")), None)
+
+
+async def _batch_of(
+    body: dict[str, Any], shown: dict[str, dict[str, Any]], wanted: list[str],
+) -> tuple[list[dict[str, Any]], list[str], str]:
+    """The dry-run items of a batch, the ids that the route leaves out, and the
+    words of a refusal before the card. *wanted* are the ids the model gave."""
+    none = "No open question has a best guess that joins a batch. Nothing was changed."
+    if not wanted:
+        ids = [qid for qid, q in shown.items() if _batch_kind(q)]
+        if not ids:
+            return [], [], none
+        items, left = await _batch_items(ids)
+        return items, left, "" if items else none
+    for qid in wanted:
+        q, refusal = _open_question(body, qid)
+        if q is None:
+            return [], [], refusal
+        if not _batch_kind(q):
+            return [], [], (
+                f"The question {data(qid)} cannot join a batch. Only the purpose of a "
+                "module and a key field with a best guess join. Nothing was changed. "
+                "Answer it with crm_answer_setup_question.")
+    try:
+        items = await _dry_run(list(dict.fromkeys(wanted)))
+    except GatewayRefusal as refused:
+        if refused.status != 422:
+            raise
+        return [], [], (
+            f"The CRM takes no batch of these questions: "
+            f"{refused.detail or 'the route refused it'}. One of them has no best guess "
+            "that joins a batch. Nothing was changed. Answer it with "
+            "crm_answer_setup_question, or give other ids.")
+    return items, [], "" if items else none
 
 
 @_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
@@ -4120,58 +4271,71 @@ async def crm_accept_best_guesses(question_ids: list[str] | None = None) -> str:
     with a best guess join a batch. Only a CRM admin can, and the person you
     act for approves the batch on one card that names each answer.
 
-    ``question_ids`` are ids that crm_list_questions shows. With none, the
-    batch takes each open question that joins. A batch that one card cannot
-    show is refused: give fewer ids."""
+    The card shows what the CRM applies, which can differ from the best guess
+    that crm_list_questions shows. ``question_ids`` are ids that
+    crm_list_questions shows. With none, the batch takes each open question
+    that joins. A batch that one card cannot show is refused: give fewer ids.
+    A chat that read outside mail does not have this tool, because a batch
+    changes many answers at once. Then the member answers each question with
+    crm_answer_setup_question, or uses the Open questions section of the CRM
+    settings."""
     wanted = [_question_segment(raw) for raw in question_ids or []]
     body = await _read_questions()
-    shown = [q for q in body.get("shown") or [] if isinstance(q, dict)]
-    if wanted:
-        picked: list[dict[str, Any]] = []
-        for qid in wanted:
-            q, refusal = _open_question(body, qid)
-            if q is None:
-                return refusal
-            if _best_of(q) is None:
-                return (f"The question {data(qid)} has no best guess that joins a batch. "
-                        "Only the purpose of a module and a key field with a best guess "
-                        "join. Nothing was changed. Answer it with "
-                        "crm_answer_setup_question.")
-            if q not in picked:
-                picked.append(q)
-    else:
-        picked = [q for q in shown if _best_of(q) is not None]
-        if not picked:
-            return "No open question has a best guess that joins a batch. Nothing was changed."
-    lines = [_best_line(q, _best_of(q) or {}) for q in picked]
-    card = {f"best guess {n}": line for n, line in enumerate(lines, start=1)}
+    shown = {str(q.get("id")): q for q in body.get("shown") or [] if isinstance(q, dict)}
+    items, left, refusal = await _batch_of(body, shown, wanted)
+    if refusal:
+        return refusal
+    card = {f"best guess {n}": _item_line(i) for n, i in enumerate(items, start=1)}
+    picks = _picks_line([shown[str(i.get("id"))] for i in items if str(i.get("id")) in shown])
+    if picks:
+        card["picks that go"] = picks
     held = _card_room(card, _ANSWER_NOTE)
     if held < len(card):
         return (
-            f"This batch has {len(card)} answers, and one card holds {held} of them, so "
-            f"nothing was changed. Give at most {held} ids in question_ids."
+            f"This batch has {len(card)} lines, and one card holds {held} of them, so "
+            f"nothing was changed. Give fewer ids in question_ids."
         )
 
     from acb_skills.ask_tools import request_confirmation
     answer = await request_confirmation(
         # Task 2494: the member's chat message closes the card.
         close_on_steer=True,
-        title=f"Accept {len(lines)} best guesses of the AI for the CRM?",
-        detail=f"{len(lines)} answers",
+        title=f"Accept {len(items)} best guesses of the AI for the CRM?",
+        detail=f"{len(items)} answers",
         context=await _held_fields_block(card, note=_ANSWER_NOTE),
     )
     if not answer:
         return _not_written(answer, unchanged="No best guess was accepted.")
-    payload: dict[str, Any] = {
-        "ids": [_question_segment(q.get("id")) for q in picked], "dry_run": False}
+    batch = [str(i.get("id")) for i in items]
+    # The card is consent for these values only. The route reads again, so a
+    # change after the card (a sync, a new rule) refuses before any write.
+    again = await _dry_run(batch)
+    if [(str(i.get("id")), i.get("value")) for i in again] != [
+            (str(i.get("id")), i.get("value")) for i in items]:
+        return ("The best guesses changed after the card, so nothing was changed. Read the "
+                "questions again with crm_list_questions, and call this tool again.")
+    payload: dict[str, Any] = {"ids": [_question_segment(i) for i in batch], "dry_run": False}
     if body.get("plan") is not None:
         payload["version"] = body.get("plan")
     made = await _post("/crm/questions/accept-best", payload)
     row = made if isinstance(made, dict) else {}
-    out = f"Accepted {len(lines)} best guesses."
+    out = f"Accepted {len(items)} best guesses."
     if row.get("version") is not None:
         out += f" The field map is at version {row.get('version')} now."
-    return out
+    differ = [
+        f"{data(i.get('label'))} got {data(i.get('value_label'))}, not the listed "
+        f"{data(best.get('label'))}"
+        for i in items
+        for best in [_listed_best(shown.get(str(i.get("id"))))]
+        if best is not None and str(best.get("value")) != str(i.get("value"))
+    ]
+    if differ:
+        out += (" The batch applies the guess before the business rules, so: "
+                + "; ".join(differ) + ".")
+    if left:
+        out += (f" {len(left)} questions had no best guess that joins a batch, and stay "
+                f"open: {', '.join(data(q) for q in left)}.")
+    return f"{out} {_CHANGE_PLACE}"
 
 
 # ── MAF agent factory (Dynamic Agent Loader entry point) ─────────────────────

@@ -35,6 +35,9 @@ read. `crm_answer_setup_question`, `crm_dismiss_question` and
 `crm_accept_best_guesses` write, each on one card. They pay six CRM rows, so
 the CRM ceiling goes from 52 to 46. Fence: `tests/unit/test_crm_question_tools.py`.
 
+A held chat drops `crm_accept_best_guesses`, because a batch is a bulk act
+(D169.3). Its card comes from the route's own dry run.
+
 Three question rows stay planned: the Undo of a dismissal, the clear of a
 member's own pick and the PUT of the catalogue. The CRM agent sends no
 `DELETE` and no `PUT`.

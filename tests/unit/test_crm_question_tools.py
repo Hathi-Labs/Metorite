@@ -136,11 +136,56 @@ def _responder(call: dict) -> Any:
     if path.endswith("/dismiss") and method == "POST":
         return {"id": path.split("/")[3], "dismissed": True}
     if path == "/crm/questions/accept-best" and method == "POST":
-        return {"dry_run": body.get("dry_run"), "items": [], "version": 8}
+        return _accept_best(body)
     raise AssertionError(f"a tool reached an unexpected route: {method} {path}")
 
 
+#: What the route applies for each id: the best guess BEFORE the business
+#: rules steer it (``questions._best_guesses``). A test sets a value that
+#: differs from the list, as a rule "net of GST" does.
+_ROUTE_BEST: dict[str, tuple[str, str, str]] = {
+    "key:Bills_X:amount": ("amount", "Grand_Total", "Grand Total"),
+    "purpose:Collection": ("purpose", "payment_in", "Payment received"),
+}
+
+
+class _Refused(dict):
+    """A route answer with a status other than 200."""
+
+    def __init__(self, status: int, detail: Any) -> None:
+        super().__init__(detail=detail)
+        self.status = status
+
+
+def _accept_best(body: dict) -> Any:
+    """The route: 422 for an id that has no best guess, else each item."""
+    labels = {q["id"]: q["label"] for q in _SHOWN}
+    items = []
+    for qid in dict.fromkeys(body.get("ids") or []):
+        if qid not in _ROUTE_BEST:
+            return _Refused(422, {"code": "bad_answer", "message":
+                                  "Only a purpose or a key field with a best guess joins a batch."})
+        part, value, label = _ROUTE_BEST[qid]
+        items.append({"id": qid, "label": labels.get(qid, qid), "part": part, "value": value,
+                      "value_label": label, "line": "x"})
+    if body.get("dry_run"):
+        return {"dry_run": True, "items": items, "version": None}
+    return {"dry_run": False, "items": items, "version": 8}
+
+
+class _Client(FakeClient):
+    """The fake gateway, with the status of a :class:`_Refused` answer."""
+
+    async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+        out = await super().request(method, url, **kwargs)
+        payload = out.json()
+        if isinstance(payload, _Refused):
+            return FakeResponse(dict(payload), status_code=payload.status)
+        return out
+
+
 def _gateway(monkeypatch: pytest.MonkeyPatch, **kwargs: Any) -> list[dict]:
+    kwargs.setdefault("client_class", _Client)
     return fake_gateway(_M, monkeypatch, _responder, user=_USER, **kwargs)
 
 
@@ -367,10 +412,19 @@ async def test_revenue_takes_no_dismissal_and_shows_no_card(monkeypatch) -> None
 # ── crm_accept_best_guesses ─────────────────────────────────────────────────
 
 
-async def test_a_batch_takes_each_question_that_joins(monkeypatch) -> None:
+def _dry(calls: list[dict]) -> list[dict]:
+    return [c for c in calls if c["method"] == "POST" and (c["json"] or {}).get("dry_run") is True]
+
+
+async def test_a_batch_shows_the_dry_run_and_sends_the_same_ids(monkeypatch) -> None:
+    """With no ids, each purpose and key field joins. The route refuses the
+    whole batch for none of them here, so one dry run builds the card, one
+    more checks it after the click, and the write sends the same ids."""
     cards = approve(monkeypatch)
     calls = _gateway(monkeypatch)
     out = await _M.crm_accept_best_guesses()
+    assert [c["json"] for c in _dry(calls)] == [
+        {"ids": ["key:Bills_X:amount", "purpose:Collection"], "dry_run": True}] * 2
     assert [(c["method"], c["path"], c["json"]) for c in writes(calls)] == [
         ("POST", "/crm/questions/accept-best",
          {"ids": ["key:Bills_X:amount", "purpose:Collection"], "dry_run": False,
@@ -382,14 +436,64 @@ async def test_a_batch_takes_each_question_that_joins(monkeypatch) -> None:
             "now use «Grand Total».") in context
     assert ("best guess 2: «Collection» is now a module of the purpose «Payment received»."
             in context)
-    assert "Accepted 2 best guesses" in out
+    assert "Accepted 2 best guesses" in out and "Your answers" in out
 
 
-async def test_a_batch_of_named_ids_sends_only_those(monkeypatch) -> None:
-    approve(monkeypatch)
+async def test_the_card_follows_the_dry_run_when_the_list_disagrees(monkeypatch) -> None:
+    """P0 of the review (task 3955). A rule "net of GST" steers the list to
+    one field, and the batch applies another. The card names what the plan
+    gets. Mutation: build the card from the listed best -> red."""
+    monkeypatch.setitem(_ROUTE_BEST, "key:Bills_X:amount", ("amount", "Sub_Total", "Sub Total"))
+    cards = approve(monkeypatch)
     calls = _gateway(monkeypatch)
-    await _M.crm_accept_best_guesses(["purpose:Collection"])
+    out = await _M.crm_accept_best_guesses(["key:Bills_X:amount"])
+    context = cards[0]["context"]
+    assert "now use «Sub Total»." in context and "Grand Total" not in context
+    assert writes(calls)[0]["json"]["ids"] == ["key:Bills_X:amount"]
+    assert "got «Sub Total», not the listed «Grand Total»" in out
+
+
+async def test_a_change_after_the_card_writes_nothing(monkeypatch) -> None:
+    """The dry run after the click differs from the card: refuse, no write."""
+    cards: list[dict] = []
+    import acb_skills.ask_tools as ask_tools
+
+    async def _click(**kwargs: Any) -> bool:
+        cards.append(kwargs)
+        # A sync lands between the card and the click.
+        _ROUTE_BEST["purpose:Collection"] = ("purpose", "invoice", "Invoice")
+        return True
+
+    monkeypatch.setitem(_ROUTE_BEST, "purpose:Collection", _ROUTE_BEST["purpose:Collection"])
+    monkeypatch.setattr(ask_tools, "request_confirmation", _click)
+    calls = _gateway(monkeypatch)
+    out = await _M.crm_accept_best_guesses(["purpose:Collection"])
+    assert len(cards) == 1 and len(_dry(calls)) == 2
+    assert writes(calls) == []
+    assert "changed after the card" in out
+
+
+async def test_a_question_with_no_route_best_leaves_the_batch_before_the_card(
+    monkeypatch,
+) -> None:
+    """With no ids, the route's 422 for the batch makes the tool try each id
+    alone. The one with no best guess stays open, and the card never names it."""
+    monkeypatch.delitem(_ROUTE_BEST, "key:Bills_X:amount")
+    cards = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    out = await _M.crm_accept_best_guesses()
+    assert "Bills" not in cards[0]["context"]
     assert writes(calls)[0]["json"]["ids"] == ["purpose:Collection"]
+    assert "1 questions had no best guess that joins a batch" in out
+
+
+async def test_named_ids_that_the_route_refuses_show_no_card(monkeypatch) -> None:
+    monkeypatch.delitem(_ROUTE_BEST, "key:Bills_X:amount")
+    cards = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    out = await _M.crm_accept_best_guesses(["purpose:Collection", "key:Bills_X:amount"])
+    assert cards == [] and writes(calls) == []
+    assert "takes no batch of these questions" in out and "Nothing was changed" in out
 
 
 @pytest.mark.parametrize("qid", ["slot:deal", "revenue", "stage:deal:abc123def456"])
@@ -399,24 +503,92 @@ async def test_a_batch_with_a_question_that_cannot_join_shows_no_card(
     cards = approve(monkeypatch)
     calls = _gateway(monkeypatch)
     out = await _M.crm_accept_best_guesses(["purpose:Collection", qid])
-    assert writes(calls) == [] and cards == []
-    assert "has no best guess that joins a batch" in out
+    assert calls[1:] == [] and cards == []
+    assert "cannot join a batch" in out
 
 
 async def test_a_batch_that_one_card_cannot_show_is_refused(monkeypatch) -> None:
-    many = [{**_PURPOSE, "id": f"purpose:M{k:03d}", "label": "L" * 60 + str(k)}
-            for k in range(120)]
+    many = [f"purpose:M{k:03d}" for k in range(120)]
 
     def answer(call: dict) -> Any:
         if call["method"] == "GET":
-            return {"open": 120, "more": 0, "plan": 7, "shown": many}
-        raise AssertionError("no write before the card")
+            return {"open": 120, "more": 0, "plan": 7, "shown": [
+                {**_PURPOSE, "id": qid, "label": "L" * 60, "proposals": []} for qid in many]}
+        assert (call["json"] or {}).get("dry_run") is True, "no write before the card"
+        return {"dry_run": True, "items": [
+            {"id": qid, "label": "L" * 60, "part": "purpose", "value": "invoice",
+             "value_label": "Invoice"} for qid in call["json"]["ids"]]}
 
     cards = approve(monkeypatch)
     calls = fake_gateway(_M, monkeypatch, answer, user=_USER)
-    out = await _M.crm_accept_best_guesses()
+    out = await _M.crm_accept_best_guesses(many)
     assert writes(calls) == [] and cards == []
-    assert "This batch has 120 answers, and one card holds" in out
+    assert "This batch has 120 lines, and one card holds" in out
+
+
+def test_the_read_fence_takes_only_the_exact_dry_run() -> None:
+    """The fence of "no write before consent" reads one POST as a read: the
+    exact path with ``dry_run`` true. Mutation: widen it -> red."""
+    from tests.unit._crm_agent_fakes import is_read
+
+    path = "/crm/questions/accept-best"
+    assert is_read({"method": "POST", "path": path, "json": {"ids": ["a"], "dry_run": True}})
+    for call in (
+        {"method": "POST", "path": path, "json": {"ids": ["a"], "dry_run": False}},
+        {"method": "POST", "path": path, "json": {"ids": ["a"]}},
+        {"method": "POST", "path": path, "json": {"ids": ["a"], "dry_run": "true"}},
+        {"method": "POST", "path": "/crm/questions/x/answer", "json": {"dry_run": True}},
+        {"method": "PATCH", "path": path, "json": {"dry_run": True}},
+    ):
+        assert not is_read(call), call
+
+
+# ── The picks of members, a slot and the place of a change ─────────────────
+
+
+@pytest.mark.parametrize(("call", "line"), [
+    (lambda: _M.crm_answer_setup_question("purpose:Collection", "Invoice"),
+     "picks that go: 1 pick of members that wait for an admin go: «Veena Rao» («Invoice»)"),
+    (lambda: _M.crm_dismiss_question("purpose:Collection"),
+     "picks that go: 1 pick of members that wait for an admin go: «Veena Rao» («Invoice»)"),
+    (lambda: _M.crm_accept_best_guesses(),
+     "picks that go: 1 pick of members that wait for an admin go: «Veena Rao» («Invoice») "
+     "for «Collection»"),
+])
+async def test_each_card_names_the_picks_that_the_write_removes(
+    call: Any, line: str, monkeypatch,
+) -> None:
+    """The route clears the waiting picks of each question it writes
+    (``clear_proposals``). Mutation: drop the line -> red."""
+    cards = approve(monkeypatch)
+    _gateway(monkeypatch)
+    await call()
+    assert line in cards[0]["context"]
+
+
+async def test_a_card_with_no_picks_has_no_picks_line(monkeypatch) -> None:
+    cards = approve(monkeypatch)
+    _gateway(monkeypatch)
+    await _M.crm_answer_setup_question("revenue", "Billed")
+    assert "picks that go" not in cards[0]["context"]
+
+
+async def test_a_slot_answer_goes_into_the_draft_and_says_so(monkeypatch) -> None:
+    """The version of a slot answer is the open draft, not the field map."""
+    cards = approve(monkeypatch)
+    _gateway(monkeypatch)
+    out = await _M.crm_answer_setup_question("slot:deal", "Potentials")
+    assert cards[0]["context"].startswith(_M._DRAFT_ANSWER_NOTE)
+    assert _M._ANSWER_NOTE not in cards[0]["context"]
+    assert "open draft version 8 of the field map" in out
+    assert "The field map is at version" not in out
+
+
+async def test_an_answer_says_where_to_change_or_undo_it(monkeypatch) -> None:
+    approve(monkeypatch)
+    _gateway(monkeypatch)
+    out = await _M.crm_answer_setup_question("purpose:Collection", "Invoice")
+    assert "tab Your answers of the Open questions section of the CRM settings" in out
 
 
 # ── The admin rule of the route ─────────────────────────────────────────────
@@ -441,7 +613,7 @@ def _registered(name: str) -> Any:
     ("crm_check_question_sum", ("key:Bills_X:amount", ["Grand_Total", "Tax"])),
     ("crm_answer_setup_question", ("purpose:Collection", "Invoice")),
     ("crm_dismiss_question", ("purpose:Collection",)),
-    ("crm_accept_best_guesses", ()),
+    ("crm_accept_best_guesses", (["purpose:Collection"],)),
 ])
 async def test_a_member_who_is_no_admin_reads_the_refusal(
     name: str, args: tuple, monkeypatch,

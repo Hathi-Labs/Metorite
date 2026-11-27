@@ -57,6 +57,7 @@ from tests.unit._crm_agent_fakes import (
     approve,
     deny,
     fake_gateway,
+    is_read,
     load_agent_module,
     writes,
 )
@@ -377,6 +378,13 @@ def _questions(call: dict) -> Any:
     path, method = call["path"], call["method"]
     if path == "/crm/questions" and method == "GET":
         return {"open": 1, "more": 0, "plan": 7, "shown": [_QUESTION], "answered": []}
+    body = call["json"] or {}
+    if path == "/crm/questions/accept-best" and body.get("dry_run") is True:
+        # The route's own dry run: what the batch applies, and no write.
+        return {"dry_run": True, "version": None, "items": [
+            {"id": _QUESTION["id"], "label": "Collection", "part": "purpose",
+             "value": "payment_in", "value_label": "Payment received",
+             "line": "Collection is now a payment received module."}]}
     if method == "POST":
         return {"id": _QUESTION["id"], "kind": "purpose", "version": 8, "dry_run": False,
                 "items": []}
@@ -455,8 +463,9 @@ async def test_everything_read_before_the_confirmation_is_a_read(
     import acb_skills.ask_tools as ask_tools
     monkeypatch.setattr(ask_tools, "request_confirmation", _snapshot)
     await _CALLS[tool]()
-    assert all(c["method"] == "GET" for c in before), (
-        f"{tool} issued {[(c['method'], c['path']) for c in before if c['method'] != 'GET']} "
+    # A read is a GET, or the one dry run of a batch (``is_read``, task 3955).
+    assert all(is_read(c) for c in before), (
+        f"{tool} issued {[(c['method'], c['path']) for c in before if not is_read(c)]} "
         "before anybody approved anything"
     )
 
