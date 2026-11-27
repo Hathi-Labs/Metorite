@@ -21,6 +21,7 @@ from __future__ import annotations
 import ast
 import collections
 import contextlib
+import shutil
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, ClassVar
@@ -241,10 +242,12 @@ async def test_the_crm_late_answer_never_matches_in_a_room(monkeypatch: pytest.M
         assert await ct._late_answer_matches("q-1", "yes") is False
 
 
-def test_the_run_context_readers_name_no_member_for_a_room() -> None:
+def test_the_run_context_readers_check_only_the_shape_of_the_address() -> None:
+    """The helper checks the shape of a run-context user. A run-context user
+    that is not an address names no member."""
     from acb_skills import chat_pin_tools, decide_tools, home_tools
 
-    with _room_run():
+    with _room_run("not-an-address"):
         assert chat_pin_tools._member() == ""
         assert home_tools._member() == ""
         assert decide_tools._proven_member() is None
@@ -252,6 +255,61 @@ def test_the_run_context_readers_name_no_member_for_a_room() -> None:
         assert chat_pin_tools._member() == MEMBER
         assert home_tools._member() == MEMBER
         assert decide_tools._proven_member() == MEMBER
+
+
+@contextlib.contextmanager
+def _real_room(*, solo: bool) -> Iterator[None]:
+    """A REAL shared web room (``routes/agent.py``): the memory id is
+    ``room:<thread>``, the run-context user is the typer's verified address,
+    and the run boundary binds ``solo_room=False``. *solo* True is the twin."""
+    from orchestrator.executor import _bind_solo_room, _release_solo_room
+
+    with run_context_scope(), artifact_context_scope():
+        bind_run_context(run_id="r-4017", user=MEMBER, member_verified=True)
+        bind_artifact_context(session_id="s-4017", member=MEMBER,
+                              agent_name="orchestrator", run_id="r-4017")
+        binding = _bind_memory_user_id(MEMBER if solo else "room:s-4017")
+        token = _bind_solo_room(solo)
+        try:
+            yield
+        finally:
+            _release_solo_room(token)
+            _unbind_memory_user_id(binding)
+
+
+async def test_in_a_real_room_the_home_tools_refuse_and_a_solo_twin_sends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Task 4017 fix round. ``home_tools._member`` passes in a real room,
+    because the typer's address is real. The solo gate refuses each Home tool
+    with no request, and the same tool in a solo run sends its request."""
+    from acb_skills import egress
+    from acb_skills import home_tools as ht
+
+    sent: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request.url.path)
+        return httpx.Response(200, json={})
+
+    monkeypatch.setattr(ht, "_transport", lambda: httpx.MockTransport(handler))
+
+    async def _no_card(*_a: Any, **_k: Any) -> bool:
+        return False
+
+    monkeypatch.setattr(egress, "write_must_show_card", _no_card)
+    with _real_room(solo=False):
+        outs = [await ht.home_read(v) for v in ("feed", "needs", "brief", "prefs")]
+        outs.append(await ht.home_read("find", words="rent"))
+        outs.append(await ht.home_card("tasks:7a7a7a7a-0000-4000-8000-00000000007a", "dismiss"))
+        outs.append(await ht.home_prefs("mutes", '["overdue"]'))
+        outs.append(await ht.home_layout("member", preset="founder"))
+        outs.append(await ht.home_test_push())
+    assert all(o.get("message") == ht.SHARED_ROOM for o in outs), outs
+    assert sent == []
+    with _real_room(solo=True):
+        await ht.home_read("feed")
+    assert sent, "the solo twin sent no request"
 
 
 async def test_the_chat_constraints_read_and_undo_nothing_for_a_room(
@@ -337,46 +395,143 @@ def test_a_skill_marker_with_a_room_id_is_foreign(tmp_path: Path) -> None:
 
 # ── 3. The fence: the helper is the one place ───────────────────────────────
 
-#: ``(module, function)`` -> why a bare ``"@" in`` test is right there. Each
-#: one reads a value that is NOT the run's member.
-ALLOWED: dict[tuple[str, str], str] = {
-    ("ask_tools.py", "_reply_classes"): "a reply form's address keys, not the run identity",
-    ("ask_tools.py", "_title_words"): "splits the words of a card title",
-    ("held_card.py", "address_problem"): "a row's address of a held send, not the run identity",
+#: ``(module, scope, exact expression)`` -> why an ``@`` test is right there.
+#: The scope is the dotted path of the function or class, or ``<module>``.
+#: Each key is ONE expression, so a second test in an allowed function, or an
+#: edited one, is not on the list and fails. Each entry reads a value that is
+#: NOT the run's member, or is the helper itself.
+ALLOWED: dict[tuple[str, str, str], str] = {
+    ("memory_tools.py", "run_member_address", "text.count('@')"): "the helper itself",
+    ("memory_tools.py", "run_member_address", "text.partition('@')"): "the helper itself",
+    ("ask_tools.py", "_reply_classes", "'@' not in a"):
+        "a reply form's address keys, not the run identity",
+    ("ask_tools.py", "_title_words", "'@' in w"): "splits the words of a card title",
+    ("ask_tools.py", "_title_words", "w.split('@', 1)"): "splits the words of a card title",
+    ("held_card.py", "address_problem", "'@' not in a"):
+        "a row's address of a held send, not the run identity",
+    ("held_card.py", "domain_of", "str(addr or '').rpartition('@')"):
+        "the domain of a row's address, not the run identity",
+    ("org_admin_tools.py", "_email_arg", "text.count('@')"):
+        "the address argument of an admin tool, not the run identity",
+    ("org_admin_tools.py", "_email_arg", "text.partition('@')"):
+        "the address argument of an admin tool, not the run identity",
 }
 
+#: The string methods that test or split on an ``@``.
+_AT_METHODS = frozenset({"count", "find", "rfind", "index", "rindex",
+                         "partition", "rpartition", "split", "rsplit"})
 
-def _at_tests() -> set[tuple[str, str]]:
-    found: set[tuple[str, str]] = set()
-    for path in sorted(SKILLS.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        rel = path.relative_to(SKILLS).as_posix()
-        for fn in ast.walk(tree):
-            if not isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef):
+
+def _is_at(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and node.value == "@"
+
+
+def _at_expr(node: ast.AST) -> bool:
+    """True for ``"@" in x`` / ``"@" not in x`` and for ``x.<method>("@")``."""
+    if isinstance(node, ast.Compare):
+        operands = [node.left, *node.comparators]
+        return any(isinstance(op, ast.In | ast.NotIn) and _is_at(operands[k])
+                   for k, op in enumerate(node.ops))
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        return node.func.attr in _AT_METHODS and bool(node.args) and _is_at(node.args[0])
+    return False
+
+
+def _at_findings(tree: ast.AST, rel: str) -> collections.Counter[tuple[str, str, str]]:
+    """Each ``@`` test of one module, keyed by ``(module, scope, expression)``.
+    The scope covers functions, classes and the module body alike."""
+    found: collections.Counter[tuple[str, str, str]] = collections.Counter()
+
+    def visit(node: ast.AST, scope: tuple[str, ...]) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                visit(child, (*scope, child.name))
                 continue
-            for node in ast.walk(fn):
-                if (isinstance(node, ast.Compare)
-                        and isinstance(node.left, ast.Constant) and node.left.value == "@"
-                        and any(isinstance(op, ast.In | ast.NotIn) for op in node.ops)):
-                    found.add((rel, fn.name))
-        for node in tree.body:
-            for sub in ast.walk(node):
-                if (not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
-                        and isinstance(sub, ast.Compare)
-                        and isinstance(sub.left, ast.Constant) and sub.left.value == "@"):
-                    found.add((rel, "<module>"))
+            if _at_expr(child):
+                found[(rel, ".".join(scope) or "<module>", ast.unparse(child))] += 1
+            visit(child, scope)
+
+    visit(tree, ())
     return found
+
+
+def _at_tests(root: Path = SKILLS) -> collections.Counter[tuple[str, str, str]]:
+    found: collections.Counter[tuple[str, str, str]] = collections.Counter()
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        found.update(_at_findings(tree, path.relative_to(root).as_posix()))
+    return found
+
+
+def _unallowed(root: Path = SKILLS) -> list[tuple[str, str, str]]:
+    """Each finding past its allowance: one per allowed key, none for others."""
+    extra = _at_tests(root) - collections.Counter(set(ALLOWED))
+    return sorted(extra.elements())
 
 
 def test_no_module_tests_the_run_member_with_a_bare_at_sign() -> None:
     """A new ``"@" in member`` test reads ``room:team@x`` as a member. Use
     ``memory_tools.run_member_address``. A test of a value that is not the
     run's member goes in :data:`ALLOWED` with its reason."""
-    extra = _at_tests() - set(ALLOWED)
-    assert not extra, (
-        f"a bare '\"@\" in' test outside memory_tools.run_member_address: {sorted(extra)}")
+    extra = _unallowed()
+    assert not extra, f"an '@' test outside memory_tools.run_member_address: {extra}"
 
 
 def test_the_allow_list_has_no_stale_entry() -> None:
-    stale = set(ALLOWED) - _at_tests()
+    stale = set(ALLOWED) - set(_at_tests())
     assert not stale, f"remove the stale ALLOWED entries: {sorted(stale)}"
+
+
+#: Planted code, each a new ``@`` test the fence must catch.
+_PLANTS = {
+    "function": "def f(member):\n    return '@' in member\n",
+    "not in, reversed side": "def f(member):\n    return x == 1 or '@' not in member\n",
+    "class body": "class C:\n    ok = '@' in MEMBER\n",
+    "module level": "OK = '@' not in MEMBER\n",
+    "count": "def f(m):\n    return m.count('@') == 1\n",
+    "find": "def f(m):\n    return m.find('@') > 0\n",
+    "index": "def f(m):\n    return m.index('@')\n",
+    "partition": "def f(m):\n    return m.partition('@')\n",
+    "rpartition": "def f(m):\n    return m.rpartition('@')\n",
+    "split": "def f(m):\n    return m.split('@')\n",
+}
+
+
+@pytest.mark.parametrize("code", list(_PLANTS.values()), ids=list(_PLANTS))
+def test_the_fence_catches_each_planted_shape(tmp_path: Path, code: str) -> None:
+    """A temporary copy of the package with one planted module goes red."""
+    copy = tmp_path / "acb_skills"
+    shutil.copytree(SKILLS, copy, ignore=shutil.ignore_patterns("__pycache__"))
+    assert _unallowed(copy) == []
+    (copy / "planted_tools.py").write_text(code, encoding="utf-8")
+    extra = _unallowed(copy)
+    assert extra and all(e[0] == "planted_tools.py" for e in extra), extra
+
+
+def test_a_second_test_inside_an_allowed_function_goes_red(tmp_path: Path) -> None:
+    """The allow-list keys one exact expression. A second ``@`` test in
+    ``ask_tools._reply_classes`` is not on it."""
+    copy = tmp_path / "acb_skills"
+    shutil.copytree(SKILLS, copy, ignore=shutil.ignore_patterns("__pycache__"))
+    path = copy / "ask_tools.py"
+    src = path.read_text(encoding="utf-8")
+    anchor = "    out: dict[str, str] = {}\n"
+    assert src.count(anchor) >= 1 and "def _reply_classes" in src
+    head, _, tail = src.partition("def _reply_classes")
+    tail = tail.replace(anchor, anchor + "    _member_ok = '@' in str(value)\n", 1)
+    path.write_text(head + "def _reply_classes" + tail, encoding="utf-8")
+    assert _unallowed(copy) == [("ask_tools.py", "_reply_classes", "'@' in str(value)")]
+
+
+def test_the_same_allowed_expression_twice_goes_red(tmp_path: Path) -> None:
+    """An allowed expression counts once, so a copy of it in the same
+    function fails too."""
+    copy = tmp_path / "acb_skills"
+    shutil.copytree(SKILLS, copy, ignore=shutil.ignore_patterns("__pycache__"))
+    path = copy / "held_card.py"
+    src = path.read_text(encoding="utf-8")
+    old = '    if not a or "@" not in a:\n'
+    assert old in src
+    path.write_text(src.replace(old, old + '        pass\n    if "@" not in a:\n', 1),
+                    encoding="utf-8")
+    assert _unallowed(copy) == [("held_card.py", "address_problem", "'@' not in a")]

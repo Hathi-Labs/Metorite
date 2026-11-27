@@ -122,10 +122,20 @@ def run_member_address(value: object = _FROM_RUN) -> str | None:
     * not exactly one ``@``, an empty local part or an empty domain
     * a ``:``, a space or a control character anywhere, or over 320 characters
 
-    Else the value, stripped. The run has no explicit shared flag that this
-    package can read. ``executor.run_is_solo`` is False for a shared room and
-    also for each unattended run (a workflow, a headless turn), so it cannot
-    say "shared". The server-set ``room:`` id is the signal. Fence:
+    Else the value, stripped.
+
+    ⚠️ **Only the memory id carries the room signal.** In a shared web room
+    the gateway binds the memory id ``room:<thread>``, and this helper refuses
+    it. The verified ``user`` of the run context and the billed member are the
+    TYPER's real address in that same room. For those values the helper checks
+    only the shape of the address, and it cannot detect a room. So a caller
+    that reads one of them, and that prints the member's own data, must also
+    ask ``orchestrator.executor.run_is_solo()`` and refuse when it is False
+    (``home_tools._solo_run``, ``company_search_tools``).
+
+    ``run_is_solo`` is False for a shared room and also for each unattended
+    run (a workflow, a headless turn). So a caller that reads the memory id
+    does not need it, and must not use it alone to say "shared". Fence:
     ``tests/unit/test_run_member_address.py``.
     """
     if value is _FROM_RUN:

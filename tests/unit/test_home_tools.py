@@ -308,12 +308,21 @@ def _held(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @contextlib.contextmanager
-def _run(*, user: str = MEMBER, verified: bool = True, member: str | None = None) -> Iterator[None]:
+def _run(*, user: str = MEMBER, verified: bool = True, member: str | None = None,
+         solo: bool = True) -> Iterator[None]:
+    """One run. *solo* is what the run boundary binds (``executor.run_is_solo``).
+    Task 4017: a Home tool refuses a run that is not solo."""
+    from orchestrator.executor import _bind_solo_room, _release_solo_room
+
     with run_context_scope(), artifact_context_scope():
         bind_run_context(run_id="r-par8b", user=user or None, member_verified=verified)
         bind_artifact_context(session_id="s-par8b", member=user if member is None else member,
                               agent_name="orchestrator", run_id="r-par8b")
-        yield
+        token = _bind_solo_room(solo)
+        try:
+            yield
+        finally:
+            _release_solo_room(token)
 
 
 def _outside_block(result: dict[str, Any]) -> str:
@@ -361,6 +370,50 @@ async def test_with_no_verified_member_nothing_is_sent(gw: Gateway, cards: Cards
         assert (await ht.home_card(CARD_ID, "dismiss"))["message"] == ht.NO_MEMBER
         assert (await ht.home_test_push())["message"] == ht.NO_MEMBER
     assert gw.calls == [] and cards.shown == []
+
+
+def _home_calls() -> list[tuple[str, Any]]:
+    """One call of each Home tool, the reads by each view."""
+    return [
+        *[(f"home_read:{v}", lambda v=v: ht.home_read(v)) for v in ("feed", "needs", "brief", "prefs")],
+        ("home_read:find", lambda: ht.home_read("find", words="rent")),
+        ("home_card", lambda: ht.home_card(CARD_ID, "dismiss")),
+        ("home_prefs", lambda: ht.home_prefs("mutes", '["overdue"]')),
+        ("home_layout", lambda: ht.home_layout("member", preset="founder")),
+        ("home_test_push", lambda: ht.home_test_push()),
+    ]
+
+
+@pytest.mark.parametrize(("name", "call"), _home_calls())
+async def test_a_shared_room_refuses_each_home_tool_and_sends_nothing(
+    gw: Gateway, cards: Cards, name: str, call: Any,
+) -> None:
+    """Task 4017. A real shared web room: the memory id is ``room:<thread>``,
+    the run-context user is the TYPER's own verified address, and the run is
+    not solo. ``_member`` passes there, so only the solo gate stops the
+    typer's Home from printing into the room. Mutation: drop ``_solo_run`` from
+    the tool -> a request goes out -> red."""
+    from acb_skills.memory_tools import _bind_memory_user_id, _unbind_memory_user_id
+
+    binding = _bind_memory_user_id("room:s-par8b")
+    try:
+        with _run(solo=False):
+            out = await call()
+    finally:
+        _unbind_memory_user_id(binding)
+    assert out.get("message") == ht.SHARED_ROOM, (name, out)
+    assert gw.calls == [] and cards.shown == []
+
+
+@pytest.mark.parametrize(("name", "call"), _home_calls())
+async def test_the_same_tool_in_a_solo_run_sends_its_request(
+    gw: Gateway, cards: Cards, name: str, call: Any,
+) -> None:
+    """Non-vacuity twin of the shared-room test."""
+    with _run(solo=True):
+        out = await call()
+    assert out.get("ok"), (name, out)
+    assert gw.calls, name
 
 
 # -- home-real-route: the reads ---------------------------------------------------------
