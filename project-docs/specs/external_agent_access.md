@@ -1300,7 +1300,7 @@ v1
 - A GET has an empty body, so its hash is the SHA-256 of zero bytes.
 - A write (EA-6a, EA3-28) adds a 9th line, the value of `X-Agent-Nonce`, after the body hash. A GET has no 9th line, so its signed string is the eight lines above, byte for byte. The body line of a write is the SHA-256 of the body bytes as sent.
 - A call in an MCP session (SW-7, §12.5) adds a last line, `session:<key>`, after the body hash or the nonce. The key goes out as `X-Agent-Session`. A call with no session has no such line, so its string is byte for byte the string before SW-7.
-- A write of a bulk call (MCP-G28a, D209) adds a last line, `batch:<key>`, after the nonce and the session line. The key goes out as `X-Agent-Batch`. It has the shape of a nonce, and the edge mints a new key for each call of `update_tasks`. Only a write carries it. Branch 0 refuses a batch key on a GET, two batch headers, and a key of another shape. A write with no batch key has no such line, so its string is byte for byte the string before MCP-G28a. The key only lowers the call count of §9.2, "The write limit". Each write still counts one row.
+- A write of a bulk call (MCP-G28a, D209) adds a last line, `batch:<key>`, after the nonce, the session line and the approval line (§19.5, AD-6). The key goes out as `X-Agent-Batch`. It has the shape of a nonce, and the edge mints a new key for each call of `update_tasks`. Only a write carries it. Branch 0 refuses a batch key on a GET, two batch headers, and a key of another shape. A write with no batch key has no such line, so its string is byte for byte the string before MCP-G28a. The key only lowers the call count of §9.2, "The write limit". Each write still counts one row.
 
 **The keys.**
 
