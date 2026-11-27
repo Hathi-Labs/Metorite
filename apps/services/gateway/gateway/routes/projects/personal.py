@@ -53,7 +53,8 @@ from gateway.routes.projects.core import (
     _placeholder,
     _tenant_session,
     actor,
-    assert_not_archived,
+    assert_project_open_for_writes,
+    assert_task_project_open,
     clean_payload,
     coerce_write_values,
     diff_changes,
@@ -385,6 +386,13 @@ async def reopen_if_closed(
     The lane is the first ``todo`` lane of the task's OWN status set. A set
     with no ``todo`` lane falls back to the first lane by position, and when
     that lane closes too the task stays where it is: the lane decides.
+
+    ARC-2b (``one_projects_app.md`` §9b.6 rule 2). The reopen changes the
+    status, and the status is project work. So a task in an archived project
+    answers 409 with ``ARCHIVED_PROJECT_REFUSAL`` here, before the status
+    write and before ``pm.task.status_changed``. An overlay write that
+    reopens nothing never reaches the guard, so it stays open. The bulk
+    ``personal`` act catches this 409 and names the task as failed.
     """
     if disposition not in OPEN_DISPOSITIONS:
         return None
@@ -408,6 +416,8 @@ async def reopen_if_closed(
             return None
     if getattr(lane, "category", None) in CLOSING_CATEGORIES:
         return None
+    # ARC-2b: refuse before the write and before the event (docstring).
+    await assert_task_project_open(db, task)
     moved = await apply_status_transition(db, task, str(lane.id), created_by=email)
     await emit("pm.task.status_changed", {
         "task_id": str(task.id), "from": moved["from"].name,
@@ -663,7 +673,7 @@ async def capture(
 async def create_personal_task(
     db: Any, email: str, project_id: str, root_id: str, status_id: str,
     values: dict[str, Any], overlay: dict[str, Any] | None = None,
-    *, announce: bool = True,
+    *, announce: bool = True, actor: str | None = None,
 ) -> Any:
     """One `pm_tasks` row in the member's own tree, assigned to them.
 
@@ -697,6 +707,13 @@ async def create_personal_task(
     that. With no event, the `shell.cache.on_event` sink moves no My Day
     version, so the park calls `shell.cache.bump_member_safe` for the owner
     after its commit. Fence: `tests/unit/test_auto_park.py`.
+
+    **`actor`** (STU-E4) names who acted when it is not the member: the
+    `system:workflow:<id>` of D-PM-4. It stamps `assigned_by` and the
+    "Captured" activity, and flags that activity `meta.automation`. It never
+    stamps `created_by`: the member stays the creator of a task in their own
+    tree, because `authority.may_move_task` and `may_delete_task` read the
+    creator. Left out, each caller writes the member as before.
     """
     # WS-64. A capture is a NEW placement, so it is refused under an archived
     # Area (one `archived_at` read by id, since callers hold ids and no row).
@@ -704,7 +721,7 @@ async def create_personal_task(
         text("SELECT name, archived_at FROM pm_projects WHERE id = CAST(:p AS uuid)"),
         {"p": project_id},
     )).fetchone()
-    assert_not_archived(target, then="Capture into")
+    assert_project_open_for_writes(target)
     stated = dict(overlay or {})
     if stated.get("disposition") is None and not values.get("parent_task_id"):
         stated["disposition"] = "INBOX"
@@ -723,16 +740,16 @@ async def create_personal_task(
     await db.execute(
         text(
             "INSERT INTO pm_task_assignees (task_id, assignee, assigned_by) "
-            "VALUES (CAST(:tid AS uuid), :who, :who) "
+            "VALUES (CAST(:tid AS uuid), :who, :by) "
             "ON CONFLICT (task_id, assignee) DO NOTHING"
         ),
-        {"tid": task_id, "who": email},
+        {"tid": task_id, "who": email, "by": actor or email},
     )
     if overlay:
         await _upsert_personal(db, task_id, email, overlay)
     await record_activity(
-        db, activity_type="system", created_by=email, task_id=task_id,
-        body="Captured",
+        db, activity_type="system", created_by=actor or email, task_id=task_id,
+        body="Captured", automation=actor is not None,
     )
     if not announce:
         return task
@@ -1056,6 +1073,8 @@ async def set_personal(
         # member looking at it.
         values["clarified_at"] = now()
         # D77 — INBOX, NEXT or WAITING on a closed task reopens it for the board.
+        # ARC-2b: in an archived project the reopen answers 409, and the
+        # overlay is not written either.
         await reopen_if_closed(db, task, email, values.get("disposition"))
         row = await _upsert_personal(db, task_id, email, values)
         out = _personal_to_dict(row)
@@ -2431,6 +2450,12 @@ async def my_task_lanes(
     membership fragment is the grant: ``_read_my_task`` answers 404 for a
     task that is not mine, exactly as ``/my/tasks/{id}`` does.
 
+    The chat uses this route too (Task 3865). ``update_task`` resolves a
+    status NAME through it when the project read 404s, and ``vocabulary``
+    does the same when it gets a ``task_id``. It answers lanes only: no
+    counts, no tags and no name of a project, so it shows an assignee no more
+    than the task shows. Fence: tests/unit/test_projects_status_read_assignee_r8.py.
+
     A sibling read rather than a field on ``/my/tasks/{id}``, on purpose.
     ``test_the_inbox_and_the_calendar_project_the_same_task_shape`` holds the
     three personal readers to one key set, so the client's one mapper never
@@ -2746,6 +2771,7 @@ async def complete_task(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
+        await assert_task_project_open(db, task)
         # The subtree FIRST. `complete_for_member` emits the parent's
         # `pm.task.status_changed` inside this transaction, so a cascade that
         # refuses after it would have announced a completion that rolled back
@@ -2969,6 +2995,10 @@ async def _organize(
         # field People capacity and analytics read.
         shared["estimate_mins"] = payload.time_estimate_mins
     if shared:
+        # ARC-2b: a date or an estimate is the team's, so an archived project
+        # refuses it (409). The overlay writes below stay open, except a
+        # reopen, which `reopen_if_closed` refuses before its event.
+        await assert_task_project_open(db, task)
         # The way `patch_task` writes them: the row, then what actually moved
         # through the ONE field_change door, so the timeline shows the
         # deadline and the estimate an organize set (D77 repair).
@@ -2984,8 +3014,10 @@ async def _organize(
     if payload.kind == "do-now":
         # Completed for the PROJECT, then the two-minute marker on my view.
         # Writing DONE onto the overlay alone would leave the board open
-        # (§13.5a decision 1). `complete_for_member` is the one completion
+        # (§13.5a decision 1). ARC-2b: the status is the project's, so an
+        # archived project refuses it. `complete_for_member` is the one completion
         # path: it emits the status event and closes an email thread too.
+        await assert_task_project_open(db, task)
         await complete_for_member(db, task, email)
     values: dict[str, Any] = {
         "disposition": disposition,

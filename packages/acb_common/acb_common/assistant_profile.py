@@ -414,7 +414,8 @@ def _clean_languages(value: Any) -> list[str]:
 
 
 def _clean_style(value: Any) -> dict[str, Any]:
-    raw = _object(value, ("length", "language", "languages", "notes"), "the style")
+    raw = _object(value, ("length", "language", "languages", "language_fixed", "notes"),
+                  "the style")
     out: dict[str, Any] = {}
     if "length" in raw:
         out["length"] = _choice(raw["length"], LENGTH, "style.length")
@@ -435,6 +436,11 @@ def _clean_style(value: Any) -> dict[str, Any]:
     if tags and first:
         out["language"] = first
         out["languages"] = tags
+    if "language_fixed" in raw:
+        # The member's order about the answer language (personalization.md 5.3).
+        if raw["language_fixed"] is not True:
+            raise ValueError("style.language_fixed is true, or null to clear it")
+        out["language_fixed"] = True
     if "notes" in raw:
         notes = raw["notes"]
         if not isinstance(notes, list):
@@ -1127,8 +1133,8 @@ def add_steered_words(author: Any, text: Any, *, typed: Any) -> bool:
     * *author* is the run member. Another member's steer never grounds a
       write.
 
-    ``orchestrator.steer.decorate_tool_result`` calls it when a tool result
-    carries a steer to the model. Never raises.
+    ``orchestrator.steer.take_steer_turns`` calls it when a model call reads
+    a steer as a user turn (task 2494). Never raises.
     """
     holder = _STEERS.get()
     if holder is None or typed is not True or not holder.member:
@@ -1163,8 +1169,11 @@ def sent_words() -> str:
 
     That is the sent text of the request (:data:`MEMBER_SENT`), then the
     member's own typed steers that the run read, as :func:`typed_words` reads
-    them. Only the tool-pack chooser reads it (D-PZ-37). ⚠️ Never ground a
-    write in it: a tapped pill holds words that the member did not type.
+    them. Only the tool-pack chooser reads it (D-PZ-37). TOF-3a F12b: the
+    live writer of skill runs reads the same words through ``PackTurn.words``,
+    and keeps only their hash (``orchestrator._tool_injection``). ⚠️ Never
+    ground a write in it: a tapped pill holds words that the member did not
+    type.
     :func:`typed_words` is the one value that grounds a write."""
     own = MEMBER_SENT.get()
     holder = _STEERS.get()
@@ -2027,6 +2036,8 @@ LANGUAGE_RULE_LINE = (
     "Language rule: answer in the language that the member uses in this "
     "message, also when it differs from their profile language. Use the "
     "profile language only when the language of the message is unclear. "
+    "A profile line that says to answer in a language even when the member "
+    "writes in another one wins over this: the member ordered it. "
     "Write every saved record in English: task and project titles and "
     "descriptions, comments, notes, CRM records, calendar events, and email "
     "or message drafts. Do this even when the member writes in another "
@@ -2036,7 +2047,7 @@ LANGUAGE_RULE_LINE = (
 
 # Accepts "kn" and "Kannada (kn)". The group is always the TAG. The second
 # pattern reads the first tag of the list line of PZ-52.
-_BLOCK_LANGUAGE = re.compile(r"Language: (?:[^.()]*?\()?([^\s.()]+?)\)?\. Answer in it")
+_BLOCK_LANGUAGE = re.compile(r"Language: (?:[^.()]*?\()?([^\s.()]+?)\)?\. Answer in ")
 _BLOCK_LANGUAGES = re.compile(r"Languages: (?:[^.(),]*?\()?([^\s.(),]+?)\)?[,.]")
 
 
@@ -2058,15 +2069,31 @@ def _style_line(style: dict[str, Any], notes: list[str]) -> str:
     if style.get("length"):
         bits.append(LENGTH_LINES[style["length"]])
     tags = [_one_line(t) for t in style.get("languages") or [] if _one_line(t)]
-    if len(tags) > 1:
-        # PZ-52: the list in order. The PZ-51 rule line decides the reply
-        # language. The list is only the fallback order.
-        bits.append("Languages: " + ", then ".join(_language_label(t) for t in tags)
-                    + ". Answer in the language of their message. "
-                    "When that is unclear, use the first in the list.")
-    elif style.get("language"):
-        bits.append(f"Language: {_language_label(_one_line(style['language']))}. "
-                    "Answer in it, unless they write in another language.")
+    if len(tags) < 2:
+        tags = [_one_line(style["language"])] if style.get("language") else []
+    if tags:
+        # PZ-52: one language, or the list in order.
+        head = ("Languages: " if len(tags) > 1 else "Language: ") + ", then ".join(
+            _language_label(t) for t in tags)
+        if style.get("language_fixed") is True:
+            # The member ordered the first language (personalization.md 5.3).
+            # It holds when they write in another one.
+            answer = LANGUAGE_NAMES.get(tags[0].lower().split("-")[0],
+                                        _language_label(tags[0]))
+            if answer == "English":
+                tail = "writes in Hindi or another language"
+            elif answer == "Hindi":
+                tail = "writes in English or another language"
+            else:
+                tail = "writes in another language"
+            bits.append(f"{head}. Answer in {answer}, even when the member {tail}.")
+        elif len(tags) > 1:
+            # The PZ-51 rule line decides the reply language. The list is only
+            # the fallback order.
+            bits.append(f"{head}. Answer in the language of their message. "
+                        "When that is unclear, use the first in the list.")
+        else:
+            bits.append(f"{head}. Answer in it, unless they write in another language.")
     if notes:
         bits.append("Notes: " + " ".join(_sentence(n) for n in notes))
     return " ".join(bits)
@@ -2379,6 +2406,8 @@ def render_export(raw: Any) -> str:
         if len(style.get("languages") or []) > 1:
             lines.append("- Languages, in order: "
                          + ", ".join(_one_line(t) for t in style["languages"]))
+        if style.get("language_fixed") is True and style.get("language"):
+            lines.append("- The language holds even when you write in another one")
         lines += [f"- Note: {n}" for n in notes]
     if profile["facts"]:
         lines += ["", "What you asked the assistant to remember"]

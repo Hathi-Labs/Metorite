@@ -48,6 +48,8 @@ export interface Style {
   language?: string;
   /** The languages the member speaks, most preferred first (PZ-52). */
   languages?: string[];
+  /** The member ordered this answer language (personalization.md 5.3). */
+  language_fixed?: boolean;
   notes?: string[];
 }
 // ── The interview (PZ-26, PZ-27, `personalization.md` §14.3 and §14.4) ────
@@ -374,7 +376,10 @@ export function mergeStyle(current: Style, edit: { [K in keyof Style]?: Style[K]
   } else if ("language" in edit) {
     next.languages = typeof edit.language === "string" && edit.language.trim() ? [edit.language.trim()] : [];
   }
-  return compact(next);
+  const merged = compact(next);
+  // No language, no mark: an emptied language leaves no orphan `language_fixed`.
+  if (!merged.language) delete merged.language_fixed;
+  return merged;
 }
 
 /** The languages of a style, most preferred first. An old style holds only `language`. */

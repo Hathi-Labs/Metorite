@@ -93,12 +93,21 @@ lane rules in `scripts/home_server/lanes/lane-rules.md`.
 The start note is the first prompt of the session. Put these parts in one
 plain text file on the PC:
 
-1. The lane's name, its stream and the task numbers, in priority order.
+1. The lane's name, its stream and the task numbers, in priority order. Name
+   the lane as `agent_label`, and the machine as `host`. The lane sends both
+   with each claim (task 3626, SW-105).
 2. A time window, not a hard deadline. A lane refuses a HIGH slice that
    cannot finish before a hard deadline, so it stops early.
 3. The full text of `scripts/home_server/lanes/lane-rules.md`.
 4. For the merge lane only: `scripts/home_server/lanes/lane-merge.md` before
    the lane rules.
+
+When an orchestrator writes the note, its first line names the run id of the
+orchestrator, for example `Dispatched by run <run id>`. The lane passes that id
+as `dispatched_by` on each claim. A server that does not know the input
+refuses the claim, so the lane then claims again without it. The lane keeps
+the line in the note header, so a lane that restarts finds its dispatcher
+(SW-108). A note with no orchestrator carries no such line.
 
 ### 3.3 Start the lane
 
@@ -202,12 +211,231 @@ merges it. The other lanes keep building. Its role is in
 
 | File on the box | What it holds |
 |---|---|
-| `~/lanes/merge-queue.tsv` | One line for each hand-over: pull request, task, worktree, lane, note. Tabs between the fields. |
-| `~/lanes/merge-queue.log` | One line for each result: `DONE <pull request> <sha>` or `BACK <pull request> <reason>`. |
+| `~/lanes/merge-bot-queue.tsv` | One line for each hand-over: pull request, task, worktree, lane, head SHA, tier, note. Tabs between the fields, under a `#` header line. Only `lane_handover.sh` writes it. A hand-over by PR number writes `-` as the worktree. |
+| `~/lanes/merge-bot.log` | One line for each result: `DONE <pull request> <sha>`, `RESOLVED <pull request> <rules>`, `RENUMBERED <pull request> <old>-><new>[, ...]` or `BACK <pull request> <reason>`. Only the merge bot writes it. The bot also posts each BACK reason on the pull request as a comment. |
+| `~/lanes/merge-queue.tsv`, `~/lanes/merge-queue.log` | History of the lane-merge session, with HOLD, RED and NOTE lines that people wrote. Nothing reads them now. |
 
 A lane hands over a pull request only after three steps. The verifier passed,
 the review of its risk tier passed, and the owner approved its preview when
 it needed one.
+
+**A hand-over from any machine** (CIV-28c, task 3229). A session on the PC has
+no worktree on the box. It runs `bash scripts/hand_over.sh <PR> <task> <tier> "<note>"`.
+Over `ssh metorite-home`, the wrapper goes to the bot's checkout
+`~/lanes/merge-bot-src` and fetches `main`. Then it runs
+`origin/main:scripts/home_server/lane_handover.sh --pr` from a temp file. So
+an old copy in the bot's checkout never runs. On the box as `dev`, it runs
+there with no ssh. A box lane can still give its own worktree to
+`lane_handover.sh`.
+
+The `--pr` mode checks out nothing. It reads the PR head and `origin/main` as
+git objects, and the trial merge reads the attributes of the PR head
+(`git --attr-source`, git 2.42 or newer). It first refuses what the bot would
+send back:
+
+- The bot timer `metorite-merge-bot.timer` is not active (exit 3).
+- The tier is HIGH, or the diff touches a path of `HIGH_PATHS_RE` (exit 4).
+- The head is in a fork, the base is not `main`, or the head branch matches
+  `PROTECTED_HEAD_RE` (exit 4).
+
+Exit 4 is final. The session merges the pull request with the full loop, and
+never changes the diff to get past the tier floor. Exit 1 is a refusal that a
+fix can pass: `VERIFY: PASS`, `Visual review:`, a conflict, or R1. Exit 3
+means that the box cannot take it, or that the result is unknown.
+
+It reads both lists from `merge_bot.sh` in the bot's checkout, the file that
+the bot runs. So each list stays in one place. A list that does not parse in
+full, or that `grep -E` rejects, stops the hand-over with exit 3. The tier
+floor never passes in silence.
+
+**The wait** (fix round 1 of PR 2294). Nothing on the box can write to
+Metorite, so the session stays the actor. It runs
+`bash scripts/hand_over.sh --wait <PR>`. Once a minute, the wait reads the
+queue and the log, with no lock. The bot gives the nth hand-over of a pull
+request the nth `DONE` or `BACK` line. It prints the line. Exit 0 is `DONE`,
+exit 1 is `BACK`, and exit 3 means no line in `HAND_OVER_WAIT` minutes (120).
+
+**The number of a hand-over** (fix round 2). Before it hands over, the
+wrapper counts the hand-overs of the pull request in the queue. This
+hand-over is that count plus 1. The wrapper writes the number to
+`~/.cache/metorite-hand-over/pr-<PR>` on the machine that runs it. `--wait`
+and `--status` read the result of that number, so an old `BACK` never reads as
+the result of a new hand-over.
+
+**After an unknown result**, run `bash scripts/hand_over.sh --status <PR>`.
+It reads once, and gives one exit code for each state:
+
+| Exit | State | Next step |
+|---|---|---|
+| 0 | `DONE` | The bot merged it. |
+| 1 | `BACK` for this hand-over | Read the reason. |
+| 5 | In the queue, with no result yet | Run `--wait`. |
+| 6 | Not in the queue | Hand it over again, or merge it yourself. |
+| 3 | The box cannot be read | Merge it yourself. |
+
+**The bot's checkout** is `~/lanes/merge-bot-src`, a detached worktree of
+`~/Metorite`. The unit `metorite-merge-bot.service` runs
+`%h/lanes/merge-bot-src/scripts/home_server/merge_bot.sh` from it. The release
+timer uses `~/Metorite`, so the bot never shares that checkout. The drop-in
+`~/.config/systemd/user/metorite-merge-bot.service.d/override.conf` on the box
+sets the same two paths, and it can stay.
+
+**Move the bot's checkout forward** after a merge that changes the bot or its
+lists. Do these steps on the box as `dev`:
+
+```bash
+systemctl --user stop metorite-merge-bot.timer
+# Let a pass that runs now end. A pass can take up to 2 hours.
+while systemctl --user is-active --quiet metorite-merge-bot.service; do sleep 10; done
+cd ~/lanes/merge-bot-src && git fetch -q origin main \
+  && git -c core.fileMode=false checkout -q --detach origin/main
+systemctl --user start metorite-merge-bot.timer
+```
+
+Between the stop and the start, a hand-over stops with exit 3.
+
+**The merge bot** (D218, task 3053). `scripts/home_server/merge_bot.sh` merges
+the queued pull requests with no model and no Metorite credential. One pass
+reads the queue, and handles each hand-over that has no result line yet. It
+never merges a `HIGH` tier slice, and it needs a PR body line that starts with
+`VERIFY: PASS`. It logs a BACK when the PR head moved after the hand-over. It
+waits for the seven required checks of `main` (a missing or pending one means
+not ready, and only the newest row of a check counts), and reruns a cancelled
+job once.
+
+It then runs the trial merge with
+`origin/main` and `scripts/premerge.sh` on the pinned SHA, and runs
+`gh pr merge --squash --match-head-commit <sha>`. A
+branch behind `main` still merges when the trial merge is clean. It never
+pushes, except the merge commit of a resolved conflict. It never passes `--admin` or `--auto`. `MERGE_BOT_DRY_RUN=1` prints
+the actions and calls no write command.
+
+Each BACK line, except `BACK <pull request> closed`, also goes on the pull
+request as a comment (CIV-28c). The comment holds the reason and the
+hand-over command. The comment drops each credential shape of
+`acb_common/secret_shapes.py`. When that scrub fails, the comment holds no
+reason. A failed comment changes no log line.
+`MERGE_BOT_BACK_COMMENT=0` turns the comment off.
+
+The bot takes only a PR of this repo with base `main`. A fork, another base,
+or a head branch with a protected name (`main`, `master`, `release`,
+`release/*`, `green/*`) goes BACK before any merge work.
+
+**Conflicts** (CIV-34a, `ci_velocity.md` §8.9). When the trial merge
+conflicts, the bot merges `main` into the PR branch. It tries the rules of
+`scripts/merge_conflict_rules.py` on each conflicted file. It checks and tests
+the merged tree, and commits the merge only when all pass. It reads the head
+branch again, and pushes the merge commit only when the branch did not move.
+It never uses force, and `rerere` stays off.
+
+The log then gets `RESOLVED <pull request> <rules>`, and the next pass waits
+for the new pr-check. The lane pulls its branch after a `RESOLVED` line.
+
+**Migration numbers** (CIV-RN, `ci_velocity.md` §8.10). lane-merge runs
+`~/lanes/merge-bot-src/scripts/home_server/merge_bot.sh --renumber <pull request> <sha>`
+before premerge. A migration at or below main's highest gets the next number
+of the ledger, and each later migration of the PR moves above it. The bot
+pushes the move with no force, and the log gets
+`RENUMBERED <pull request> <old>-><new>[, ...][ check by hand: <file>:<line>, ...]`.
+The lane pulls its branch after a `RENUMBERED` line.
+
+The log gets `BACK <pull request> conflict: ...` in these cases:
+
+- A file fits no rule, or the conflict is in a HIGH, workflow or schema path.
+- A check or a test fails on the merged tree.
+- The tests need more time than the cap.
+- The head branch moved during the resolution.
+
+The bot runs ruff from `~/lanes/merge-bot-wt/.venv/bin`, or through
+`uv run --no-sync`. The unit PATH has no ruff.
+
+The units are
+`scripts/home_server/systemd/metorite-merge-bot.service` and `.timer`, every
+2 minutes, user `dev`. The owner installs them (see the header of the service
+file). `lane-merge` reads the log and closes or returns each task. A hand-over
+needs no box run since D218, because GitHub pr-check is the gate.
+
+**The automatic revert** (CIV-31, task 3056). `scripts/home_server/auto_revert.py`
+reads a red push batch of `main`, names the culprit, and reverts it through a
+revert PR. The merge bot merges that PR. It ships dark: the unit sets
+`AUTO_REVERT_MODE=dry` for one week first. `ci_velocity.md` §8.8 holds the
+design.
+
+| File on the box | What it holds |
+|---|---|
+| `~/lanes/auto-revert.log` | One line for each decision: `WOULD-REVERT` (dry), `REVERT`, `REVERTED`, `REOPENED`, `SKIP` or `PERSON`. Only the auto-revert pass writes it. |
+| `~/lanes/auto-revert/run-<id>.md` | One report for each red batch run: the checks, the decision, and the PR, comment and task text. |
+
+Read each new `PERSON` line. It names the doubt, the culprit and its task.
+The revert PR goes to the merge bot with the task `0`, so no task closes when
+it merges. Then the pass opens the culprit's task again (CIV-31c). It runs one
+`claude -p` call with the Metorite sign-in of the box, and writes `REOPENED`.
+When that call fails, the pass writes a `PERSON` line with `reopen=failed`.
+Then `lane-merge` opens the task by hand (`lanes/lane-merge.md`).
+
+The units are
+`scripts/home_server/systemd/metorite-auto-revert.service` and `.timer`, every
+5 minutes, user `dev`. They take the place of `metorite-bisect-poll`.
+
+**The mode** (CIV-31d). The mode has one source: the line
+`Environment=AUTO_REVERT_MODE=<mode>` of `metorite-auto-revert.service`, in
+the unit file or in a drop-in. On the box, it is in the drop-in
+`~/.config/systemd/user/metorite-auto-revert.service.d/override.conf`. The mode
+has one reader, `scripts/home_server/auto_revert_mode.sh`. The pass, the merge
+bot and `lane-merge` run it, and none of them reads the mode from its own env.
+So the pass and the bot always see the same mode.
+
+To set the mode, do these steps on the box as `dev`. Write `on`, `dry` or
+`off` in place of `on` in the `sed` line.
+
+```bash
+cd ~/.config/systemd/user
+sed -i 's/^Environment=AUTO_REVERT_MODE=.*/Environment=AUTO_REVERT_MODE=on/' \
+  metorite-auto-revert.service metorite-auto-revert.service.d/*.conf
+systemctl --user daemon-reload
+bash ~/lanes/auto-revert-src/scripts/home_server/auto_revert_mode.sh   # prints: on
+```
+
+The `sed` line sets each mode line, so no drop-in keeps an old value. The
+next pass of each unit reads the new mode, and no unit needs a restart. A pass
+that runs now keeps the mode that it read at its start. An empty line, or a
+word that is not `on`, `dry` or `off`, means `off`.
+
+**Before `on`: one supervised reopen** (CIV-31d). Do this check once, before
+the first `on`. It runs the reopen of mode `on` with the real sign-in of the
+box, on a task that nobody needs. These must be true first:
+
+1. The owner makes a long-lived Claude token with `claude setup-token`. The
+   owner gives it to `claude` of the user `dev`, for the shell and for the
+   unit. The token never goes in the repo or in a log. The Claude sign-in of
+   the box can expire, and then each reopen fails with a `PERSON` line.
+2. `claude mcp list` in `~/lanes/auto-revert-src` shows `metorite` as
+   connected (§5.2).
+3. A scratch task exists in Metorite, in a project with a status of the
+   category `in_progress`. Put the task in a status of another category, so
+   that the move shows.
+
+Then run the check on the box as `dev`:
+
+```bash
+cd ~/lanes/auto-revert-src
+python3 scripts/home_server/auto_revert.py reopen-check <the scratch task id>
+```
+
+The command prints a folder. Check each of these:
+
+- The exit is 0, and the last line of the command says `REOPENED`.
+- In Metorite, the scratch task has a status of the category `in_progress`.
+- The task has one new comment that starts with
+  `Auto-revert (CIV-31): the revert PR 0`.
+- `calls.jsonl` in the folder has an `allow` line for each of the four calls,
+  and no `deny` line.
+- `stream.jsonl` in the folder has four tool calls, each on the scratch task.
+- `check.log` holds the line of the check. `~/lanes/auto-revert.log` has no
+  new line.
+
+When one check fails, do not set `on`. Read the reason in `check.log`, repair
+the cause, and run the check again. Then delete the folder.
 
 ### 3.9 End of a delegation
 
@@ -271,9 +499,47 @@ When `claude mcp list` shows `metorite` as "Needs authentication":
 5. Check with `claude mcp list`. Then start fresh lanes (§3.3), not resumes.
 
 The login needs a terminal. A login with no terminal opens no listener. A
-callback address that waits too long expires. The per-box token of task 1819
-(MCP-G17) replaces this procedure when it ships. `docs/box_connect.md` holds
-the box-token steps.
+callback address that waits too long expires.
+
+The per-box token of task 1819 (MCP-G17) replaces this procedure when it
+ships. `docs/box_connect.md` holds the box-token steps. A lane does not load
+`~/.config/metorite/box.env`. The user entry gets its header from the helper
+`~/.local/bin/metorite-box-headers`, so `box.sh start` needs no change. The
+OWNER STEP about the project entry of `.mcp.json` (`docs/box_connect.md` §4)
+still applies.
+
+With a box token, the sign-in ends only through an org switch:
+`scripts/metorite_switch_org.sh` (`docs/box_connect.md` §7).
+
+### 5.3 The sign-in alarm
+
+A timer checks the sign-in of §5.2 every 10 minutes on a dev machine. When
+`metorite` shows "Needs authentication" or is missing, it writes one NOTE
+line to `~/lanes/merge-queue.log`. A repeat sends nothing. A "back" NOTE
+marks the recovery. A failed check (timeout, odd text) changes nothing.
+
+⚠️ The check must never refresh the shared OAuth token. A refresh by the
+alarm can make a lane present a spent refresh token, and then the server
+signs out every lane. So the alarm reads `expiresAt` of the `metorite`
+entry in `~/.claude/.credentials.json` first. It runs the check only when
+the access token has 10 minutes or more left, or when no OAuth entry
+exists (a box token). An expired token does not page, because it can mean
+that nobody called. So with OAuth, the alarm cannot see a dead refresh
+token that no lane retries. The box token of task 1819 has no refresh
+token, and the alarm then checks on each run.
+
+- Install: `bash scripts/home_server/mcp_signin_alarm.sh install`. This
+  enables nothing. Enable with `... enable` (OWNER-GATE `deploy`).
+- Settings: `~/.config/metorite/alarm.env`. `METORITE_ALARM_CHANNEL` is
+  `note` (default) or `gh`. The `gh` channel opens one issue, and it closes
+  the issue on recovery. It needs `METORITE_ALARM_GH_USER`, the login to
+  mention. Without it, nothing is sent. `METORITE_ALARM_GH_REPO` sets the
+  repository (default `Hathi-Labs/Metorite`). A new issue also notifies the
+  watchers of the repository. `METORITE_ALARM_HOST` names the box.
+- Logs: `journalctl --user -u metorite-signin-alarm.service`. State is in
+  `~/.local/state/metorite/signin_alarm.json`.
+- `aroh-dev-1` and the PC's WSL install it the same way. When the checkout
+  is not `~/Metorite`, set `METORITE_REPO=<path>` in `alarm.env`.
 
 ---
 
@@ -292,7 +558,8 @@ second lane. The script's header and `engineering_practice.md` §7a own the
 details. On 2026-11-06 a full suite peaked at about 10.7 GB of memory and
 took about 41 minutes (task 1907). So run one full suite at a time on the box.
 
-Before each push, run the tests that the diff can affect:
+GitHub `pr-check` is the gate (D218), so `ci_local` is optional. Before each
+push, run the tests that the diff can affect:
 `timeout 2400 uv run python scripts/affected_tests.py --run`.
 
 ### 6.2 Merge and release

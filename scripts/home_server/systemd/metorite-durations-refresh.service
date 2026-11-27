@@ -1,0 +1,21 @@
+# CIV-33b: refresh .test_durations from the newest green FULL run. A user unit of `dev`.
+# The owner installs it. The agent that built it did not.
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp scripts/home_server/systemd/metorite-durations-refresh.* ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now metorite-durations-refresh.timer
+# Set WorkingDirectory to a clean checkout of main that has `gh` signed in.
+# The script opens a pull request. It never pushes to main.
+# Logs: journalctl --user -u metorite-durations-refresh.service
+[Unit]
+Description=Metorite durations refresh: open a PR with fresh .test_durations (CIV-33b)
+
+[Service]
+Type=oneshot
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:%h/.local/bin
+WorkingDirectory=%h/Metorite
+ExecStartPre=/usr/bin/git fetch origin main
+ExecStartPre=/usr/bin/git switch --detach origin/main
+ExecStart=/usr/bin/env python3 scripts/refresh_test_durations.py --pr
+TimeoutStartSec=15min

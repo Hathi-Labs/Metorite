@@ -45,6 +45,8 @@ LLM_ENTRY_ANY = frozenset({
     "acompletion", "completion", "chat_completion", "_call_llm", "aembedding",
     # The billed Router entry (H-171). Every routed completion goes through it.
     "completion_on_router",
+    # Its streamed twin (task 3542). The routed arm of the streamed helper.
+    "stream_on_router",
 })
 #: Entry points matched only as a bare name, because ``.complete()`` is a
 #: common method name elsewhere. ``acb_llm`` exports these two.
@@ -120,6 +122,9 @@ MACHINE_SITES: dict[str, str] = {
     "packages/acb_llm/acb_llm/client.py::_routed_text": "transport to the Router",
     "packages/acb_llm/acb_llm/context.py::_complete_with_fallback": "transport",
     "packages/acb_llm/acb_llm/context.py::_stream_text": "transport",
+    # Task 3541: the routed arm of `_stream_text`. It streams from the Router
+    # since task 3542.
+    "packages/acb_llm/acb_llm/context.py::_routed_text": "transport to the Router",
     # Embeddings.
     "apps/services/whatsapp_ingestion/whatsapp_ingestion/wa_embeddings.py::_embed_batch": "embedding",
     GW + "tasks/capability.py::_embed": "embedding",
@@ -138,6 +143,9 @@ MACHINE_SITES: dict[str, str] = {
     "packages/acb_memory/acb_memory/graphiti_client.py::_is_episode_worthy": "yes or no",
     GW + "settings.py::test_tier": "a health ping",
     "packages/acb_skills/acb_skills/loader.py::_call_llm_for_merge_resolution": "resolves a merge conflict in an agent file",
+    # VOX-3 (task 2263): a tool result that the chat model reads. The chat's
+    # own answer carries the house voice, so this call writes no member prose.
+    "packages/acb_skills/acb_skills/attachment_tools.py::analyze_image": "a tool result for the chat model, which writes the member's answer",
     # The member's own words or voice is the point, so the house voice must
     # not bias what the call learns or imitates.
     GW + "email/automation/drafting.py::_llm_summarize_writing_style": "learns the member's own style",

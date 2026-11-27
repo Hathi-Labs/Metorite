@@ -420,6 +420,20 @@ class TestForget:
 
 
 class TestSet:
+    def test_a_language_mark_needs_the_members_own_order(self, own_chat, monkeypatch) -> None:
+        # Task 3131: a pasted mail cannot set the mark.
+        monkeypatch.setattr(pt, "_member_words", lambda: "please summarise this mail")
+        out = _run(pt.profile_set("style", {"language": "hi", "language_fixed": True}))
+        assert _refused(out, "not_your_words") == pt.LANGUAGE_FIXED_REFUSED
+        assert own_chat.writes() == []
+
+    def test_a_language_mark_passes_on_the_members_words(self, own_chat, monkeypatch) -> None:
+        monkeypatch.setattr(pt, "_member_words",
+                            lambda: "give me the answer in English, not Hindi")
+        _run(pt.profile_set("style", {"language": "en", "language_fixed": True}))
+        (put,) = own_chat.writes()
+        assert json.loads(put.content)["value"]["language_fixed"] is True
+
     def test_it_merges_and_puts_the_whole_sub_object(self, own_chat) -> None:
         out = _run(pt.profile_set("style", {"length": "detailed"}))
         (put,) = own_chat.writes()
@@ -886,11 +900,25 @@ def _closing_reads(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "search_company_dated": lambda: cs.search_company_dated("acme invoices"),
         "read_page": lambda: kt.read_page("6f1c0c4e-6a43-4d3b-9a43-0c7d2b1e9a11"),
         "list_spaces": lambda: kt.list_spaces(),
+        # PAR-3b (task 3901): the eight more Knowledge reads.
+        "list_pages": lambda: kt.list_pages(),
+        "list_recent": lambda: kt.list_recent(),
+        "read_page_version": lambda: kt.read_page_version(_PAGE, 1),
+        "list_backlinks": lambda: kt.list_backlinks(_PAGE),
+        "list_proposals": lambda: kt.list_proposals(),
+        "list_sources": lambda: kt.list_sources(),
+        "list_gaps": lambda: kt.list_gaps(),
+        "list_maintenance": lambda: kt.list_maintenance(),
     }
 
 
+_PAGE = "6f1c0c4e-6a43-4d3b-9a43-0c7d2b1e9a11"
+
+
 @pytest.mark.parametrize("read", ["search_company", "search_company_dated", "read_page",
-                                  "list_spaces"])
+                                  "list_spaces", "list_pages", "list_recent",
+                                  "read_page_version", "list_backlinks", "list_proposals",
+                                  "list_sources", "list_gaps", "list_maintenance"])
 @pytest.mark.parametrize("name", ALL)
 def test_a_third_party_read_closes_every_write_for_the_rest_of_the_run(
         own_chat, monkeypatch, read, name) -> None:
@@ -2142,13 +2170,13 @@ def test_the_persona_marks_detail_and_people_at_once() -> None:
 # assistant still ran a tool. The answer became a steer, and each save in the
 # run refused as ``NO_TYPED_TEXT``. Now the run member's own TYPED steers are
 # typed words of the run. They count when the run takes them at its start
-# (``tests/unit/test_steer_follow_up.py``) and when a tool result carries one
-# to the model (below).
+# (``tests/unit/test_steer_follow_up.py``) and when a model call reads one as
+# a user turn (below, task 2494).
 #
 # Mutations this section catches (R7):
 #
-# * ``decorate_tool_result`` stops handing the steers to the holder, or a
-#   tool call keeps its own copy, so a later call cannot see the words;
+# * ``take_steer_turns`` stops handing the steers to the holder, or a
+#   model call keeps its own copy, so a later call cannot see the words;
 # * the rule drops the author check, the ``typed`` check or the paste check;
 # * a run that names no member counts a steer;
 # * a second call names another member;
@@ -2173,11 +2201,11 @@ def steer_mod():
 
 
 def _read_at_a_tool_result(steer: Any, author: str, text: str, *, typed: Any) -> None:
-    """The applier buffers the steer. A tool result carries it to the model,
-    in the tool call's OWN copy of the context, as a run calls a tool."""
+    """The applier buffers the steer. The next model call takes it as a user
+    turn (task 2494), in its OWN copy of the context."""
     assert steer.buffer_guidance(STEER_THREAD, author, text, signal_id="s-1", typed=typed)
-    out = contextvars.copy_context().run(steer.decorate_tool_result, "tool output", STEER_THREAD)
-    assert text.strip() in out, "the model reads the steer"
+    out = contextvars.copy_context().run(steer.take_steer_turns, STEER_THREAD)
+    assert text.strip() in " ".join(out), "the model reads the steer"
 
 
 @pytest.mark.usefixtures("_no_card")  # PZ-32: the typed words alone, as in TestGrounding

@@ -84,6 +84,9 @@ import {
   ownState,
 } from "./tree";
 
+/** WS-39 SP-3a — the one label of the work-style picker, on every door. */
+export const WORK_STYLE_LABEL = "How this team works";
+
 /**
  * One menu entry, in terms with no React in them.
  *
@@ -148,6 +151,19 @@ export interface ProjectMenuHandlers {
    * omits it.
    */
   onConvert?: (project: ProjectRow) => void;
+  /**
+   * WS-39 TPL-1b. Open the "Save as template" dialog for this project. It
+   * opens a dialog and saves nothing. The page passes it only while
+   * `PROJECTS_TEMPLATES_ORGS` holds the org, so the entry is absent otherwise.
+   * Offered on a project and a subproject, because a space and a folder hold
+   * no tasks.
+   */
+  onSaveAsTemplate?: (project: ProjectRow) => void;
+  /**
+   * WS-39 TPL-1b. Open the picker for a new project from a template, under
+   * this row. Its presence adds the "New from template…" create option.
+   */
+  onNewFromTemplate?: (parent: ProjectRow) => void;
 }
 
 /**
@@ -202,6 +218,12 @@ export interface ProjectMenuUi {
   onManageStatuses?: () => void;
   onManageTags?: () => void;
   onManageLifecycle?: () => void;
+  /**
+   * WS-39 SP-3a — "How this team works", the work-style picker
+   * (`WorkStyleDialog`). Offered on EVERY level: the style sits on any node,
+   * set by hand, with no inheritance (`project_management_app.md` §13.1).
+   */
+  onWorkStyle?: () => void;
 }
 
 /**
@@ -288,6 +310,25 @@ export function projectMenuItems(
     else groups.push([convert]);
   }
 
+  // TPL-1b — beside Rename and Move. It copies this project's shape, so it
+  // sits with the entries that act on what the node IS, and only with the flag.
+  if (
+    handlers.onSaveAsTemplate &&
+    (level === "project" || level === "subproject") &&
+    !archived &&
+    !isPersonalRoot(project)
+  ) {
+    const onSave = handlers.onSaveAsTemplate;
+    const save: ProjectMenuItem = {
+      kind: "item",
+      label: "Save as template",
+      icon: "LayoutTemplate",
+      onSelect: () => onSave(project),
+    };
+    if (groups.length > 0) groups[groups.length - 1].push(save);
+    else groups.push([save]);
+  }
+
   // Create, from the same grammar the row's `+` button reads. A flat labelled
   // group rather than a flyout: `ContextMenu` has no submenus on purpose, and
   // "New folder" already names its own level, so a heading plus two items says
@@ -299,7 +340,7 @@ export function projectMenuItems(
       create.push({
         kind: "item",
         label: option.label,
-        icon: option.kind === "folder" ? "Folder" : "Plus",
+        icon: option.kind === "folder" ? "Folder" : option.template ? "LayoutTemplate" : "Plus",
         onSelect: () => ui.onCreate?.(option),
       });
     }
@@ -383,6 +424,14 @@ export function projectMenuItems(
         label: "Lifecycle policy",
         icon: "History",
         onSelect: ui.onManageLifecycle,
+      });
+    }
+    if (ui.onWorkStyle) {
+      scoped.push({
+        kind: "item",
+        label: WORK_STYLE_LABEL,
+        icon: "Workflow",
+        onSelect: ui.onWorkStyle,
       });
     }
     if (scoped.length > 0) groups.push(scoped);

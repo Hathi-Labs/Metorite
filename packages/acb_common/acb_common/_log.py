@@ -372,6 +372,60 @@ def automation_agent_scope(name: str | None) -> Iterator[None]:
                 _AUTOMATION_AGENT.set(held)
 
 
+#: The shape of an app slug that :func:`run_attribution_scope` takes.
+_APP_SLUG_RE = re.compile(r"[a-z][a-z0-9_]*")
+
+#: The ``(app, agent)`` pair that :func:`run_attribution_scope` bound on this
+#: task, or None. ⚠️ A ContextVar, not a run-context key, so no request can set
+#: it. A task and ``asyncio.to_thread`` copy it, so a model call of the run
+#: reads it. A task that started outside the scope never sees it.
+_RUN_ATTRIBUTION: ContextVar[tuple[str, str] | None] = ContextVar(
+    "acb_run_attribution", default=None)
+
+
+@contextlib.contextmanager
+def run_attribution_scope(*, app: str, agent: str) -> Iterator[None]:
+    """Make each agent run in this block bill as ``agent`` of ``app``. AUTO-8b-2c.
+
+    🔴 **A headless turn billed as a chat.** One round of a headless turn is
+    one ``run_agent`` run of the internal agent ``worker``. The run bound the
+    agent ``worker`` and the app of the worker's ``config.json`` (``chat``),
+    and the worker's client sent a fixed ``X-CC-Agent: worker``. So the usage
+    row named the chat, not the turn (``proactive_agent.md`` §4.4).
+
+    - ``app`` and ``agent`` are CODE CONSTANTS. ``agent`` has the shape of
+      :data:`AUTOMATION_AGENT_RE` and ``app`` is a slug. Another value is a
+      bug in the caller, so it raises ``ValueError`` and binds nothing.
+    - ``orchestrator.executor`` reads :func:`run_attribution` at each place
+      that binds the agent or the app of a run. The worker's ``agents.py``
+      leaves out its fixed ``X-CC-Agent`` while the scope is bound.
+    - :func:`attributed_agent` reports ``agent`` as it is, never as
+      ``agent:<name>``.
+    - Reset in ``finally``, so an exception leaves no scope behind.
+
+    ⚠️ Only ``gateway/jobs/headless_turn.py`` binds it. Fence:
+    ``tests/unit/test_usage_attribution.py`` (``TestTheRunAttributionScope``).
+    """
+    agent_name = str(agent or "").strip()
+    app_slug = str(app or "").strip()
+    if not AUTOMATION_AGENT_RE.fullmatch(agent_name) or not _APP_SLUG_RE.fullmatch(app_slug):
+        raise ValueError("run_attribution_scope takes an app slug and an <app>.<feature> agent")
+    held = _RUN_ATTRIBUTION.get()
+    token = _RUN_ATTRIBUTION.set((app_slug, agent_name))
+    try:
+        yield
+    finally:
+        try:
+            _RUN_ATTRIBUTION.reset(token)
+        except ValueError:  # a token from another context
+            _RUN_ATTRIBUTION.set(held)
+
+
+def run_attribution() -> tuple[str, str] | None:
+    """The ``(app, agent)`` pair of :func:`run_attribution_scope`, or None."""
+    return _RUN_ATTRIBUTION.get()
+
+
 def chat_agent_label(name: str | None) -> str:
     """The name a CHAT agent reports. The ONE rule against a claimed name.
 
@@ -408,10 +462,14 @@ def attributed_agent(ctx: Mapping[str, str], module: str | None) -> str | None:
     3. **The backstop.** With no agent bound and a module known, the call
        reports ``<module>.automation``. With no module it reports None. It
        never invents an app.
+
+    The agent of :func:`run_attribution_scope` is ours too (AUTO-8b-2c), so
+    a bound name equal to it is reported as it is.
     """
     bound = str(ctx.get("agent") or "").strip()
     if bound:
-        if bound == _AUTOMATION_AGENT.get():
+        scoped = _RUN_ATTRIBUTION.get()
+        if bound == _AUTOMATION_AGENT.get() or (scoped is not None and bound == scoped[1]):
             return bound
         return chat_agent_label(bound)
     app = str(module or "").strip()

@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { bindToRun } from "@/lib/runBinding";
 
-type Ev = { type: string; runId?: string; delta?: string };
+type Ev = { type: string; runId?: string; delta?: string; resumed?: boolean };
 
 /** What a reader saves: the text of the events its binding accepts. */
 function savedBy(events: Ev[], seed?: string): string {
@@ -41,6 +41,26 @@ describe("bindToRun", () => {
       { type: "RUN_STARTED", runId: "run-1" },
       { type: "TEXT_MESSAGE_CONTENT", delta: "b" },
     ])).toBe("ab");
+  });
+
+  it("accepts the second start of the same run that RESUME-2b marks `resumed` (case A)", () => {
+    const resumed: Ev[] = [
+      { type: "RUN_STARTED", runId: "run-1" },
+      { type: "TEXT_MESSAGE_CONTENT", delta: "part one " },
+      { type: "RUN_FINISHED", runId: "run-1" },
+      { type: "RUN_STARTED", runId: "run-1", resumed: true },
+      { type: "TEXT_MESSAGE_CONTENT", delta: "part two" },
+    ];
+    expect(savedBy(resumed)).toBe("part one part two");
+    expect(savedBy(resumed, "run-1")).toBe("part one part two");
+    // A `resumed` mark never lets another run in.
+    const other: Ev[] = [
+      { type: "RUN_STARTED", runId: "run-1" },
+      { type: "TEXT_MESSAGE_CONTENT", delta: "part one" },
+      { type: "RUN_STARTED", runId: "run-2", resumed: true },
+      { type: "TEXT_MESSAGE_CONTENT", delta: "another run" },
+    ];
+    expect(savedBy(other)).toBe("part one");
   });
 
   it("follows a stream that carries no run id", () => {

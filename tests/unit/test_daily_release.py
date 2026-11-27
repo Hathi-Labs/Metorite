@@ -215,7 +215,8 @@ def test_the_tests_gate_the_release(deploy: dict) -> None:
 
 def test_release_is_fast_forward_only(deploy: dict) -> None:
     body = "\n".join(s.get("run", "") for s in deploy["jobs"]["publish-release"]["steps"])
-    assert 'git push origin "${GITHUB_SHA}:refs/heads/release"' in body
+    # CIV-30: the release commit, which is green/main on a slot run.
+    assert 'git push origin "${RELEASE_SHA}:refs/heads/release"' in body
     assert "--force" not in body and " -f " not in body
 
 
@@ -243,7 +244,7 @@ def test_a_held_day_says_so(deploy: dict) -> None:
 
 def test_the_deploy_sends_its_own_sha(deploy: dict) -> None:
     raw = _DEPLOY.read_text(encoding="utf-8")
-    assert '"DEPLOY_REF=${GITHUB_SHA} DEPLOY_FORCE=' in raw
+    assert '"DEPLOY_REF=${RELEASE_SHA} DEPLOY_FORCE=' in raw
 
 
 # ── 5. A late schedule run waits for the next slot ──────────────────────────
@@ -351,12 +352,26 @@ _BASH = _bash()
 def test_the_window_reads_the_clock(deploy: dict, tmp_path: pathlib.Path,
                                     clock: str, attempt: str, is_open: bool) -> None:
     step = deploy["jobs"]["release-window"]["steps"][0]
-    assert 'hm="$(date -u +%H%M)"' in step["run"], "it reads the real clock"
+    # CIV-30c: one read gives the minute of the day and the Unix time.
+    assert '''read -r hm epoch <<< "$(date -u '+%H%M %s')"''' in step["run"], "it reads the real clock"
     out, summary = tmp_path / "out", tmp_path / "summary"
     # A shell function shadows `date`, so the step's own text runs unchanged.
-    script = f"date() {{ echo {clock}; }}\n" + step["run"]
+    # The Unix time is the same minute on 2026-11-05. The run picked at the
+    # slot itself, as the box's run does, so this test reads the window
+    # alone. test_green_slot.py fences the pick time (CIV-30c).
+    import datetime as _dt
+    at = _dt.datetime(2026, 11, 5, int(clock[:2]), int(clock[2:]), tzinfo=_dt.UTC)
+    epoch = int(at.timestamp())
+    picked = epoch
+    for h, m in _SLOTS:
+        for day in (-1, 0):
+            slot = at.replace(hour=h, minute=m) + _dt.timedelta(days=day)
+            if _dt.timedelta(minutes=-30) <= at - slot < _dt.timedelta(hours=4, minutes=30):
+                picked = int(slot.timestamp())
+    script = f"date() {{ echo {clock} {epoch}; }}\n" + step["run"]
     # GITHUB_RUN_ATTEMPT is pinned: a rerun of CI itself sets it to 2.
-    env = {**os.environ, **step["env"], "GITHUB_RUN_ATTEMPT": attempt,
+    env = {**os.environ, **{k: v for k, v in step["env"].items() if "${{" not in v},
+           "PICKED_AT": str(picked), "GITHUB_RUN_ATTEMPT": attempt,
            "GITHUB_OUTPUT": str(out), "GITHUB_STEP_SUMMARY": str(summary)}
     done = subprocess.run([_BASH, "-c", script], env=env, capture_output=True,
                           text=True, timeout=30)
@@ -737,7 +752,7 @@ def test_a_stale_rerun_does_not_roll_production_back(deploy: dict) -> None:
     ids = [s.get("id") for s in steps]
     assert ids.index("stale") < ids.index("deploy"), "check before the ssh opens"
     stale = steps[ids.index("stale")]["run"]
-    assert 'git merge-base --is-ancestor "$GITHUB_SHA" "$rel"' in stale
+    assert 'git merge-base --is-ancestor "$RELEASE_SHA" "$rel"' in stale
     assert steps[ids.index("deploy")]["if"] == "${{ steps.stale.outputs.stale != 'true' }}"
 
 

@@ -61,6 +61,7 @@ from acb_common.provisioning import (
 )
 from sqlalchemy import create_engine, text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._customer_console_ladder import (
     apply_ladder as apply_console_ladder,
 )
@@ -87,9 +88,7 @@ class TestThisSuiteIsRegistered:
     leave the job green."""
 
     def test_named_in_the_ci_skip_guard(self):
-        workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(
-            encoding="utf-8")
-        assert "tests/unit/test_console_bootstrap.py" in workflow
+        assert "tests/unit/test_console_bootstrap.py" in r8_lists.must_run()
 
 
 _TENANT_SNAPSHOT = os.environ.get("_ACB_TENANT_LADDER_URL_AT_LAUNCH")
@@ -933,7 +932,7 @@ class TestTheTeamSizeGateCannotBeCrashed:
         the rule; the digit bound is read off it."""
         from gateway.routes import signup as route
 
-        assert route._MAX_TEAM_SIZE_DIGITS == len(str(route.MAX_TEAM_SIZE))
+        assert len(str(route.MAX_TEAM_SIZE)) == route._MAX_TEAM_SIZE_DIGITS
 
     def test_every_value_in_range_still_passes(self):
         """Non-vacuity: a length bound set one digit too tight would refuse
