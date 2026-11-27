@@ -69,6 +69,12 @@ API connection in the chat. Its one reader is
 change. The flip waits for the rung 1 demo, and it stays OWNER-GATE
 (`enforcement-flip`).
 
+`APP_LEAD_RUNS_ORGS` lets the lead of a project, or of a project above it,
+Release and Resume an agent run on that project (`agent_coordination.md`
+§3.10.2, SW-48). Its one reader is
+`gateway.routes.projects.filters.app_lead_runs_allowed`. The flip stays
+OWNER-GATE (`enforcement-flip`).
+
 `CHAT_CARD_PRECONDITION_ORGS` turns on the version check of a card
 (`chat_failure_modes.md` §6 row HRD-10a). For each listed org, `update_task`
 sends the `updated_at` of the read that the card shows as `If-Match`. A task
