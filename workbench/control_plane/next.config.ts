@@ -25,6 +25,8 @@ export const STUDIO_REDIRECTS = [
   { source: "/workflows/:id", destination: "/studio/workflows/:id", permanent: true },
   { source: "/build/apps", destination: "/studio", permanent: true },
   { source: "/build/agents", destination: "/studio", permanent: true },
+  // STB-1: the old API connector page. It was a client-side redirect.
+  { source: "/apis", destination: "/integrations", permanent: true },
 ];
 
 const nextConfig: NextConfig = {
@@ -32,7 +34,12 @@ const nextConfig: NextConfig = {
     return STUDIO_REDIRECTS;
   },
   async headers() {
-    return [{ source: "/connect/:path*", headers: CONNECT_FRAME_HEADERS }];
+    return [
+      { source: "/connect/:path*", headers: CONNECT_FRAME_HEADERS },
+      // WS-55 EA-19d (§10.9 question 3): the page that makes a box token
+      // shows a secret once, so no other site may frame it either.
+      { source: "/integrations/:path*", headers: CONNECT_FRAME_HEADERS },
+    ];
   },
   // 🔴 **The deploy builds BESIDE the running build, never over it.**
   //
@@ -55,6 +62,12 @@ const nextConfig: NextConfig = {
   // its dev server writes no Turbopack disk cache. Plain `next dev` keeps the
   // cache. Fence: `src/lib/e2eGate.test.ts`.
   experimental: {
+    // Next buffers each request body for src/proxy.ts (it matches every path)
+    // and keeps only the first 10 MB by default, which cut a 14 MB chat upload
+    // (task 3811). 100 MB covers the largest single request: Knowledge import
+    // total (100 MB), workspace file (50 MB), chat upload (25 MB). The fence is
+    // src/lib/proxyBodyLimit.test.ts.
+    proxyClientMaxBodySize: "100mb",
     turbopackFileSystemCacheForDev: process.env.E2E_NO_TURBOPACK_CACHE !== "1",
   },
   images: {

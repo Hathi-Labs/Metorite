@@ -484,6 +484,34 @@ test.describe("a redraft through the chat keeps the member's edits", () => {
     expect(JSON.stringify(answer)).toContain("Call me on Friday");
   });
 
+  test("a chat switch keeps an untick and the text, and Send does not go to that person (task 1893)", async ({ page }) => {
+    // The edits of each thread live in `chatStore`, beside the card log. A switch resets the queue, and the
+    // log redraws the waiting card from the server's form. Without the kept edits, Geo came back ticked,
+    // and one click sent to that person.
+    await openCard(page, [stubCard(OLD, `Email to ${KIM}`, form(FIRST)), bobCard()], []);
+    await page.getByRole("tab", { name: /Kim/ }).click();
+    const text = page.getByRole("textbox", { name: "Email text" });
+    await text.fill(EDITED);
+    await page.getByRole("checkbox", { name: `Send to ${GEO}` }).uncheck();
+    // Another chat, then back to this one.
+    await page.getByRole("button", { name: "+ New conversation" }).click();
+    await page.getByRole("button", { name: /General-purpose AI company brain/i }).click();
+    await expect(page.locator("[data-new-mail-card]")).toHaveCount(0, { timeout: 10_000 });
+    // The first conversation is the one whose run still waits on the card: its row shows the working icon.
+    await page.getByRole("img", { name: "Assistant is working" }).first().click();
+    await expect(page.locator("[data-new-mail-card]")).toBeVisible({ timeout: 15_000 });
+    await page.getByRole("tab", { name: /Kim/ }).click();
+    await expect(text).toHaveValue(EDITED);
+    await expect(page.getByRole("checkbox", { name: `Send to ${GEO}` })).not.toBeChecked();
+    await expect(page.getByRole("checkbox", { name: `Send to ${KIM}` })).toBeChecked();
+    await page.waitForTimeout(600);
+    await page.locator("[data-reply-send]").click();
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __answers: unknown[] }).__answers.length)).toBe(1);
+    const [answer] = await page.evaluate(() => (window as unknown as { __answers: unknown[] }).__answers);
+    expect(JSON.stringify(answer)).not.toContain(GEO);
+    expect(JSON.stringify(answer)).toContain("Call me on Friday");
+  });
+
   test("a change of tab keeps the version that a steer carries", async ({ page }) => {
     // The form used to report its start on the remount, and that deleted the
     // kept version. So the next steer carried Geo as ticked.

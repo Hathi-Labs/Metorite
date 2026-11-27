@@ -100,6 +100,12 @@ export type NavPane = {
    */
   adminOnly?: boolean;
   /**
+   * The href of the host pane. Only an install pane with `extends` sets it
+   * (`package_host.md` §8.2, PKG-15b). The sidebar draws the pane indented
+   * under its host. Optional, so a pane without it draws as before.
+   */
+  parent?: string;
+  /**
    * Launch status — REQUIRED, so adding a pane forces the decision rather than
    * defaulting into the customer's sidebar. `nav.test.ts` pins the live set
    * against `launch_surface.md` §2, so promoting an app is a one-line edit
@@ -191,6 +197,22 @@ export const NAV_SECTIONS: NavSection[] = [
     id: "personal",
     label: "Personal Center",
     items: [
+      // WS-AP AP-2a (`waiting_on_me.md` §5.1). The first item of Personal
+      // Center, so it sits under My Day. Team `personal`, never `across`.
+      // ⚠️ `preview` until AP-2c, which makes it `live`, with `LIVE_SET` and
+      // `launch_surface.md` §2 in the same PR.
+      // No `feature`: every member has a list of their own, as `/integrations`
+      // has no gate. The gateway answers 404 for an org that is off, and the
+      // page shows its off state. No nav filter hides the row on a 404.
+      {
+        href: "/waiting",
+        team: "personal",
+        blurb: "What waits on you: agents, approvals, decisions",
+        label: "Waiting",
+        icon: "Hourglass",
+        note: "Every agent question, approval and decision that waits on you",
+        launch: "preview",
+      },
       {
         href: "/tasks",
         team: "personal",

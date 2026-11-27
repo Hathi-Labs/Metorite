@@ -25,10 +25,22 @@ Change it here and nowhere else.
 | `queue_wait.p90_min` | over 20 | A job that waits for a runner is idle time, not test time. |
 | `batch_main.median_min` | over 60 | The full suite must fit inside a release window (D194). |
 | `selection_misses.batch_red_after_pr_green` | over 0 | A miss means the PR selection skipped a test it needed. |
+| `quality.revert_share` | over 0.05 | Reverts show that a fast merge let a fault in (D218). |
+| `quality.red_main_minutes_per_day` | over 120 | Main that stays red blocks every release slot. |
+| `quality.hotfix_releases` | over 0 | A release outside a slot needs a reason in the report. |
 | `slowest_tests[].seconds` | over 180 for any file | One slow file sets the floor of the batch time. |
 | Owner queue, oldest item | over 3 days | The owner wait is the biggest delay that CI cannot fix. |
 | Stale hold | any hold stale over 2 hours | A stale hold blocks a task that nobody works. |
 | `open_prs_older_than_2d` | any PR older than 2 days | Long branches cause collisions (root `CLAUDE.md` §4). |
+| `built_not_live.open_prs` | over 30 | Built is not done. Done means live (owner directive land before build, 2026-11-26, rule 6). A long queue of open PRs is work that no customer can use. |
+| `built_not_live.oldest_days` | over 5 | The oldest open PR shows how long built work waits to go live (same directive). |
+
+## The rollback rule (D218)
+
+When `quality.revert_share` stays over 0.05 in this report and in the one
+before it, open one fix task. The task returns the merge bot to the strict
+gate for the area that broke. The strict gate re-tests after each merge of
+main. Name the area and the reverted pull requests in the task.
 
 ## Rules for the headless session
 
@@ -67,8 +79,14 @@ The script prints one JSON object. Its keys:
 - `batch_main`: `runs`, `median_min`, `p90_min`, `red_rate`. It counts the
   `deploy.yml` runs with event push on `main`.
 - `selection_misses`: `batch_red_after_pr_green`, `red_batches`, `matched`.
+- `quality`: `merged_prs`, `reverts`, `revert_share`, `red_main_minutes_per_day`,
+  `hotfix_releases`, `hotfix_run_ids`. `selection_misses` in this block only
+  points to the top-level `selection_misses`.
 - `slowest_tests`: the 10 slowest files, with `seconds`.
 - `open_prs_older_than_2d`: `number`, `title`, `age_days`.
+- `built_not_live`: `open_prs` (open PRs that are not drafts), `over_24h`
+  (each such PR older than 24 hours: `number`, `title`, `age_days`, oldest
+  first) and `oldest_days`.
 - `delta`: this week minus last week, for every number. It exists only with
   `--compare`.
 - `truncated`: a note for each list that the run cap cut short.
@@ -85,6 +103,15 @@ Call the MCP. The script cannot do it.
 - **Waits on the owner.** Call `list_agent_runs` with `needs_agent` false and
   status awaiting. Count them, and note the oldest.
 
+### 2b. Read the time lost by lane
+
+`delivery_review.sh` puts the table "Time lost by lane" at the end of the
+system prompt of this session. The lane keeper keeps the stop log
+`~/lanes/lane-stops.tsv` (CIV-LIVE, task 4060). The table gives the hours of
+each lane by cause, for the last 7 days, and a total. It has no threshold, so
+it opens no fix task. If the table step failed, the prompt holds one line that
+says so. Copy that line.
+
 ### 3. Compare with the thresholds
 
 Build one table. Use one row for each line of the Thresholds table above.
@@ -97,7 +124,8 @@ no data.
    `519d9f0d-8dde-4910-b733-b4fa2ed3c2b9`). Title it `Delivery review YYYY-MM-DD`
    with today's date. Set its parent to epic task 1628 (id
    `ed3027f8-bf27-4f56-9a40-2c89141606d0`).
-2. Put the comparison table and the deltas in its description.
+2. Put the comparison table and the deltas in its description. Then copy the
+   table "Time lost by lane" from the system prompt as it is.
 3. Add the full JSON of `/tmp/delivery_now.json` in a fenced `json` block at
    the end of the description. The next run reads it as its last week.
 4. For each item over its threshold, create ONE fix task. Title it

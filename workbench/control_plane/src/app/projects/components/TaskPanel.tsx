@@ -51,11 +51,13 @@
  * `tabIndex={0}` canvas holding WS-27y's cursor.
  */
 
+import Button from "@/components/ui/Button";
+import { useStartFocus } from "@/app/tasks/lib/focusStart";
 import Badge from "@/components/ui/Badge";
 import { useToast } from "@/components/ui/Toast";
 import { StatusChip } from "@/components/StatusChip";
 import { EditableTaskTitle, TaskHeaderRow, type TaskWhere } from "@/components/TaskPanelHeader";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 
 import { lensMyOverlay } from "@/app/tasks/lib/lens";
 import { filedByMe, focusPatch, lensPatchItem, overlayOf } from "@/app/tasks/lib/lens";
@@ -146,6 +148,12 @@ interface Props {
    * the My tasks rows move to the new chip after a pick.
    */
   serverOverlay?: boolean;
+  /**
+   * PK-1 — the host's own icon buttons in the header, before the expand and
+   * the close (`TaskHeaderRow`'s `actions`). My Day puts "Open in Projects"
+   * here. The Projects page passes none.
+   */
+  actions?: ReactNode;
 }
 
 /** The viewer's own overlay on this task, or null when they hold none. */
@@ -168,6 +176,7 @@ export function TaskPanel({
   where,
   myWork = false,
   serverOverlay = false,
+  actions,
 }: Props) {
   // A copied link names this organization, so it opens in the right account.
   const orgId = useAccess().access.organization?.id ?? null;
@@ -178,6 +187,7 @@ export function TaskPanel({
   const twoColumn = mode === "full";
 
   const toast = useToast();
+  const startFocus = useStartFocus();
   const taskUndo = useTaskUndo();
   // S6e — the way back (§4.8 point 4): what I filed this task as in My
   // Tasks. Null with the lens off, and null when I hold no overlay row.
@@ -351,6 +361,7 @@ export function TaskPanel({
                 }
               : undefined
           }
+          actions={actions}
           onClose={onClose}
         />
         {/* Wraps rather than truncates: the title is the one thing on the
@@ -395,6 +406,20 @@ export function TaskPanel({
               {shownMine.context ? ` · ${shownMine.context}` : ""}
             </Badge>
           ) : null}
+          {/* CC-4: start focus on this task. One session at a time, and a
+              to-do task moves to In progress with an Undo. */}
+          {task.archived_at || task.completed_at ? null : (
+            <Button
+              variant="secondary"
+              size="sm"
+              icon="Play"
+              className="ml-auto"
+              onClick={() => void startFocus(task.id)}
+              data-testid="task-start-focus"
+            >
+              Start focus
+            </Button>
+          )}
         </div>
         {/* My own focus on this task, private to me. Only when the task is
             in MY lens — `mine` is null for anybody else's task, so a

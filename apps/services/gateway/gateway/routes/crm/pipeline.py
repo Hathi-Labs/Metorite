@@ -69,6 +69,7 @@ from gateway.routes.crm.core import (
     project_joined,
     read_deal_stages,
     record_activity,
+    related_hits,
     require_deal_pipeline,
     require_row,
     resolve_owner,
@@ -590,7 +591,10 @@ async def get_pipeline(
         if source:
             where += " AND source = :source"
             params["source"] = source
-        search_clause, search_params = search_where(DEALS, q)
+        # HRD-18a: the related names, read once for every lane.
+        search_clause, search_params = search_where(
+            DEALS, q, related=await related_hits(db, DEALS, q),
+        )
         if search_clause:
             where += f" AND {search_clause}"
             params.update(search_params)
@@ -936,7 +940,12 @@ async def _create_deal(
         "probability": await entry_probability(db, status, pipeline_id),
         "expected_close_date": wanted.expected_close_date,
         "next_step": wanted.next_step,
-        "description": wanted.description,
+        # Task 2490: the lead's own description goes to the deal when the
+        # caller passes none, so a 300-character equipment note is not lost.
+        "description": (
+            wanted.description if wanted.description is not None
+            else getattr(lead, "description", None)
+        ),
         # Provenance (§3.4) — this is what lets the deal's timeline union the
         # lead's history instead of losing everything said before conversion.
         "lead_id": str(lead.id),

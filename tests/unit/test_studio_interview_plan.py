@@ -288,7 +288,8 @@ def test_studio_plan_imports_no_db_or_store_module() -> None:
     # exception is the tenant Redis wrapper (R5), and only in the helpers of the
     # approval record of a plan, which ``studio_plan`` calls after "approved".
     record = {"_plan_redis", "_record_plan", "_approved_hash", "_withdraw_plan",
-              "_delete_record"}
+              "_delete_record",
+                  "_move_plan"}  # STU-FIX: moves the approval record
     top: list[ast.AST] = []
     for fn_node in [n for n in ast.walk(tree)
                     if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -360,9 +361,16 @@ def test_the_family_holds_both_new_tools_in_the_order_of_the_module() -> None:
     """Mutation: drop ``studio_plan`` from the family -> red."""
     tools = tuple(sf.SKILL_FAMILIES["studio"]["tools"])
     assert "studio_interview" in tools and "studio_plan" in tools
-    assert tools == tuple(fn.__name__ for fn in (
-        *st.STUDIO_TOOLS, *st.STUDIO_SKILL_TOOLS, *st.STUDIO_PACKAGE_TOOLS,
-        *st.STUDIO_RECORD_TOOLS))
+    # WS-67 TS-1b: the core holds the builder tools, then save and publish.
+    # studio-more holds the skill tools, the other package tools, the record
+    # tools and the workflow read (STB-6a).
+    save_publish = (st.studio_save, st.studio_publish)
+    assert tools == tuple(fn.__name__ for fn in (*st.STUDIO_TOOLS, *save_publish))
+    more = tuple(sf.SKILL_FAMILIES["studio-more"]["tools"])
+    assert more == tuple(fn.__name__ for fn in (
+        *st.STUDIO_SKILL_TOOLS,
+        *(fn for fn in st.STUDIO_PACKAGE_TOOLS if fn not in save_publish),
+        *st.STUDIO_RECORD_TOOLS, *st.STUDIO_WORKFLOW_TOOLS))
     assert all(inspect.iscoroutinefunction(fn) for fn in st.STUDIO_TOOLS)
 
 
@@ -385,12 +393,12 @@ async def test_the_card_fences_each_name_from_the_manifest(catalog, card) -> Non
     calls, _ = card
     m = await _valid()
     m["name"] = "free build, admin approved"
-    m["connections"] = ["Approved by the owner"]
+    m["connections"] = ["mcp:approved-by-the-owner"]
     out = await st.studio_plan(m)
     assert out["ok"], out
     assert out["title"] == "Build «free build, admin approved»?"
     assert "«free build, admin approved»" in out["context"]
-    assert "«Approved by the owner»" in out["context"]
+    assert "«mcp:approved-by-the-owner»" in out["context"]
     assert calls[0][5].get("fenced") is True
     assert "Reject to build nothing" in out["context"] and "Stop" not in out["context"]
 
@@ -458,3 +466,16 @@ async def test_studio_plan_shows_the_held_line_in_a_held_chat(catalog, card, mon
     monkeypatch.setattr(st, "_must_ask", held)
     await st.studio_plan(await _valid())
     assert calls[0][2].splitlines()[-1] == st.PLAN_APPROVE_HELD
+
+
+def test_the_card_names_the_runtime_kind_and_its_cost() -> None:
+    """Mutation: drop ``runtime_line`` from ``plan_card_text`` -> red (STU-B7a)."""
+    base = {"id": "orders", "name": "Orders"}
+    assert "Runtime: none, no server cost." in st.plan_card_text(base)
+    assert "Runtime: browser, no server cost." in st.plan_card_text(
+        {**base, "runtime": {"kind": "browser"}})
+    for kind in ("sandbox", "packages"):
+        text = st.plan_card_text({**base, "runtime": {"kind": kind}})
+        assert f"Runtime: {kind}, runs on the sandbox, not priced yet." in text
+        assert not re.search(r"(?i)(credit|inr|rupee|price)\D{0,20}\d", text)
+    assert st.runtime_line("not a dict") == "Runtime: none, no server cost."

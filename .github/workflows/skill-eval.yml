@@ -15,6 +15,9 @@ on:
       # The Workflows engine ships with a golden trajectory eval (root
       # AGENTS.md standing rule #3) — engine edits must re-run the gate.
       - "apps/services/gateway/gateway/routes/workflows/**"
+      # TOF-3b F4b: the skill test run has one real-loop trajectory fence.
+      - "apps/services/gateway/gateway/studio/skill_tests.py"
+      - "apps/services/gateway/gateway/routes/studio/skills.py"
       - "packages/acb_skills/**"
       - "packages/acb_llm/**"
       # WS-46 P3: the Projects operations eval replays its sequences through

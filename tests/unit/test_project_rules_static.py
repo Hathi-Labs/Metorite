@@ -50,6 +50,8 @@ pytest.importorskip("gateway.routes.projects", reason="gateway not installed")
 
 from acb_common import get_settings
 
+from tests.unit import _r8_lists as r8_lists
+
 _ROOT = Path(__file__).resolve().parents[2]
 _MIGRATIONS = _ROOT / "infra" / "postgres"
 _GATEWAY = _ROOT / "apps" / "services" / "gateway" / "gateway"
@@ -349,9 +351,8 @@ def test_the_router_is_mounted_and_is_not_under_projects() -> None:
 
 
 def test_the_r8_suite_is_named_in_the_ci_skip_guard() -> None:
-    workflow = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8")
-    assert "tests/unit/test_project_rules.py" in workflow
-    assert "tests/unit/test_project_rules_propose.py" in workflow
+    assert "tests/unit/test_project_rules.py" in r8_lists.must_run()
+    assert "tests/unit/test_project_rules_propose.py" in r8_lists.must_run()
 
 
 # ── ALN-5b: the proposer ────────────────────────────────────────────────────

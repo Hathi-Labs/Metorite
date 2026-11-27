@@ -1,0 +1,5 @@
+<!-- SYNTHETIC: written by hand from brief section 5.4, not recorded on TallyPrime. -->
+<ENVELOPE>
+ <HEADER><VERSION>1</VERSION><STATUS>0</STATUS></HEADER>
+ <BODY><DATA><LINEERROR>Could not find Company 'Gamma Pvt Ltd'</LINEERROR></DATA></BODY>
+</ENVELOPE>

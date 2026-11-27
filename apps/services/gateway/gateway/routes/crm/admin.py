@@ -50,7 +50,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from acb_auth import UserContext, get_current_user, require_permission
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from gateway.routes.crm import change_log
 from gateway.routes.crm.access import ADMIN_PERMISSION
 from gateway.routes.crm.change_log import Change, Logged, log_change, quoted
@@ -502,6 +502,14 @@ def _change_summary(noun: str, name: Any, before: dict[str, Any],
     return f"Changed the {noun} {quoted(name)}: {', '.join(words)}"
 
 
+async def _via(request: Request | None) -> str:
+    """``chat`` when the CRM assistant sent this write, else ``ui``
+    (``change_log.via_of``, CRM-M2e, task 3951). FastAPI always passes the
+    request. A direct call of the route function, as the hermetic route tests
+    make, has none and logs ``ui``."""
+    return await change_log.via_of(request) if request is not None else change_log.VIA_UI
+
+
 # ── Statuses ────────────────────────────────────────────────────────────────
 
 @router.get("/statuses/{kind}", response_model=list[StatusModel])
@@ -521,11 +529,14 @@ async def list_statuses(
 async def create_status(
     kind: str, payload: StatusIn,
     user: UserContext = Depends(get_current_user),
+    request: Request = None,  # type: ignore[assignment]  # FastAPI injects it
 ) -> StatusModel:
     table, _ = _kind(kind)
     values = payload.model_dump(exclude_unset=True)
+    # CRM-M2e (task 3951): a change that the CRM assistant made logs `chat`.
+    via = await _via(request)
     async with _tenant_session() as db:
-        row = await create_status_in(db, user, kind, values)
+        row = await create_status_in(db, user, kind, values, via=via)
         return status_wire(await read_status(db, table, str(row.id)) or row)
 
 
@@ -640,6 +651,7 @@ async def reset_status_order(
 async def patch_status(
     kind: str, status_id: str, payload: StatusIn,
     user: UserContext = Depends(get_current_user),
+    request: Request = None,  # type: ignore[assignment]  # FastAPI injects it
 ) -> StatusModel:
     """Rename, recolour, retype, hide or reorder a lane (reorder = PATCH position).
 
@@ -658,9 +670,10 @@ async def patch_status(
     """
     _kind(kind)
     values = payload.model_dump(exclude_unset=True)
+    via = await _via(request)
     try:
         async with _tenant_session() as db:
-            return await patch_status_in(db, user, kind, status_id, values)
+            return await patch_status_in(db, user, kind, status_id, values, via=via)
     except DBAPIError as exc:
         if not is_transient(exc):
             raise
@@ -673,6 +686,7 @@ async def patch_status(
 async def patch_status_in(
     db: Any, user: Any, kind: str, status_id: str, values: dict[str, Any],
     *, undoes: str | None = None, members: dict[str, dict[str, Any]] | None = None,
+    via: str = change_log.VIA_UI,
 ) -> StatusModel:
     """The body of ``PATCH /crm/statuses/{kind}/{id}``, in the caller's
     transaction. The route and the Undo of a change both call it, so an
@@ -729,7 +743,7 @@ async def patch_status_in(
                     _STATUS_NOUNS[kind], row.name, before, _summary_keys(after), "name"),
                 ladder=change_log.TEAM, entity_id=str(row.id),
                 before=before, after=after,
-            ), undoes=undoes)
+            ), undoes=undoes, via=via)
     return status_wire(await read_status(db, table, status_id) or row)
 
 
@@ -967,11 +981,14 @@ async def list_lost_reasons(
     dependencies=ADMIN_ONLY,
 )
 async def create_lost_reason(
-    payload: LostReasonIn, user: UserContext = Depends(get_current_user),
+    payload: LostReasonIn,
+    user: UserContext = Depends(get_current_user),
+    request: Request = None,  # type: ignore[assignment]  # FastAPI injects it
 ) -> LostReasonModel:
     values = payload.model_dump(exclude_unset=True)
     if not (values.get("label") or "").strip():
         raise HTTPException(status_code=422, detail="A lost reason needs a label.")
+    via = await _via(request)
     async with _tenant_session() as db:
         if values.get("position") is None:
             values["position"] = await _next_position(db, "crm_lost_reasons")
@@ -981,7 +998,7 @@ async def create_lost_reason(
             summary=f"Added the lost reason {quoted(row.label)}",
             ladder=change_log.TEAM, entity_id=str(row.id),
             after=_snapshot(row, REASON_LOG_KEYS),
-        ))
+        ), via=via)
         return _reason_wire(row)
 
 
@@ -992,16 +1009,18 @@ async def create_lost_reason(
 async def patch_lost_reason(
     reason_id: str, payload: LostReasonIn,
     user: UserContext = Depends(get_current_user),
+    request: Request = None,  # type: ignore[assignment]  # FastAPI injects it
 ) -> LostReasonModel:
     """Relabel, reorder or hide a lost reason. In Mirror mode, hide only."""
     values = payload.model_dump(exclude_unset=True)
+    via = await _via(request)
     async with _tenant_session() as db:
-        return await patch_lost_reason_in(db, user, reason_id, values)
+        return await patch_lost_reason_in(db, user, reason_id, values, via=via)
 
 
 async def patch_lost_reason_in(
     db: Any, user: Any, reason_id: str, values: dict[str, Any],
-    *, undoes: str | None = None,
+    *, undoes: str | None = None, via: str = change_log.VIA_UI,
 ) -> LostReasonModel:
     """The body of ``PATCH /crm/lost-reasons/{id}``, in the caller's
     transaction. The route and the Undo of a change both call it. It logs
@@ -1023,7 +1042,7 @@ async def patch_lost_reason_in(
             summary=_change_summary("lost reason", row.label, before, after, "label"),
             ladder=change_log.TEAM, entity_id=str(row.id),
             before=before, after=after,
-        ), undoes=undoes)
+        ), undoes=undoes, via=via)
     return _reason_wire(updated)
 
 

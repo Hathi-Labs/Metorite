@@ -112,10 +112,12 @@ from gateway.routes.apps._common import (
     MAX_STORAGE_VALUE_BYTES,
     TABLE_NAME_RE,
     _get_db,
+    _log,
+    _tenant_session,
     _uid,
     can_edit,
     get_app_or_404,
-    record_app_audit,
+    record_app_audit_in,
     require_app_user,
     router,
 )
@@ -393,13 +395,20 @@ async def execute_app_action(
     resolved = _resolve_action(manifest, action_name, args)
     app_id = str(row.id)
     email = _uid(user)
-
+    # The audit row goes to the org of the app row (H4 shape, task 1317),
+    # never to request input. An agent run binds no tenant, so the ambient
+    # `tenant_session()` would raise there. `app_audit` has FORCE RLS, so an
+    # unbound insert writes no row as a role without BYPASSRLS.
     async def _audit(detail: dict[str, Any]) -> None:
-        await record_app_audit(
-            app_id=app_id, user_email=email, kind="action",
-            app_version=row.live_version,
-            detail={"action": action_name, "kind": resolved.kind, **detail},
-        )
+        try:
+            async with _tenant_session(str(row.organization_id)) as adb:
+                await record_app_audit_in(
+                    adb, app_id=app_id, user_email=email, kind="action",
+                    app_version=row.live_version,
+                    detail={"action": action_name, "kind": resolved.kind, **detail},
+                )
+        except Exception as exc:  # best-effort, like every app audit row
+            _log.warning("apps.audit_failed", kind="action", error=str(exc)[:160])
 
     if resolved.readonly or resolved.kind == "storage.set":
         try:

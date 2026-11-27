@@ -41,6 +41,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from gateway.routes import seats as route
 
+from tests.unit import _r8_lists as r8_lists
+
 PERSON = UserContext(email="admin@customer.example", role=UserRole.EMPLOYEE)
 ANON = UserContext(email=None, role=UserRole.EMPLOYEE)
 
@@ -135,9 +137,7 @@ class TestThisFenceIsRegistered:
     spec's verify block — the closest a hand-list gets to defending itself."""
 
     def test_named_in_the_ci_no_db_fence_guard(self):
-        workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(
-            encoding="utf-8")
-        assert "tests/unit/test_seat_admin_proxy_route.py" in workflow
+        assert "tests/unit/test_seat_admin_proxy_route.py" in r8_lists.must_run()
 
     def test_named_in_the_owning_spec_verify_block(self):
         spec = (_ROOT / "project-docs/specs/subscription_console.md").read_text(

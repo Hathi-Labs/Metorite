@@ -67,11 +67,13 @@ api.metorite.com {
 
 # --- MCP edge for outside agents (WS-55 EA-10b) ---
 # external_agent_access.md §15.3. The wildcard *.metorite.com record already
-# sends this host to the box. 1MiB is 1048576 bytes, the edge's own cap
-# (agent_edge.mcp.MAX_BODY_BYTES). Caddy reads "1MB" as 1000000 bytes.
+# sends this host to the box. 6MiB is 6291456 bytes, the edge's own cap of
+# one upload_task_image call (agent_edge.mcp.MAX_UPLOAD_BODY_BYTES, CIV-14b).
+# Every other call keeps the edge's cap of 1 MiB. Caddy reads "6MB" as
+# 6000000 bytes.
 mcp.metorite.com {
 	request_body {
-		max_size 1MiB
+		max_size 6MiB
 	}
 	reverse_proxy 127.0.0.1:8091 {
 		lb_try_duration 30s
