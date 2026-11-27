@@ -54,10 +54,11 @@ import {
   groupKeyOf,
   openBucket,
   OVERVIEW_ABOVE,
+  boundedFolds,
+  drawnCards,
   overviewTiles,
   questionStops,
   scopeSessions,
-  shownSessions,
   stepStop,
   subTotals,
   usesOverview,
@@ -295,21 +296,24 @@ export function AgentLenses({
     setWindows({});
     setSubsOf(null);
   }, []);
+  // AMR-5a: the Graph and the Board draw open folds only while they fit one
+  // canvas. The List draws only the rows on screen, so it keeps each of them.
+  const folds = useMemo(
+    () => (!model || lens === "list" ? opened : boundedFolds(model, filters, opened, nameOf)),
+    [model, lens, filters, opened, nameOf],
+  );
   /**
-   * Opens a fold of idle or done sessions in place. When that would draw more
-   * than the bound of one canvas, the orchestrator opens as its own level,
-   * which is bounded (§3.12.9).
+   * Opens a fold of idle or done sessions in place. When that would pass the
+   * bound, the orchestrator opens as its own level, which is bounded.
    */
   const openGroup = useCallback(
     (key: string) => {
-      const at = model ? findGroup(model, key) : null;
-      if (model && at && lens !== "list") {
-        const folded = membersOf(at.group).filter((s) => !states.has(s.state)).length;
-        if (shownSessions(model, filters, nameOf).length + folded > OVERVIEW_ABOVE) return openLevel(at.person, key);
-      }
-      setOpened((prev) => new Set(prev).add(key));
+      const next = new Set(folds).add(key);
+      const at = model && lens !== "list" ? findGroup(model, key) : null;
+      if (model && at && drawnCards(model, filters, next, nameOf) > OVERVIEW_ABOVE) return openLevel(at.person, key);
+      setOpened(next);
     },
-    [model, lens, states, filters, nameOf, openLevel],
+    [folds, model, lens, filters, nameOf, openLevel],
   );
   /** Opens the orchestrator of a session, selects it and centres its card. */
   const goToSession = useCallback(
@@ -424,7 +428,7 @@ export function AgentLenses({
   const shared: LensViewProps = {
     model,
     filters,
-    opened,
+    opened: folds,
     onOpenGroup: openGroup,
     selectedId: selectionNodeId(selection),
     onOpenSession: openSession,

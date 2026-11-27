@@ -20,6 +20,8 @@ import { BEN, bigFleet, fleet, mapOf, run, session } from "./agentLensesFixtures
 import { parseAgentMap } from "./agentMap";
 import {
   CARDS_MAX,
+  boundedFolds,
+  drawnCards,
   OVERVIEW_ABOVE,
   SESSION_CARDS_MAX,
   SUB_ROWS_MAX,
@@ -124,6 +126,44 @@ describe("the overview", () => {
     // 64 sessions of the owner's view: 4 are not idle or done.
     expect(usesOverview(working(4, 60), chips(), nameOf)).toBe(false);
     expect(usesOverview(working(4, 60), shown(), nameOf)).toBe(true);
+  });
+  const orchs = (n: number, state: string, lane: string) =>
+    buildLensModel(
+      mapOf(
+        Array.from({ length: n }, (_, i) => [session(`o${i}`, { state }), session(`l${i}`, { state: lane })]).flat(),
+        [],
+        Array.from({ length: n }, (_, i) => ({ from: `o${i}`, to: `l${i}` })),
+      ),
+    );
+  it("counts each orchestrator card, whatever its chip", () => {
+    expect(usesOverview(orchs(40, "done", "working"), chips(), nameOf)).toBe(true);
+    expect(usesOverview(orchs(100, "quiet", "quiet"), chips(), nameOf)).toBe(true);
+    expect(usesOverview(orchs(20, "done", "working"), chips(), nameOf)).toBe(false);
+  });
+  it("counts the orchestrator that a find draws as context", () => {
+    // 40 matching lanes under 40 orchestrators that do not match.
+    expect(usesOverview(orchs(40, "working", "working"), chips({ find: "Task of nobody" }), nameOf)).toBe(false);
+    expect(drawnCards(orchs(40, "working", "working"), chips({ find: "l" }), new Set(), nameOf)).toBeGreaterThan(40);
+  });
+  /** Three orchestrators with 30 idle lanes each, and one working lane. */
+  const folded = buildLensModel(
+    mapOf(
+      [0, 1, 2].flatMap((o) => [
+        session(`o${o}`),
+        ...Array.from({ length: 30 }, (_, i) => session(`q${o}-${i}`, { state: "quiet" })),
+      ]),
+      [],
+      [0, 1, 2].flatMap((o) => Array.from({ length: 30 }, (_, i) => ({ from: `o${o}`, to: `q${o}-${i}` }))),
+    ),
+  );
+  it("counts the folds that are open already, so they never pass the bound together", () => {
+    const one = new Set(["ana@x.test|o0"]);
+    const two = new Set([...one, "ana@x.test|o1"]);
+    expect(drawnCards(folded, chips(), one, nameOf)).toBe(33);
+    expect(drawnCards(folded, chips(), two, nameOf)).toBe(63);
+    expect(boundedFolds(folded, chips(), one, nameOf)).toBe(one);
+    // Opened on the List, then drawn on the Graph: they close.
+    expect(boundedFolds(folded, chips(), two, nameOf).size).toBe(0);
   });
   it("keeps the tiles at 41 shown sessions", () => {
     expect(usesOverview(working(40, 20), chips(), nameOf)).toBe(false);

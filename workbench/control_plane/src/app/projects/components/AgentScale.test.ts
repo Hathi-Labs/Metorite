@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -98,10 +96,6 @@ describe("everyone's graph with idle sessions hidden (AMR-5a)", () => {
     const out = lenses({ read: { kind: "ready", map: split }, initialLens: "board" });
     expect(count(out, "data-agent-session=")).toBe(4);
     expect(out).not.toContain("data-agent-overview");
-  });
-  it("opens a large fold as its own bounded level", () => {
-    const source = readFileSync(new URL("./AgentLenses.tsx", import.meta.url), "utf-8");
-    expect(source).toContain("> OVERVIEW_ABOVE) return openLevel(at.person, key);");
   });
 });
 

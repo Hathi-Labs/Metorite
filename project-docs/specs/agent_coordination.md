@@ -905,7 +905,7 @@ The owner asked on 2026-11-26 that the view of §3.12.8 stays usable with hundre
 
 - **Aggregate first.** A canvas draws at most 40 session cards, plus the orchestrator card. Past that it groups, and each group says what it holds.
 - **Six states.** Needs you, Failed, Working, Waiting, Idle and Done. Idle and Done start off. "Done" is the word of the ended state `completed`. Its look is the key `lens_done` of `statusAccent.ts`. So a `completed` run keeps its gray chip on every other surface. The test `AgentRepairs.test.ts` holds that rule.
-- **The count (AMR-5a, owner 2026-11-27).** Only the sessions that the state chips and Find let through count toward the 40. A fold that would draw more than 40 opens its orchestrator as its own level.
+- **The count (AMR-5a, owner 2026-11-27).** Only the cards that draw count toward the 40. Those are the sessions that the state chips and Find let through, and each orchestrator card. When a fold would pass 40 with the folds that are open, its orchestrator opens as its own level. On the Graph and the Board, open folds that pass 40 together close.
 - **The overview.** A scope that shows more than 40 sessions draws one tile for each orchestrator, under its person, on the Graph and the Board. The tile that wants the most attention comes first. A tile holds its counts, one square for each session (the most urgent first, at most 96) and a bar of its subagents. The sessions with no orchestrator make one "No orchestrator" tile for each person.
 - **Quiet orchestrators.** A tile with only idle and done sessions folds into one row for its person. A find opens that row.
 - **Levels.** A tile, or a square, opens the graph of that orchestrator. A breadcrumb leads back: All agents, then a person, then an orchestrator.
