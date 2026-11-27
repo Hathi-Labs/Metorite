@@ -80,7 +80,7 @@ async def sync_calendars(user: UserContext = Depends(get_current_user)):
 # Persisted so server-side AI (the planner, the chat agent, the day summary)
 # can see the user's committed top priority — previously localStorage-only.
 #
-# ⚠️ H-312b (migration 504): each statement on `calendar_day_state` names the
+# ⚠️ H-312b (migration 514): each statement on `calendar_day_state` names the
 # member AND the bound organization (`_BOUND_ORG`). Under the owner role RLS
 # does not apply, so the member filter alone reached the row of another org.
 # The key is still `(user_id, day)`. So in a second org, a save of a day that
