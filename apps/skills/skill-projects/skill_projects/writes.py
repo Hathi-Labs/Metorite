@@ -4859,6 +4859,33 @@ async def unarchive_task(task_id: str) -> str:
 # ── Projects ─────────────────────────────────────────────────────────────────
 
 
+async def _same_name_sibling(name: str, parent_id: Any) -> dict[str, Any] | None:
+    """The live node under *parent_id* (None: a space) that has *name*, if any.
+
+    Names compare without case and without outer spaces. An archived node
+    does not count. A folder counts: a folder and a project of one name under
+    one parent confuse the member just the same.
+    """
+    want = str(name or "").strip().casefold()
+    payload = (await get("/projects/tree")) or {}
+    found: list[dict[str, Any]] = []
+
+    def walk(nodes: list[dict[str, Any]]) -> None:
+        for node in nodes or []:
+            if not isinstance(node, dict):
+                continue
+            if (
+                not node.get("archived_at")
+                and (node.get("parent_project_id") or None) == (parent_id or None)
+                and str(node.get("name") or "").strip().casefold() == want
+            ):
+                found.append(node)
+            walk(node.get("children") or [])
+
+    walk(payload.get("rows") or [])
+    return found[0] if found else None
+
+
 @_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def create_project(
     name: str,
@@ -4888,10 +4915,29 @@ async def create_project(
         parent = await get(f"/projects/nodes/{pid}")
         payload["parent_project_id"] = pid
         parent_label = data(parent.get("name"))
+        # Task 3596, the production case (session a8296fc6): the helper made
+        # a project, then made a second one of the SAME name under the first.
+        # A node never takes the name of its own parent: point to the parent.
+        if str(parent.get("name") or "").strip().casefold() == label.casefold():
+            return (
+                f"{parent_label} already exists, and a {which} cannot sit under a parent of "
+                f"the same name, so I made no second one.\n  full_id: {pid}\n"
+                "Use it, or ask for a different name."
+            )
     if description.strip():
         payload["description"] = description.strip()
     if lead.strip():
         payload["lead"] = await _resolve_assignee(lead, dispatch=False)
+    # HRD-16 / task 3596: one turn never makes two nodes of one name under
+    # one parent. The first create is already in the tree, so a repeat finds
+    # it and points to it, before any card.
+    twin = await _same_name_sibling(label, payload.get("parent_project_id"))
+    if twin:
+        return (
+            f"{data(twin.get('name'))} already exists under {parent_label}, so I made no "
+            f"second one.\n  full_id: {twin.get('id')}\n"
+            "Use it, or ask for a different name."
+        )
     if not await _confirm(
         title=f"Create this {which}?",
         detail=f"{data(label)} under {parent_label}",
