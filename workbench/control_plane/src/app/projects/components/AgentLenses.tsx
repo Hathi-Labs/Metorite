@@ -244,8 +244,11 @@ export function AgentLenses({
   const openSession = useCallback((s: LensSession) => setSelection({ kind: "session", id: s.id }), []);
   const mine = (me ?? "").trim().toLowerCase();
   /** The address of the scope: "" for everyone. "Me" is the address of the viewer. */
+  // With no address, "Me" matches nobody. It never reads as everyone.
   const scope =
-    person === ME_VALUE ? (model?.people.find((p) => p.person.toLowerCase() === mine)?.person ?? mine) : person;
+    person === ME_VALUE
+      ? (model?.people.find((p) => p.person.toLowerCase() === mine)?.person ?? (mine || ME_VALUE))
+      : person;
   const selected = selection?.kind === "session" ? selection.id : null;
   const options = useMemo(
     () => ({ ...view, mode, person: scope, find, nameOf, pin: selected }),
@@ -293,7 +296,8 @@ export function AgentLenses({
     setView((old) => bucketView(old, who, state, next));
   }, []);
   const onPick = useCallback((node: GraphNode) => {
-    if (node.kind === "person") setSelection({ kind: "person", person: node.person });
+    if (node.kind === "root") setSelection({ kind: "root", person: node.person });
+    else if (node.kind === "person") setSelection({ kind: "person", person: node.person });
     else if (node.kind === "block") setSelection({ kind: "block", block: node.block });
     else if (node.kind === "session" || node.kind === "orch") setSelection({ kind: "session", id: node.session.id });
   }, []);
@@ -372,7 +376,8 @@ export function AgentLenses({
       <AgentDetails
         model={model}
         selection={selection}
-        onSelect={setSelection}
+        // A session of the details opens the way to its card, so it always draws.
+        onSelect={(next) => (next.kind === "session" ? goToSession(next.id) : setSelection(next))}
         onOpenTask={openTask}
         personLabels={personLabels}
         nameOf={nameOf}

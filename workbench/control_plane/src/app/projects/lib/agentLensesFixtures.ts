@@ -67,7 +67,7 @@ export function bigFleet(size = 500, subsEach = 4): AgentMap {
   const lines: Array<{ from: string; to: string }> = [];
   for (let i = 0; i < size - orchs.length; i += 1) {
     const orch = orchs[i % orchs.length];
-    // The last orchestrator holds idle sessions only, so one tile is quiet.
+    // The last orchestrator holds idle sessions only.
     const state = orch.id === "o14" ? "quiet" : states[(i * 7) % states.length];
     const id = `s${i}`;
     sessions.push(

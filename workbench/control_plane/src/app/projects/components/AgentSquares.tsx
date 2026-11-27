@@ -36,7 +36,7 @@ export function Square({ state }: { state: LensSession["state"] }) {
 /**
  * The squares of a group. With `onPick` a square opens its session. The
  * squares take no tab stop: the group that holds them is the keyboard way in,
- * and the find box and the List reach each session.
+ * and the find box reaches each session.
  */
 export function Squares({
   sessions,

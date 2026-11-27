@@ -31,14 +31,16 @@ export type BlockKey = "you";
 
 export type GraphNode = { id: string; x: number; y: number; w: number; h: number } & (
   /** The scope: everyone, or one person. */
-  | { kind: "root"; person: string; sessions: LensSession[]; folded: boolean }
-  | { kind: "person"; person: string; sessions: LensSession[]; folded: boolean }
-  | { kind: "orch"; session: LensSession; members: LensSession[]; folded: boolean; canFold: boolean }
+  | { kind: "root"; person: string; sessions: LensSession[]; folded: boolean; canFold: boolean }
+  /** `canFold`: false for an open person under a find, which ignores folds. */
+  | { kind: "person"; person: string; sessions: LensSession[]; folded: boolean; canFold: boolean }
+  /** `hidden`: the agents under it that draw no card. */
+  | { kind: "orch"; session: LensSession; members: LensSession[]; hidden: number; folded: boolean; canFold: boolean }
   | { kind: "session"; session: LensSession }
   /** The idle and done agents of a person, under the Active switch. */
   | { kind: "rest"; person: string; count: number; open: boolean }
   /** `next`: where a click starts the next cards of the state (`StateNode.next`). */
-  | { kind: "bucket"; person: string; state: LensState; sessions: LensSession[]; shown: number; next: number }
+  | { kind: "bucket"; person: string; state: LensState; sessions: LensSession[]; next: number }
   | { kind: "block"; block: BlockKey; sessions: LensSession[] }
   | { kind: "sub"; sessionId: string; row: SubRow }
   | { kind: "submore"; sessionId: string; count: number }
@@ -220,8 +222,9 @@ export function layoutGraph(model: LensModel, options: GraphOptions): Graph {
           top = Math.max((inGroup[0] + inGroup[inGroup.length - 1]) / 2 - tall / 2, from);
         }
         const members = membersOf(group).filter((s) => matchesFind(s, find, nameOf(s.person)));
+        const hidden = members.filter((s) => s.id !== orch.id && !plan.shown.has(s.id)).length;
         put(
-          { id, kind: "orch", session: orch, members, folded, canFold: !find.trim() && group.sessions.length > 0 },
+          { id, kind: "orch", session: orch, members, hidden, folded, canFold: !find.trim() && group.sessions.length > 0 },
           orchX * u,
           GRAPH_W.orch,
           GRAPH_H.orch,
@@ -229,7 +232,6 @@ export function layoutGraph(model: LensModel, options: GraphOptions): Graph {
         );
         own.add(orch.id);
         rep.set(orch.id, id);
-        if (folded) for (const s of group.sessions) if (!plan.shown.has(s.id)) rep.set(s.id, id);
         link(pid, id, "tree");
         kids.push(top + tall / 2);
         // A short group must not let the tall orchestrator overlap what follows.
@@ -248,8 +250,7 @@ export function layoutGraph(model: LensModel, options: GraphOptions): Graph {
       };
       for (const bucket of plan.buckets) {
         const id = bucketNodeId(plan.person, bucket.state);
-        const shown = plan.sessions.filter((s) => s.state === bucket.state && plan.shown.has(s.id)).length;
-        row({ id, kind: "bucket", person: plan.person, state: bucket.state, sessions: bucket.sessions, shown, next: bucket.next });
+        row({ id, kind: "bucket", person: plan.person, state: bucket.state, sessions: bucket.sessions, next: bucket.next });
         for (const s of bucket.sessions) if (!rep.has(s.id)) rep.set(s.id, id);
       }
       if (plan.rest) {
@@ -257,13 +258,32 @@ export function layoutGraph(model: LensModel, options: GraphOptions): Graph {
         row({ id, kind: "rest", person: plan.person, count: plan.rest.count, open: plan.rest.open });
         for (const s of plan.sessions) if (!rep.has(s.id) && !isActive(s)) rep.set(s.id, id);
       }
+      // An agent under a folded orchestrator stands where its orchestrator does:
+      // on its card, in its state node or in the "idle or done" node. An agent
+      // with nothing else stands on its person, so no line is lost.
+      for (const group of person.groups) {
+        const stand = group.orch ? rep.get(group.orch.id) : undefined;
+        const folded = group.orch !== null && folds.get(sessionNodeId(group.orch.id)) === false;
+        for (const s of group.sessions) {
+          if (folded && stand && !own.has(s.id)) rep.set(s.id, stand);
+        }
+      }
+      for (const s of plan.sessions) if (!rep.has(s.id)) rep.set(s.id, pid);
     } else {
       for (const s of plan.sessions) rep.set(s.id, pid);
     }
     const middle = kids.length > 0 ? (Math.min(...kids) + Math.max(...kids)) / 2 : blockTop + h / 2;
     const top = Math.max(middle - h / 2, blockTop);
     put(
-      { id: pid, kind: "person", person: plan.person, sessions: plan.sessions, folded: !plan.open },
+      {
+        id: pid,
+        kind: "person",
+        person: plan.person,
+        sessions: plan.sessions,
+        folded: !plan.open,
+        // A find ignores a fold, but the bound can fold a person under it.
+        canFold: !find.trim() || !plan.open,
+      },
       GRAPH_X.person * u,
       GRAPH_W.person,
       plan.open ? GRAPH_H.person : GRAPH_H.card,
@@ -282,6 +302,7 @@ export function layoutGraph(model: LensModel, options: GraphOptions): Graph {
     person: scope,
     sessions: inScope,
     folded: rootFolded,
+    canFold: !find.trim(),
     x: GRAPH_X.root,
     y: Math.max(Math.min(middle - tall / 2, ROOT_LOWEST * u), 0),
     w: GRAPH_W.root * u,

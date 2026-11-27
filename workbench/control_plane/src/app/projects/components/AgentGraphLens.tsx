@@ -58,11 +58,12 @@ import {
   subWords,
 } from "../lib/agentLenses";
 import { NAMES_ONLY_BELOW, subTotals } from "../lib/agentScale";
+import { EVERYONE } from "./AgentDetails";
 import { CARD_FACE, CountLine, SessionCard, pressKeys } from "./AgentSessionCard";
 import { BucketRow, Square, Squares, TileCounts } from "./AgentSquares";
 
 export const GRAPH_LABEL = "Map of people, orchestrators and agents";
-export const EVERYONE = "Everyone";
+export { EVERYONE };
 export const LEGEND_LABEL = "Legend";
 /** The squares of a folded person card. The rest read "+N". */
 const CARD_SQUARES = 28;
@@ -215,8 +216,17 @@ export function GraphCard({ data }: { data: NodeData }) {
     const need = countStates(node.sessions).you;
     const subs = subTotals(node.sessions).total;
     return (
-      <div className="relative h-full" data-agent-graph-root="">
-        <div className="flex h-full w-full flex-col justify-center gap-0.5 rounded-lg border-2 border-border bg-card px-2.5 shadow-sm">
+      <div className="relative h-full">
+        <div
+          role="button"
+          tabIndex={0}
+          aria-pressed={selected}
+          aria-label={`${name}. ${agentTotals(node.sessions)}.${need > 0 ? ` ${needWord(need)}.` : ""} ${subagentWord(subs)}.`}
+          onClick={pick}
+          onKeyDown={pressKeys(pick)}
+          data-agent-graph-root=""
+          className={`flex h-full w-full cursor-pointer flex-col justify-center gap-0.5 rounded-lg border-2 border-border bg-card px-2.5 text-left shadow-sm hover:shadow-md ${ring(selected)}`}
+        >
           <span className="flex min-w-0 items-center gap-1.5 pr-6">
             <Icon name={node.person ? "User" : "Users"} size={15} className="shrink-0 text-muted-foreground" aria-hidden />
             <span className={`truncate font-semibold text-foreground ${namesOnly ? "text-xl" : "text-sm"}`}>{name}</span>
@@ -229,7 +239,7 @@ export function GraphCard({ data }: { data: NodeData }) {
             </>
           )}
         </div>
-        <Chevron folded={node.folded} name={name} onClick={fold} />
+        {node.canFold ? <Chevron folded={node.folded} name={name} onClick={fold} /> : null}
       </div>
     );
   }
@@ -273,14 +283,14 @@ export function GraphCard({ data }: { data: NodeData }) {
             </span>
           )}
         </div>
-        <Chevron folded={node.folded} name={name} onClick={fold} />
+        {node.canFold ? <Chevron folded={node.folded} name={name} onClick={fold} /> : null}
       </div>
     );
   }
   if (node.kind === "orch") {
     const s = node.session;
     const sub = node.folded
-      ? `${node.members.length - 1} agents folded`
+      ? `${node.hidden} ${node.hidden === 1 ? "agent" : "agents"} folded`
       : `Orchestrator · ${machineWord(s)}${s.model ? ` · ${s.model}` : ""}`;
     return (
       <div className="relative h-full">

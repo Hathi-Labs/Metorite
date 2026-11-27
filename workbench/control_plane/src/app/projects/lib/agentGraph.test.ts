@@ -266,6 +266,53 @@ describe("the subagents of one agent", () => {
   });
 });
 
+describe("a fold never loses an agent or a line (the verifier's repair)", () => {
+  /** 35 working agents, an orchestrator with an agent that asks, and 10 that wait. */
+  const m = buildLensModel(
+    mapOf(
+      [
+        ...Array.from({ length: 35 }, (_, i) => session(`w${i}`)),
+        session("aboss", { state: "waiting" }),
+        session("ask", { state: "waiting_on_person" }),
+        ...Array.from({ length: 10 }, (_, i) => session(`z${i}`, { state: "waiting" })),
+      ],
+      [run("r", "ask", { state: "awaiting" })],
+      [{ from: "aboss", to: "ask" }],
+    ),
+    new Map(),
+    { email: "ana@x.test" },
+  );
+  it("keeps the line to You when the folded orchestrator joins a state node", () => {
+    let view = foldView(NEW_VIEW, "s:aboss", false, "ana@x.test");
+    const folded = layoutGraph(m, options({ ...view }));
+    expect(folded.edges.some((e) => e.kind === "you")).toBe(true);
+    const bucket = kind(folded, "bucket").find((b) => b.state === "waiting")!;
+    view = bucketView(view, "ana@x.test", "waiting", bucket.next);
+    const walked = layoutGraph(m, options({ ...view }));
+    expect(cards(walked)).not.toContain("aboss");
+    expect(walked.edges.filter((e) => e.kind === "you")).toHaveLength(1);
+    expect(kind(walked, "block")[0].sessions.map((s) => s.id)).toEqual(["ask"]);
+    expectWholeLines(walked);
+  });
+  it("counts the agents under a folded orchestrator", () => {
+    const g = layoutGraph(model, options({ ...foldView(NEW_VIEW, "s:boss", false, "ana@x.test") }));
+    // lane-a and the idle agent under it. lane-b is of another person.
+    expect(node("s:boss", g)).toMatchObject({ hidden: 2 });
+  });
+  it("draws the selected agent of a person that the member folded", () => {
+    const view = foldView(NEW_VIEW, "p:ben@x.test", false, "ben@x.test");
+    expect(cards(layoutGraph(model, options({ ...view, pin: "lane-b" })))).toContain("lane-b");
+  });
+  it("offers no fold that a find would ignore", () => {
+    const g = layoutGraph(model, options({ find: "solo" }));
+    expect(node(ROOT_ID, g)).toMatchObject({ canFold: false });
+    expect(node("p:ana@x.test", g)).toMatchObject({ canFold: false });
+    const bound = layoutGraph(buildLensModel(workingFleet(500)), options({ find: "w" }));
+    expect(kind(bound, "person").filter((n) => n.folded).every((n) => n.canFold)).toBe(true);
+    expect(kind(bound, "person").some((n) => n.folded)).toBe(true);
+  });
+});
+
 describe("the layout with lines between two agents", () => {
   const map = mapOf(
     [session("o1"), session("o2"), session("l1", { person: "ben@x.test" }), session("l2"), session("l3")],

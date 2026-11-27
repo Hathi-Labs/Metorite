@@ -20,7 +20,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { relativeTime } from "@/lib/taskCard";
 
 import { type TaskRow, projectsApi } from "../lib/api";
-import { type BlockKey, YOU_WORD, blockOf, blockSentence } from "../lib/agentGraph";
+import { type BlockKey, ROOT_ID, YOU_WORD, blockOf, blockSentence } from "../lib/agentGraph";
 import {
   DISPATCHED_BY_LABEL,
   DISPATCHED_LABEL,
@@ -50,16 +50,21 @@ import { AgentRunPanel } from "./AgentRunPanel";
 import { STATE_PILL, StatePill, pressKeys } from "./AgentSessionCard";
 import { AgentSubagents } from "./AgentSubagents";
 
+export const EVERYONE = "Everyone";
+
 /** What the dock or the sheet shows. */
 export type LensSelection =
   | { kind: "session"; id: string }
   | { kind: "person"; person: string }
+  /** The root of the map: one person, or everyone with "". */
+  | { kind: "root"; person: string }
   | { kind: "block"; block: BlockKey };
 
 /** The node of the graph that a selection lights. */
 export function selectionNodeId(selection: LensSelection | null): string | null {
   if (!selection) return null;
   if (selection.kind === "session") return `s:${selection.id}`;
+  if (selection.kind === "root") return ROOT_ID;
   return selection.kind === "person" ? `p:${selection.person}` : `b:${selection.block}`;
 }
 
@@ -78,6 +83,10 @@ export function selectionTitle(
 ): string | null {
   if (selection.kind === "session") return model.byId.get(selection.id)?.name ?? null;
   if (selection.kind === "person") {
+    return model.people.some((p) => p.person === selection.person) ? nameOf(selection.person) : null;
+  }
+  if (selection.kind === "root") {
+    if (!selection.person) return model.sessions.length > 0 ? EVERYONE : null;
     return model.people.some((p) => p.person === selection.person) ? nameOf(selection.person) : null;
   }
   return blockSessions(model, selection.block).length > 0 ? YOU_WORD : null;
@@ -351,17 +360,13 @@ function SessionDetails({ session, ...props }: DetailsProps & { session: LensSes
   );
 }
 
-function PersonDetails({ person, ...props }: DetailsProps & { person: LensPerson }) {
-  const sessions = personSessions(person);
+/** The counts, the machines and the questions of a set of sessions. */
+function CountDetails({ sessions, ...props }: DetailsProps & { sessions: readonly LensSession[] }) {
   const counts = countStates(sessions);
   const machines = [...new Set(sessions.filter((s) => s.state !== "idle" && s.host).map((s) => s.host as string))];
   const asks = sessions.filter((s) => s.state === "you");
   return (
-    <div className="flex flex-col gap-3" data-agent-details="person">
-      <div className="flex items-center gap-2">
-        <PersonAvatar email={person.person} displayName={props.nameOf(person.person)} size={28} />
-        <span className="truncate text-xs text-muted-foreground">{person.person}</span>
-      </div>
+    <>
       <dl className="flex flex-col gap-1.5">
         {LENS_STATES.map((state) => (
           <Fact key={state} term={lensWord(state)}>
@@ -376,6 +381,18 @@ function PersonDetails({ person, ...props }: DetailsProps & { person: LensPerson
           <SessionList sessions={asks} nowMs={props.nowMs} onSelect={props.onSelect} />
         </section>
       ) : null}
+    </>
+  );
+}
+
+function PersonDetails({ person, ...props }: DetailsProps & { person: LensPerson }) {
+  return (
+    <div className="flex flex-col gap-3" data-agent-details="person">
+      <div className="flex items-center gap-2">
+        <PersonAvatar email={person.person} displayName={props.nameOf(person.person)} size={28} />
+        <span className="truncate text-xs text-muted-foreground">{person.person}</span>
+      </div>
+      <CountDetails {...props} sessions={personSessions(person)} />
     </div>
   );
 }
@@ -389,6 +406,14 @@ export function AgentDetails(props: DetailsProps) {
   if (selection.kind === "person") {
     const person = model.people.find((p) => p.person === selection.person);
     return person ? <PersonDetails {...props} person={person} /> : null;
+  }
+  if (selection.kind === "root") {
+    const sessions = selection.person ? model.sessions.filter((s) => s.person === selection.person) : model.sessions;
+    return (
+      <div className="flex flex-col gap-3" data-agent-details="root">
+        <CountDetails {...props} sessions={sessions} />
+      </div>
+    );
   }
   const sessions = blockSessions(model, selection.block);
   return (

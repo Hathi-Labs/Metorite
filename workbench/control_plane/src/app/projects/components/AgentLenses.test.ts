@@ -95,6 +95,14 @@ describe("the map on the canvas", () => {
     expect(out).toContain(NO_AGENT_OF_YOURS);
     expect(out).not.toContain('data-agent-graph=""');
   });
+  it("draws only my agents for Me, and nobody for Me with no address", () => {
+    expect(lenses({ viewerEmail: "ben@x.test", initialPerson: "me" })).toContain('data-agent-graph=""');
+    expect(lenses({ viewerEmail: "", initialPerson: "me" })).toContain(NO_AGENT_OF_YOURS);
+  });
+  it("opens a session of the details through the way to its card", () => {
+    const source = readFileSync(new URL("./AgentLenses.tsx", import.meta.url), "utf-8");
+    expect(source).toContain('onSelect={(next) => (next.kind === "session" ? goToSession(next.id) : setSelection(next))}');
+  });
   it("draws untrusted names as text", () => {
     const map = fleet();
     map.sessions[0].name = "<img src=x onerror=1>";

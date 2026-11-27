@@ -26,7 +26,7 @@ import {
 export const CARDS_MAX = 40;
 /** The sub-agent rows under one session card. The rest are in the details. */
 export const SUB_ROWS_MAX = 8;
-/** The squares of one tile. The rest read "+N". */
+/** The squares of one group. The rest read "+N". */
 export const SQUARES_MAX = 96;
 /** A list longer than this draws only the rows on screen. */
 export const WINDOW_ABOVE = 50;
@@ -190,8 +190,9 @@ function draftOf(person: LensPerson, options: PlanOptions): Draft | null {
   }
   const override = folds.get(personNodeId(person.person));
   const hasPin = pin !== null && all.some((s) => s.id === pin);
-  // The start rule: a person with active work starts open, any other as their card.
-  const open = q ? true : (override ?? (hasPin || all.some(isActive)));
+  // The start rule: a person with active work starts open, any other as their
+  // card. The person of the selected session is always open.
+  const open = q || hasPin ? true : (override ?? all.some(isActive));
   return {
     person: person.person,
     sessions: matches,

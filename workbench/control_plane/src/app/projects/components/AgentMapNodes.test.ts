@@ -10,6 +10,7 @@ import { type GraphNode, layoutGraph } from "../lib/agentGraph";
 import { buildLensModel } from "../lib/agentLenses";
 import { splitFleet } from "../lib/agentLensesFixtures";
 import { NEW_VIEW } from "../lib/agentScale";
+import { AgentDetails } from "./AgentDetails";
 import { GraphCard } from "./AgentGraphLens";
 
 const NOW = Date.parse("2026-11-26T12:00:00Z");
@@ -31,6 +32,27 @@ describe("the node cards of the map", () => {
   it("says the totals of the scope on the root", () => {
     const out = text(draw("root"));
     for (const part of ["Everyone", "64 agents · 4 active", "0 subagents"]) expect(out).toContain(part);
+  });
+  it("opens the details from the root, as from any node", () => {
+    expect(draw("root")).toMatch(/role="button"[^>]*aria-label="Everyone\. 64 agents · 4 active\./);
+    const details = renderToStaticMarkup(
+      createElement(AgentDetails, {
+        model, selection: { kind: "root", person: "" }, onSelect: () => {}, onOpenTask: () => {}, nameOf: (e: string) => e, nowMs: NOW,
+      }),
+    );
+    expect(details).toContain('data-agent-details="root"');
+  });
+  it("draws untrusted names as text on each card", () => {
+    const evil = splitFleet();
+    evil.sessions[0].name = "<img src=x onerror=1>";
+    const g = layoutGraph(buildLensModel(evil), {
+      ...NEW_VIEW, mode: "active", person: "", find: "", pin: null, unit: 1, nameOf: () => "<img src=y>",
+    });
+    const out = g.nodes
+      .map((node) => renderToStaticMarkup(createElement(GraphCard, { data: data(node, { nameOf: () => "<img src=y>" }) })))
+      .join("");
+    expect(out).toContain("&lt;img src=x");
+    expect(out).not.toMatch(/<img src=[xy]/);
   });
   it("draws a folded person as a card with counts and squares", () => {
     const out = draw("p:ben@x.test");
@@ -60,7 +82,7 @@ describe("the node cards of the map", () => {
   });
   it("sends the click of a state node with its next cards", () => {
     const bucket: GraphNode = {
-      id: "k", kind: "bucket", person: "ana@x.test", state: "working", sessions: [], shown: 0, next: 12, x: 0, y: 0, w: 1, h: 1,
+      id: "k", kind: "bucket", person: "ana@x.test", state: "working", sessions: [], next: 12, x: 0, y: 0, w: 1, h: 1,
     };
     const onBucket = vi.fn();
     const card = GraphCard({ data: data(bucket, { onBucket }) }) as ReactElement<{ onOpen: () => void; word: string }>;

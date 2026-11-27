@@ -2293,6 +2293,8 @@ They keep their own gates.
 
 #### AMR-1 · The Graph lens of the Agents view
 
+⚠️ **Replaced in part by AMR-5 (owner, 2026-11-27).** The four columns and the wait nodes are gone. The flag and the fields of the read stay.
+
 - **Metorite task.** 4020. Epic 321.
 - **Scope.** §3.12.8 for the Graph and the details. The flag `AGENT_LENSES_ORGS`, its shell field `agent_lenses`, and `waiting_on` and `waiting_until` on each run of the map read and of `get_agent_map`.
 - **Done when.** With the flag on, the canvas shows the four columns, and each line comes from a field of the read. With the flag off, the canvas is the map of SW-103. A waiting run gives its wait, and every other run gives two nulls.
@@ -2319,6 +2321,8 @@ They keep their own gates.
 
 #### AMR-4 · The Agents view at scale
 
+⚠️ **Replaced in part by AMR-5 (owner, 2026-11-27).** The overview tiles and the levels are gone. The two reads, the subagent counts, the phone levels and the windowed lists stay.
+
 - **Metorite task.** 4023. Epic 321.
 - **Scope.** §3.12.9. It holds the overview tiles, the bound, the subagent counts, the question pager, the phone levels, the windowed lists and the two reads.
 - **Done when.** A fleet of 500 sessions and 2000 subagents draws at most 40 session cards on a canvas, plus the orchestrator card. R8: the summary holds no child row, and one session reads its own rows only, under the reach of the map. With the flag off, the map answers as before. The first overview draws under 1 second after the map answers.
@@ -2334,6 +2338,7 @@ They keep their own gates.
 - **Done when.** 64 sessions of two people draw one map. It holds the scope, both people and the 4 active agents. It also holds one "43 idle or done" node, and the second person folded. With All, and with 500 working sessions, the map draws at most 40 agent cards, and clicks reach every agent. People narrows the map to one person. The toolbar holds People, Active or All, Find, and "Needs you N" when a question waits. The phone view does not change.
 - **Fence.** `lib/agentGraph.test.ts`, `lib/agentScale.test.ts`, `components/AgentLenses.test.ts` and `components/AgentMapNodes.test.ts`.
 - **Risk.** STANDARD UI on a live screen. **Gate.** AGENT-SAFE. D145 owner preview before the merge. `AGENT_LENSES_ORGS` is on for one org, so the next release shows it there. **Depends on.** AMR-1, AMR-3, AMR-4.
+- **Built, 2026-11-27,** on branch `amr5-mt-e85b25cc-one-agents-map`.
 
 #### SW-39 · Child runs
 
