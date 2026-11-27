@@ -533,6 +533,28 @@ REFUSALS: dict[str, str] = {
         "not run it."),
 }
 
+#: B1b-3 review: the words of ``source_not_open`` when the live read refused
+#: an MCP tool that waits for the approval of its text (``tool_changed``).
+#: The code stays ``source_not_open``. The words name the action and the
+#: server, which the member already reads in the manifest, and the right that
+#: approves. The grant check of the live read comes first, so a member who
+#: may not use the server gets the plain words.
+TOOL_WAITS_TEXT = (
+    "The tool {uses} of the server {server} waits for an approval of its text. "
+    "An admin who may connect integrations (integrations:manage) approves it in the "
+    "catalog, then try again.")
+
+
+def _refusal_words(out: Any) -> str:
+    """The words of a 403 of *out*: :data:`TOOL_WAITS_TEXT` for a tool that
+    waits for its approval, else ``REFUSALS`` of the code."""
+    if out.refusal == SOURCE_NOT_OPEN and out.live_note == mcp_tools.LIVE_TOOL_CHANGED:
+        ref = parse_uses(str(out.uses or ""))
+        if ref is not None and ref.source == "mcp":
+            return TOOL_WAITS_TEXT.format(uses=f"mcp:{ref.server}.{ref.tool}", server=ref.server)
+    return REFUSALS[out.refusal]
+
+
 #: B2b-2b. The 422 of a body that ``build_call`` cannot use, the 503 of an
 #: app that failed, and the audit reason of an app's own 4xx.
 BAD_ARGS = "bad_args"
@@ -2713,7 +2735,7 @@ def _answer(out: _Outcome) -> dict[str, Any] | Response:
     if out.refusal is not None:
         ask = out.refusal == APPROVAL_REQUIRED and out.can_ask
         raise HTTPException(status_code=403, detail={
-            "code": out.refusal, "message": APPROVAL_ASK if ask else REFUSALS[out.refusal]})
+            "code": out.refusal, "message": APPROVAL_ASK if ask else _refusal_words(out)})
     if out.too_large:
         raise HTTPException(status_code=413, detail={
             "code": BODY_TOO_LARGE, "message": BODY_OVER_CAP})

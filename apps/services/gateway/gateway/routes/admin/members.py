@@ -22,7 +22,6 @@ from acb_auth import (
     InvalidPermission,
     UserContext,
     agent_run_permission,
-    build_access,
     feature_permission,
     integration_use_permission,
     require_permission,
@@ -32,12 +31,14 @@ from acb_auth.access import (
     mirror_identity_membership,
     mirror_membership_status,
     purge_identity_shadow,
+    read_integration_rules,
 )
 from acb_auth.console_resolve import (
     ConsoleMemberWriteUnavailable,
     invite_member_on_console,
     remove_member_on_console,
 )
+from acb_auth.integration_access import RULE_SOURCE, USE_ALL, USE_PREFIX
 from acb_auth.permissions import matched_by
 from acb_common.assistant_profile import CLEAR_FOR_MEMBER_SQL_TEMPLATE, mark_changed
 from fastapi import Depends, HTTPException
@@ -46,7 +47,9 @@ from gateway.package_host.sharing import OTHERS_SEE_THE_INSTALL
 from gateway.routes.admin._common import (
     PURGE_OUTCOME,
     _iso,
+    _load_overrides,
     _log,
+    _role_permission_map,
     _tenant_session,
     assert_not_self_demotion,
     assert_not_self_lockout,
@@ -54,6 +57,7 @@ from gateway.routes.admin._common import (
     get_member,
     get_org_id,
     invalidate_for,
+    member_rule_access,
     provision_member,
     record_admin_change,
     require_admin_user,
@@ -90,6 +94,7 @@ from gateway.routes.projects.seal import (
 # A member has one `user_settings` row for each organization (migration 239),
 # so each statement on that table names the org beside RLS, not instead of it.
 from gateway.routes.tasks.settings import _BOUND_ORG
+from gateway.studio.skills_store import SHARED_WITH_ORG
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -731,6 +736,11 @@ _CREDENTIAL_CASCADES: dict[str, tuple[str, ...]] = {
 #: after `_PURGE_DELETES` deletes her grants, read the same answer.
 _OTHERS_SEE_THE_APP = OTHERS_SEE_THE_INSTALL
 
+#: WS-STU J2d (TOF-4b): a skill that the org shares, the one test of
+#: `gateway/studio/skills_store.py`. Its parentheses let the delete side
+#: write `NOT` before it, so the delete and the keep split on it alone.
+_SHARED_SKILL = SHARED_WITH_ORG
+
 #: **Deleted.** Enumerated from `infra/postgres/` by grepping for every column
 #: that names a person — FKs to `app_user(id)` and the email-string columns
 #: (`owner_email`, `user_email`, `user_id`, `subject`, `*_by`) — not from
@@ -789,6 +799,46 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # on her private chats. So the count is each row of the member.
     _PersonRows("chat_member_rows", "chat_session_member",
                 f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-CO CO-17: the cards that the member approved, one row each, with no
+    # card text. The rows are the member's only, so they go with the member.
+    # Same clause as the line above, and the same place: before the chats.
+    _PersonRows("chat_card_rows", "chat_card_record",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-CO CO-4: the shadow rows of the join match of THIS organization. A
+    # row holds codes and ids of the member's own chats, and nobody else's,
+    # so it goes with the member. The clause names the bound org beside RLS,
+    # as `chat_member_rows` does. It runs before `private_chat_sessions`,
+    # whose cascade would take only the rows of her private chats. So the
+    # count is each row of the member.
+    _PersonRows("chat_join_rows", "chat_join_log",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-TOF TOF-2b: the tool failure rows of THIS organization that name the
+    # member (``failure_events.member_email``, 30 days of retention). They go
+    # with the member. The clause names the bound org beside RLS. The platform
+    # tables hold no address and stay.
+    _PersonRows("failure_event_rows", "failure_events",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # SBX-1a (agent_sandbox.md §7.4): the tool gaps of the member in THIS
+    # organization. The need of a row is text about the member's work, so it
+    # goes with the member. The clause names the bound org beside RLS. It runs
+    # before `private_chat_sessions`, whose cascade would take only the rows of
+    # her private chats. So the count is each row of the member.
+    _PersonRows("tool_gaps", "tool_gaps",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # SBX-4b1 (agent_sandbox.md §7.3, §12.4 decision 10): the tool run rows
+    # of the member in THIS organization. A row holds her address. A Delete of
+    # a chat keeps the row (ON DELETE SET NULL), so no cascade takes it, and
+    # this entry deletes each row of hers. The clause names the bound org
+    # beside RLS. SBX-7 reviews this rule when credits land.
+    _PersonRows("user_tool_runs", "user_tool_runs",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # SBX-2 (agent_sandbox.md §12.2): the run capabilities of the member in
+    # THIS organization. A row holds her address and a token hash. The table
+    # is RLS-exempt, so the clause must name the bound org. The door already
+    # refuses a capability whose member has no seat (step 10). The delete
+    # removes the address at once, and does not wait for the daily sweep.
+    _PersonRows("sandbox_capabilities", "sandbox_capabilities",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
     # Their own private conversations. ⚠️ `visibility = 'private'` is
     # load-bearing and is the line the rejected "purge their content too"
     # option would have crossed: a `people`/`org` room they created has OTHER
@@ -811,9 +861,9 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # changes of a private saved view or of an own business rule. They hold
     # the text of a private view or an own rule, which only the member
     # reads, so they go with the member. This purge deletes the own rules
-    # (`crm_member_rules` above). It does not delete the saved views
-    # (`crm_views`). An Undo row has the same readers as the row it undoes
-    # (`change_log.log_change`), so the `ON DELETE CASCADE` key of
+    # (`crm_member_rules` above) and the private saved views
+    # (`crm_private_views` below). An Undo row has the same readers as the
+    # row it undoes (`change_log.log_change`), so the `ON DELETE CASCADE` key of
     # `undoes_id` takes only rows that this clause counts too, and no org
     # row goes with them. The clause names
     # the bound org beside RLS, as `reminders` does. The org's rows that the
@@ -825,6 +875,18 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # `private_to`.
     _PersonRows("crm_private_changes", "crm_change_log",
                 f"lower(private_to) = :email AND organization_id = {_BOUND_ORG}"),
+    # Task 1570 (D175.5, the owner's decision of 2026-11-04): the member's
+    # private CRM saved views of THIS organization. Only the owner reads a
+    # private view, so a purged member leaves none behind. The Change history
+    # rows that only the member reads went with `crm_private_changes` above.
+    # A shared view stays with the address. It is not counted as kept, as the
+    # org's rows of `crm_change_log` are not. The clause names the bound org
+    # beside RLS, as `studio_private_views` does, so the same address in
+    # another org keeps its views. No table hangs off `crm_views`, so the
+    # count is each row that goes.
+    _PersonRows("crm_private_views", "crm_views",
+                "NOT shared AND lower(owner_email) = :email"
+                f" AND organization_id = {_BOUND_ORG}"),
     # WS-61 KB-2f: the member's starred Knowledge pages. A star is the
     # member's own shortcut, so it goes with the member. The page stays.
     _PersonRows("knowledge_favorites", "kb_favorites", "lower(member_email) = :email"),
@@ -837,6 +899,12 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # stays: it is a `pm_tasks` row, and a purge deletes none (D63).
     _PersonRows("reminders", "reminders",
                 f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-MDC CC-5a (D-MD-5): the member's focus sessions of THIS organization.
+    # Only the member reads their own minutes, so a purged member leaves none
+    # behind. The clause names the bound org beside RLS, as `reminders` does,
+    # so the same address in another org keeps its sessions. The task stays.
+    _PersonRows("focus_sessions", "focus_sessions",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
     # WS-BRIEF BR-4: the member's briefs and close-outs of THIS organization.
     # A brief is the member's own text, and only the member reads it, so a
     # purged member leaves none behind. The clause names the bound org beside
@@ -845,15 +913,25 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # key to `brief_runs`.
     _PersonRows("brief_runs", "brief_runs",
                 f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
-    # WS-STU F1: the member's AI Studio skills of THIS organization. In F1 a
-    # skill is private, and only its owner reads it, so a purged member
-    # leaves none behind. The clause names the bound org beside RLS, as
-    # `brief_runs` does, so the same address in another org keeps its
-    # skills. The versions, `studio_skill_versions`, go by their
-    # `ON DELETE CASCADE` key to `studio_skills`. J2 adds a shared skill, and
-    # J2 decides if a shared one stays.
+    # WS-TOF TOF-3a (F12a): the runs of a skill that the member made in THIS
+    # organization: live turns, tests and repair proposals. A row holds codes,
+    # names and a hash, and it is the member's own record, so it goes with the
+    # member. The clause names the bound org beside RLS, as `studio_skills`
+    # does. It runs before `studio_skills`, whose cascade takes the runs of a
+    # deleted skill. So the count is each row of the member.
+    _PersonRows("studio_skill_runs", "studio_skill_runs",
+                f"lower(created_by) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-STU F1 and J2d (TOF-4b): the member's AI Studio skills of THIS
+    # organization that the org does not share. Only the owner reads such a
+    # skill, so a purged member leaves none behind: a private skill, and a
+    # skill with only a pending or a rejected ask. The clause names the bound
+    # org beside RLS, as `brief_runs` does, so the same address in another
+    # org keeps its skills. The versions, `studio_skill_versions`, go by
+    # their `ON DELETE CASCADE` key to `studio_skills`. A skill that the org
+    # shares stays with the address: see `studio_shared_skills` below.
     _PersonRows("studio_skills", "studio_skills",
-                f"lower(owner_email) = :email AND organization_id = {_BOUND_ORG}"),
+                f"NOT {_SHARED_SKILL} AND lower(owner_email) = :email"
+                f" AND organization_id = {_BOUND_ORG}"),
     # WS-STU AF-10a: the member's private saved views of THIS organization.
     # Only the owner reads a private view, so a purged member leaves none
     # behind. The clause names the bound org beside RLS, as `studio_skills`
@@ -1025,6 +1103,17 @@ _PURGE_KEEPS: tuple[_PersonRows, ...] = (
     # the member's views with no overlap and no gap.
     _PersonRows("studio_shared_views", "studio_saved_views",
                 "shared AND lower(owner_email) = :email"
+                f" AND organization_id = {_BOUND_ORG}"),
+    # WS-STU J2d (TOF-4b, the orchestrator's decision of 2026-11-19): the
+    # skills of the member that the org shares. A holder approved a version,
+    # and each member of the org loads it, so the skill stays with the org
+    # and keeps the address, as a shared view does. Known limit: only the raw
+    # DELETE share route unshares it. No surface lists the id of an approved
+    # skill, and the chat unshare sends the owner-only read first (J2d).
+    # The clause is the delete side's `studio_skills` with no `NOT`, so the
+    # two split the member's skills with no overlap and no gap.
+    _PersonRows("studio_shared_skills", "studio_skills",
+                f"{_SHARED_SKILL} AND lower(owner_email) = :email"
                 f" AND organization_id = {_BOUND_ORG}"),
 )
 
@@ -1242,11 +1331,22 @@ async def purge_member_rows(
     its session block exits. A refusal of invariant 1 raises before the
     read, so it reaches no provider and stops no loop. More than
     ``TEARDOWN_MAX_MAILBOXES`` mailboxes raise a 409 before any delete.
+
+    ACC-1 fix round 1 (``integrations_console.md`` §3.9.2): the FIRST
+    statement takes the member's address off each integration access rule of
+    the org, under the row lock of the org (``_common.ORG_RULE_LOCKS``). It is
+    first because the lock must come before each row lock of the deletes
+    below. A refusal after it rolls it back with the rest. This body is the
+    one place that deletes an ``app_user`` row of a live org. The org purge
+    (``acb_auth.offboard``) deletes the org row, and the rules go with it.
     """
-    await assert_owner_survives(db, org_id, excluding_user_id=member["id"])
+    from gateway.routes.admin.integration_access import scrub_member_rules
 
     addr = (member["email"] or "").strip().lower()
     uid = member["id"]
+
+    await scrub_member_rules(db, org_id, addr)
+    await assert_owner_survives(db, org_id, excluding_user_id=member["id"])
 
     # EM-G11f1b: the plans, then the purge rows, before any delete. The
     # cascade of `email_accounts` deletes the filter ids, and the purge row
@@ -1371,38 +1471,9 @@ async def set_member_roles(
 
 # ── Per-user access + overrides ─────────────────────────────────────────────
 
-async def _load_overrides(db: Any, user_id: str) -> list[dict[str, Any]]:
-    rows = (
-        await db.execute(
-            text(
-                "SELECT permission, effect, reason, set_by, set_at "
-                "  FROM user_permission_override "
-                " WHERE user_id = CAST(:uid AS uuid) ORDER BY permission"
-            ),
-            {"uid": user_id},
-        )
-    ).mappings().all()
-    return [dict(r) for r in rows]
-
-
-async def _role_permission_map(db: Any, user_id: str) -> dict[str, list[str]]:
-    """``{role_slug: [permission, ...]}`` for the member's assigned roles."""
-    rows = (
-        await db.execute(
-            text(
-                "SELECT r.slug AS slug, rp.permission AS permission "
-                "  FROM user_role ur "
-                "  JOIN org_role r            ON r.id = ur.role_id "
-                "  JOIN org_role_permission rp ON rp.role_id = r.id "
-                " WHERE ur.user_id = CAST(:uid AS uuid)"
-            ),
-            {"uid": user_id},
-        )
-    ).mappings().all()
-    out: dict[str, list[str]] = {}
-    for r in rows:
-        out.setdefault(r["slug"], []).append(r["permission"])
-    return out
+# `_load_overrides` and `_role_permission_map` live in `_common` (ACC-3), so
+# `my_integrations.py` reads the same rows. They are imported above under the
+# same names.
 
 
 def _agent_names() -> list[str]:
@@ -1465,24 +1536,55 @@ def _explain(
     }
 
 
+def _explain_ruled(
+    base: EffectiveAccess, ruled: EffectiveAccess, permission: str,
+    role_perms: dict[str, list[str]], *, all_refused: bool,
+) -> dict[str, Any]:
+    """:func:`_explain` after the integration rules (ACC-1).
+
+    A permission that the member's roles and overrides allow and a rule
+    refuses shows the source ``integration-rule``, so the cause is named.
+    """
+    out = _explain(ruled, permission, role_perms)
+    if not out["allowed"] and base.has(permission):
+        out["source"] = RULE_SOURCE
+        out["via_role"] = ""
+        out["pattern"] = USE_ALL if all_refused else (
+            permission if permission.startswith(USE_PREFIX) else USE_ALL
+        )
+    return out
+
+
 @router.get("/members/{email}/access", summary="Resolved access for one member")
 async def get_member_access(
     email: str,
     admin: UserContext = Depends(require_admin_user),
 ) -> dict[str, Any]:
-    """The member's effective access, with provenance for every decision."""
+    """The member's effective access, with provenance for every decision.
+
+    ACC-1: the integration rules of the org apply here as in the resolver,
+    through the same function (``acb_auth.integration_access.narrow``), in
+    the one step ``_common.member_rule_access`` (ACC-3). The
+    list of integrations holds each ruled service too, so an MCP server or an
+    API connection with a rule shows here.
+    """
     async with _tenant_session() as db:
         org_id = await get_org_id(db, admin)
         member = await get_member(db, org_id, email)
         roles = await roles_for_user(db, member["id"])
         role_perms = await _role_permission_map(db, member["id"])
         overrides = await _load_overrides(db, member["id"])
+        rules = await read_integration_rules(db, org_id, member["id"])
 
-    access = build_access(
-        [p for perms in role_perms.values() for p in perms],
-        [(o["permission"], o["effect"]) for o in overrides],
-        roles=roles,
-        is_active=member["status"] == "active",
+    # ACC-3: the one base-and-narrow step, shared with `GET /auth/me/integrations`.
+    base, narrowed = member_rule_access(
+        role_perms, overrides, roles=roles,
+        is_active=member["status"] == "active", email=member["email"], rules=rules,
+    )
+    access = narrowed.access
+    explain = partial(
+        _explain_ruled, base, access, role_perms=role_perms,
+        all_refused=narrowed.all_refused,
     )
 
     return {
@@ -1490,25 +1592,26 @@ async def get_member_access(
         "display_name": member["display_name"] or "",
         "status": member["status"],
         "roles": roles,
-        "granted": sorted(access.granted),
-        "denied": sorted(access.denied),
+        # The member's own grants and overrides. A rule shows on its row below.
+        "granted": sorted(base.granted),
+        "denied": sorted(base.denied),
         "features": [
-            _explain(access, feature_permission(f), role_perms) | {"slug": f}
+            explain(feature_permission(f)) | {"slug": f}
             for f in FEATURES
         ],
         "capabilities": [
-            _explain(access, c, role_perms) for c in CAPABILITIES
+            explain(c) for c in CAPABILITIES
         ],
         "agents": [
-            _explain(access, agent_run_permission(n), role_perms) | {"name": n}
+            explain(agent_run_permission(n)) | {"name": n}
             for n in _agent_names()
         ],
         # Which third-party services an agent may use ON THIS MEMBER'S BEHALF.
         # Separate from `integrations:manage` (adding/rotating the credentials),
         # which appears under capabilities.
         "integrations": [
-            _explain(access, integration_use_permission(s), role_perms) | {"name": s}
-            for s in _integration_names()
+            explain(integration_use_permission(s)) | {"name": s}
+            for s in sorted(set(_integration_names()) | narrowed.ruled)
         ],
         "overrides": [
             {

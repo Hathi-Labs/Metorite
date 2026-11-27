@@ -99,7 +99,8 @@ for a query with no operator:
   Email asks for the mail from that sender (``sender=``), because a full
   text word never matches inside an address;
 * each hit found so says ``matched_by`` ``near``, with ``word`` and ``as``.
-  A hit that two rungs found keeps the lower rung. ``near`` in the answer
+  A hit that two rungs found keeps the copy with more words, then the lower
+  rung (FIND-2b). ``near`` in the answer
   names each word, its spelling, its hits and ``held``: true when the word
   has a hit of its own (:func:`find.near_report`). The log line is
   ``search.company.near``, with no word.
@@ -127,7 +128,9 @@ a closed list of :mod:`gateway.retrieval.find`:
   alone and passes ``find.proves_absence``. The member typed it as it folds,
   no hit and no related record shows it, and the near lookup ran and gave no
   name of the word itself. A low ``covers``, or a first pass with no hit, is
-  no proof. While ``find.ABSENCE_CLAIMS`` is off, it is never true;
+  no proof. Each app that answered must declare ``Source.proves_absence``
+  (:func:`_declared`, FIND-4b), and no source declares it yet. While
+  ``find.ABSENCE_CLAIMS`` is off, it is never true;
 * a zero answer gets ``where_else``: at most 3 entries, the skipped apps, the
   past chats while the search did not ask them (HRD-21), then the apps that
   are not open to the member. No entry names a record;
@@ -878,8 +881,7 @@ def _wins_a_tie(new: Hit, kept: Hit) -> bool:
     rungs found (HRD-18b review of 2026-11-16, P2-d).
 
     The copy that holds more words wins, and on a tie the lower rung: the
-    order of §3.4. The text of §3.5 says the lower rung alone. The owner is
-    asked (a3). To go back to §3.5, compare ``find.rung_of`` here only.
+    order of §3.4 and the text of §3.5 (the planner, FIND-2b, 2026-11-17).
     """
     return _first_in_order(new) < _first_in_order(kept)
 
@@ -1212,6 +1214,7 @@ async def _find_tail(
     ``held`` of *near* and ``none_has_all`` use one proof
     (:func:`find.proves_absence`). It reads the text of every hit and every
     related record, so both are set after rung 4 (FIND-4 review round 3).
+    Both read one map of declarations (:func:`_declared`, FIND-4b).
     """
     loop = asyncio.get_running_loop()
     started = loop.time()
@@ -1231,15 +1234,16 @@ async def _find_tail(
     if ladder.explain:
         return _explained(answer, user, skipped, why, hybrid, ladder)
     shown_text = find.shown_texts(found, answer.get("related"))
+    declared = _declared(user, answered, chat_answered=find.CHAT_KEY in found)
     if near:
         answer["near"] = find.near_report(
             near, found, answer.get("broadened"), query=answer["query"],
             first_zero=first_zero, skipped=skipped, limited=limited,
-            related=answer.get("related"), looked=ladder.looked)
+            related=answer.get("related"), looked=ladder.looked, declared=declared)
     answer["skipped_why"] = why
     answer["none_has_all"] = _none_has_all(
         user, answer["query"], answered, skipped, answer.get("broadened"), limited=limited,
-        miss=miss, shown=shown_text, looked=ladder.looked)
+        miss=miss, shown=shown_text, looked=ladder.looked, declared=declared)
     if not shown and not answer.get("related"):
         answer["where_else"] = find.where_else(
             skipped, why, chat_named=chat_asked, not_open=_not_open(user))
@@ -1248,18 +1252,21 @@ async def _find_tail(
 
 def _none_has_all(user: UserContext, words: str, answered: list[str], skipped: list[str],
                   broadened: list[dict[str, Any]] | None, *, limited: bool, miss: bool,
-                  shown: list[str], looked: dict[str, bool] | None) -> bool:
+                  shown: list[str], looked: dict[str, bool] | None,
+                  declared: dict[str, bool] | None) -> bool:
     """True only with proof that no record the member can open holds all the
     words (``find_engine.md`` §3.6, FIND-4).
 
     The proof is :func:`find.word_absent`: one word, searched alone in each
     app that answered, found nothing, nothing was skipped or limited, and the
-    word passes :func:`find.proves_absence`. That is, the member typed it as
-    it folds, no hit and no related record shows it (*shown*), and the near
-    lookup gave no name of the word itself (*looked*). An app that is open to
-    the member must have answered, and the query has no operator. A low
-    ``covers`` is no proof, and a first pass with no hit is no proof either,
-    because People matches the whole query as one phrase.
+    word passes :func:`find.proves_absence`. That is, each app that answered
+    declares ``Source.proves_absence`` (*declared*, FIND-4b), the member
+    typed the word as it folds, no hit and no related record shows it
+    (*shown*), and the near lookup gave no name of the word itself
+    (*looked*). An app that is open to the member must have answered, and the
+    query has no operator. A low ``covers`` is no proof, and a first pass
+    with no hit is no proof either, because People matches the whole query as
+    one phrase.
 
     The answer must also *miss* (FIND-4 review, P1): no hit shows every word.
     """
@@ -1267,8 +1274,31 @@ def _none_has_all(user: UserContext, words: str, answered: list[str], skipped: l
         miss and bare_words(words) is not None
         and any(REGISTRY[key].reaches(user) for key in answered)
         and find.word_absent(broadened, query=words, skipped=skipped, limited=limited,
-                             shown=shown, looked=looked)
+                             shown=shown, looked=looked, declared=declared)
     )
+
+
+def _declared(user: UserContext, answered: list[str], *,
+              chat_answered: bool) -> dict[str, bool]:
+    """``Source.proves_absence`` of each app that answered the first pass
+    (FIND-4b, ``find_engine.md`` §3.6), from :data:`REGISTRY`. The past chats
+    count when they answered (*chat_answered*). ``find.proves_absence`` needs
+    ``True`` from each one.
+
+    An app whose switch is closed for the member is left out. It reads no
+    record that the member can open, and the answer does not name it as
+    searched. So a dark Studio changes no answer. A key that is not in
+    :data:`REGISTRY` declares nothing. The map holds app keys and bools only,
+    and no line logs it.
+    """
+    out: dict[str, bool] = {}
+    for key in [*answered, *([find.CHAT_KEY] if chat_answered else [])]:
+        source = REGISTRY.get(key)
+        if source is None:
+            out[key] = False
+        elif source.reaches(user):
+            out[key] = source.proves_absence is True
+    return out
 
 
 def _not_open(user: UserContext) -> list[str]:

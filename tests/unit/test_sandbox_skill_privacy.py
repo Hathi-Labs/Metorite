@@ -50,11 +50,16 @@ _X, _Y = "x-skills@example.com", "y-skills@example.com"
 _SKILL = "---\nname: {name}\ndescription: Draw a chart.\n---\nRun scripts/plot.py.\n"
 
 
-def _make_skill(ws: Path, name: str, member: str, *, body: str = "print('{name} ran')\n") -> None:
-    """A skill folder that *member* made, as the host writers make it."""
-    from acb_skills.agent_paths import claim_skill
+def _make_skill(
+    ws: Path, name: str, member: str, *, body: str = "print('{name} ran')\n", org: str = ORG_A,
+) -> None:
+    """A skill folder that *member* made in the tenant dir of *org*, as the host
+    writers make it."""
+    from acb_skills.agent_paths import claim_skill, tenant_instance
 
-    claim_skill(ws, f"agent-data/skills/{name}/SKILL.md", member)
+    claim_skill(
+        ws, f"agent-data/skills/{name}/SKILL.md", member, instance=tenant_instance(org),
+    )
     folder = ws / "agent-data" / "skills" / name
     (folder / "scripts").mkdir(parents=True, exist_ok=True)
     (folder / "SKILL.md").write_text(_SKILL.format(name=name), encoding="utf-8")
@@ -229,11 +234,16 @@ async def test_docker_a_member_never_reads_another_members_skill(
     from acb_common import get_settings
 
     monkeypatch.setattr(get_settings(), "gateway_session_secret", SKILL_SECRET, raising=False)
+    # This half tests the mounts. The claim asks the blob store (H-245), and
+    # with no database that ask fails closed, so it answers "no row" here.
+    from acb_memory import blob_store
+
+    monkeypatch.setattr(blob_store, "has_rows_under", lambda *a, **k: False)
     broker = real_projects["broker"]
     tx, ty = new_thread(), new_thread()
     with bound_run(DOCKER_ORG, agent=PA, thread=tx, member=_X) as ws:
-        _make_skill(ws, "xs", _X, body="print('X-SECRET-SKILL')\n")
-        _make_skill(ws, "ys", _Y, body="print('Y-SECRET-SKILL')\n")
+        _make_skill(ws, "xs", _X, body="print('X-SECRET-SKILL')\n", org=DOCKER_ORG)
+        _make_skill(ws, "ys", _Y, body="print('Y-SECRET-SKILL')\n", org=DOCKER_ORG)
         hx = await broker.acquire()
     with bound_run(DOCKER_ORG, agent=PA, thread=ty, member=_Y):
         hy = await broker.acquire()
@@ -266,7 +276,7 @@ async def test_docker_a_member_never_reads_another_members_skill(
     # X makes another skill. X's next command sees it, in a fresh container.
     await broker.release(hx)
     with bound_run(DOCKER_ORG, agent=PA, thread=tx, member=_X) as ws:
-        _make_skill(ws, "xs2", _X)
+        _make_skill(ws, "xs2", _X, org=DOCKER_ORG)
         hx2 = await broker.acquire()
     after = await broker.exec(hx2, "ls -A /workspace/agent-data/skills", 30)
     assert after.output.split() == ["xs", "xs2"], after.output

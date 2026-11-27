@@ -49,6 +49,7 @@ from sqlalchemy import create_engine, text
 from tests.unit._customer_console_ladder import (
     DEFAULT_DEPLOYMENT_LABEL,
     apply_ladder,
+    callable_test_vendors,
     ensure_deployment,
 )
 
@@ -112,6 +113,9 @@ def db():
 
 @pytest.fixture
 def client(monkeypatch):
+    # MS-2 refuses a provider the Router cannot call (rule H2). The vendors
+    # here are made up per run (`e2e<run>`), and a fake answers for them.
+    callable_test_vendors(monkeypatch, starts=("e2e",))
     monkeypatch.setenv("CUSTOMER_CONSOLE_OPERATOR_TOKEN", TOKEN)
     monkeypatch.setenv("CUSTOMER_CONSOLE_ENCRYPTION_KEY", ENC_KEY)
     from customer_console.main import app
@@ -495,7 +499,11 @@ def test_a_stream_that_FAILS_to_open_gives_its_hold_back(
         "model": tier, "stream": True,
         "messages": [{"role": "user", "content": "hi"}]})
 
-    assert r.status_code == 200  # a stream reports failure in-band
+    # AO-3: a stream that no step opens answers 503 `unavailable` before the
+    # first byte. It used to answer 200 with a lone `[DONE]`, which the chat
+    # read as an empty reply. The hold still goes back.
+    assert r.status_code == 503, r.text
+    assert r.json() == {"detail": {"reason": "unavailable"}}
     assert _holds(db, org_id) == 1
     assert _open_holds(db, org_id) == 0, "a failed stream kept its reservation"
     assert _balance(db, org_id) == before

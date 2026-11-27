@@ -37,11 +37,13 @@
  * many are subtasks. A drag moves only the card dragged: a parent's status
  * never follows its subtask (`board.optimisticDrop`, fenced).
  */
+import { useStartFocus } from "@/app/tasks/lib/focusStart";
 import { ContextMenu, type CtxItem } from "@/components/ContextMenu";
 import { Board } from "@/components/board/Board";
 import { BoardColumn, BoardHeaderCell } from "@/components/board/BoardColumn";
 import { AvatarStack, TaskMeta } from "@/components/TaskMeta";
-import { agentCardLook } from "../lib/agentCardLook";
+import { agentCardLook, splitPlanProgress } from "../lib/agentCardLook";
+import { holderLine } from "../lib/agentHolder";
 import { AgentPill } from "./AgentPill";
 import { DropGap } from "@/components/DropGap";
 import { EmptyState } from "@/components/EmptyState";
@@ -56,7 +58,7 @@ import { accentForGroup, accentForStatus } from "../lib/accent";
 import type { StatusRow, TagRow,
   TaskTypeRow, TaskRow } from "../lib/api";
 import { projectsApi } from "../lib/api";
-import { AGENT_WORK_EMPTY, WAITING_ON_ME_EMPTY } from "../lib/agentRuns";
+import { AGENT_WORK_EMPTY, isHeldByAgent, WAITING_ON_ME_EMPTY } from "../lib/agentRuns";
 import {
   buildCellDropPatch,
   buildColumnDropUpdate,
@@ -674,6 +676,8 @@ export function TaskBoard({
    * end of that column". `buildColumnDropUpdate` builds the patch rather than an
    * inline `{ status_id }`, so the menu and the drag write the same shape.
    */
+  // CC-4: the board card menu starts focus through the one start door.
+  const startFocus = useStartFocus();
   const menuActions: TaskMenuActions = {
     open: (task) => onSelect(task),
     copyLink: (task) => {
@@ -698,6 +702,7 @@ export function TaskBoard({
     mergeInto: (task) => onMergeTask?.(task.id),
     askAgent: (task) => onAskAgent?.(task.id),
     makeEpic: (task) => void makeEpic(task),
+    focus: (task) => void startFocus(task.id),
     setStatus: (task, statusId) => {
       if (task.status_id === statusId) return;
       onDrop(task, [], buildColumnDropUpdate("status", statusId));
@@ -741,6 +746,8 @@ export function TaskBoard({
     // An archived task takes no new run, and the gateway refuses it, so the
     // entry drops rather than offering a click that ends in an error.
     canAskAgent: Boolean(onAskAgent) && !task.archived_at,
+    // An open task takes a session. An archived or finished one does not.
+    canFocus: !task.archived_at && !task.completed_at,
     // Renaming needs somewhere to send the result. A board whose page does not
     // reload after a write would show the old title until the next poll, which
     // reads as the rename having failed.
@@ -903,6 +910,8 @@ export function TaskBoard({
       memberEmail: task.agent_member_email,
       note: task.agent_note,
       waiting: task.agent_waiting,
+      stranded: task.agent_stranded,
+      plan: task.agent_plan,
       viewerEmail: me,
       labels: personLabels,
     });
@@ -1095,7 +1104,31 @@ export function TaskBoard({
             {agentLook.edge === "live" ? (
               <span aria-hidden className="agent-live-dot h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
             ) : null}
-            <span className="truncate">{agentLook.line}</span>
+            {/* SW-32: the count "3 of 7" never truncates, the step does. */}
+            {(() => {
+              const split = splitPlanProgress(agentLook.line, task.agent_plan);
+              return split ? (
+                <>
+                  <span className="truncate">{split.head}</span>
+                  <span className="shrink-0 whitespace-nowrap">{split.tail}</span>
+                </>
+              ) : (
+                <span className="truncate">{agentLook.line}</span>
+              );
+            })()}
+          </p>
+        ) : null}
+        {/* SW-5: who holds the task, and since when. */}
+        {task.held_by && isHeldByAgent(task) ? (
+          <p
+            data-agent-holder
+            className="mt-1 min-w-0 truncate text-[10px] text-muted-foreground"
+            // The live line above already names the session. The tooltip keeps
+            // the session label too, and the visible text keeps the part that
+            // truncation must not cut: who holds the task, and since when.
+            title={holderLine(task.held_by, personLabels, undefined, undefined, task.agent_label)}
+          >
+            {holderLine(task.held_by, personLabels)}
           </p>
         ) : null}
         <TaskMeta chips={visibleChips(task, shownFields, undefined, tagHues, typeHues)} />

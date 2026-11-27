@@ -7,7 +7,11 @@ Metorite file, each named by a reference (``acb_skills.held_card``):
 * ``artifact:<agent>:<path>`` — a file of the member's OWN workspace of that
   agent, as the Artifacts app lists it. The bytes come through
   ``send.load_artifact_attachments``, the one reader of a workspace file for
-  a send (``workspace._member_agent_workspace``, H-201).
+  a send (``workspace._member_agent_workspace``, H-201). Task 3598: a file
+  of a chat folder of a shared agent, such as the path that
+  ``make_document`` gives, when the member may write to that chat
+  (``workspace._chat_thread_file``). Only this ref takes a chat file,
+  because only this ref pins a digest. A held chat takes no such file.
 * ``knowledge:<page id>`` — a Knowledge page that the member can read, as
   its Markdown. The page comes through ``knowledge.core.load_page``, the
   visibility read of the Knowledge routes, behind the same two gates
@@ -27,6 +31,7 @@ card named (409 else). Fence: ``tests/unit/test_email_metorite_files.py``.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import mimetypes
 import re
@@ -111,7 +116,9 @@ def _is_held_workspace(agent: str, path: str, email: str | None) -> bool:
     except Exception:  # an unknown answer refuses
         return True
     if mine is None or held is None:
-        return False  # the read below finds no file, and refuses it
+        # The read below finds no file, and refuses it: a held send reads no
+        # chat file of a shared agent (``chat_files`` off, task 3598).
+        return False
     return Path(mine).resolve() == Path(held).resolve()
 
 
@@ -135,8 +142,14 @@ async def _artifact(user: UserContext, spec: str, *, held: bool) -> tuple[str, b
     agent, _, path = spec.partition(":")
     if held and _is_held_workspace(agent, path, user.email):
         raise HTTPException(status_code=422, detail=HELD_WORKSPACE_REFUSED)
-    [got] = load_artifact_attachments(
-        [ArtifactAttachment(path=path, agent=agent)], user.email)
+    # Task 3598: this ref is the ONE door of a chat file, because the card
+    # and the send check its digest (``check_digests``). A held run can write
+    # the folder of its own chat, so a held send takes no chat file. The room
+    # check reads the database, so the resolver runs in a thread. The tenant
+    # is the member's own.
+    [got] = await asyncio.to_thread(
+        load_artifact_attachments, [ArtifactAttachment(path=path, agent=agent)],
+        user.email, organization_id=user.organization_id, chat_files=not held)
     return str(got["filename"]), bytes(got["content"]), str(got["mime_type"])
 
 

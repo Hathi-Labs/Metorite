@@ -22,9 +22,9 @@ the answer of KR-ZERO, byte for byte.
   :func:`word_absent` is the proof that no record holds all the words.
   :func:`proves_absence` is the ONE rule of a word that may prove absence,
   for it and for ``held`` of :func:`near_report`. It reads
-  :func:`typed_alone`, :func:`shown_texts` and the result of
-  :func:`named_itself`. While :data:`ABSENCE_CLAIMS` is off (the default),
-  it proves nothing, so no line says that a record does not exist.
+  :func:`declares_all`, :func:`typed_alone`, :func:`shown_texts` and the
+  result of :func:`named_itself`. While :data:`ABSENCE_CLAIMS` is off (the
+  default), it proves nothing, so no line says that a record does not exist.
 * The past chats (HRD-21, §3.1 rung 6): :func:`chat_search_named` is the one
   reader of ``CHAT_SEARCH_ORGS``, :data:`CHAT_KEY` names the source and its
   rung, and :func:`stamp_first` stamps its hits ``chat``, with every word.
@@ -175,8 +175,9 @@ EDGE_MARKS = ".,;:!?()[]{}"
 #: ``none_has_all`` is never true. The facts stay.
 #:
 #: Set it True only after each source declares ``Source.proves_absence`` (a
-#: later slice), and the claim reads that declaration too. Tests set it True
-#: to keep the guard of :func:`proves_absence` fenced.
+#: later slice). The claim reads each declaration too (FIND-4b,
+#: :func:`declares_all`). Tests set it True to keep the guard of
+#: :func:`proves_absence` fenced.
 ABSENCE_CLAIMS = False
 
 #: A typed token that may prove absence: ASCII letters and digits only.
@@ -226,12 +227,28 @@ def named_itself(word: str, names: dict[str, dict[str, list[Any]]]) -> bool:
     return False
 
 
+def declares_all(declared: dict[str, bool] | None) -> bool:
+    """True when one app or more answered, and each app that answered
+    declares ``Source.proves_absence`` (FIND-4b, ``find_engine.md`` §3.6).
+    *declared* maps the key of each app that answered to its declaration.
+
+    ``None`` or an empty map proves nothing. A value that is not ``True``
+    proves nothing, so one app that does not declare stops the claim. Pure.
+    """
+    return bool(declared) and all(value is True for value in declared.values())
+
+
 def proves_absence(word: str, *, query: str, shown: list[str],
-                   looked: dict[str, bool] | None) -> bool:
+                   looked: dict[str, bool] | None,
+                   declared: dict[str, bool] | None) -> bool:
     """True when a search of *word* alone that found nothing may prove that
     no record holds it (FIND-4 review, P1 and round 3). The ONE rule, for
     ``held`` false in :func:`near_report` (HRD-18b) and for
-    :func:`word_absent` (FIND-4). Pure. Each part must hold:
+    :func:`word_absent` (FIND-4). Pure.
+
+    Each app that answered must declare ``Source.proves_absence``
+    (:func:`declares_all` of *declared*, FIND-4b). Only then can its zero
+    show that no record of the app holds the word. Then each part must hold:
 
     1. the member typed the word as it folds (:func:`typed_alone`);
     2. no hit of any rung and no related record shows it (*shown*, as
@@ -247,6 +264,7 @@ def proves_absence(word: str, *, query: str, shown: list[str],
     """
     return (
         ABSENCE_CLAIMS
+        and declares_all(declared)
         and typed_alone(query, word)
         and not any(coverage([word], text) for text in shown)
         and looked is not None and looked.get(word) is True
@@ -277,7 +295,8 @@ def near_report(entries: list[dict[str, Any]], found: dict[str, list[Any]],
                 broadened: list[dict[str, Any]] | None, *, query: str,
                 first_zero: bool, skipped: list[str],
                 limited: bool = False, related: Iterable[Any] | None = None,
-                looked: dict[str, bool] | None = None) -> list[dict[str, Any]]:
+                looked: dict[str, bool] | None = None,
+                declared: dict[str, bool] | None = None) -> list[dict[str, Any]]:
     """Each entry of the route's ``near``, with ``held`` (HRD-18b).
 
     ``held`` is true when the word has a hit of its own: the word alone found
@@ -290,9 +309,10 @@ def near_report(entries: list[dict[str, Any]], found: dict[str, list[Any]],
     P3-3). The word must also pass :func:`proves_absence` (FIND-4 review):
     the member typed it as it folds, no hit of any rung and no *related*
     record shows it, and the near lookup gave no name of the word itself
-    (*looked*). While :data:`ABSENCE_CLAIMS` is off, ``held`` is never false.
-    In each other case it is ``None``: not known. Only a false word may open
-    the answer with "No record holds" (§3.6). Pure.
+    (*looked*). Each app that answered must declare ``Source.proves_absence``
+    (*declared*, FIND-4b). While :data:`ABSENCE_CLAIMS` is off, ``held`` is
+    never false. In each other case it is ``None``: not known. Only a false
+    word may open the answer with "No record holds" (§3.6). Pure.
     """
     own = [f"{h.title} {h.hint} {h.snippet}" for hits in found.values() for h in hits
            if h.matched_by in OWN_RUNGS]
@@ -307,14 +327,16 @@ def near_report(entries: list[dict[str, Any]], found: dict[str, list[Any]],
             held = True
         elif (alone is not None and not alone[1] and not skipped and not limited
               and len(asked) == 1
-              and proves_absence(asked[0], query=query, shown=shown, looked=looked)):
+              and proves_absence(asked[0], query=query, shown=shown, looked=looked,
+                                 declared=declared)):
             held = False
         out.append({**entry, "held": held})
     return out
 
 
 def word_absent(broadened: list[dict[str, Any]] | None, *, query: str, skipped: list[str],
-                limited: bool, shown: list[str], looked: dict[str, bool] | None) -> bool:
+                limited: bool, shown: list[str], looked: dict[str, bool] | None,
+                declared: dict[str, bool] | None) -> bool:
     """True when the words alone prove that no record holds all the words
     (FIND-4, ``find_engine.md`` §3.6): one content word, searched alone in
     each app that answered, found nothing. The rule is the rule of ``held``
@@ -328,8 +350,9 @@ def word_absent(broadened: list[dict[str, Any]] | None, *, query: str, skipped: 
     The word needs ``name_match.NEAR_MIN_LETTERS`` letters, as each word of
     ``held`` does: an app may answer nothing for a short word, with no error.
     The word must pass :func:`proves_absence`, the rule that ``held`` uses:
-    typed as it folds, shown by no hit (*shown*), and named by no near name
-    of the word itself (*looked*).
+    each app that answered declares it (*declared*), typed as it folds,
+    shown by no hit (*shown*), and named by no near name of the word itself
+    (*looked*).
 
     The route also needs a miss: no hit shows every word
     (``company._none_has_all``).
@@ -340,7 +363,8 @@ def word_absent(broadened: list[dict[str, Any]] | None, *, query: str, skipped: 
         isinstance(entry, dict) and _count_of(entry.get("hits")) == 0
         and not entry.get("skipped") and isinstance(entry.get("word"), str)
         and name_match.near_eligible(entry["word"])
-        and proves_absence(entry["word"], query=query, shown=shown, looked=looked)
+        and proves_absence(entry["word"], query=query, shown=shown, looked=looked,
+                           declared=declared)
         for entry in broadened or []
     )
 

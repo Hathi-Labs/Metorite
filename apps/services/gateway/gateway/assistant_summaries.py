@@ -699,6 +699,9 @@ def _value(answer: Answer, *, through: str, through_ms: int, at: datetime) -> st
 
 #: True when the member deleted the summary of the chat.
 _OFF = "COALESCE(member_summary @> jsonb_build_object('off', true), false)"
+#: The chat `s` is NOT one whose summary the member deleted (`off`). The
+#: join shadow (CO-4) reads it, so no other module names the column.
+NOT_OFF_SQL = "NOT COALESCE(s.member_summary @> jsonb_build_object('off', true), false)"
 #: The bound tenant, named beside RLS, as each store module names it.
 _BOUND_ORG = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
 #: The newest row of the chat `s`, as a waterline.

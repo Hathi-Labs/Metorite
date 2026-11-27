@@ -127,7 +127,9 @@ ALL_TOOLS = ["whoami", "list_projects", "get_project", "list_members", "list_tag
              # WS-39 LP-1a: the updates of a project, newest first.
              "list_project_updates",
              # WS-39 TPL-1a: the templates of the organization.
-             "list_templates"]
+             "list_templates",
+             # WS-MCP SW-113: the agent map of SW-102.
+             "get_agent_map"]
 
 
 def _uuid(n: int) -> str:
@@ -727,16 +729,31 @@ class TestTheChallenges:
     @pytest.mark.parametrize("scope,scopes,names", [
         ("projects:read", ("projects:read",), ALL_TOOLS),
         ("projects:write", ("projects:read",), ALL_TOOLS),
-        ("context:read", ("context:read",), ["whoami"]),
+        ("context:read", ("context:read",), ["whoami", "get_company_context"]),
         ("projects:read", ("context:read",), ["whoami"]),
         ("", ("projects:read",), ["whoami"]),
     ])
-    async def test_tools_list_varies_with_the_scope(self, armed, scope, scopes, names):
-        """D7, §9.6 tools rule 1. ``whoami`` needs only a live token (§8)."""
+    async def test_tools_list_varies_with_the_scope(self, armed, monkeypatch, scope, scopes,
+                                                    names):
+        """D7, §9.6 tools rule 1. ``whoami`` needs only a live token (§8).
+        EA-5: ``get_company_context`` needs ``context:read``. The org is on
+        ``agent_resources_orgs``, so the scope alone decides here."""
+        monkeypatch.setattr(get_settings(), "agent_resources_orgs", "*")
         armed.store.tokens[GOOD] = _lookup(scope=scope, scopes=scopes)
         r = await _post(_rpc("tools/list"))
         assert r.status_code == 200, r.text
         assert [t["name"] for t in r.json()["result"]["tools"]] == names
+
+    async def test_the_company_context_tool_is_dark_off_agent_resources_orgs(self, armed):
+        """EA-5. With the flag empty, a ``context:read`` token lists ``whoami``
+        only, and a call answers the off text with no gateway request."""
+        armed.store.tokens[GOOD] = _lookup(scope="context:read", scopes=("context:read",))
+        r = await _post(_rpc("tools/list"))
+        assert [t["name"] for t in r.json()["result"]["tools"]] == ["whoami"]
+        result = await _tool("get_company_context")
+        assert result["isError"] is True
+        assert result["content"][0]["text"] == tools.TEXT_CONTEXT_OFF
+        assert not armed.gateway.requests
 
     async def test_an_outage_in_the_lookup_is_503_never_401(self, armed):
         """D18, EA3-10. ``ConnectionRefusedError`` is what asyncpg raises."""

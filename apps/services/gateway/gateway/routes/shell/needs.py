@@ -207,11 +207,16 @@ KIND_ORDER = {
     # as the bell draws it (`myDay.ts` `FIRED_FIRST`). The cut to `size` keeps
     # the first rows, so a fired reminder must not sit behind 30 other rows.
     "reminder_due": 0, "reminder_check": 1,
-    "overdue": 2, "approval": 3, "due_today": 4, "notification": 5,
-    "needs_reply": 6,
+    # AO-2 (customer_console.md §6A.17b): an AI vendor that runs out stops the
+    # chat for every member, so its alert comes before the admin's own work.
+    # The source gives one row for each vendor at most, so it cannot fill the
+    # cut. Only the admins of the operator org ever get it.
+    "provider_alert": 2,
+    "overdue": 3, "approval": 4, "due_today": 5, "notification": 6,
+    "needs_reply": 7,
     # WS-66 RM-2b (calendar_events_reminders.md §5.6): a reminder that Metorite
     # stopped checking is the last of the needs kinds.
-    "reminder_unconfirmed": 7}
+    "reminder_unconfirmed": 8}
 #: The kinds that take only the room the member's own rows leave inside the
 #: limit. An admin's approvals must never push out their own work.
 YIELDING_KINDS = frozenset({"approval"})
@@ -219,7 +224,7 @@ YIELDING_KINDS = frozenset({"approval"})
 NEWEST_FIRST = {"overdue": False, "approval": False, "due_today": False,
                 "notification": True, "needs_reply": False,
                 "reminder_due": False, "reminder_check": False,
-                "reminder_unconfirmed": False}
+                "reminder_unconfirmed": False, "provider_alert": True}
 
 Item = dict[str, Any]
 Act = dict[str, Any]
@@ -606,7 +611,7 @@ def _sentence(row: dict[str, Any]) -> str:
     title = str(row.get("task_title") or "").strip() or "a task"
     task = f"#{row['task_number']} {title}" if row.get("task_number") else title
     verb = _VERB.get(str(row.get("kind") or ""), "updated")
-    return f"{_who(row.get('actor'))} {verb} {task}"
+    return f"{row.get('actor_name') or _who(row.get('actor'))} {verb} {task}"
 
 
 async def _projects(user: UserContext) -> Found:
@@ -678,7 +683,9 @@ def _note_signals(notes: list[dict[str, Any]]) -> list[Signal]:
             signal_id=f"tasks:{task_id}", app="projects", kind="notification",
             entity=entity, title=entity["label"],
             facts={"notification": str(reason.get("kind") or ""),
-                   "who": _who(reason.get("actor")), "excerpt": reason.get("excerpt"),
+                   # Task 1574: the directory name, as the task panel shows it.
+                   "who": reason.get("actor_name") or _who(reason.get("actor")),
+                   "excerpt": reason.get("excerpt"),
                    "at": _iso(reason.get("created_at")), "note_ids": ids,
                    "unread": len(ids),
                    # The newest note, which may not be the reason. The state
@@ -1026,6 +1033,37 @@ async def _reminders(user: UserContext) -> Found:
                  signals=lambda: signals[:PER_APP], next_edge=_iso(edge))
 
 
+# ── AI vendor alerts (AO-2, ``customer_console.md`` §6A.17b) ────────────────
+#
+# One row for each AI vendor that is out of credit or low, and one "serves
+# again" row for a day after it recovers. Only an admin of an org that
+# PROVIDER_ALERT_ORGS lists gets a row: `admin=True` applies the admin test,
+# and the flag lives inside (SourceAbsent). The rows come from the last alert
+# that `gateway.provider_alerts` sent, in the tenant Redis of the org. So the
+# provider writes no SQL and opens no session. Each row links to the provider
+# page of the Operator Console. It has no act and no feed signal: the bell and
+# the Needs you card show it, and no My Day card does.
+
+PROVIDER_ALERT_KINDS = frozenset({"provider_alert"})
+
+
+async def _provider_alerts(user: UserContext) -> Found:
+    from gateway import provider_alerts
+
+    org = str(user.organization_id or "")
+    if not provider_alerts.alert_allowed(org):
+        raise SourceAbsent("PROVIDER_ALERT_ORGS does not list the org")
+    items: list[Item] = []
+    for alert in await provider_alerts.bell_rows(org, _now()):
+        title, detail = provider_alerts.words(alert.state, alert.label, alert.days_left,
+                                              alert.was)
+        items.append(_item(id=f"providers:{alert.provider}", app="providers",
+                           kind="provider_alert", title=title, detail=detail,
+                           href=provider_alerts.PROVIDER_PAGE, at=alert.at))
+    shown = _sort(items)[:PER_APP]
+    return Found(shown, len(shown), capped=len(items) > PER_APP)
+
+
 # ── The one registry (``my_day_feed.md`` §4.4) ─────────────────────────────
 
 
@@ -1184,21 +1222,38 @@ async def _decisions(user: UserContext) -> Found:
 STUDIO_HREF = "/studio"
 STUDIO_APPROVAL_RIGHT = "studio:publish"
 
+# WS-STU J2d (TOF-4b, ``ai_studio_rows/J2d.md``): the same source gives one
+# row for each pending ask to share a SKILL with the org. The provider calls
+# the route's own list (``skills.list_skill_shares``), so it writes no SQL. It
+# drops each ask of the member, because the store refuses that approve. The
+# row holds no body and no hash. A skill share needs no install (J2c), so
+# ``PACKAGE_HOST_ORGS`` gates the app rows only. The row has no act: the
+# holder reads the whole text on a card in the chat, and decides there. It
+# opens a new chat with a drafted message (``skill_share_href``). The member
+# reads the words, then sends them. The words hold ids only, no member text.
+
+
+def skill_share_href(skill_id: str, version: Any) -> str:
+    """The link of a skill share row: a new chat, with the ask in the box.
+
+    ``q`` puts words in the message box with no typed mark, and nothing
+    sends by itself (``app/chat/page.tsx``). The words load the pack
+    ``studio-share`` by its words ("skill share"). They name the act
+    (approve or reject) and the skill id and the version only, so the model
+    calls ``act=approve``, which shows the card with the whole text."""
+    words = (f"Review the skill share ask of skill {skill_id}, version {version}: "
+             "approve or reject.")
+    return f"/chat?{urlencode({'do': 'new-chat', 'q': words})}"
+
 
 def _same_person(a: Any, b: Any) -> bool:
     return str(a or "").strip().lower() == str(b or "").strip().lower() != ""
 
 
-async def _studio_approvals(user: UserContext) -> Found:
-    from gateway.package_host import flags as host_flags
-    from gateway.routes.studio import flags as studio_flags
+async def _studio_app_rows(user: UserContext) -> tuple[list[Item], bool]:
+    """The app rows of J2b-4a, and whether the route cut its list."""
     from gateway.routes.studio import packages
 
-    org = getattr(user, "organization_id", None)
-    if not studio_flags.studio_allowed(org):
-        raise SourceAbsent("STUDIO_ORGS does not hold the org")
-    if not host_flags.package_host_allowed(org):
-        raise SourceAbsent("PACKAGE_HOST_ORGS does not hold the org")
     answer = await packages.list_approvals(user=user, state=None)
     me = user.email
     out = []
@@ -1213,8 +1268,47 @@ async def _studio_approvals(user: UserContext) -> Found:
             detail=f"{name}, version {version}. Asked by {_who(row.get('requested_by'))}.",
             href=STUDIO_HREF, at=row.get("requested_at"),
         ))
+    return out, bool(answer.get("truncated"))
+
+
+async def _studio_skill_rows(user: UserContext) -> tuple[list[Item], bool]:
+    """The skill share rows of J2d, and whether the route cut its list."""
+    from gateway.routes.studio import skills
+
+    answer = await skills.list_skill_shares(user=user, state=None)
+    me = user.email
+    out = []
+    for row in answer.get("shares") or []:
+        if _same_person(row.get("owner_email"), me):
+            continue
+        sid = str(row.get("skill_id") or "")
+        name = str(row.get("name") or "").strip() or "A skill"
+        version = row.get("version")
+        out.append(_item(
+            id=f"studio-skill-share:{sid}:{version}", app="studio",
+            kind="approval", title="A skill share waits for your approval",
+            detail=f"{name}, version {version}. Asked by {_who(row.get('requested_by'))}.",
+            href=skill_share_href(sid, version), at=row.get("requested_at"),
+        ))
+    return out, bool(answer.get("truncated"))
+
+
+async def _studio_approvals(user: UserContext) -> Found:
+    from gateway.package_host import flags as host_flags
+    from gateway.routes.studio import flags as studio_flags
+
+    org = getattr(user, "organization_id", None)
+    if not studio_flags.studio_allowed(org):
+        raise SourceAbsent("STUDIO_ORGS does not hold the org")
+    out: list[Item] = []
+    cut = False
+    if host_flags.package_host_allowed(org):
+        rows, cut = await _studio_app_rows(user)
+        out += rows
+    rows, skills_cut = await _studio_skill_rows(user)
+    out += rows
     shown = _sort(out)[:PER_APP]
-    return Found(shown, len(shown), capped=bool(answer.get("truncated")) or len(out) > PER_APP)
+    return Found(shown, len(shown), capped=cut or skills_cut or len(out) > PER_APP)
 
 
 # Approvals runs LAST of the needs providers (the module note). Three of them
@@ -1229,6 +1323,12 @@ register(Provider("email", ("email",), _email, frozenset({"needs_reply"}),
 # right `studio:publish` gates it (`permission`), and the flags live inside.
 register(Provider("studio", ("studio",), _studio_approvals, frozenset({"approval"}),
                   permission=STUDIO_APPROVAL_RIGHT, app="studio"))
+# AO-2: the AI vendor alerts of the operator org, for its admins only. It
+# registers before the reminders, so approvals stays last and the reminders
+# stay beside it. The gate is `feature:chat`: the alert says the chat fell
+# over. PROVIDER_ALERT_ORGS gates it inside (SourceAbsent).
+register(Provider("providers", ("chat",), _provider_alerts, PROVIDER_ALERT_KINDS,
+                  admin=True))
 # WS-66 RM-2b: the reminders register before approvals, which stays last. The
 # gate is `feature:projects`, the gate of the reminder routes. It has no
 # Handled read, and the flag lives inside the provider (SourceAbsent).
