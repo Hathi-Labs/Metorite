@@ -174,7 +174,7 @@ def test_rule_b_a_half_written_line_waits_and_a_token_never_reaches_the_log(ow):
     agents = [_merge_fresh(home)]
     _queue(home, "")
     mod.run_pass(agents, now=NOW, child=_no_child)
-    _queue(home, "BACK 7 push failed with ghp_abcdefSECRET123")
+    _queue(home, "BACK 7 push failed with " + "ghp_" + "SECRET" + "a1" * 16)
     assert mod.run_pass(agents, now=NOW, child=_no_child) == []
     _queue(home, " again\n")
     ev = mod.run_pass(agents, now=NOW, child=_no_child)
@@ -248,7 +248,7 @@ def test_the_timer_runs_every_5_minutes_and_ships_disabled():
     sh = (DIR / "orch_watch.sh").read_text(encoding="utf-8")
     install = sh.split("install_files() {", 1)[1].split("\n}", 1)[0]
     assert "systemctl --user enable" not in install and "--now" not in install
-    assert "lane_keeper.py" in install  # orch_watch.py imports its readers
+    assert "scripts/home_server/lane_keeper.py" in sh  # orch_watch.py imports its readers
 
 
 def test_the_last_record_reader(ow, tmp_path):
@@ -293,3 +293,84 @@ def test_rule_c_the_note_label_of_lane_merge_can_have_a_suffix(ow):
     assert not mod.merger_note(["NOTE\tlane-orch\t00:06 UTC: woke lane-merge"])
     assert not mod.merger_note(["NOTE\tsignin-alarm\t00:06 UTC: lane-merge ok"])
     assert not mod.merger_note(["HOLD\tlane-merge\tx"])
+
+
+# --- review round: the one credential list, the tail, truncation, the merge label ----
+
+
+def test_a_back_detail_is_scrubbed_by_the_one_credential_list(ow):
+    mod, home = ow
+    assert mod.SHAPES, "orch_watch.py must load acb_common/secret_shapes.py by path"
+    agents = [_merge_fresh(home)]
+    _bot(home, "")
+    mod.run_pass(agents, now=NOW, child=_no_child)
+    aws = "AKIA" + "IOSFODNN7EXAMPLE"
+    jwt = "eyJ" + "hbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3"
+    pem = "-----BEGIN RSA " + "PRIVATE KEY-----"
+    pwd = "password=" + "hunter2hunter2"
+    _bot(home, f"BACK 2910 key {aws} jwt {jwt} {pwd} and {pem}\n")
+    ev = mod.run_pass(agents, now=NOW, child=_no_child)
+    assert [e[1] for e in ev] == ["2910"]
+    text = (home / "lanes" / "orch-events.log").read_text(encoding="utf-8")
+    for secret in (aws, jwt, pem, "hunter2"):
+        assert secret not in text
+    assert text.count("<redacted>") >= 4
+
+
+def test_with_no_copy_of_the_one_list_the_detail_is_withheld(ow, monkeypatch):
+    mod, _ = ow
+    assert mod.load_shapes([]) is None
+    monkeypatch.setattr(mod, "SHAPES", None)
+    assert mod.scrub("plain words") == mod.WITHHELD
+
+
+def test_rule_a_walks_back_past_bookkeeping_records(ow):
+    mod, home = ow
+    d = home / ".claude" / "projects" / "-p"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / "s-a.jsonl"
+    recs = [
+        {"type": "assistant"},
+        {"type": "system", "subtype": "turn_duration"},
+        {"type": "tools-used"},
+        {"type": "tools-used"},
+    ]
+    f.write_text("\n".join(json.dumps(r) for r in recs) + "\n", encoding="utf-8")
+    os.utime(f, (NOW - 40 * 60, NOW - 40 * 60))
+    assert mod.last_record(f) == "turn_duration"
+    ev = mod.run_pass([_agent("lane-a", "s-a"), _merge_fresh(home)], now=NOW, child=_no_child)
+    assert [(e[0], e[1], e[2][:4]) for e in ev] == [("idle", "lane-a", "idle")]
+    # Bookkeeping after a user record: the turn still runs.
+    with open(f, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"type": "user"}) + "\n" + json.dumps({"type": "cost-state"}) + "\n")
+    assert mod.last_record(f) == "user"
+
+
+def test_rule_b_a_log_truncated_in_place_that_grows_past_the_old_offset_is_read_again(ow):
+    mod, home = ow
+    agents = [_merge_fresh(home)]
+    _queue(home, "NOTE a\nNOTE b\n")
+    mod.run_pass(agents, now=NOW, child=_no_child)
+    log = home / "lanes" / "merge-queue.log"
+    with open(log, "r+", encoding="utf-8") as f:  # the same inode
+        f.truncate(0)
+        f.write("NOTE a much longer line than before\nHOLD 2920 mode off\n")
+    assert [e[1] for e in mod.run_pass(agents, now=NOW, child=_no_child)] == ["2920"]
+
+
+def test_rule_c_a_lane_merge_label_with_a_suffix_counts_for_the_transcript(ow):
+    mod, home = ow
+    (home / "lanes" / "keeper-lanes.txt").write_text("lane-a\n", encoding="utf-8")
+    agents = [_agent("lane-merge-1126", "s-m")]
+    _transcript(home, "s-m", 0, last=None)
+    mod.run_pass(agents, now=NOW, child=_no_child)
+    later = NOW + 100 * 60
+    os.utime(home / ".claude/projects/-p/s-m.jsonl", (later - 60, later - 60))
+    assert mod.run_pass(agents, now=later, child=_no_child) == []
+
+
+def test_install_takes_the_files_from_origin_main():
+    sh = (DIR / "orch_watch.sh").read_text(encoding="utf-8")
+    assert 'show "origin/main:$path"' in sh
+    assert "packages/acb_common/acb_common/secret_shapes.py" in sh
+    assert 'install -m "$mode" "$HERE' not in sh  # never the working tree

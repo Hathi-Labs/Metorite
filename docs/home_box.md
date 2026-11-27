@@ -467,9 +467,12 @@ down. Now the box runs it (task 4058). Two parts do the work:
 The timer ships DISABLED. After the merge, the owner or lane-devx does these
 steps on the box:
 
-1. Run `bash scripts/home_server/orch_watch.sh install`. It copies
-   `orch_watch.py` and `lane_keeper.py` to `~/.local/lib/metorite` and the
-   units to `~/.config/systemd/user`. It enables nothing.
+1. Run `bash scripts/home_server/orch_watch.sh install`. It fetches
+   `origin/main` and takes each file from there with `git show`, never from
+   the working tree. It copies `orch_watch.py`, `lane_keeper.py` and
+   `secret_shapes.py` to `~/.local/lib/metorite`, and the units to
+   `~/.config/systemd/user`. It enables nothing. `secret_shapes.py` is the one
+   credential list (task 1272). The watch scrubs each detail with it.
 2. Run `bash scripts/home_server/orch_watch.sh enable`. This is OWNER-GATE
    `deploy`.
 3. Write the start note `~/lanes/start/lane-orch.txt` from `lane-orch.md` and

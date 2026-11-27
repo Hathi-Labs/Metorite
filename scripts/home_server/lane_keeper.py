@@ -87,8 +87,10 @@ ORCH_CURSOR = Path(
 )
 ORCH_NOTE = (
     "New events wait in ~/lanes/orch-events.log. Read the lines after your cursor "
-    "(~/.local/state/metorite/orch_events.cursor), act on each one as lane-orch.md "
-    "says, then move the cursor. Never merge, deploy or flip a flag."
+    "(~/.local/state/metorite/orch_events.cursor) and note the line count that you "
+    "read. Act on each line as lane-orch.md says. Then write THAT count to the "
+    "cursor, never a new `wc -l`: a line that came while you worked stays new. "
+    "Never merge, deploy or flip a flag."
 )
 
 
@@ -348,10 +350,6 @@ def _orch_wake(
     ):
         return
     why_new = f"orch-events lines {max(cursor, batch) + 1}-{total}"
-    if state.get(ORCH_LANE) == now:  # a wake or a start of this pass that worked
-        state["_orch_batch"] = total
-        log(f"skip {ORCH_LANE}: woken in this pass, {why_new}")
-        return
     a = newest_per_lane(agents).get(ORCH_LANE)
     if a and a.get("state") not in ENDED:
         # Inside a turn (a `sleep`, say): it is running. Same rule as plan().

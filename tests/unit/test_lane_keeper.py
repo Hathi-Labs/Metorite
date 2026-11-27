@@ -542,3 +542,24 @@ def test_civ_orch_only_events_wake_lane_orch(keeper, monkeypatch):
     # No session and no new event: no fresh start either.
     assert mod.run_pass("[]", now=NOW + 99999) == []
     assert _orch_calls(calls) == []
+
+
+def test_civ_orch_a_line_that_comes_while_lane_orch_works_wakes_it_again(keeper, monkeypatch):
+    """The cursor race of the review: lane-orch writes the count that it READ."""
+    mod, home = keeper
+    _lanes(home, "lane-orch")
+    _transcript(home, "s-o", 60)
+    calls: list = []
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run(calls))
+    ended = json.dumps([_agent("lane-orch", "s-o", "done")])
+    _orch(home, 2, cursor=0)
+    assert [w[2] for w in mod.run_pass(ended, now=NOW)] == ["orch-events"]
+    # lane-orch is busy. It read 2 lines, and a third line comes.
+    _orch(home, 3)
+    busy = json.dumps([_agent("lane-orch", "s-o", "working", status="busy")])
+    assert mod.run_pass(busy, now=NOW + 300) == []
+    # It ends its turn, and writes the count that it read: 2.
+    _orch(home, 3, cursor=2)
+    assert [w[2] for w in mod.run_pass(ended, now=NOW + 600)] == ["orch-events"]
+    assert "lines 3-3" in (home / "lanes" / "keeper.log").read_text(encoding="utf-8")
+    assert "write THAT count" in mod.ORCH_NOTE and "never a new `wc -l`" in mod.ORCH_NOTE

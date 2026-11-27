@@ -39,7 +39,10 @@ your cursor. Only events wake you.
 
 1. Read the cursor: `~/.local/state/metorite/orch_events.cursor`. It holds
    one number, the count of lines that you handled. No file means 0.
-2. Read the lines of `~/lanes/orch-events.log` after that count.
+2. Read the lines of `~/lanes/orch-events.log` after that count. Record
+   the line count of the log at this read. Call it N. Example:
+   `N=$(wc -l < ~/lanes/orch-events.log)`, then read the lines from
+   cursor + 1 to N.
 3. Act on each event, in order:
    - **`back`, `hold` or `red`.** Find the task of the pull request. Its body
      has the task URL. Find the lane that owns the task. Wake that lane, or
@@ -51,9 +54,12 @@ your cursor. Only events wake you.
    - **`merger-silent`.** Check lane-merge: its session, its last turn, and
      `~/lanes/merge-bot.log`. Wake it when it stopped. Then write one NOTE
      line with what you found.
-4. Write the new count to the cursor file:
-   `wc -l < ~/lanes/orch-events.log > ~/.local/state/metorite/orch_events.cursor`.
-   Do this only after you acted on each line.
+4. Write N to the cursor file:
+   `echo "$N" > ~/.local/state/metorite/orch_events.cursor`. Do this only
+   after you acted on each line.
+   ⚠️ Write N from step 2. Never count the log again here. The watch can add
+   a line while you work. A new count marks that line as handled, and then
+   no lane acts on it. With N, the keeper sees the line and wakes you again.
 5. End the turn. Do not wait in a loop. The keeper wakes you for the next
    batch.
 

@@ -21,7 +21,8 @@ minutes on the box, so it has no loop and no sleep.
   ``~/lanes/merge-bot.log``: ``BACK`` and ``RED`` there are events. Each log has
   its own position file. The first pass starts at the end of each log, so old
   lines make no event.
-- (c) ``merger-silent``: no lane-merge activity for :data:`MERGER_MIN`
+- (c) ``merger-silent``: no activity of a lane whose name starts with
+  ``lane-merge`` (``lane-merge-1126``) for :data:`MERGER_MIN`
   minutes. Activity is a new NOTE line of lane-merge in the queue log, or a
   write to the transcript of lane-merge. A NOTE line is of lane-merge when its
   second field starts with ``lane-merge`` (``lane-merge``, ``lane-merge-1126``).
@@ -37,13 +38,16 @@ same, it writes nothing. When the condition clears, the key goes. When the
 signature changes, it writes a new event.
 
 **The idle state** mirrors ``~/lanes/idle_check.sh`` (the PC loop's helper):
-the last transcript record ``turn_duration`` or ``stop_hook_summary`` means
-the turn ended. Then a ``bash -c`` child of the session process means
+the last meaningful transcript record ``turn_duration`` or
+``stop_hook_summary`` means the turn ended. A meaningful record has the type
+user, assistant or system. The read walks back past bookkeeping records. Then a ``bash -c`` child of the session process means
 ``waiting`` (it wakes by itself), and no child means ``idle``. Any other last
 record means ``active``. A ``waiting`` lane makes no event.
 
-**It never prints a token**, and it reads no credential. A detail that looks
-like a token is replaced with ``<redacted>``.
+**It never prints a token**, and it reads no credential. Each subject and detail
+passes through the ONE credential list, ``acb_common/secret_shapes.py``
+(task 1272), loaded by file path. A match becomes ``<redacted>``. With no copy
+of the list, the watch withholds the whole detail.
 
 The lane ``lane-orch`` reads the events log (``lanes/lane-orch.md``). The lane
 keeper wakes it when the log has lines past its cursor.
@@ -54,6 +58,8 @@ Fence: ``tests/unit/test_orch_watch.py``.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -83,8 +89,47 @@ NOTE_RE = re.compile(r"^NOTE\s+lane-merge\S*(\s|$)")
 # The kinds that are events in each log (rule b).
 QUEUE_KINDS = frozenset({"BACK", "HOLD", "RED"})
 BOT_KINDS = frozenset({"BACK", "RED"})
-TOKEN_RE = re.compile(r"(gh[pousr]_|github_pat_|sk-|mtr_|Bearer\s+)\S+")
 DETAIL_MAX = 300
+# The record types that say what a turn did. Any other type is bookkeeping
+# (tools-used, cost-state, queue-operation, bridge-session, last-prompt, ...).
+MEANINGFUL_TYPES = frozenset({"user", "assistant", "system"})
+TAIL_BYTES = 262144
+WITHHELD = "<detail withheld: no secret_shapes.py to scrub it>"
+# The ONE credential list (task 1272): packages/acb_common/acb_common/secret_shapes.py.
+# The timer runs /usr/bin/python3 outside the venv, so it loads the file by path.
+# orch_watch.sh installs a copy beside this file. In a checkout, the repo copy serves.
+_SHAPES_REL = Path("packages") / "acb_common" / "acb_common" / "secret_shapes.py"
+
+
+def _shape_files() -> list[Path]:
+    here = Path(__file__).resolve().parent
+    return [
+        here / "secret_shapes.py",
+        here.parents[1] / _SHAPES_REL,
+        HOME / "Metorite" / _SHAPES_REL,
+    ]
+
+
+def load_shapes(files: list[Path] | None = None) -> tuple[re.Pattern[str], ...] | None:
+    """Every scrub pattern of the one list, or None when no copy loads."""
+    for f in _shape_files() if files is None else files:
+        if not f.is_file():
+            continue
+        try:
+            spec = importlib.util.spec_from_file_location("orch_secret_shapes", f)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return (
+                *(rx for _, rx in mod.SECRET_SHAPES),
+                *mod.REDACTION_SHAPES,
+                mod.REDACTION_BEARER,
+            )
+        except Exception:  # a broken copy: try the next one
+            continue
+    return None
+
+
+SHAPES = load_shapes()
 
 
 def queue_log() -> Path:
@@ -112,8 +157,15 @@ def bot_pos_path() -> Path:
 
 
 def scrub(text: str) -> str:
-    """One line with no tab and no token, cut to :data:`DETAIL_MAX` characters."""
-    text = TOKEN_RE.sub("<redacted>", text)
+    """One line with no tab and no credential, cut to :data:`DETAIL_MAX` characters.
+
+    It fails closed: with no copy of the one list, the whole text is withheld."""
+    if not text:
+        return ""
+    if SHAPES is None:
+        return WITHHELD
+    for rx in SHAPES:
+        text = rx.sub("<redacted>", text)
     return re.sub(r"[\t\r\n]+", " ", text).strip()[:DETAIL_MAX]
 
 
@@ -152,24 +204,26 @@ def transcript(sid: str) -> Path | None:
 
 
 def last_record(path: Path) -> str:
-    """The subtype or type of the last record of a transcript. Empty when unknown."""
+    """The subtype or type of the last meaningful record of a transcript.
+
+    It walks back past bookkeeping records, whose type is not user, assistant or
+    system. A real tail ends ``turn_duration, tools-used, tools-used``. Empty when
+    no meaningful record is in the tail."""
     try:
         with open(path, "rb") as f:
             f.seek(0, os.SEEK_END)
-            f.seek(max(0, f.tell() - 65536))
+            f.seek(max(0, f.tell() - TAIL_BYTES))
             tail = f.read().decode("utf-8", errors="replace")
     except OSError:
         return ""
-    lines = [ln for ln in tail.splitlines() if ln.strip()]
-    if not lines:
-        return ""
-    try:
-        rec = json.loads(lines[-1])
-    except ValueError:
-        return ""
-    if not isinstance(rec, dict):
-        return ""
-    return str(rec.get("subtype") or rec.get("type") or "")
+    for ln in reversed(tail.splitlines()):
+        try:
+            rec = json.loads(ln)
+        except ValueError:
+            continue  # a blank line, or the cut first line of the tail
+        if isinstance(rec, dict) and rec.get("type") in MEANINGFUL_TYPES:
+            return str(rec.get("subtype") or rec.get("type"))
+    return ""
 
 
 def has_shell_child(pid: int | None) -> bool:
@@ -221,26 +275,44 @@ def idle_conditions(
     return out
 
 
+def _mark(f, offset: int) -> str:
+    """A short hash of the up to 64 bytes before ``offset``."""
+    f.seek(max(0, offset - 64))
+    return hashlib.sha256(f.read(min(offset, 64))).hexdigest()[:16]
+
+
 def read_queue(path: Path, pos: dict | None) -> tuple[list[str], dict]:
     """The complete new lines since ``pos`` and the new position.
 
-    With no position, the place is the end of the log and no line is new. A log
-    that shrank or has a new inode is read from its start."""
+    With no position, the place is the end of the log and no line is new. The
+    log is read from its start when it has a new inode, when it is shorter than
+    the offset, or when the bytes before the offset changed. The last case is a
+    log truncated in place that then grew past the old offset."""
     try:
-        st = path.stat()
+        with open(path, "rb") as f:
+            return _read_from(f, pos)
     except OSError:
-        return [], pos or {"inode": 0, "offset": 0}
+        return [], pos or {"inode": 0, "offset": 0, "mark": ""}
+
+
+def _read_from(f, pos: dict | None) -> tuple[list[str], dict]:
+    """Read ``f`` from ``pos``. See :func:`read_queue`."""
+    st = os.fstat(f.fileno())
     if pos is None:
-        return [], {"inode": st.st_ino, "offset": st.st_size}
+        return [], {"inode": st.st_ino, "offset": st.st_size, "mark": _mark(f, st.st_size)}
     offset = int(pos.get("offset", 0))
-    if pos.get("inode") != st.st_ino or st.st_size < offset:
+    if (
+        pos.get("inode") != st.st_ino
+        or st.st_size < offset
+        or _mark(f, offset) != pos.get("mark", _mark(f, offset))
+    ):
         offset = 0
-    with open(path, "rb") as f:
-        f.seek(offset)
-        data = f.read()
+    f.seek(offset)
+    data = f.read()
     end = data.rfind(b"\n") + 1  # a half-written last line waits for the next pass
+    new = offset + end
     lines = data[:end].decode("utf-8", errors="replace").splitlines()
-    return lines, {"inode": st.st_ino, "offset": offset + end}
+    return lines, {"inode": st.st_ino, "offset": new, "mark": _mark(f, new)}
 
 
 def queue_events(
@@ -271,7 +343,9 @@ def merger_condition(
     seen = float(state.get("merge_seen") or 0) or now  # the first pass starts the clock
     if noted:
         seen = now
-    a = newest_per_lane(agents).get(MERGE_LANE)
+    # The newest session of any lane whose name starts with lane-merge (lane-merge-1126).
+    merges = [a for n, a in newest_per_lane(agents).items() if n.startswith(MERGE_LANE)]
+    a = max(merges, key=lambda x: x.get("startedAt", 0), default=None)
     path = transcript(a["sessionId"]) if a and a.get("sessionId") else None
     if path is not None:
         seen = max(seen, path.stat().st_mtime)
