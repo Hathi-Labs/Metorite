@@ -6468,7 +6468,8 @@ control of the thread gets a guard of its own.
    keeps its height. In the place of the item it shows an inert line: "Answer
    sent", "Not now" or "Answered elsewhere". The line is no button, and it
    holds no commit control. The pointer row holds its place in the same way.
-   A fold by hand keeps the height too, with an empty gap.
+   A fold by hand keeps the height too, with an empty gap. The K7 fold does
+   not hold, because the phone keyboard already moved the page.
 2. **The collapse rule.** The dock collapses, or draws the next item, only
    when all three are true. At least 800 ms passed since the item left. No
    pointer is down. At least 600 ms passed since the last pointerdown or
