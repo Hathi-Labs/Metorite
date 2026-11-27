@@ -799,9 +799,11 @@ _STORE_DIGESTS: dict[tuple[int, int], str] = {
     # phase only, with an app id and a version. The ticket: `issue_ticket`,
     # `take_ticket`, `ticket_well_formed` and the new codes. The pins before
     # it were 3.12 ``a226cce6…137bec11`` and 3.13 ``ac7483eb…1dd1a8a27``.
-    # CPython 3.12.16 and 3.13.18 gave the new pins. OWED: the Opus
-    # diff-reviewer review and the independent verification. A later commit
-    # names both.
+    # CPython 3.12.16 and 3.13.18 gave the new pins. Reviewed: the Opus
+    # diff-reviewer APPROVE of 8f89b8ca57 ("Digest 51e708c7... (py3.12) of
+    # sandbox_capabilities.py approved by this review"), held at 44d12c5cb0.
+    # Verified: the independent Opus ws-verifier PASS of 44d12c5cb0, which
+    # recomputed all four values. Task 3802, 2026-11-27.
     (3, 12): "51e708c7d277f902287a16e210ac612a6c4339083af88f6dccc95c01bb9fecc5",
     (3, 13): "665a61291b760d4facd9cb52615a3c9eb8862668875d43520c69b34269f14a45",
 }

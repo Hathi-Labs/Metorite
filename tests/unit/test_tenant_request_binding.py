@@ -1313,8 +1313,10 @@ _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
     # ticket. `x-sandbox-ticket` joins `_SANDBOX_HEADERS` and the tripwire's
     # list. The pins before it were 3.12 ``01b17a9f…0cf06a71`` and 3.13
     # ``46de0ff1…90246f7a``. CPython 3.12.16 and 3.13.18 gave the new pins.
-    # OWED: the Opus diff-reviewer review and the independent verification of
-    # external_agent_access.md §10.1. A later commit names both.
+    # Reviewed: the Opus diff-reviewer APPROVE of 8f89b8ca57 ("Digest
+    # 82bea7a4... (py3.12) of deps.py (branch 0) approved by this review"),
+    # held at 44d12c5cb0. Verified (external_agent_access.md §10.1): the
+    # independent Opus ws-verifier PASS of 44d12c5cb0. Task 3802, 2026-11-27.
     (3, 12): "82bea7a4e5d25380a146ad4369b5d5aa13fcea990bf9bcb550909b12b4b467be",
     (3, 13): "f781ee5f96b307cbee7fbd97f133bd5c46a2592be3a65e30edb91e7caca75904",
 }

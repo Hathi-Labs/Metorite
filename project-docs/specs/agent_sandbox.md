@@ -509,7 +509,7 @@ reading.
 |---|---|---|
 | SBX-1 | SBX-1a built dark and merged (2026-11-26, task 3800, `2c3f6ae0c`). SBX-1b built dark and merged (2026-11-26, task 3984, `ab2928139`), behind the 404 of the route | §12 rows SBX-1a and SBX-1b |
 | SBX-2 | Built, dark behind `SANDBOX_DOOR_ORGS` (task 3801, merged 2026-11-26, `209884bac`). Migration 503 | `SANDBOX_ROUTES` in `acb_common/app_manifests`. `acb_auth/sandbox_capabilities.py`. `tests/unit/test_sandbox_capability.py` |
-| SBX-3 | SBX-3a built dark on its branch (task 3802, 2026-11-27), not merged. The review and the independent check are owed. SBX-3b (task 4084) not built | `gateway/sandbox_batch.py`. `SANDBOX_WRITE_ROUTES` in `acb_common/app_manifests`. `tests/unit/test_sandbox_door_writes.py` |
+| SBX-3 | SBX-3a built dark on its branch (task 3802, 2026-11-27), not merged. The Opus review and the independent check are done (44d12c5cb0). SBX-3b (task 4084) not built | `gateway/sandbox_batch.py`. `SANDBOX_WRITE_ROUTES` in `acb_common/app_manifests`. `tests/unit/test_sandbox_door_writes.py` |
 | SBX-4 | Not built. PR 2862 (SBX-4a, an inert target) was open on 2026-11-26. §12.4 specifies SBX-4b | `MAF_CODING_TARGETS` holds no `tools` (`sandbox_broker.py:126`) |
 | SBX-5 | Not built | `git log --grep SBX-5` finds the spec commit only. Its input B7 is built |
 | SBX-6 | Not built | Its inputs are partly built, see PKG-11 and J2 below |
@@ -3550,9 +3550,9 @@ get mutation testing (`engineering_practice.md` §4).
 ### 12.5 SBX-3 — writes held for a card
 
 **Status (2026-11-27).** SBX-3a is built dark on the branch
-`mt-3ca27266-sbx3a-door` (task 3802). It is not merged. The Opus
-diff-reviewer review and the independent verification are owed, because
-the pins of the two digests change. `SANDBOX_DOOR_ORGS` stays empty. SBX-3b (task
+`mt-3ca27266-sbx3a-door` (task 3802). It is not merged. The pins of the two
+digests change. The Opus diff-reviewer approved them at 8f89b8ca57, and the
+independent verification passed at 44d12c5cb0. `SANDBOX_DOOR_ORGS` stays empty. SBX-3b (task
 4084) is not built.
 
 **Board.** SBX-3a is Metorite task 3802. SBX-3b: task 4084. Risk tier HIGH.
@@ -4402,3 +4402,5 @@ here, and each needs its own check before anyone acts on it.
   with a `.` or an empty segment. One batch is open for each capability. The
   batch refuses a row that sets `check_text`. A fence holds the rule of no database
   session for the wait. The answer of a direct write is the fixed code.
+- 2026-11-27 — SBX-3a: the commit after 44d12c5cb0 names the Opus review
+  and the independent verification of the two digest pins (done-when 17).
