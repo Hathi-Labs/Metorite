@@ -39,7 +39,7 @@ async def test_a_409_with_the_archived_detail_returns_the_sentence(
         return Answer(status=409, body={"detail": SENTENCE})
 
     monkeypatch.setattr(tools, "gateway_write", refused)
-    ctx = SimpleNamespace(key="k", caller=SimpleNamespace(lookup=None), session=None)
+    ctx = SimpleNamespace(key="k", caller=SimpleNamespace(lookup=None), session=None, batch=None)
     with pytest.raises(ToolError) as err:
         await tools._write(
             ctx, "PATCH", "/projects/tasks/{task_id}", "Task not found.",
@@ -54,7 +54,7 @@ async def test_another_409_keeps_its_own_text(monkeypatch: pytest.MonkeyPatch) -
         return Answer(status=409, body={"detail": "Something else."})
 
     monkeypatch.setattr(tools, "gateway_write", refused)
-    ctx = SimpleNamespace(key="k", caller=SimpleNamespace(lookup=None), session=None)
+    ctx = SimpleNamespace(key="k", caller=SimpleNamespace(lookup=None), session=None, batch=None)
     with pytest.raises(ToolError) as err:
         await tools._write(
             ctx, "PATCH", "/projects/tasks/{task_id}", "Task not found.",

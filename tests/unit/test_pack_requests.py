@@ -386,6 +386,8 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "add_my_absence": ("record my holiday from 24 to 31 December",
                        "add my absence for next Friday"),
     "remove_my_absence": ("remove my absence on Friday", "delete one of my absences"),
+    "set_work_schedule": ("change the company work schedule to four days",
+                          "set the working week of the company"),
     # -- calendar-connections: Sync now and the task switch (P-1c, task 3923) --
     # The pack is dark, and EVERY names each pack, so this table reads the pack
     # set of a box whose TOOL_PACKS line names it.
@@ -401,6 +403,13 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "notes_templates": ("list the meeting templates",),
     "notes_glossary": ("show my notes glossary",),
     "notes_copilot_instructions": ("show my copilot instructions",),
+    # -- chat-threads: the chat list of the member (PAR-11 part a, task 4012) --
+    # The pack is dark, and EVERY names each pack, so this table reads the pack
+    # set of a box whose TOOL_PACKS line names it.
+    "list_chats": ("list my chats", "show my archived chats", "which chat topics do I have?"),
+    "edit_chat": ("rename this chat to Budget", "archive this chat",
+                  "move this chat to the topic Finance"),
+    "delete_chat": ("delete the chat about the old offsite",),
     # -- studio-repair: the repair of a skill (TOF-3a F12c) --
     "studio_skill_repair": ("fix my skill, it failed", "the skill was wrong, repair the skill"),
     "studio_skill_undo": ("undo my skill to the version before",),

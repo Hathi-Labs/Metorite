@@ -311,6 +311,9 @@ ALLOWED: dict[str, str] = {
     "apps/agents/agent-email-assistant/agents.py::_pick_drafts::plan.ordered[:rule.MAX_DRAFTS]":
         "The card says 'The card lists N of M matching drafts'. A draft that it does not "
         "list has no tick, so it stays in Drafts (task 3977).",
+    "packages/acb_skills/acb_skills/chat_thread_tools.py::edit_chat::' '.join(str(name or '').split())[:TITLE_MAX]":
+        "One string, not rows: the new name of a chat, cut to 120 characters as the dock "
+        "cuts it (SESSION_TITLE_MAX). No row is behind the cut (PAR-11).",
 }
 
 #: The size of :data:`ALLOWED`. Raising it is a deliberate edit of this file.
@@ -343,7 +346,9 @@ ALLOWED: dict[str, str] = {
 #: EAC-1b added two: the note of an edited card names ten people and says 'and N more',
 #: and cuts one text of the member to 120 characters (94).
 #: Task 3977 added two: the shared cut of card lines ends with '+N more', and the
-#: draft pick card counts the drafts that it does not list (96).
+#: draft pick card counts the drafts that it does not list (96). PAR-11 part a
+#: added one: the new name of a chat, cut as the dock cuts it. The real count
+#: of ALLOWED is then 96, so the ceiling stays at 96.
 ALLOWED_CEILING = 96
 
 

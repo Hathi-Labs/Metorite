@@ -161,7 +161,9 @@ While project updates are off for your organization, both tools say so and chang
 
 Each change shows in the task history, with the agent as `mcp:<host>`. A status change of the agent can start a workflow of your organization that runs on a status change, as your own change does. A move to done is a status change too.
 
-A connection makes at most 120 changes in 10 minutes, counted from its first change. When a change is refused for that reason, the answer holds `retry_after`, the seconds to wait, and the reply carries a `Retry-After` header. A "Metorite is busy" answer holds `retry_after` in the same way when Metorite names a wait. Every write tool states the limit in its description.
+A connection makes at most 120 write calls and 5000 changed rows in 10 minutes, counted from its first change. A single change counts as 1 call and 1 row. One call of `update_tasks` counts as 1 call, and each task in it counts as 1 row. Every write tool states the limit in its description.
+
+When Metorite refuses a change for one of these limits, the answer names the limit and holds `retry_after`, the seconds to wait. The reply also carries a `Retry-After` header. A "Metorite is busy" answer holds `retry_after` in the same way when Metorite names a wait.
 
 **An assignment notifies people.** Each person that the agent adds gets one notification in the bell. It shows your name, and on a second line the name of the agent, such as `via Claude Code`. The agent can assign only a person who can already open the task, so an assignment never shows a task to somebody new. To assign anybody else, do it in Metorite.
 
