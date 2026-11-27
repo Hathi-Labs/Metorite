@@ -44,6 +44,9 @@ def _fresh_loggers(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         sandbox_capabilities, "_log", structlog.get_logger("acb_auth.sandbox"),
     )
+    from gateway import sandbox_batch
+
+    monkeypatch.setattr(sandbox_batch, "_log", structlog.get_logger("gateway.sandbox_batch"))
 
 
 def _clean(logs: list[dict], *secrets: str) -> None:
@@ -205,3 +208,54 @@ def test_a_refusal_at_step_3_logs_at_info_and_step_4_at_warning(monkeypatch):
     assert first["code"] == "capability" and first["log_level"] == "info"
     assert second["code"] == "org" and second["log_level"] == "warning"
     _clean(logs)
+
+
+# ── sandbox.door.write (SBX-3a, §12.5 decision 9, done-when 16) ─────────────
+
+_BODY_VALUE = "q7bodysecretvalue"
+_TASK_ID = "7f3c0000-0000-4000-8000-00000000abcd"
+
+
+def test_the_write_line_holds_no_body(monkeypatch):
+    """Done-when 16. The line ``sandbox.door.write`` holds no body, no path
+    value, no token and no hash: the org, the run, the phase, the held id,
+    the count of rows by class, the event and the count of rows that ran by
+    status. Every other line of the batch holds none of them either."""
+    from tests.unit import test_sandbox_door_writes as writes
+
+    door = writes._door(monkeypatch, None)
+    rows = [writes._row("PATCH", f"/projects/tasks/{_TASK_ID}", {"title": _BODY_VALUE}),
+            writes._row("POST", "/crm/leads", {"last_name": _BODY_VALUE},
+                        query={"source": _BODY_VALUE}),
+            writes._row("POST", f"/crm/leads/{_TASK_ID}/convert", {"note": _BODY_VALUE})]
+    tickets: list[str] = []
+    real_issue = sandbox_capabilities.issue_ticket
+
+    async def spy(**kwargs):
+        ticket = await real_issue(**kwargs)
+        tickets.append(ticket)
+        return ticket
+
+    monkeypatch.setattr(sandbox_capabilities, "issue_ticket", spy)
+
+    async def act(task):
+        held = await writes._wait_held(door.redis, 2, task)
+        for card_id, record in held.items():
+            ticked = [r["id"] for r in record["rows"]] if record["class"] == "B" else None
+            await writes._decide(card_id, ticked)
+
+    with structlog.testing.capture_logs() as logs:
+        answer = asyncio.run(writes._batch(door, rows, act))
+    assert answer.status_code == 200, answer.text
+    assert len(tickets) == 2
+    lines = [line for line in logs if line.get("event") == "sandbox.door.write"]
+    assert [line["act"] for line in lines] == ["held", "approved", "refused"]
+    held, *_ = lines
+    assert held["rows_b"] == 2 and held["rows_c"] == 1 and held["phase"] == "run"
+    assert held["org"] == kit.ORG_A and held["run"] == "run-1"
+    assert set(held) <= {"event", "log_level", "act", "org", "run", "phase", "held",
+                         "rows_b", "rows_c", "ran"}
+    assert lines[1]["ran"] == {"200": 1, "201": 1}
+    _clean(logs, _BODY_VALUE, _TASK_ID, *tickets)
+    for line in lines:
+        assert "/crm/" not in repr(line) and "/projects/" not in repr(line)
