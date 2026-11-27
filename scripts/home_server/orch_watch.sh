@@ -34,13 +34,20 @@ install_files() {
   TMP="$(mktemp -d)"
   trap 'rm -rf "$TMP"' EXIT
   mkdir -p "$LIB" "$UNITS"
+  # Fetch every file first, then install. A failed `git show` stops the
+  # script before any file changes, so the box never runs a mixed set.
   for row in "${FILES[@]}"; do
     IFS=: read -r name path mode <<<"$row"
     git -C "$HERE" show "origin/main:$path" > "$TMP/$name"
-    install -m "$mode" "$TMP/$name" "$LIB/$name"
   done
   for unit in "${UNIT_FILES[@]}"; do
     git -C "$HERE" show "origin/main:scripts/home_server/$unit" > "$TMP/$unit"
+  done
+  for row in "${FILES[@]}"; do
+    IFS=: read -r name path mode <<<"$row"
+    install -m "$mode" "$TMP/$name" "$LIB/$name"
+  done
+  for unit in "${UNIT_FILES[@]}"; do
     install -m 0644 "$TMP/$unit" "$UNITS/$unit"
   done
   systemctl --user daemon-reload

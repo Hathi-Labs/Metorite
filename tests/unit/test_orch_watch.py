@@ -349,12 +349,14 @@ def test_rule_a_walks_back_past_bookkeeping_records(ow):
 def test_rule_b_a_log_truncated_in_place_that_grows_past_the_old_offset_is_read_again(ow):
     mod, home = ow
     agents = [_merge_fresh(home)]
-    _queue(home, "NOTE a\nNOTE b\n")
+    # The old offset (36 bytes) must lie AFTER the new event line, so that a
+    # read from the old offset skips it. Only the mark check finds it.
+    _queue(home, "NOTE " + "a" * 30 + "\n")
     mod.run_pass(agents, now=NOW, child=_no_child)
     log = home / "lanes" / "merge-queue.log"
     with open(log, "r+", encoding="utf-8") as f:  # the same inode
         f.truncate(0)
-        f.write("NOTE a much longer line than before\nHOLD 2920 mode off\n")
+        f.write("HOLD 2920 x\nNOTE " + "b" * 60 + "\n")
     assert [e[1] for e in mod.run_pass(agents, now=NOW, child=_no_child)] == ["2920"]
 
 
