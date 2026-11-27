@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import ast
 import base64
+import logging
 import pathlib
+import time
 from email.utils import getaddresses as real_getaddresses
 from typing import Any
 
@@ -29,14 +31,22 @@ import pytest
 from aiosmtpd.smtp import Envelope
 from email_ingestion import addresses, inbound
 from email_ingestion.addresses import (
+    LIST_MAX_CHARS,
     NO_SENDER,
+    SENDER_MAX_CHARS,
+    SENDER_MAX_VALUES,
+    first_raw_header,
     header_text,
     parse_address_list,
     parse_sender,
 )
+from email_ingestion.providers import imap as imap_provider
 from email_ingestion.providers.base import EmailAddress
 from email_ingestion.providers.gmail import GmailProvider
-from email_ingestion.providers.imap import _parse_imap_raw_message
+from email_ingestion.providers.imap import (
+    _parse_imap_fetch_full,
+    _parse_imap_raw_message,
+)
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 PACKAGE = REPO / "apps" / "services" / "email_ingestion" / "email_ingestion"
@@ -72,6 +82,14 @@ AMBIGUOUS = {
     "no-address": "Mail Delivery Subsystem",
     "deep-comment": "(" * 1200 + "a@b.test" + ")" * 1200,
     "long-backslash-run": "\\" * 100_000 + f" <{REAL}>",
+    # The forms of the verifier of round 1. Each one gives no sender.
+    "route": f"<@company.test:{REAL}>",
+    "double-angle": f"<<{FALSE}>>",
+    "encoded-local-part": f"=?utf-8?q?ceo?=@{FALSE.split('@')[1]}",
+    "quoted-address-after": f'{REAL} "{FALSE}"',
+    "open-quote-at-end": f'{REAL} "',
+    "nul-in-address": "x <a\x00b@c.test>",
+    "same-then-other": f"{REAL} <{REAL}> <{FALSE}>",
 }
 
 #: Real sender headers that must keep their address and name.
@@ -88,6 +106,19 @@ REAL_SENDERS = [
     ("=?iso-8859-1?q?M=FCller=2C_J=FCrgen?= <j@example.net>",
      "Müller, Jürgen", "j@example.net"),
     ("Ops <ops@[192.0.2.1]>", "Ops", "ops@[192.0.2.1]"),
+    # Each word of a name with a bare comma stays (review round 1).
+    ("Amazon Web Services, Inc. <no-reply@aws.amazon.com>",
+     "Amazon Web Services, Inc.", "no-reply@aws.amazon.com"),
+    ('"Doe" Jr, John <j@x.com>', "Doe Jr, John", "j@x.com"),
+    # A display name that is the address itself, in any case.
+    ("john@x.com <john@x.com>", "john@x.com", "john@x.com"),
+    ("JOHN@X.COM <john@x.com>", "JOHN@X.COM", "john@x.com"),
+    ("john@x.com<JOHN@x.com>", "john@x.com", "JOHN@x.com"),
+    # A NUL never reaches the stored name.
+    ("a\x00b <a@b.test>", "ab", "a@b.test"),
+    ("=?utf-8?q?a=00b?= <a@b.test>", "ab", "a@b.test"),
+    # A charset name that is not ASCII leaves the name as it came.
+    ("=?\u00e9?q?x?= <a@b.test>", "=?\u00e9?q?x?=", "a@b.test"),
 ]
 
 
@@ -384,3 +415,152 @@ def test_gmail_reads_each_from_header() -> None:
 
 def test_gmail_with_no_from_header_has_an_empty_sender() -> None:
     assert _gmail_parse([]).from_address == NO_SENDER
+
+
+# ── review round 1 ─────────────────────────────────────────────────────────
+
+
+def test_a_charset_name_that_is_not_ascii_never_raises() -> None:
+    """``=?\u00e9?q?x?=`` raises ``CharsetError`` in the standard library.
+    Before the repair, that error failed the whole IMAP batch."""
+    header = "=?\u00e9?q?x?= <a@b.test>"
+    assert parse_sender(header) == EmailAddress(name="=?\u00e9?q?x?=",
+                                                email="a@b.test")
+    assert parse_address_list(f"{header}, c@d.test") == [
+        EmailAddress(name="=?\u00e9?q?x?=", email="a@b.test"),
+        EmailAddress(name="", email="c@d.test"),
+    ]
+    msg = _parse_imap_raw_message(_mail([header], to=header), "7", [], "")
+    assert msg is not None
+    assert msg.from_address.email == "a@b.test"
+
+
+def test_the_parse_never_raises(monkeypatch: pytest.MonkeyPatch,
+                                caplog: pytest.LogCaptureFixture) -> None:
+    """An error inside the parse gives no address and a log line. The log
+    line never holds the header."""
+    def boom(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("boom")
+    monkeypatch.setattr(addresses, "_sender_of_one", boom)
+    monkeypatch.setattr(addresses, "decode_display_name", boom)
+    with caplog.at_level(logging.WARNING, logger=addresses.__name__):
+        assert parse_sender(f"Boss <{REAL}>") == NO_SENDER
+        assert parse_address_list(f"Boss <{REAL}>") == []
+    assert "RuntimeError" in caplog.text
+    assert REAL not in caplog.text
+
+
+def test_one_bad_message_never_fails_the_imap_batch(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The batch gives each other message, and the log names the UID."""
+    real_parse = imap_provider._parse_imap_raw_message
+
+    def parse(raw: str, uid: str, flags: list[str], internaldate: str) -> Any:
+        if uid == "2":
+            raise LookupError("unknown encoding")
+        return real_parse(raw, uid, flags, internaldate)
+    monkeypatch.setattr(imap_provider, "_parse_imap_raw_message", parse)
+    body = _mail([f"Asha <{REAL}>"]).encode("utf-8")
+    data = [(f"{uid} (UID {uid} FLAGS () BODY[] {{{len(body)}}}".encode(), body)
+            for uid in ("1", "2", "3")]
+    with caplog.at_level(logging.WARNING, logger=imap_provider.__name__):
+        messages = _parse_imap_fetch_full(data)
+    assert [m.provider_message_id for m in messages] == ["1", "3"]
+    assert "uid=2" in caplog.text
+
+
+def test_an_address_beside_the_sender_must_be_the_sender() -> None:
+    """The display name may be the address itself. Any other address outside
+    quotes and comments gives no sender."""
+    assert parse_sender(f"{REAL.upper()} <{REAL}>").email == REAL
+    assert parse_sender(f"{FALSE} <{REAL}>") == NO_SENDER
+    assert parse_sender(f"{REAL}, {REAL}").email == REAL
+    assert parse_sender(f"{REAL}, {FALSE}") == NO_SENDER
+
+
+def test_each_entry_of_the_lenient_parse_must_be_the_sender(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The check of each entry refuses on its own, not only with the other
+    checks. A lenient parse with a second address gives no sender."""
+    monkeypatch.setattr(addresses, "_pairs",
+                        lambda _t: [("", FALSE), ("Asha", REAL)])
+    assert parse_sender(f"Asha <{REAL}>") == NO_SENDER
+
+
+def test_the_policy_parser_must_agree(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(addresses, "_policy_addresses", lambda _t: [FALSE])
+    assert parse_sender(f"Asha <{REAL}>") == NO_SENDER
+    monkeypatch.setattr(addresses, "_policy_addresses", lambda _t: [])
+    assert parse_sender(f"Asha <{REAL}>") == NO_SENDER
+
+
+def test_the_count_of_from_values_is_capped() -> None:
+    assert parse_sender([REAL] * SENDER_MAX_VALUES).email == REAL
+    assert parse_sender([REAL] * (SENDER_MAX_VALUES + 1)) == NO_SENDER
+
+
+def test_the_total_length_of_the_from_values_is_capped() -> None:
+    half = SENDER_MAX_CHARS // 2
+    value = f'"{"a" * (half - len(REAL) - 5)}" <{REAL}>'
+    assert len(value) == half
+    assert parse_sender([value, value]).email == REAL
+    assert parse_sender([value, value, value]) == NO_SENDER
+    long = f'"{"a" * SENDER_MAX_CHARS}" <{REAL}>'
+    assert parse_sender(long) == NO_SENDER
+
+
+async def test_many_from_headers_cost_little_on_the_receiver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """500 ``From`` values took 15 s on the event loop before the caps."""
+    value = "\\" * (SENDER_MAX_CHARS - 30) + f" <{REAL}>"
+    raw = _mail([value] * 500).encode("utf-8")
+    start = time.monotonic()
+    msg = await _inbound(monkeypatch, raw)
+    assert time.monotonic() - start < 3
+    assert msg.from_address == NO_SENDER
+
+
+def test_a_list_header_longer_than_the_cap_gives_no_address() -> None:
+    entry = "a@x.test, "
+    under = entry * ((LIST_MAX_CHARS - 1) // len(entry))
+    assert len(parse_address_list(under)) == len(under) // len(entry)
+    over = entry * (LIST_MAX_CHARS // len(entry) + 1)
+    assert len(over) > LIST_MAX_CHARS
+    assert parse_address_list(over) == []
+
+
+def test_the_first_list_header_is_read_and_no_more() -> None:
+    """``first_raw_header`` stops at the first header, so a mail with many
+    ``To`` headers costs the work of one."""
+    class Msg:
+        def raw_items(self) -> Any:
+            yield "To", "a@x.test"
+            raise AssertionError("read past the first To header")
+    assert first_raw_header(Msg(), "To") == "a@x.test"
+
+
+def test_a_list_keeps_no_nul() -> None:
+    assert parse_address_list(
+        "=?utf-8?q?n=00?= <c@d.test>, x <a\x00@b.test>, e@f.test") == [
+        EmailAddress(name="n", email="c@d.test"),
+        EmailAddress(name="", email="e@f.test"),
+    ]
+
+
+def test_a_fold_goes_and_its_space_stays() -> None:
+    assert header_text("Asha\r\n Rao <a@x.test>") == "Asha Rao <a@x.test>"
+    assert header_text("Asha\n\tRao") == "Asha\tRao"
+    assert parse_address_list('"Asha\r\n Rao" <a@x.test>') == [
+        EmailAddress(name="Asha Rao", email="a@x.test")]
+
+
+def test_imap_reads_to_from_the_raw_value() -> None:
+    """The decoded value of the policy turns this encoded word into a second
+    recipient. The raw value gives no false recipient."""
+    to = f"=?utf-8?q?ceo=40company.test=2C_?= {REAL}"
+    msg = _parse_imap_raw_message(_mail([REAL], to=to), "7", [], "")
+    assert msg is not None
+    assert FALSE not in [a.email for a in msg.to_addresses]

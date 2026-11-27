@@ -1161,7 +1161,7 @@ def _parse_imap_fetch(msg_data: list) -> list[EmailMessage]:
             else:
                 raw_body = str(item[1]) if item[1] else ""
 
-            msg = _parse_imap_raw_message(raw_body, uid, flags, internaldate_match)
+            msg = _parse_one_imap_message(raw_body, uid, flags, internaldate_match)
             if msg:
                 messages.append(msg)
 
@@ -1193,11 +1193,29 @@ def _parse_imap_fetch_full(msg_data: list) -> list[EmailMessage]:
 
         raw_body = item[1].decode("utf-8", errors="replace") if isinstance(item[1], bytes) else str(item[1])
 
-        msg = _parse_imap_raw_message(raw_body, uid, flags, internaldate_match)
+        msg = _parse_one_imap_message(raw_body, uid, flags, internaldate_match)
         if msg:
             messages.append(msg)
 
     return messages
+
+
+def _parse_one_imap_message(
+    raw: str, uid: str, flags: list[str], internaldate: str
+) -> EmailMessage | None:
+    """One message of a FETCH batch, or None when it does not parse.
+
+    One bad message never fails the whole batch (task 4016). The batch gives
+    the other messages, and a log line names the UID. The sync cursor still
+    moves past the UID, because ``sync_messages`` takes it from UIDNEXT. So
+    the sync does not try that message again, and it stays on the server.
+    """
+    try:
+        return _parse_imap_raw_message(raw, uid, flags, internaldate)
+    except Exception as exc:
+        _log.warning("IMAP message uid=%s did not parse (%s), so the sync "
+                       "skips it", uid, type(exc).__name__)
+        return None
 
 
 def _parse_imap_raw_message(

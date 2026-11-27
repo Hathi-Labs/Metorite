@@ -109,7 +109,11 @@ All providers implement the `BaseEmailProvider` abstract interface:
 20. **The parse of an address header.** `addresses.py` is the one parse, for IMAP, the inbound receiver and Gmail (task 4016). Never take the text inside the first `<...>` pair, because a display name can hold `"<ceo@company.test>"`.
    - It splits the RAW header and decodes a display name only after the split. IMAP and the inbound receiver read the raw value through `raw_header_values`, never `str(msg.get(...))`.
    - `parse_sender` gives an empty address for a sender that is malformed or ambiguous, never a guess. Two `From` headers with different addresses give an empty address too.
+   - Each address outside quotes and comments must be the sender. So `john@x.com <john@x.com>` keeps its sender, and `ceo@company.test <mallory@evil.test>` gets none.
+   - More than `SENDER_MAX_VALUES` `From` values, or more than `SENDER_MAX_CHARS` characters in all, give no sender. The policy parser is slow on some text, and the receiver runs on the event loop.
+   - The parse never raises, and a name or an address holds no NUL. In `providers/imap.py`, the sync logs and skips one message that does not parse, so the rest of the batch stays.
    - Fence: `test_email_from_parser.py`. It also refuses a `split("<")` in this package.
+   - The gateway shows a stored sender through `capture_email._sender_label`. A name that holds `@` or `<`, and is not the address, shows the address. Fence: `test_capture_email_sender_label.py`.
 
 ## Inbound SMTP Server
 
