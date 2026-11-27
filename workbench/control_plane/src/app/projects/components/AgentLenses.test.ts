@@ -162,6 +162,12 @@ describe("the phone view", () => {
     expect(phone({ questionsOn: true })).toContain("data-questions");
     expect(phone()).not.toContain("data-questions");
   });
+  it("names the sessions that no orchestrator started (G7)", () => {
+    const out = phone({ initialPath: [{ kind: "person", person: "ana@x.test" }] });
+    expect(out).toContain("Started directly");
+    expect(out).toContain('title="Sessions that a person started, not an orchestrator."');
+    expect(out).not.toContain("No orchestrator");
+  });
   it("draws one level: the orchestrators of a person, then their sessions", () => {
     const person = phone({ initialPath: [{ kind: "person", person: "ana@x.test" }] });
     expect(person).toContain("Orchestrator boss");

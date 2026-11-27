@@ -906,6 +906,7 @@ This replaces some rules of 2026-11-26. They are the Board, Graph and List switc
 - **The controls.** Fit, zoom out, zoom in and one "Legend" button. The button opens the states and the dispatch line. The legend starts shut, and Escape closes it.
 - **Details.** A click opens a dock at the right. A narrow window uses the shared `Modal`.
 - **The acts.** The view only reads (rule 7 of §3.12.7). The details show the run panel (`AgentRunPanel`) of one task. That panel has no Steer control before SW-86, so a member writes to an agent in its reply box.
+- **Started directly (G7).** The group of the sessions that no orchestrator handed work to reads "Started directly". Its tip reads "Sessions that a person started, not an orchestrator." On the map, those agents hang from their person.
 - **The phone, 760 pixels and under.** It shows the counts, then the questions that wait on the member, then the people. The oldest question comes first. AMR-5 does not change it.
 - **One level for each screen.** On a phone, a person opens their orchestrators. An orchestrator opens its sessions. A session opens in a bottom sheet.
 - **One answer path.** The phone uses the list of agent questions (`QuestionsView`). The map does not draw on a phone.

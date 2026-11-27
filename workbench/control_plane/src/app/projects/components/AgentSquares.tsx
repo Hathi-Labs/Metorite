@@ -19,7 +19,9 @@ import {
 import { SQUARES_MAX } from "../lib/agentScale";
 
 export const NO_MATCH_COPY = "No session matches these filters.";
-export const NO_ORCHESTRATOR = "No orchestrator";
+/** The group of the sessions that no orchestrator handed work to (decision G7). */
+export const STARTED_DIRECTLY = "Started directly";
+export const STARTED_DIRECTLY_TIP = "Sessions that a person started, not an orchestrator.";
 
 /** What the tip of a square says. */
 export function squareTip(s: LensSession, nowMs: number): string {
