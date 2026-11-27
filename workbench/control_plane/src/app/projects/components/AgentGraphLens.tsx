@@ -60,7 +60,7 @@ import {
 } from "../lib/agentLenses";
 import { NAMES_ONLY_BELOW, subTotals } from "../lib/agentScale";
 import { EVERYONE } from "./AgentDetails";
-import { CARD_FACE, CardFact, CountLine, SessionCard, pressKeys } from "./AgentSessionCard";
+import { CARD_FACE, CHIP, CardFact, CountLine, SessionCard, SubShort, pressKeys } from "./AgentSessionCard";
 import { BucketRow, Square, Squares, TileCounts } from "./AgentSquares";
 
 export const GRAPH_LABEL = "Map of people, orchestrators and agents";
@@ -307,7 +307,7 @@ export function GraphCard({ data }: { data: NodeData }) {
           className={CARD_FACE}
         >
           {/* The room at the right is that of the chevron and the sub-agent button. */}
-          <span className={`flex min-w-0 items-center gap-1.5 ${s.subs.total > 0 ? "pr-14" : "pr-7"}`}>
+          <span className="flex min-w-0 items-center gap-1.5 pr-7">
             <Icon name="Bot" size={13} className="shrink-0 text-muted-foreground" aria-hidden />
             <span className={`min-w-0 truncate font-semibold ${namesOnly ? "text-xl" : "text-sm"}`}>{s.name}</span>
             {age && !namesOnly ? <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">{age}</span> : null}
@@ -315,18 +315,25 @@ export function GraphCard({ data }: { data: NodeData }) {
           {namesOnly ? null : (
             <>
               <span className="flex min-w-0 items-center gap-1.5">
-                <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-                  {node.folded ? folded : workLine(s, nowMs)}
-                </span>
+                <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{workLine(s, nowMs)}</span>
                 {s.host ? (
                   <span className="max-w-[50%] shrink-0 truncate rounded bg-secondary px-1 text-[11px] text-muted-foreground" title={place}>
                     {s.host}
                   </span>
                 ) : null}
               </span>
-              <CountLine counts={countStates(node.members)} />
-              <span className="flex h-5 min-w-0 items-center" data-agent-card-foot="">
+              <span className="flex min-w-0 items-baseline gap-2 text-[11px] text-muted-foreground">
+                {node.folded ? <span className="shrink-0">{folded}</span> : null}
+                <CountLine counts={countStates(node.members)} />
+              </span>
+              <span className="flex h-5 min-w-0 items-center gap-1.5" data-agent-card-foot="">
                 <CardFact session={s} nowMs={nowMs} />
+                {/* Holds the room of the count button, which sits above the card. */}
+                {s.subs.total > 0 ? (
+                  <span aria-hidden className={`${CHIP} invisible ml-auto`}>
+                    <SubShort subs={s.subs} />
+                  </span>
+                ) : null}
               </span>
             </>
           )}
@@ -336,16 +343,17 @@ export function GraphCard({ data }: { data: NodeData }) {
       {s.subs.total > 0 && !namesOnly ? (
         <Button
           variant="ghost"
-          size="icon-xs"
-          icon="GitFork"
+          size="none"
           selected={subsOpen}
           aria-expanded={subsOpen}
           aria-label={`${subsOpen ? "Hide" : "Show"} ${subWords(s.subs)} of ${s.name}`}
           title={subWords(s.subs)}
           data-agent-sub-toggle={s.id}
           onClick={() => onToggleSubs(s.id)}
-          className={`!absolute top-1.5 z-10 ${node.canFold ? "right-8" : "right-1.5"}`}
-        />
+          layout={`!absolute bottom-1.5 right-2.5 z-10 flex ${CHIP} items-center`}
+        >
+          <SubShort subs={s.subs} icon={subsOpen ? "ChevronDown" : "GitFork"} />
+        </Button>
       ) : null}
     </div>
   );

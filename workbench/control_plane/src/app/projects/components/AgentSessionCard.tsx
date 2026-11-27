@@ -86,7 +86,7 @@ export function SubShort({ subs, icon = "GitFork" }: { subs: SubCounts; icon?: s
   );
 }
 
-const CHIP =
+export const CHIP =
   "max-w-[55%] shrink-0 overflow-hidden whitespace-nowrap rounded bg-secondary px-1 text-[11px] font-normal text-muted-foreground";
 
 /** The raised face of a card inside an agent edge. */

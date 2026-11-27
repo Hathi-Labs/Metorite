@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import { type GraphNode, layoutGraph } from "../lib/agentGraph";
 import { buildLensModel } from "../lib/agentLenses";
 import { splitFleet } from "../lib/agentLensesFixtures";
-import { NEW_VIEW } from "../lib/agentScale";
+import { NEW_VIEW, foldView } from "../lib/agentScale";
 import { AgentDetails } from "./AgentDetails";
 import { GraphCard, NODE_MOVE, readingOrder } from "./AgentGraphLens";
 
@@ -83,6 +83,17 @@ describe("the node cards of the map", () => {
     const node = g.nodes.find((n) => n.id === "s:boss")!;
     const seen = text(renderToStaticMarkup(createElement(GraphCard, { data: data(node) })));
     for (const part of ["boss", "5m ago", "#7 Task of boss", "metorite-home", "Waiting · CI · 25 min"]) expect(seen).toContain(part);
+  });
+  it("shows the subagent count at the foot of an orchestrator card, and its task while folded", () => {
+    const subs = splitFleet();
+    subs.sessions[0] = { ...subs.sessions[0], subagents: { total: 7, working: 2, failed: 0, done: 5, names: [] } };
+    const g = layoutGraph(buildLensModel(subs), {
+      ...foldView(NEW_VIEW, "s:boss", false, "ana@x.test"), mode: "active", person: "", find: "", pin: null, unit: 1, nameOf: (e) => e,
+    });
+    const node = g.nodes.find((n) => n.id === "s:boss")!;
+    const out = renderToStaticMarkup(createElement(GraphCard, { data: data(node) }));
+    for (const part of ["7 · 2 working", "#7 Task of boss", "agents folded"]) expect(text(out)).toContain(part);
+    expect(out).toContain('data-agent-sub-toggle="boss"');
   });
   it("draws the name, the task, the age and the machine, then the count at the foot (G2)", () => {
     const evil = splitFleet();

@@ -414,6 +414,36 @@ describe("urgency wins after a click too (decision G3)", () => {
     expect(n(after, "waiting_on_person")).toBe(35);
     for (const id of [5, 6, 7]) expect(cards(after)).toContain(`ana-working-${id}`);
   });
+  it("takes from another person only the room that the click needs", () => {
+    const m = fleetOf([
+      ["ben", 40, "failed"],
+      ["ana", 20, "working"],
+      ["ana", 1, "done"],
+    ]);
+    let view = foldView(NEW_VIEW, "p:ana@x.test", true, "ana@x.test");
+    const open = layoutGraph(m, options({ mode: "all", ...view }));
+    expect([n(open, "ben-failed"), n(open, "ana-working")]).toEqual([28, 12]);
+    const bucket = kind(open, "bucket").find((b) => b.state === "done" && b.person === "ana@x.test")!;
+    view = bucketView(view, "ana@x.test", "done", bucket.next);
+    const g = layoutGraph(m, options({ mode: "all", ...view }));
+    expect([n(g, "ben-failed"), n(g, "ana-done"), n(g, "ana-working")]).toEqual([39, 1, 0]);
+  });
+  it("counts a displaced folded orchestrator in the node of the most urgent agent it holds", () => {
+    const m = buildLensModel(
+      mapOf(
+        [
+          ...Array.from({ length: 45 }, (_, i) => session(`f${String(i).padStart(2, "0")}`, { state: "failed" })),
+          session("zboss", { state: "waiting" }),
+          session("zlane", { state: "failed" }),
+        ],
+        [],
+        [{ from: "zboss", to: "zlane" }],
+      ),
+    );
+    const g = layoutGraph(m, options({ ...foldView(NEW_VIEW, "s:zboss", false, "ana@x.test") }));
+    const holding = kind(g, "bucket").filter((b) => b.sessions.some((s) => s.id === "zboss"));
+    if (!cards(g).includes("zboss")) expect(holding.map((b) => b.state)).toEqual(["failed"]);
+  });
   it("draws a folded orchestrator that holds an agent that needs you, over a state node click", () => {
     const m = buildLensModel(
       mapOf(

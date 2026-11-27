@@ -273,6 +273,11 @@ function takeInto(shown: Set<string>, draft: Draft, s: LensSession, cap: number)
   return true;
 }
 
+/** The slots that a click on the state node of `state` needs, at most `WINDOW_ROOM`. */
+function roomFor(draft: Draft, state: LensState): number {
+  return Math.min(WINDOW_ROOM, draft.ranked.filter((s) => draft.rankOf(s) === state).length);
+}
+
 /**
  * The cards that a person keeps while the state node of `state` is open: the
  * selected agent, then the most urgent ones. They leave only the room that the
@@ -282,14 +287,14 @@ function reducedCards(draft: Draft, quota: number, pin: string | null, state: Le
   const shown = new Set<string>();
   const pinned = draft.ranked.find((s) => s.id === pin);
   if (pinned) takeInto(shown, draft, pinned, quota);
-  const need = Math.min(WINDOW_ROOM, draft.ranked.filter((s) => s.state === state).length);
+  const need = roomFor(draft, state);
   draft.ranked.forEach((s) => takeInto(shown, draft, s, Math.max(quota - need, 0)));
   return shown;
 }
 
 /** The sessions of a state that a state node walks: those outside the cards it keeps. */
 function walked(draft: Draft, kept: ReadonlySet<string>, state: LensState): LensSession[] {
-  return draft.ranked.filter((s) => s.state === state && !kept.has(s.id));
+  return draft.ranked.filter((s) => draft.rankOf(s) === state && !kept.has(s.id));
 }
 
 /** The person that the member opened, in at most `quota` cards. An open state node walks. */
@@ -343,8 +348,12 @@ function share(open: readonly Draft[], options: PlanOptions): Map<string, { show
     const pinned = d.ranked.find((s) => s.id === options.pin);
     if (pinned) take(d, pinned, CARDS_MAX);
   }
-  /** The room that the click of the member keeps for the person they opened. */
-  const kept = latest ? Math.min(WINDOW_ROOM, latest.cards) : 0;
+  /**
+   * The room that the click of the member keeps for the person they opened: what
+   * the open state node needs, and with none, what the person needs.
+   */
+  const window = latest && options.window?.person === latest.person ? options.window : null;
+  const kept = !latest ? 0 : window ? roomFor(latest, window.state) : Math.min(WINDOW_ROOM, latest.cards);
   if (latest) for (const s of latest.ranked) if (URGENT.includes(latest.rankOf(s))) take(latest, s, CARDS_MAX);
   const own = () => (latest ? cards.get(latest.person)!.size : 0);
   for (const state of URGENT) {
@@ -374,12 +383,13 @@ function share(open: readonly Draft[], options: PlanOptions): Map<string, { show
     const urgentOfOthers = open
       .filter((o) => o !== d)
       .reduce((n, o) => n + o.ranked.filter((s) => URGENT.includes(o.rankOf(s))).length, 0);
-    const quota = CARDS_MAX - Math.min(urgentOfOthers, CARDS_MAX - Math.min(WINDOW_ROOM, d.cards));
+    /** The slots of this person after a click on the node of `state`. */
+    const quotaFor = (state: LensState) => CARDS_MAX - Math.min(urgentOfOthers, CARDS_MAX - roomFor(d, state));
     nexts.set(
       d.person,
       new Map(
         LENS_STATES.map((state) => {
-          const list = walked(d, reducedCards(d, quota, options.pin, state), state);
+          const list = walked(d, reducedCards(d, quotaFor(state), options.pin, state), state);
           return [state, Math.max(list.findIndex((s) => !mine.has(s.id)), 0)];
         }),
       ),
@@ -428,7 +438,8 @@ export function planMap(model: LensModel, options: PlanOptions): PersonPlan[] {
       return { person, sessions, open: false, shown: new Set<string>(), rest: null, buckets: [] };
     }
     const buckets = LENS_STATES.flatMap((state): StateNode[] => {
-      const folded = draft.ranked.filter((s) => s.state === state && !shown.has(s.id));
+      // A folded orchestrator joins the node of the most urgent agent it holds.
+      const folded = draft.ranked.filter((s) => draft.rankOf(s) === state && !shown.has(s.id));
       return folded.length > 0 ? [{ state, sessions: folded, next: mine?.nexts.get(state) ?? 0 }] : [];
     });
     const rowsOpen = options.restOpen.has(person);
