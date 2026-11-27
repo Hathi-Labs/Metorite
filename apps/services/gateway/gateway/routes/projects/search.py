@@ -87,6 +87,7 @@ from gateway.routes.projects.filters import (
     task_number,
     text_match_clause,
 )
+from gateway.routes.projects.team_scope import check_team_value, resolve_team_scope
 from sqlalchemy import text
 
 # `MIN_QUERY` — the shortest text query either search surface will run — is
@@ -421,14 +422,21 @@ async def search_tasks(
     # words. The company search and every other caller keep the all-words
     # answer, so a partial row is never read as a match of every word.
     most_words: bool = False,
+    # WS-39 T-1. A team slug or `all` (`team_scope.py`). A slug keeps the hits
+    # inside the projects of one team of the caller. Dark behind TEAMS_ORGS.
+    team: str | None = None,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
     """Ranked task hits across every project the caller can see.
 
     Global by default and by design: the point of a search surface is finding
     the thing you cannot navigate to, and scoping it to the selected project
-    would make it a filter with a different name.
+    would make it a filter with a different name. A team scope is the one
+    narrowing it takes (T-1), because the team view of the app searches it.
     """
+    # The flag and the shape of `team` first, so an empty query refuses a bad
+    # value too. The membership of the caller needs the session, below.
+    check_team_value(user, team)
     term = clean_query(q)
     if not term:
         return {"rows": [], "total": 0, "truncated": False, "query": term}
@@ -445,6 +453,13 @@ async def search_tasks(
 
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
+        scope = await resolve_team_scope(db, user, vis, team)
+        visible = task_visibility_clause(vis)
+        team_params: dict[str, Any] = {}
+        if scope is not None:
+            # ANDed beside the visibility clause: a scope only narrows.
+            visible = f"({visible} AND {scope.project_clause('t.project_id')})"
+            team_params = scope.params
         exclude_sql = ""
         exclude_params: dict[str, Any] = {}
         if exclude_relatives_of:
@@ -458,7 +473,7 @@ async def search_tasks(
             )
         rows = (await db.execute(
             text(_SEARCH_SQL.format(
-                visible=task_visibility_clause(vis),
+                visible=visible,
                 triage="TRUE" if include_triage else triage_exclusion_clause(),
                 exclude=exclude_sql,
                 match=text_match if number is None else _NUMBER_MATCH,
@@ -466,6 +481,7 @@ async def search_tasks(
             )),
             {
                 **vis.params,
+                **team_params,
                 **exclude_params,
                 **word_params,
                 "term": f"%{escaped}%",
@@ -492,12 +508,15 @@ async def search_tasks(
                 text(_PARTIAL_SQL.format(
                     held=held,
                     any_word=any_word,
-                    visible=task_visibility_clause(vis),
+                    # The clause of the first read, so the team scope of T-1
+                    # narrows the partial hits too.
+                    visible=visible,
                     triage="TRUE" if include_triage else triage_exclusion_clause(),
                     exclude=exclude_sql,
                 )),
                 {
                     **vis.params,
+                    **team_params,
                     **exclude_params,
                     **word_params,
                     "needles": list(dict.fromkeys(words)),

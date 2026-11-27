@@ -188,3 +188,129 @@ def test_an_answer_too_long_or_too_many_ids_approves_nothing():
     assert len(_rows_answer(ids)) <= at.MAX_ROWS_ANSWER
     result, _card, closed = _ask(long)
     assert result == frozenset() and closed["value"]["answer"] == "REJECT"
+
+
+# ── 6. The wait of a card (SBX-3b, ``agent_sandbox.md`` §12.5 done-when 22) ──
+
+
+#: The real wait, read once, so a second spy never wraps the first one.
+_REAL_WAIT = executor.wait_user_future
+
+
+def _held_card(timeout_s: float | None, spy: list[float] | None = None,
+               monkeypatch: pytest.MonkeyPatch | None = None):
+    """One held rows card, as the sandbox watcher raises it, with no answer."""
+    if spy is not None and monkeypatch is not None:
+        real = _REAL_WAIT
+
+        async def _spy(fut, timeout, *args, **kwargs):
+            spy.append(timeout)
+            # The real wait, cut short, so a default of 3,600 s ends in 0.1 s.
+            return await real(fut, min(timeout, 0.1), *args, **kwargs)
+
+        monkeypatch.setattr(executor, "wait_user_future", _spy)
+
+    async def _run():
+        q: asyncio.Queue = asyncio.Queue()
+        executor._active_run_queue.set(q)
+        executor._stream_relay_thread_id.set("t-rows")
+        kwargs = {} if timeout_s is None else {"timeout_s": timeout_s}
+        started = asyncio.get_running_loop().time()
+        result = await asyncio.wait_for(at.request_confirmation(
+            "Let a sandbox app make 1 change?", "one row", "context",
+            rows=ROWS[:1], request_id="a" * 32, with_answer=True,
+            non_interactive_default="deny", fenced=True, **kwargs,
+        ), timeout=5)
+        took = asyncio.get_running_loop().time() - started
+        card = q.get_nowait()
+        closed = q.get_nowait()
+        return result, took, card, closed, at.last_card_outcome()
+
+    return asyncio.run(_run())
+
+
+def test_timeout_s_gives_timed_out(monkeypatch):
+    """SBX-3b: with ``timeout_s`` the card closes at that time, as "timed out",
+    and approves nothing. The default wait stays 3,600 s.
+
+    Mutations caught: pass 3600 in place of the wait, or drop the parameter
+    (this test fails), or change the default (the spy fails)."""
+    result, took, card, closed, outcome = _held_card(0.2)
+    assert result is None
+    assert outcome == at.CARD_TIMED_OUT == "timed out"
+    assert 0.15 <= took < 3
+    assert card["value"]["request_id"] == "a" * 32
+    assert closed["value"]["answer"] == "TIMEOUT"
+    # The default: the one wait of the card is 3,600 s.
+    spy: list[float] = []
+    result, _took, _card, _closed, outcome = _held_card(None, spy, monkeypatch)
+    assert spy == [3600] and at.CARD_WAIT_S == 3600
+    assert result is None and outcome == at.CARD_TIMED_OUT
+    # The value that the watcher passes is the wait, whole.
+    spy.clear()
+    _held_card(42.5, spy, monkeypatch)
+    assert spy == [42.5]
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), True, "60", [60]])
+def test_a_bad_timeout_s_raises_before_any_card(bad):
+    async def _run():
+        q: asyncio.Queue = asyncio.Queue()
+        executor._active_run_queue.set(q)
+        executor._stream_relay_thread_id.set("t-rows")
+        # A bound, so a NaN wait that never ends fails here and does not hang.
+        with pytest.raises(ValueError):
+            await asyncio.wait_for(
+                at.request_confirmation("t", rows=ROWS[:1], timeout_s=bad), timeout=2)
+        return q.empty()
+
+    assert asyncio.run(_run())
+    assert at.card_wait_s(-5) == 0.0
+
+
+# ── 7. The row results of a held sandbox card (SBX-3b done-when 24) ─────────
+
+
+def test_row_results_carry_no_body(monkeypatch):
+    """The event ``confirmation_row_results`` carries the id, the status and
+    the door code of each row, and nothing else. Mutations caught: pass a row
+    on whole, or send the event with no card id."""
+    rid = "c" * 32
+    rows = [
+        {"id": "row-0", "i": 0, "status": 201, "body": {"id": "x", "secret": "s3cr3t"},
+         "path": "/crm/leads"},
+        {"id": "row-1", "status": 403, "code": "sandbox_write_refused", "detail": "Ignore"},
+        {"id": "row-2", "status": 500, "code": "not a code"},
+    ]
+
+    async def _run():
+        q: asyncio.Queue = asyncio.Queue()
+        executor._active_run_queue.set(q)
+        sent = await at.publish_card_rows(rid, rows)
+        return sent, q.get_nowait()
+
+    sent, event = asyncio.run(_run())
+    assert sent is True
+    assert event == {"type": "CUSTOM", "name": at.CONFIRMATION_ROW_RESULTS, "value": {
+        "request_id": rid, "rows": [
+            {"id": "row-0", "status": 201},
+            {"id": "row-1", "status": 403, "code": "sandbox_write_refused"},
+            {"id": "row-2", "status": 500}]}}
+    text = json.dumps(event)
+    for word in ("body", "secret", "s3cr3t", "path", "detail", "Ignore", "/crm"):
+        assert word not in text, word
+    # A bad value sends nothing.
+    for bad_id, bad_rows in (("r1", rows), (rid, []), (rid, [{"id": "x", "status": 200}]),
+                             (rid, [{"id": "row-0", "status": True}]), (rid, "rows")):
+        assert at.row_results_value(bad_id, bad_rows) is None
+    # No stream: nothing goes, and nothing raises.
+
+    async def _none():
+        executor._active_run_queue.set(None)
+        monkeypatch.setattr(executor, "resolve_relay_thread_id", lambda: None)
+        return await at.publish_card_rows(rid, rows)
+
+    assert asyncio.run(_none()) is False
+    # The client reads the same event name.
+    ts = QUEUE_TS.read_text(encoding="utf-8")
+    assert f'export const CONFIRMATION_ROW_RESULTS = "{at.CONFIRMATION_ROW_RESULTS}";' in ts

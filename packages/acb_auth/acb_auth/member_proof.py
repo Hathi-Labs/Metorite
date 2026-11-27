@@ -76,15 +76,28 @@ MEMBER_PROOF_HEADER = "X-CC-Member-Proof"
 #: runs for that member, so the longer window buys no new reader.
 PROOF_TTL_SECONDS = 3600
 
-#: Signing secrets that are PUBLIC, so they prove nothing. `acb_common.settings`
-#: ships the first as its default and `.env.example` repeats it.
+#: Secrets that are PUBLIC, so they prove nothing. `acb_common.settings` and
+#: `.env.example` ship them as defaults and placeholders.
 #:
 #: 🔴 A box that never set `GATEWAY_SESSION_SECRET` signs under a string anyone
 #: can read. Under the deployment key a proof picks the paying organization, so
 #: accepting one here would let any holder of the gateway LLM key bill any
 #: tenant. Such a secret is treated as EMPTY: nothing is signed, nothing
 #: verifies. `test_member_proof.py` pins this list to the settings default.
-PUBLIC_DEFAULT_SECRETS = frozenset({"change-me-dev-only"})
+#:
+#: Task 574: this is the ONE list of public secrets. The startup check
+#: (`acb_auth.secret_check`) reads it too. `sk-local` is the settings default
+#: of `LITELLM_MASTER_KEY`, `sk-local-dev-change-me` its `.env.example` value,
+#: and `acb_dev_change_me` the password of the default `DATABASE_URL`.
+#: `neo4j_dev_change_me` was public in the compose file. A new default or
+#: placeholder goes here, or `test_secret_startup_check.py` fails.
+PUBLIC_DEFAULT_SECRETS = frozenset({
+    "change-me-dev-only",
+    "sk-local",
+    "sk-local-dev-change-me",
+    "acb_dev_change_me",
+    "neo4j_dev_change_me",
+})
 
 
 def _usable(secret: str | None) -> bool:
