@@ -51,7 +51,7 @@ from acb_auth import UserContext, agent_oauth, sandbox_capabilities
 from acb_auth.agent_oauth import ACTOR_VIA_PATTERN
 from acb_auth.deps import get_current_user, require_internal_auth
 from acb_common import app_manifests, get_logger, get_settings, tenant_redis
-from acb_common.card_body import CardBody, CardWontFit, card_body
+from acb_common.card_body import CARD_CLIP, CardBody, CardWontFit
 from acb_common.tool_refusals import data
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
@@ -913,13 +913,13 @@ def card_text(record: Mapping[str, Any]) -> dict[str, Any]:
     *record*. It never shows the member, the run, the thread, the held id, the
     deadline or the token hash. The context starts with the warning line. A
     class C card starts its title, its detail and its warning line with the
-    counts. The context is at most 4,000 characters (``card_body``). Only a
-    long text value of the body (``LONG_TEXT_KEYS``) may be cut, and the last
-    line then says so.
+    counts. Each line of a field names its row, and stays under that row, in
+    row order. The context is at most :data:`CARD_CLIP` characters, and no
+    text is cut: a card shows each value whole, or it shows nothing.
 
     Raises ``ValueError`` for a record that the batch handler could not have
-    written, and :class:`CardWontFit` when the short lines do not fit on one
-    card. Either way no card shows, and the batch times out with nothing run.
+    written, and :class:`CardWontFit` when the card does not fit whole.
+    Either way no card shows, and the batch times out with nothing run.
     """
     cls = record.get("class")
     raw_rows = record.get("rows")
@@ -948,15 +948,24 @@ def card_text(record: Mapping[str, Any]) -> dict[str, Any]:
                   "Only a ticked row runs.")
         note = CARD_WARNING
 
-    lines: list[tuple[str, str]] = []
+    # Each line stays under its own row and names it, in row order (review
+    # P1). ``card_body`` moves the long text of every row to the end, so the
+    # text of row 1 showed under row 2, and an unticked row hid a write.
+    # Nothing is cut: a card that does not fit whole is not drawn.
+    lines: list[str] = [note]
     for number, row in enumerate(rows, start=1):
         ids = _ids(row)
-        lines.append(("", f"{number}. {_label(row)}" + (f" {ids}" if ids else "")))
-        lines += [("", f"   query {data(key)} {data(value)}") for key, value in row.query]
-        lines += [(key, f"   {data(key)} {_shown(value)}") for key, value in row.body]
+        lines.append(f"{number}. {_label(row)}" + (f" {ids}" if ids else ""))
+        lines += [f"   row {number}: query {data(key)} {data(value)}" for key, value in row.query]
+        lines += [f"   row {number}: {data(key)} {_shown(value)}" for key, value in row.body]
         if not row.body:
-            lines.append(("", "   (no fields)"))
-    context: CardBody = card_body(note, lines)
+            lines.append(f"   row {number}: (no fields)")
+    text = "\n".join(lines)
+    if len(text) > CARD_CLIP:
+        raise CardWontFit("This change does not fit on one card, so nothing was changed. "
+                          "Send fewer or shorter fields, or split the batch, and call the "
+                          "tool once more.")
+    context = CardBody(text)
 
     card_rows: list[dict[str, Any]] = [{"id": row.row_id, "label": _label(row), "hint": _hint(row), "checked": True}
                  for row in rows]

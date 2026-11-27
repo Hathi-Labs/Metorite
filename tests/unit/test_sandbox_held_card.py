@@ -302,19 +302,50 @@ def test_each_class_c_row_has_its_counts() -> None:
 
 
 def test_a_card_that_does_not_fit_is_not_drawn() -> None:
-    # A long text may be cut, and the card says so on its last line.
+    """Review P1: no text is cut. A card shows each value whole, or it shows
+    nothing. Mutation caught: clip the context in place of the refusal."""
     long_text = _row(0, "PATCH", "/projects/tasks/a1", "/projects/tasks/{task_id}",
                      {"status": "done", "description": "word " * 2000})
-    card = sb.card_text(_record("B", [long_text]))
-    context = card["context"]
-    assert len(context) <= CARD_CLIP
-    assert str(context).endswith(CUT_MARK) and context.cut == ("description",)
-    assert f"{data('status')} «done»" in context
-    # A short field never is cut: no card shows.
+    with pytest.raises(CardWontFit):
+        sb.card_text(_record("B", [long_text]))
     long_field = _row(0, "PATCH", "/projects/tasks/a1", "/projects/tasks/{task_id}",
                       {"status": "x" * 5000})
     with pytest.raises(CardWontFit):
         sb.card_text(_record("B", [long_field]))
+    # Just inside the clip, the whole text shows, with no cut mark.
+    room = CARD_CLIP - len(sb.CARD_WARNING) - 200
+    fits = _row(0, "PATCH", "/projects/tasks/a1", "/projects/tasks/{task_id}",
+                {"description": "w" * room})
+    context = sb.card_text(_record("B", [fits]))["context"]
+    assert len(context) <= CARD_CLIP and CUT_MARK not in context
+    assert data("w" * room) in context
+
+
+def test_each_field_line_stays_under_its_own_row() -> None:
+    """Review P1 (SBX-F3). ``card_body`` moved the long text of every row to
+    the end, so the description of row 1 showed under row 2. The member then
+    unticked row 2, approved row 1, and row 1 wrote text that the card hid
+    under row 2. Mutation caught: build the context with ``card_body``, or
+    drop the row number of a field line."""
+    rows = [
+        _row(0, "PATCH", "/projects/tasks/AAA", "/projects/tasks/{task_id}",
+             {"title": "Clean up", "description": "Delete all customer data now"}),
+        _row(1, "PATCH", "/projects/tasks/BBB", "/projects/tasks/{task_id}",
+             {"title": "Typo", "description": "Fixed a typo"}),
+    ]
+    context = str(sb.card_text(_record("B", rows))["context"])
+    lines = context.splitlines()
+    head_1 = lines.index(f"1. PATCH /projects/tasks/{{task_id}} task_id {data('AAA')}")
+    head_2 = lines.index(f"2. PATCH /projects/tasks/{{task_id}} task_id {data('BBB')}")
+    assert lines[0] == sb.CARD_WARNING and 0 < head_1 < head_2
+    assert lines[head_1 + 1:head_2] == [
+        f"   row 1: {data('title')} {data('Clean up')}",
+        f"   row 1: {data('description')} {data('Delete all customer data now')}",
+    ]
+    assert lines[head_2 + 1:] == [
+        f"   row 2: {data('title')} {data('Typo')}",
+        f"   row 2: {data('description')} {data('Fixed a typo')}",
+    ]
 
 
 def test_a_hint_with_many_keys_counts_the_rest() -> None:
@@ -468,14 +499,10 @@ async def test_the_held_routes_are_internal_only(door, monkeypatch) -> None:
         # A sandbox capability. The door refuses it before the route: step 5
         # of ``_sandbox_gate`` answers 403 ``sandbox_read_only`` to a non-GET.
         cap = await _call(door.app, path, body, kit.headers())
-        assert cap.status_code in (401, 403, 404), (path, cap.status_code)
-        if cap.status_code == 403:
-            assert cap.json() == {"detail": "sandbox_read_only"}
-        # A sandbox capability with the bearer too: the bearer is no door key.
+        assert (cap.status_code, cap.json()) == (403, {"detail": "sandbox_read_only"}), path
+        # A sandbox capability with the bearer too: one credential only, 401.
         both = await _call(door.app, path, body, {**kit.headers(), **_internal()})
-        assert both.status_code in (401, 403, 404), (path, both.status_code)
-        if both.status_code == 403:
-            assert both.json() == {"detail": "sandbox_read_only"}
+        assert both.status_code == 401, (path, both.status_code)
     # The SSO escape hatch makes a bare member header a member. The routes
     # still need the internal bearer: 401, and the route does not run.
     monkeypatch.setenv("GATEWAY_TRUST_UNVERIFIED_SSO_HEADERS", "1")
@@ -618,6 +645,8 @@ async def test_results_go_to_the_owner_once(door) -> None:
     assert sb.RESULT_GRACE_S - 5 < ttl - get_settings().sandbox_approval_timeout_seconds \
         <= sb.RESULT_GRACE_S
     # Another member, another run: nothing back, and nothing spent.
+    # The card id in the list of run-2 too, so the run filter is reached.
+    door.redis.lists[f"cc:{kit.ORG_A}:{sb.RUN_NAMESPACE}:run-2"] = [card_id]
     for who, run in ((kit.OTHER_MEMBER, RUN), (kit.MEMBER, "run-2")):
         got = await _call(door.app, "/sandbox/held/results", {"run_id": run}, _internal(who))
         assert got.json() == {"results": []}
@@ -652,6 +681,51 @@ async def test_a_run_with_no_chat_writes_nothing(door, monkeypatch) -> None:
         "sandbox_write_refused", "sandbox_write_refused"]
     assert door.ran == []
     assert report.shown == 1 and report.refused == 1 and report.approved == 0
+
+
+# ── A failed act shows its card once (verify F2) ────────────────────────────
+
+
+async def test_a_failed_act_shows_the_card_once(door, monkeypatch) -> None:
+    """When the gateway does not take an act (409 or 503), the open card comes
+    back on the next ask. The watcher does not show it again, and it waits
+    one poll step between asks. The batch times out, and nothing runs.
+    Mutation caught: drop the set of failed cards."""
+    monkeypatch.setattr(get_settings(), "sandbox_approval_timeout_seconds", 3)
+    acts: list[str] = []
+    asks: list[int] = []
+    real_next = sandbox_held._next_card
+
+    async def failing_act(body: dict[str, Any], member: str) -> bool:
+        acts.append(body["card_id"])
+        return False  # as a 409 or a 503 of the act route
+
+    async def next_card(run_id: str, member: str) -> Any:
+        asks.append(1)
+        return await real_next(run_id, member)
+
+    monkeypatch.setattr(sandbox_held, "_act", failing_act)
+    monkeypatch.setattr(sandbox_held, "_next_card", next_card)
+    queue: asyncio.Queue = asyncio.Queue()
+    seen: list[dict[str, Any]] = []
+    stop = asyncio.Event()
+    with _run_binding(queue=queue):
+        member = asyncio.create_task(_member_answers(queue, kit.ORG_A, lambda c: ["row-0"],
+                                                     seen))
+        watcher = asyncio.create_task(sandbox_held.watch_held(RUN, THREAD, stop=stop,
+                                                              poll_s=0.05))
+        answer = await asyncio.wait_for(_start_batch(door.app, TWO_ROWS), timeout=20)
+        stop.set()
+        report = await asyncio.wait_for(watcher, timeout=60)
+        member.cancel()
+    shown = [e for e in seen if e.get("name") == "confirmation_requested"]
+    assert len(shown) == 1 and report.shown == 1 and report.act_failed == 1
+    assert len(acts) == 1
+    # About 3 s of asks at one each 0.05 s. A hot loop makes thousands.
+    assert len(asks) < 150, len(asks)
+    assert [e["code"] for e in answer.json()["rows"]] == [
+        "sandbox_approval_timeout", "sandbox_approval_timeout"]
+    assert door.ran == []
 
 
 # ── 22. A late answer runs nothing ──────────────────────────────────────────

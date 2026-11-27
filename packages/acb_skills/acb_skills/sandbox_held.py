@@ -157,8 +157,9 @@ async def _deliver_results(run_id: str, member: str, report: WatchReport) -> Non
 
 
 async def _show(card: dict[str, Any], thread_id: str, member: str,
-                report: WatchReport) -> None:
-    """Show one card, and hand its answer to the gateway."""
+                report: WatchReport) -> bool:
+    """Show one card, and hand its answer to the gateway. True when the
+    gateway took the act."""
     from acb_skills.ask_tools import RowsAnswer, request_confirmation
 
     card_id = str(card["card_id"])
@@ -182,12 +183,13 @@ async def _show(card: dict[str, Any], thread_id: str, member: str,
                          "answer": answer.answer}, member)
         report.approved += int(ok)
         report.act_failed += int(not ok)
-        return
+        return ok
     # A refusal, a timeout, another member, a closed card or no chat.
     ok = await _act({"card_id": card_id, "card_thread_id": thread_id, "refused": True},
                     member)
     report.refused += int(ok)
     report.act_failed += int(not ok)
+    return ok
 
 
 async def _sleep_or_stop(stop: asyncio.Event, seconds: float) -> None:
@@ -203,8 +205,10 @@ async def watch_held(run_id: str, thread_id: str, *, stop: asyncio.Event,
     refusal names it. *stop* is set when the run command ends. The watcher
     then finishes the card that it shows, asks for no new card, and reads
     results until each card that it showed has its results, or until the
-    deadline of the last batch plus :data:`RESULTS_GRACE_S`. With no member in the run binding it shows no
-    card and returns at once: the batch then times out with nothing run."""
+    deadline of the last batch plus :data:`RESULTS_GRACE_S`. A card whose act
+    the gateway did not take is not shown again, so its batch times out with
+    nothing run. With no member in the run binding it shows no card and
+    returns at once: the batch then times out with nothing run."""
     report = WatchReport()
     member = _member()
     if not member or "@" not in member or not run_id or not thread_id:
@@ -212,17 +216,23 @@ async def watch_held(run_id: str, thread_id: str, *, stop: asyncio.Event,
         return report
     step = POLL_S if poll_s is None else poll_s
     last_deadline = 0.0
+    #: The cards whose act the gateway did not take (a 409 or a 503). The
+    #: watcher never shows one again: its batch times out, and nothing runs.
+    failed: set[str] = set()
     while True:
         await _deliver_results(run_id, member, report)
         if stop.is_set():
             break
         card = await _next_card(run_id, member)
-        if card is None:
+        if card is None or str(card["card_id"]) in failed:
             await _sleep_or_stop(stop, step)
             continue
         last_deadline = max(last_deadline,
                             time.monotonic() + float(card.get("seconds_left") or 0))
-        await _show(card, thread_id, member, report)
+        if not await _show(card, thread_id, member, report):
+            # No hot loop: the open card comes back at once on the next ask.
+            failed.add(str(card["card_id"]))
+            await _sleep_or_stop(stop, step)
     end = last_deadline + RESULTS_GRACE_S
     while (last_deadline and time.monotonic() < end
            and not set(report.cards) <= report.done):
