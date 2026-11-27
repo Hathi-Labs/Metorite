@@ -195,7 +195,8 @@ WAVES: dict[str, tuple[str, tuple[str, ...], tuple[int, ...]]] = {
             (3105, 3114, 3943, 3944, 3945, 3946, 3947)),
     "P-6": ("Workflows, Custom Apps and the Agent Registry", ("workflows", "apps", "agents"),
             (3115, 3903, 3950)),
-    "P-7": ("Chat threads and the shell", ("chat", "shell"), (3115, 3903)),
+    # PAR-11 part c (task 4014): the files of this chat, in the pack chat-files.
+    "P-7": ("Chat threads and the shell", ("chat", "shell"), (3115, 3903, 4014)),
     "P-8": ("Settings, Admin and Integrations", ("settings", "admin", "integrations"),
             (3102, 3925, 3107, 3935, 3936, 3108, 3109, 3932)),
     "P-9": ("AI Studio", ("studio",), (3115,)),
@@ -230,6 +231,8 @@ TOOL_SOURCES: tuple[str, ...] = (
     "apps/agents/agent-whatsapp-assistant/agents.py",
     "apps/skills/skill-my-tasks/skill_my_tasks/core.py",
     "packages/acb_skills/acb_skills/chat_pin_tools.py",
+    # PAR-11 part c (task 4014): the chat-files pack sends the routes of the Files panel.
+    "packages/acb_skills/acb_skills/chat_workspace_tools.py",
     "packages/acb_skills/acb_skills/crm_tools.py",
     # PAR-9 (task 3950): the studio-apps pack sends the routes of the Custom Apps.
     "packages/acb_skills/acb_skills/custom_app_tools.py",
@@ -438,6 +441,14 @@ COVERED: dict[str, str | tuple[str, str]] = {
     # id: it acts on the chat of the run, as the member of the run.
     "DELETE /api/chat/sessions/{}/pin": "pin_chat",
     "GET /api/agent/artifacts": "list_artifacts",
+    # PAR-11 part c (task 4014): the Files panel of this chat, in the dark pack
+    # chat-files (chat_workspace_tools.py). Each tool sends the route of the panel
+    # as the member of the run, for the chat of the run. Each write shows one card.
+    "GET /api/agent/workspace/{}": "list_chat_files",
+    "GET /api/agent/workspace/{}/history": "list_chat_files",
+    "PUT /api/agent/workspace/{}/file": "edit_chat_file",
+    "POST /api/agent/workspace/{}/promote": "promote_chat_file",
+    "DELETE /api/agent/workspace/{}/file": "delete_chat_file",
     "PUT /api/chat/sessions/{}/pin": "pin_chat",
     # ── Shell, Home and approvals ──
     # PAR-8b (task 3903, chat_parity.md section 6.4 rung 5): the Home tools of the
@@ -845,6 +856,40 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "download",
         "The bytes of a chat file for the viewer and the download button. The chat writes and reads its files itself.",
     ),
+    # PAR-11 part c (task 4014): five requests that are no act of a member in the
+    # chat. Task 4014 says that a row only the browser can do takes a reason,
+    # and no new kind.
+    "POST /api/agent/workspace/{}/upload": (
+        "chat",
+        "The paperclip of the chat's own composer (FileUploadButton.tsx). The member picks a file "
+        "on their own device, and only the browser can read it. The file then goes with the "
+        "member's next turn, as the mic of VOX-1 does.",
+    ),
+    "POST /api/agent/artifacts/upload": (
+        "download",
+        "The Upload button of the email rule editor (RulesTab.tsx) sends a file from the member's "
+        "own device, which only the browser can read. It is the file stream of a download, in the "
+        "other direction. The chat lists these files with list_artifacts, and a member gives the "
+        "chat a file with the paperclip of the composer.",
+    ),
+    "PATCH /api/agent/workspace/{}": (
+        "chat",
+        "The app builder binds its own chat to the folder of the app when the page opens "
+        "(build/apps/[slug]/edit/page.tsx). No member click sends it. It sets the folder of the "
+        "chat's own saved thread.",
+    ),
+    "POST /api/artifacts/compile": (
+        "download",
+        "The preview of a React file that an agent wrote. The chat card builds it to draw it "
+        "(SandboxedReact.tsx), and no member click sends it. No gateway route serves it. The "
+        "chat reads and writes the source itself.",
+    ),
+    "POST /api/documents/pdf": (
+        "download",
+        "The Download PDF button of a saved report (reportFiles.ts). The browser saves the PDF as "
+        "a file on the device. The chat reads the report itself, and make_document makes a PDF in "
+        "the chat.",
+    ),
     "GET /api/auth/me/chat-decisions": (
         "chat",
         "Reads the kept decisions of this chat to draw the chips under the answer (HRD-12b). "
@@ -1174,12 +1219,9 @@ DEBT: dict[str, str] = {
     "PUT /api/agent/{}/skills": "P-6",
     "PUT /api/observability/avatars/{}": "P-6",
     # ── Chat ──
-    "DELETE /api/agent/workspace/{}/file": "P-7",
     "DELETE /api/chat/sessions/{}": "P-7",
     "DELETE /api/chat/sessions/{}/agents/{}": "P-7",
     "DELETE /api/chat/sessions/{}/participants/{}": "P-7",
-    "GET /api/agent/workspace/{}": "P-7",
-    "GET /api/agent/workspace/{}/history": "P-7",
     "GET /api/chat/directory": "P-7",
     "GET /api/chat/pending-asks": "P-7",
     "GET /api/chat/sessions": "P-7",
@@ -1189,21 +1231,14 @@ DEBT: dict[str, str] = {
     # pays the three with the chat tool of the chat list, as for the pin.
     "GET /api/chat/topics": "P-7",
     "GET /api/models/all": "P-7",
-    "PATCH /api/agent/workspace/{}": "P-7",
     "PATCH /api/chat/sessions/{}": "P-7",
     "PATCH /api/chat/sessions/{}/participants/{}": "P-7",
     "PATCH /api/chat/sessions/{}/room": "P-7",
-    "POST /api/agent/artifacts/upload": "P-7",
-    "POST /api/agent/workspace/{}/promote": "P-7",
-    "POST /api/agent/workspace/{}/upload": "P-7",
-    "POST /api/artifacts/compile": "P-7",
     "POST /api/chat/sessions/{}/agents": "P-7",
     "POST /api/chat/sessions/{}/participants": "P-7",
     "POST /api/chat/suggestions": "P-7",
     "POST /api/chat/topics": "P-7",
-    "POST /api/documents/pdf": "P-7",
     "POST /api/feedback": "P-7",
-    "PUT /api/agent/workspace/{}/file": "P-7",
     "PUT /api/chat/sessions/{}/topic": "P-7",
     # ── Shell, Home and approvals ──
     # PAR-8b (task 3903) paid 9 of the 16 shell rows. The two rows of the
@@ -1315,7 +1350,7 @@ DEBT_CEILING: dict[str, int] = {
     "workflows": 0,  # STB-6a (task 3117) paid the list and the read of one workflow (24 to 22). STB-6b (task 3118) paid publish, rollback, disable and enable (22 to 18). PAR-8a (task 3903) paid the other 18 with seven tools of studio-workflows (18 to 0).
     "apps": 2,  # PAR-9: 26 rows paid by task 3950 with the six tools of studio-apps (28 to 2). The model call and the tool call of the cc bridge wait for an owner ruling on their kind.
     "agents": 20,
-    "chat": 28,  # CO-11 (task 3510) added Pin and Unpin of a chat (25 to 27). CO-2b (task 3588) added the topic read, the topic create and the move of a chat (27 to 30). CO-11b (task 3563) paid both pin routes with pin_chat (30 to 28). P-7 pays the three topic routes with the chat tool of the chat list, a separate slice. Paid by task 3115.
+    "chat": 18,  # CO-11 (task 3510) added Pin and Unpin of a chat (25 to 27). CO-2b (task 3588) added the topic read, the topic create and the move of a chat (27 to 30). CO-11b (task 3563) paid both pin routes with pin_chat (30 to 28). P-7 pays the three topic routes with the chat tool of the chat list, a separate slice. PAR-11 part c (task 4014) paid the ten rows of the chat files: five with the four tools of chat-files, and five exemptions (28 to 18).
     "shell": 7,  # PKG-17c-1 (task 2969) added the PUT of the org shell layout. PAR-8b (task 3903) paid 9 rows with the Home tools (16 to 7). The two rows of the approval queue wait for the owner (chat_parity.md section 7, item 6). The intent row and the four push rows wait for an owner ruling on their kind (section 2).
     "settings": 30,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531). PKG-20 added the appearance read and write. Paid by task 3108.
     "admin": 10,  # PAR-2a (task 3102) paid the member list, the requests, the role list, the status, the roles and the answer of a request (36 to 30). PAR-4a (task 3107) paid the six group rows, the features read, the role create and delete, the access read, the overrides write, the removal preview and the org rename (30 to 17). PAR-4c (task 3935) paid the remove and the purge, and PAR-4d (task 3936) paid the five seat rows with read_seats and set_seat (17 to 10).
