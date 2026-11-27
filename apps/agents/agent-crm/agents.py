@@ -3671,10 +3671,13 @@ _DRAFT_ANSWER_NOTE = (
     "the CRM until an admin approves the draft."
 )
 
-#: The first line of the card of a dismissal.
+#: The first line of the card of a dismissal. The UI undoes a dismissal only
+#: from the toast of its own click (``OpenQuestions.tsx``), and the chat sends
+#: no DELETE, so a dismissal of the chat has no Undo. The question opens again
+#: when its hash changes (``crm_sync/questions.py``).
 _DISMISS_NOTE = (
-    "The CRM stops asking this question. It asks again when the Zoho data of "
-    "this part changes."
+    "The CRM stops asking this question, and the chat cannot undo it. The CRM "
+    "asks again when the Zoho data behind it changes."
 )
 
 #: Where a member changes or undoes an answer in use. The chat reads only the
@@ -3845,7 +3848,8 @@ async def crm_my_question_picks(offset: int = 0, limit: int = _QUESTION_PAGE) ->
     """Read the answers that the person you act for picked in the chat for an
     open CRM question, and that wait for a CRM admin. It shows only the
     member's own picks, never the pick of another member. Each member with
-    CRM access can read their own."""
+    CRM access can read their own. A member clears a pick in the section
+    Business rules of the CRM settings, under "Your choices in the chat"."""
     body = await _get("/crm/questions/mine")
     choices = [c for c in (body or {}).get("choices") or [] if isinstance(c, dict)] \
         if isinstance(body, dict) else []
@@ -4120,14 +4124,22 @@ def _answered_text(q: dict[str, Any], shown: str, change: str, value: Any,
     if kind == "stage_value":
         return out + (" To undo it, restore the earlier version of the field map in the "
                       "Field mapping section of the CRM settings.")
+    if kind == "term":
+        # A term has no part, so the tab Your answers shows it with no change
+        # (``correctionTarget`` of ``questions.ts`` is null for it).
+        return out + (" The tab Your answers of the Open questions section of the CRM "
+                      "settings shows this answer. Neither the chat nor the settings "
+                      "can change it now.")
     return f"{out} {_CHANGE_PLACE}"
 
 
 @_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
 async def crm_dismiss_question(question_id: str) -> str:
     """Mark one open setup question of a CRM that mirrors Zoho as "Not
-    relevant", so the CRM stops asking it. It asks again when the Zoho data
-    of that part changes. Only a CRM admin can, and the person you act for
+    relevant", so the CRM stops asking it. Nothing undoes it from the chat or
+    the settings. The CRM asks again when the Zoho data behind it changes: for
+    a module, a new field, a changed type or a fill that moves by a step of
+    10%. Only a CRM admin can, and the person you act for
     approves it on a card first. The meaning of revenue takes no dismissal,
     because it has a default.
 
@@ -4163,8 +4175,8 @@ async def crm_dismiss_question(question_id: str) -> str:
                                               "stays open.")
     record = _question_segment(q.get("id"))
     await _post(f"/crm/questions/{record}/dismiss", {})
-    return (f"Dismissed the question about {_question_label(q)}. The CRM asks again "
-            "when the Zoho data of that part changes.")
+    return (f"Dismissed the question about {_question_label(q)}. The chat cannot undo "
+            "it. The CRM asks again when the Zoho data behind it changes.")
 
 
 #: The kind of a question from its id, for a line of the dry run.
@@ -4192,15 +4204,21 @@ async def _dry_run(ids: list[str]) -> list[dict[str, Any]]:
     return [i for i in items or [] if isinstance(i, dict)]
 
 
-async def _batch_items(ids: list[str]) -> tuple[list[dict[str, Any]], list[str]]:
-    """The dry run of *ids*, and the ids that the route does not take. With a
-    422 for the whole batch, each id is tried alone, so one question with no
-    best guess does not stop the others."""
+async def _batch_items(ids: list[str]) -> tuple[list[dict[str, Any]], list[str], str]:
+    """The dry run of *ids*, the ids that the route does not take, and the
+    words of a refusal. With a 422 for the whole batch, each id is tried
+    alone, so one question with no best guess does not stop the others. Past
+    :data:`_BATCH_PROBE_MAX` ids the tool refuses and asks for ids."""
     try:
-        return await _dry_run(ids), []
+        return await _dry_run(ids), [], ""
     except GatewayRefusal as refused:
-        if refused.status != 422 or len(ids) > _BATCH_PROBE_MAX:
+        if refused.status != 422:
             raise
+        if len(ids) > _BATCH_PROBE_MAX:
+            return [], [], (
+                f"The CRM takes no batch of these {len(ids)} questions, because one of "
+                "them has no best guess that the CRM applies. Nothing was changed. Give "
+                f"at most {_BATCH_PROBE_MAX} ids in question_ids, from crm_list_questions.")
     items: list[dict[str, Any]] = []
     left: list[str] = []
     for qid in ids:
@@ -4210,7 +4228,7 @@ async def _batch_items(ids: list[str]) -> tuple[list[dict[str, Any]], list[str]]
             if refused.status != 422:
                 raise
             left.append(qid)
-    return items, left
+    return items, left, ""
 
 
 def _item_line(item: dict[str, Any]) -> str:
@@ -4237,11 +4255,14 @@ async def _batch_of(
     words of a refusal before the card. *wanted* are the ids the model gave."""
     none = "No open question has a best guess that joins a batch. Nothing was changed."
     if not wanted:
-        ids = [qid for qid, q in shown.items() if _batch_kind(q)]
+        # The steer of the list only adds a best guess and never removes one
+        # (``questions.steered``). So a question with no listed best guess has
+        # none in the batch either, and it never joins.
+        ids = [qid for qid, q in shown.items() if _batch_kind(q) and _listed_best(q)]
         if not ids:
             return [], [], none
-        items, left = await _batch_items(ids)
-        return items, left, "" if items else none
+        items, left, refusal = await _batch_items(ids)
+        return items, left, refusal or ("" if items else none)
     for qid in wanted:
         q, refusal = _open_question(body, qid)
         if q is None:
@@ -4258,7 +4279,8 @@ async def _batch_of(
             raise
         return [], [], (
             f"The CRM takes no batch of these questions: "
-            f"{refused.detail or 'the route refused it'}. One of them has no best guess "
+            f"{str(refused.detail or 'the route refused it').rstrip('. ')}. One of them "
+            "has no best guess "
             "that joins a batch. Nothing was changed. Answer it with "
             "crm_answer_setup_question, or give other ids.")
     return items, [], "" if items else none

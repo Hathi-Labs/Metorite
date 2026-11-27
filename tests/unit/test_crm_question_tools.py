@@ -526,6 +526,62 @@ async def test_a_batch_that_one_card_cannot_show_is_refused(monkeypatch) -> None
     assert "This batch has 120 lines, and one card holds" in out
 
 
+async def test_fifty_candidates_drop_the_ones_with_no_listed_best(monkeypatch) -> None:
+    """Round 3 (A). 50 purpose questions, 10 with no best guess in the list.
+    The steer only adds a best guess, so those 10 never join, and the other
+    40 go in one dry run. Mutation: drop the listed-best filter -> the 50
+    exceed the probe and the tool refuses -> red."""
+    many = [{**_PURPOSE, "id": f"purpose:M{k:02d}", "label": f"M{k:02d}", "proposals": [],
+             "choices": [{"value": "invoice", "label": "Invoice", "best": k >= 10}]}
+            for k in range(50)]
+    joins = {q["id"] for q in many if q["choices"][0]["best"]}
+
+    def answer(call: dict) -> Any:
+        if call["method"] == "GET":
+            return {"open": 50, "more": 0, "plan": 7, "shown": many}
+        ids = call["json"]["ids"]
+        if set(ids) - joins:
+            return _Refused(422, {"code": "bad_answer", "message":
+                                  "Only a purpose or a key field with a best guess joins a batch."})
+        return {"dry_run": call["json"]["dry_run"], "version": 8, "items": [
+            {"id": i, "label": i, "part": "purpose", "value": "invoice",
+             "value_label": "Invoice"} for i in ids]}
+
+    cards = approve(monkeypatch)
+    calls = fake_gateway(_M, monkeypatch, answer, user=_USER, client_class=_Client)
+    out = await _M.crm_accept_best_guesses()
+    assert [len(c["json"]["ids"]) for c in _dry(calls)] == [40, 40]
+    assert set(writes(calls)[0]["json"]["ids"]) == joins
+    assert len(cards) == 1 and "Accepted 40 best guesses" in out
+
+
+async def test_more_than_the_probe_that_cannot_batch_is_refused_in_words(monkeypatch) -> None:
+    """Each of 50 questions shows a best guess, and the route still refuses
+    the batch: past the probe, the tool asks for ids, with no bare 422."""
+    many = [{**_PURPOSE, "id": f"purpose:M{k:02d}", "label": f"M{k:02d}", "proposals": []}
+            for k in range(50)]
+
+    def answer(call: dict) -> Any:
+        if call["method"] == "GET":
+            return {"open": 50, "more": 0, "plan": 7, "shown": many}
+        return _Refused(422, {"code": "bad_answer", "message":
+                              "Only a purpose or a key field with a best guess joins a batch."})
+
+    cards = approve(monkeypatch)
+    calls = fake_gateway(_M, monkeypatch, answer, user=_USER, client_class=_Client)
+    out = await _M.crm_accept_best_guesses()
+    assert cards == [] and writes(calls) == [] and len(_dry(calls)) == 1
+    assert "Give at most 40 ids in question_ids" in out and "Nothing was changed" in out
+
+
+async def test_a_refusal_of_named_ids_has_one_full_stop(monkeypatch) -> None:
+    monkeypatch.delitem(_ROUTE_BEST, "key:Bills_X:amount")
+    approve(monkeypatch)
+    _gateway(monkeypatch)
+    out = await _M.crm_accept_best_guesses(["key:Bills_X:amount"])
+    assert ".." not in out and "joins a batch. One of them" in out
+
+
 def test_the_read_fence_takes_only_the_exact_dry_run() -> None:
     """The fence of "no write before consent" reads one POST as a read: the
     exact path with ``dry_run`` true. Mutation: widen it -> red."""
@@ -582,6 +638,40 @@ async def test_a_slot_answer_goes_into_the_draft_and_says_so(monkeypatch) -> Non
     assert _M._ANSWER_NOTE not in cards[0]["context"]
     assert "open draft version 8 of the field map" in out
     assert "The field map is at version" not in out
+
+
+async def test_a_term_answer_does_not_point_at_a_change_that_does_not_exist(
+    monkeypatch,
+) -> None:
+    """Round 3 (B). A term has no part, so the settings show it and cannot
+    change it (``correctionTarget`` is null)."""
+    term = {"id": "term:Bills_X:collection", "kind": "term", "module": "Bills_X",
+            "label": "Bills", "value": "collection", "reason": "open", "records": 4,
+            "why": "w", "none": False, "other": False, "dismissible": True,
+            "choices": [{"value": "Grand_Total", "label": "Grand Total", "best": True}]}
+    monkeypatch.setattr(_M, "_read_questions",
+                        _async({"open": 1, "more": 0, "plan": 7, "shown": [term]}))
+    approve(monkeypatch)
+    _gateway(monkeypatch)
+    out = await _M.crm_answer_setup_question("term:Bills_X:collection", "Grand Total")
+    assert _M._CHANGE_PLACE not in out
+    assert "Neither the chat nor the settings can change it now." in out
+
+
+async def test_a_dismissal_says_the_chat_cannot_undo_it(monkeypatch) -> None:
+    """Round 3 (C). The UI undoes a dismissal only from the toast of its own
+    click, and the chat sends no DELETE."""
+    cards = approve(monkeypatch)
+    _gateway(monkeypatch)
+    out = await _M.crm_dismiss_question("purpose:Collection")
+    assert "the chat cannot undo it" in cards[0]["context"]
+    assert "The chat cannot undo it." in out
+
+
+def _async(value: Any) -> Any:
+    async def _read(*_a: Any, **_k: Any) -> Any:
+        return value
+    return _read
 
 
 async def test_an_answer_says_where_to_change_or_undo_it(monkeypatch) -> None:

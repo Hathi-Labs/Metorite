@@ -125,9 +125,11 @@ around.
   `crm_answer_question`. The card of a batch shows what the CRM applies, and
   that can differ from the best guess of the list. A chat that read outside
   mail has no batch tool. Then answer each question on its own card. You
-  cannot change an answer in use, undo a dismissal or clear a pick. Send the
-  member to the tab Your answers of the Open questions section of the CRM
-  settings for those acts.
+  cannot change an answer in use: an admin uses the tab Your answers of the
+  Open questions section of the CRM settings. You cannot clear a pick: the
+  member uses "Your choices in the chat" in the Business rules section of
+  the CRM settings. Nobody can undo a dismissal from the chat. The CRM asks
+  the question again when the Zoho data behind it changes.
 
 ## Hard rules
 
