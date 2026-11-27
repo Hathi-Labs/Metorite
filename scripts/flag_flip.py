@@ -46,9 +46,10 @@ the checkout, and it prints the evidence and the rollback commands. When the
 chat-turn smoke is on (``SMOKE_CHAT_TURN=1``, task 4061), it runs that smoke
 after the flip.
 
-Exit codes: 0 flipped (or no change), 2 refused before any write, 3 the flip
-is not proved or a write failed (the tool then puts the files back), 4 the
-smoke failed after a proved flip.
+Exit codes: 0 the files and the services hold the value, 2 refused before
+any write, 3 a write failed (the tool puts the files back) or the flip is not
+proved (the files keep the new value, and the output names the rollback), 4
+the smoke failed after a proved flip.
 
 Fence: ``tests/unit/test_flag_flip.py``.
 """
@@ -225,7 +226,17 @@ def rewrite(path: Path, key: str, value: str) -> bytes:
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     out: list[str] = []
     done = False
+    inside = False  # inside a multi-line double-quoted value, such as a PEM
     for line in lines:
+        quotes = len(re.findall(r'(?<!\\)"', line))
+        if inside:
+            out.append(line)
+            inside = quotes % 2 == 0
+            continue
+        if re.match(r'^[ \t]*(?:export[ \t]+)?[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*"', line) and quotes % 2 == 1:
+            out.append(line)
+            inside = True
+            continue
         if pat.match(line):
             if not done:
                 nl = "\n" if line.endswith("\n") else ""
@@ -249,7 +260,9 @@ def write_in_place(path: Path, data: bytes) -> None:
     ``vps_apply.sh`` does. A full copy goes first to a temp file beside it. When
     the read-back differs, the copy stays and the write fails.
     """
-    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.flagflip.", dir=str(path.parent))
+    # The full copy holds secrets, so it goes beside the deploy lock, outside
+    # the checkout, at mode 600.
+    fd, tmp = tempfile.mkstemp(prefix="acb-flagflip-", dir=str(APP_DIR.parent))
     with os.fdopen(fd, "wb") as fh:
         fh.write(data)
         fh.flush()
@@ -303,13 +316,16 @@ def journal_cursor() -> str:
     raise RuntimeError("journalctl gave no cursor")
 
 
-def reload_gateway(key: str, cursor: str) -> str:
+def reload_gateway(key: str, cursor: str, expect_applied: bool = True) -> str:
     """SIGHUP the gateway main process and prove the reload. Returns the line.
 
     It reads only the entries AFTER *cursor*, so an older line never proves
     this flip. A ``flags.reload_refused`` or ``flags.reload_failed`` line
-    there fails the flip. The proof is a ``flags.reloaded`` line whose
-    ``applied=[...]`` names *key*.
+    there fails the flip. When the root .env changed (*expect_applied*), the
+    proof is a ``flags.reloaded`` line whose ``applied=[...]`` names *key*.
+    When it did not change, any ``flags.reloaded`` line proves it: the reload
+    compares the file with the values that the gateway runs, so a line that
+    does not name the key says that the gateway already runs the file value.
     """
     res = run(["sudo", "systemctl", "kill", "-s", "HUP", "--kill-whom=main", GATEWAY])
     if res.returncode != 0:
@@ -323,23 +339,30 @@ def reload_gateway(key: str, cursor: str) -> str:
                 raise RuntimeError(f"the gateway refused the reload: {line[:300]}")
         for line in lines:
             m = APPLIED_RE.search(line) if "flags.reloaded" in line else None
-            if m and re.search(rf"['\"]{key}['\"]", m.group(1), re.IGNORECASE):
+            if m and (not expect_applied or re.search(rf"['\"]{key}['\"]", m.group(1), re.IGNORECASE)):
                 return line[:300]
         if time.monotonic() >= deadline:
             raise RuntimeError(f"no flags.reloaded line applies {key} after {RELOAD_WAIT_S:.0f} s")
         time.sleep(1)
 
 
-def restart_edge(key: str, value: str) -> str:
-    """Restart the edge and prove that its process env holds the new value."""
+def _edge_env() -> tuple[str, list[str]]:
+    pid = run(["systemctl", "show", "-p", "MainPID", "--value", EDGE]).stdout.strip()
+    return pid, run(["sudo", "cat", f"/proc/{pid}/environ"]).stdout.split("\0")
+
+
+def sync_edge(key: str, value: str) -> str:
+    """Make the edge process run *value*: restart it when its env differs, then prove it."""
+    pid, env = _edge_env()
+    if f"{key}={value}" in env:
+        return f"acb-agent-edge pid {pid} already runs {key}={value!r}"
     if run(["sudo", "systemctl", "restart", EDGE], timeout=120).returncode != 0:
         raise RuntimeError("the restart of acb-agent-edge failed")
     time.sleep(3)
     if run(["systemctl", "is-active", EDGE]).stdout.strip() != "active":
         raise RuntimeError("acb-agent-edge is not active after the restart")
-    pid = run(["systemctl", "show", "-p", "MainPID", "--value", EDGE]).stdout.strip()
-    env = run(["sudo", "cat", f"/proc/{pid}/environ"]).stdout
-    if f"{key}={value}" not in env.split("\0"):
+    pid, env = _edge_env()
+    if f"{key}={value}" not in env:
         raise RuntimeError(f"the edge process env does not hold the new {key}")
     return f"acb-agent-edge restarted, pid {pid}, env holds {key}"
 
@@ -412,9 +435,14 @@ def flip(a: argparse.Namespace) -> int:
                 if time.monotonic() >= deadline:
                     raise Refused(f"a deploy or another flip holds {lock} after {LOCK_WAIT_S:.0f} s") from None
                 time.sleep(2)
-        return _flip_locked(a, key, app, root)
+        code = _flip_locked(a, key, app, root)
     finally:
         os.close(lock_fd)
+    # The smoke takes a shared hold of the deploy lock (smoke_chat.sh), so it
+    # runs only after this flip let the lock go.
+    if code == 0 and getattr(a, "_flipped", False):
+        return _smoke_after(a, app)
+    return code
 
 
 def target_files(app: Path, key: str) -> list[Path]:
@@ -449,16 +477,18 @@ def _flip_locked(a: argparse.Namespace, key: str, app: Path, root: Path) -> int:
     operation = "off" if a.off else "set" if a.set is not None else "add" if a.add is not None else "remove"
     new = new_items(key, cur, operation, a.set if a.set is not None else a.add if a.add is not None else a.remove)
     new_raw = ",".join(new)
-    if key in EMPTY_MEANS_ALL and not new and cur:
+    if key in EMPTY_MEANS_ALL and not new and any(read_key(f, key) for f in files):
         raise Refused(f"{key}: empty means EVERY org for this flag, so this would turn it on everywhere")
-    if new == cur and all(read_key(f, key) is not None for f in files):
-        print(f"flag_flip: {key} is already {old_raw!r}. No change.")
-        return 0
+    # Only a file whose bytes change is backed up and written. When no file
+    # changes, the tool still makes the services run the file value (a hand
+    # edit with no reload, or a value that only one file lacked).
+    plan = {f: rewrite(f, key, new_raw) for f in files}
+    changed = [f for f in files if plan[f] != f.read_bytes()]
     if not gateway_reloads():
         raise Refused("the gateway does not report flag_reload: true on /version")
 
     print(f"flag_flip: {key}: {old_raw!r} -> {new_raw!r}")
-    print("flag_flip: files: " + ", ".join(str(f.relative_to(app)) for f in files))
+    print("flag_flip: files that change: " + (", ".join(str(f.relative_to(app)) for f in changed) or "none"))
     if a.dry_run:
         print("flag_flip: dry run. Nothing was written.")
         return 0
@@ -469,11 +499,17 @@ def _flip_locked(a: argparse.Namespace, key: str, app: Path, root: Path) -> int:
         raise Refused(str(exc)) from None
     t0 = time.time()
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(t0))
-    baks = {f: backup(f, stamp, a.task) for f in files}
-    edge_changed = edge in files
+    baks: dict[Path, Path] = {}
     try:
-        for f in files:
-            write_in_place(f, rewrite(f, key, new_raw))
+        for f in changed:
+            baks[f] = backup(f, stamp, a.task)
+    except OSError as exc:
+        for bak in baks.values():
+            bak.unlink(missing_ok=True)
+        raise Refused(f"the backup failed ({exc})") from None
+    try:
+        for f in changed:
+            write_in_place(f, plan[f])
     except (OSError, RuntimeError) as exc:
         print(f"flag_flip: WRITE FAILED: {exc}. The tool puts each file back from its backup.", file=sys.stderr)
         restored = True
@@ -483,26 +519,29 @@ def _flip_locked(a: argparse.Namespace, key: str, app: Path, root: Path) -> int:
             except (OSError, RuntimeError):
                 restored = False
                 print(f"  restore by hand: cat {bak} > {f}", file=sys.stderr)
-        _record(app, t0, a, key, old_raw, new_raw, files, "write failed" + ("" if restored else ", not restored"))
+        _record(app, t0, a, key, old_raw, new_raw, changed, "write failed" + ("" if restored else ", not restored"))
         return 3
 
+    edge_used = edge in files
     evidence: list[str] = []
     result = "proved"
     code = 0
     try:
-        evidence.append("gateway: " + reload_gateway(key, cursor))
-        if edge_changed:
-            evidence.append(restart_edge(key, new_raw))
+        evidence.append("gateway: " + reload_gateway(key, cursor, expect_applied=root in changed))
+        if edge_used:
+            evidence.append(sync_edge(key, new_raw))
     except RuntimeError as exc:
         result, code = f"not proved: {exc}", 3
 
-    _record(app, t0, a, key, old_raw, new_raw, files, result)
-    _print_report(evidence, baks, edge_changed)
+    _record(app, t0, a, key, old_raw, new_raw, changed, result)
+    _print_report(evidence, baks, edge_used)
     if code:
-        print(f"flag_flip: FLIP NOT PROVED: {result[len('not proved: '):]}", file=sys.stderr)
+        print(f"flag_flip: FLIP NOT PROVED: {result[len('not proved: '):]}. The files keep the new value.",
+              file=sys.stderr)
         return code
-    print(f"flag_flip: OK {key} flipped and proved at {stamp}.")
-    return _smoke_after(a, app)
+    print(f"flag_flip: OK {key} is {new_raw!r} in the files and the services, proved at {stamp}.")
+    a._flipped = True
+    return 0
 
 
 def _record(app: Path, t0: float, a: argparse.Namespace, key: str, old_raw: str, new_raw: str,

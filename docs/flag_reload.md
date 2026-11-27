@@ -897,9 +897,16 @@ each env file in place, so the file keeps its inode. It writes the root `.env`.
 For a flag in `EDGE_FLAGS`, it also writes `apps/services/agent_edge/.env`,
 because the edge reads only that file.
 
-Then the tool sends the SIGHUP above, and waits for the `flags.reloaded` line
-that names the key. It restarts `acb-agent-edge` when the edge file changed,
-and checks the env of the new process.
+Then the tool sends the SIGHUP above, and reads the gateway log after that
+point. When the root `.env` changed, the `flags.reloaded` line must name the
+key. When it did not change, a line that applies nothing proves that the
+gateway already runs the file value. For an edge flag, the tool restarts
+`acb-agent-edge` when its process runs another value, and checks the new
+process.
+
+So the tool also repairs a hand edit: run it with the value that the files
+already hold, and it makes each service run that value. The chat-turn smoke
+runs after the tool frees the deploy lock.
 
 The tool prints the rollback commands. It appends one line to
 `/opt/acb/acb-flag-flips.log`. Fence: `tests/unit/test_flag_flip.py`.

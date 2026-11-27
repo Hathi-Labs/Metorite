@@ -1507,13 +1507,15 @@ class FlagRegistry(BaseSettings):
 #: (CLAUDE.md §3a rule 3): a flip moves money or credits, reaches a real person
 #: or a third party, or changes who may act as whom. `scripts/flag_flip.py`
 #: refuses each one without `--owner-approved <answer id>`. A comment above
-#: that says owner-only, "only the owner", billed, credits, "real person",
-#: "vendor money" or "does not cover" puts its flag here. Fence:
+#: that says owner-only, "only the owner", billed, credits, "pays",
+#: "real person", "vendor money", "does not cover" or H-166 puts its flag
+#: here. Fence:
 #: tests/unit/test_flag_flip.py scans those comments and fails on a flag that
 #: is missing here.
 OWNER_ONLY_FLAGS: frozenset[str] = frozenset({
     "agent_access_orgs",
     "agent_change_access_orgs",
+    "ai_turn_kind_nowait_orgs",
     "app_owner_root_orgs",
     "app_requests_orgs",
     "assistant_chat_summary_orgs",
@@ -1527,6 +1529,7 @@ OWNER_ONLY_FLAGS: frozenset[str] = frozenset({
     "crm_digest_orgs",
     "crm_module_reread_orgs",
     "crm_note_search_orgs",
+    "decide_feature_modes",
     "due_push_orgs",
     "github_app_orgs",
     "headless_turn_orgs",

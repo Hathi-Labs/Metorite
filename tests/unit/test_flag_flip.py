@@ -45,6 +45,7 @@ FAKE = {
         'case "$*" in\n'
         '  *"kill -s HUP"*) [ -f "$FAKE_DIR/hup_fails" ] && exit 1; '
         'cat "$FAKE_DIR/reload_line" >> "$FAKE_DIR/journal" 2>/dev/null; exit 0 ;;\n'
+        '  *"restart acb-agent-edge"*) [ -f "$FAKE_DIR/environ.after" ] && mv "$FAKE_DIR/environ.after" "$FAKE_DIR/environ"; exit 0 ;;\n'
         '  *is-active*) echo active ;;\n'
         '  *MainPID*) echo 4242 ;;\n'
         "esac\nexit 0\n"
@@ -121,7 +122,7 @@ def test_add_an_org_rewrites_one_line_and_keeps_every_other_byte(box, capsys):
     audit = (box.app.parent / "acb-flag-flips.log").read_text().split("\t")
     assert audit[1:5] == ["4086", "TOOL_PACKS_ORGS", ORG1, f"{ORG1},{ORG2}"]
     out = capsys.readouterr().out
-    assert "OK TOOL_PACKS_ORGS flipped and proved" in out and "cat " in out
+    assert "OK TOOL_PACKS_ORGS is" in out and "proved at" in out and "cat " in out
 
 
 def test_a_name_outside_the_registry_is_refused_before_any_write(box):
@@ -138,13 +139,13 @@ def test_an_owner_only_flag_needs_the_owner_answer(box):
     assert flip("AGENT_ACCESS_ORGS", "--set", ORG1, "--task", "1") == 2
     assert box.root.read_bytes() == before
     box.reload_line("flags.reloaded applied=['AGENT_ACCESS_ORGS']")
-    (box.fake / "environ").write_text(f"A=1\0AGENT_ACCESS_ORGS={ORG1}\0")
+    (box.fake / "environ.after").write_text(f"A=1\0AGENT_ACCESS_ORGS={ORG1}\0")
     assert flip("AGENT_ACCESS_ORGS", "--set", ORG1, "--task", "1", "--owner-approved", "not-a-uuid") == 2
     assert flip("AGENT_ACCESS_ORGS", "--set", ORG1, "--task", "1", "--owner-approved",
                 "64887a7a-c190-44d1-a360-61e813b8f118", "--no-smoke") == 0
     # Closing an owner-only flag is the safe way, and needs no answer.
     box.reload_line("flags.reloaded applied=['AGENT_ACCESS_ORGS']")
-    (box.fake / "environ").write_text("A=1\0AGENT_ACCESS_ORGS=\0")
+    (box.fake / "environ.after").write_text("A=1\0AGENT_ACCESS_ORGS=\0")
     assert flip("AGENT_ACCESS_ORGS", "--off", "--task", "1", "--no-smoke") == 0
 
 
@@ -193,7 +194,7 @@ def test_an_edge_held_key_changes_both_files_and_restarts_the_edge(box):
     box.reload_line("flags.reloaded applied=['MCP_IMAGE_UPLOAD_ORGS']")
     for f in (box.root, box.app / EDGE):
         f.write_text(f.read_text() + "MCP_IMAGE_UPLOAD_ORGS=\n")
-    (box.fake / "environ").write_text(f"X=1\0MCP_IMAGE_UPLOAD_ORGS={ORG1}\0")
+    (box.fake / "environ.after").write_text(f"X=1\0MCP_IMAGE_UPLOAD_ORGS={ORG1}\0")
     assert flip("MCP_IMAGE_UPLOAD_ORGS", "--add", ORG1, "--task", "1", "--no-smoke") == 0
     assert f"MCP_IMAGE_UPLOAD_ORGS={ORG1}\n" in (box.app / EDGE).read_text()
     assert "restart acb-agent-edge" in box.calls()
@@ -203,7 +204,7 @@ def test_the_edge_env_must_hold_the_new_value_after_the_restart(box):
     box.reload_line("flags.reloaded applied=['MCP_IMAGE_UPLOAD_ORGS']")
     for f in (box.root, box.app / EDGE):
         f.write_text(f.read_text() + "MCP_IMAGE_UPLOAD_ORGS=\n")
-    (box.fake / "environ").write_text("X=1\0MCP_IMAGE_UPLOAD_ORGS=\0")  # the old value
+    (box.fake / "environ.after").write_text("X=1\0MCP_IMAGE_UPLOAD_ORGS=\0")  # the old value
     assert flip("MCP_IMAGE_UPLOAD_ORGS", "--add", ORG1, "--task", "1", "--no-smoke") == 3
 
 
@@ -213,11 +214,15 @@ def test_a_value_that_differs_between_files_is_refused(box):
     assert flip("MCP_IMAGE_UPLOAD_ORGS", "--add", ORG2, "--task", "1") == 2
 
 
-def test_dry_run_and_no_change_write_nothing(box, capsys):
+def test_dry_run_writes_nothing_and_no_change_still_syncs_the_gateway(box):
     before = box.root.read_bytes()
     assert flip("TOOL_PACKS_ORGS", "--add", ORG2, "--task", "1", "--dry-run") == 0
-    assert flip("TOOL_PACKS_ORGS", "--add", ORG1, "--task", "1") == 0
     assert box.root.read_bytes() == before and "HUP" not in box.calls()
+    # No file changes. The gateway reload still runs, and a line that applies
+    # nothing proves that the gateway already runs the file value.
+    box.reload_line("flags.reloaded applied=[] restart=[]")
+    assert flip("TOOL_PACKS_ORGS", "--add", ORG1, "--task", "1", "--no-smoke") == 0
+    assert box.root.read_bytes() == before and "HUP" in box.calls()
     assert not list(box.app.glob(".env.bak.*"))
 
 
@@ -294,7 +299,7 @@ def test_the_flip_keeps_the_inode_of_each_env_file(box):
     box.reload_line("flags.reloaded applied=['MCP_IMAGE_UPLOAD_ORGS']")
     edge = box.app / EDGE
     inodes = (box.root.stat().st_ino, edge.stat().st_ino)
-    (box.fake / "environ").write_text(f"X=1\0MCP_IMAGE_UPLOAD_ORGS={ORG1}\0")
+    (box.fake / "environ.after").write_text(f"X=1\0MCP_IMAGE_UPLOAD_ORGS={ORG1}\0")
     assert flip("MCP_IMAGE_UPLOAD_ORGS", "--add", ORG1, "--task", "1", "--no-smoke") == 0
     assert (box.root.stat().st_ino, edge.stat().st_ino) == inodes
     assert not list(box.app.rglob(".*.flagflip.*"))  # no temp copy is left
@@ -302,7 +307,7 @@ def test_the_flip_keeps_the_inode_of_each_env_file(box):
 
 def test_an_edge_flag_goes_into_the_edge_file_even_when_it_is_absent(box):
     box.reload_line("flags.reloaded applied=['PLAYBOOK_ORGS']")
-    (box.fake / "environ").write_text(f"X=1\0PLAYBOOK_ORGS={ORG1}\0")
+    (box.fake / "environ.after").write_text(f"X=1\0PLAYBOOK_ORGS={ORG1}\0")
     assert flip("PLAYBOOK_ORGS", "--add", ORG1, "--task", "1", "--no-smoke") == 0
     assert f"PLAYBOOK_ORGS={ORG1}\n" in (box.app / EDGE).read_text()
     assert f"PLAYBOOK_ORGS={ORG1}\n" in box.root.read_text()
@@ -330,7 +335,7 @@ def test_edge_flags_holds_each_registry_flag_that_the_edge_reads():
 
 OWNER_MARK = re.compile(
     r"owner-only|owner only|only the owner|billed|credit|is the owner's|flip is the owner|does not cover"
-    r"|real person|vendor money|spends? model",
+    r"|real person|vendor money|spends? model|\bpays\b|H-166",
     re.IGNORECASE,
 )
 
@@ -377,7 +382,7 @@ def test_set_fixes_a_value_that_differs_between_files(box):
     box.reload_line("flags.reloaded applied=['MCP_IMAGE_UPLOAD_ORGS']")
     box.root.write_text(box.root.read_text() + f"MCP_IMAGE_UPLOAD_ORGS={ORG1}\n")
     (box.app / EDGE).write_text((box.app / EDGE).read_text() + "MCP_IMAGE_UPLOAD_ORGS=\n")
-    (box.fake / "environ").write_text(f"X=1\0MCP_IMAGE_UPLOAD_ORGS={ORG2}\0")
+    (box.fake / "environ.after").write_text(f"X=1\0MCP_IMAGE_UPLOAD_ORGS={ORG2}\0")
     assert flip("MCP_IMAGE_UPLOAD_ORGS", "--set", ORG2, "--task", "1", "--no-smoke") == 0
     assert f"MCP_IMAGE_UPLOAD_ORGS={ORG2}\n" in (box.app / EDGE).read_text()
 
@@ -385,7 +390,7 @@ def test_set_fixes_a_value_that_differs_between_files(box):
 def test_a_key_only_in_the_edge_file_is_not_drift(box):
     box.reload_line("flags.reloaded applied=['PLAYBOOK_ORGS']")
     (box.app / EDGE).write_text((box.app / EDGE).read_text() + f"PLAYBOOK_ORGS={ORG1}\n")
-    (box.fake / "environ").write_text(f"X=1\0PLAYBOOK_ORGS={ORG1},{ORG2}\0")
+    (box.fake / "environ.after").write_text(f"X=1\0PLAYBOOK_ORGS={ORG1},{ORG2}\0")
     assert flip("PLAYBOOK_ORGS", "--add", ORG2, "--task", "1", "--no-smoke") == 0
     assert f"PLAYBOOK_ORGS={ORG1},{ORG2}\n" in box.root.read_text()
 
@@ -443,4 +448,113 @@ def test_empty_means_all_matches_its_reader():
     """ASSISTANT_PROFILE_ORGS: empty is every org. A change of the reader must update the set."""
     src = (REPO / "packages/acb_common/acb_common/assistant_profile.py").read_text(encoding="utf-8")
     assert "return not orgs or org in orgs" in src
-    assert ff.EMPTY_MEANS_ALL == frozenset({"ASSISTANT_PROFILE_ORGS"})
+    assert set(ff.EMPTY_MEANS_ALL) == {"ASSISTANT_PROFILE_ORGS"}
+
+
+def test_the_incident_case_an_edge_file_that_lacks_the_key_is_repaired(box):
+    """2026-11-27: the root holds the value, the edge file does not."""
+    box.root.write_text(box.root.read_text() + f"PLAYBOOK_ORGS={ORG1}\n")
+    box.reload_line("flags.reloaded applied=[] restart=[]")  # the root did not change
+    (box.fake / "environ").write_text("X=1\0")
+    (box.fake / "environ.after").write_text(f"X=1\0PLAYBOOK_ORGS={ORG1}\0")
+    assert flip("PLAYBOOK_ORGS", "--add", ORG1, "--task", "1", "--no-smoke") == 0
+    assert f"PLAYBOOK_ORGS={ORG1}\n" in (box.app / EDGE).read_text()
+    assert "restart acb-agent-edge" in box.calls()
+
+
+def test_a_hand_edit_with_no_restart_is_made_live(box):
+    box.root.write_text(box.root.read_text() + f"PLAYBOOK_ORGS={ORG1}\n")
+    (box.app / EDGE).write_text((box.app / EDGE).read_text() + f"PLAYBOOK_ORGS={ORG1}\n")
+    box.reload_line("flags.reloaded applied=[] restart=[]")
+    (box.fake / "environ").write_text("X=1\0PLAYBOOK_ORGS=\0")  # the edge runs the old value
+    (box.fake / "environ.after").write_text(f"X=1\0PLAYBOOK_ORGS={ORG1}\0")
+    assert flip("PLAYBOOK_ORGS", "--add", ORG1, "--task", "1", "--no-smoke") == 0
+    assert "restart acb-agent-edge" in box.calls()
+
+
+def test_an_edge_that_runs_the_value_is_not_restarted(box):
+    box.root.write_text(box.root.read_text() + f"PLAYBOOK_ORGS={ORG1}\n")
+    (box.app / EDGE).write_text((box.app / EDGE).read_text() + f"PLAYBOOK_ORGS={ORG1}\n")
+    box.reload_line("flags.reloaded applied=[] restart=[]")
+    (box.fake / "environ").write_text(f"X=1\0PLAYBOOK_ORGS={ORG1}\0")
+    assert flip("PLAYBOOK_ORGS", "--add", ORG1, "--task", "1", "--no-smoke") == 0
+    assert "restart acb-agent-edge" not in box.calls()
+
+
+def test_set_empty_makes_drifted_files_one(box):
+    box.reload_line("flags.reloaded applied=['MCP_IMAGE_UPLOAD_ORGS']")
+    box.root.write_text(box.root.read_text() + f"MCP_IMAGE_UPLOAD_ORGS={ORG1}\n")
+    (box.app / EDGE).write_text((box.app / EDGE).read_text() + f"MCP_IMAGE_UPLOAD_ORGS={ORG2}\n")
+    (box.fake / "environ.after").write_text("X=1\0MCP_IMAGE_UPLOAD_ORGS=\0")
+    assert flip("MCP_IMAGE_UPLOAD_ORGS", "--set", "", "--task", "1", "--no-smoke") == 0
+    assert "MCP_IMAGE_UPLOAD_ORGS=\n" in box.root.read_text()
+    assert "MCP_IMAGE_UPLOAD_ORGS=\n" in (box.app / EDGE).read_text()
+
+
+def test_an_empty_means_all_flag_is_not_emptied_under_drift(box):
+    box.root.write_text(box.root.read_text() + f"ASSISTANT_PROFILE_ORGS={ORG1}\n")
+    (box.app / EDGE).write_text((box.app / EDGE).read_text() + f"ASSISTANT_PROFILE_ORGS={ORG2}\n")
+    assert flip("ASSISTANT_PROFILE_ORGS", "--set", "", "--task", "1") == 2
+
+
+def test_the_smoke_runs_after_the_deploy_lock_is_free(box, monkeypatch):
+    import fcntl
+
+    seen = []
+
+    def smoke(app):
+        fd = os.open(box.app.parent / "acb-deploy.lock", os.O_RDONLY)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)  # smoke_chat.sh takes a shared hold
+            seen.append("free")
+        except BlockingIOError:
+            seen.append("busy")
+        finally:
+            os.close(fd)
+        return True
+
+    monkeypatch.setattr(ff, "run_smoke", smoke)
+    (box.app / "deploy").mkdir()
+    (box.app / "deploy/smoke_chat.sh").write_text("exit 0\n")
+    box.root.write_text(box.root.read_text() + "SMOKE_CHAT_TURN=1\n")
+    box.reload_line("flags.reloaded applied=['TOOL_PACKS_ORGS']")
+    assert flip("TOOL_PACKS_ORGS", "--add", ORG2, "--task", "1") == 0
+    assert seen == ["free"]
+
+
+def test_a_key_line_inside_a_multi_line_value_is_kept(tmp_path):
+    p = tmp_path / ".env"
+    p.write_text('PEM="l1\nTOOL_PACKS_ORGS=x\nl3"\nTOOL_PACKS_ORGS=a\nB=2\n')
+    assert ff.rewrite(p, "TOOL_PACKS_ORGS", "b").decode() == 'PEM="l1\nTOOL_PACKS_ORGS=x\nl3"\nTOOL_PACKS_ORGS=b\nB=2\n'
+
+
+def test_a_failed_backup_is_refused_and_leaves_nothing(box, monkeypatch):
+    def broken(path, stamp, task):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ff, "backup", broken)
+    before = box.root.read_bytes()
+    assert flip("TOOL_PACKS_ORGS", "--add", ORG2, "--task", "1") == 2
+    assert box.root.read_bytes() == before and "HUP" not in box.calls()
+
+
+def test_the_temp_copy_is_outside_the_checkout(box, monkeypatch):
+    """The full copy holds secrets. A failed read-back keeps it, so it must not sit in the checkout."""
+    dirs = []
+    real = ff.tempfile.mkstemp
+
+    def spy(*args, **kw):
+        dirs.append(Path(kw["dir"]))
+        return real(*args, **kw)
+
+    monkeypatch.setattr(ff.tempfile, "mkstemp", spy)
+    box.reload_line("flags.reloaded applied=['TOOL_PACKS_ORGS']")
+    assert flip("TOOL_PACKS_ORGS", "--add", ORG2, "--task", "1", "--no-smoke") == 0
+    assert dirs and all(d == box.app.parent for d in dirs)
+
+
+def test_an_owner_only_flag_can_be_removed_with_no_answer(box):
+    box.root.write_text(box.root.read_text() + f"CRM_DIGEST_ORGS={ORG1},{ORG2}\n")
+    box.reload_line("flags.reloaded applied=['CRM_DIGEST_ORGS']")
+    assert flip("CRM_DIGEST_ORGS", "--remove", ORG1, "--task", "1", "--no-smoke") == 0
+    assert flip("CRM_DIGEST_ORGS", "--add", ORG1, "--task", "1") == 2
