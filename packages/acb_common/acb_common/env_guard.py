@@ -468,7 +468,7 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # CIV-14f: the answer watcher of the home box (scripts/home_server). The
     # token is a read-only box token. A tenant must never save these.
     "METORITE_WATCHER_TOKEN", "METORITE_WATCHER_STATE", "METORITE_REPO",
-    "METORITE_MCP_URL", "WATCHER_CLAUDE_CMD",
+    "METORITE_MCP_URL", "WATCHER_CLAUDE_CMD", "METORITE_WATCHER_HELPER", "METORITE_WATCHER_BOX_ENV",
     # Task 4062: the host name of the box lanes, for the answered route.
     "METORITE_BOX_HOST",
     # Task 4086: the guarded flag flip (scripts/flag_flip.py) on the box, and
