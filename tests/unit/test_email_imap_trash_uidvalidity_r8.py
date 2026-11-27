@@ -179,14 +179,28 @@ async def test_the_read_prefers_the_message_id_column_and_keeps_to_its_tenant(
         empty = _seed(m, "5", thread_id="<E@test>", imid="")
         none = _seed(m, "6", thread_id=None)
         foreign = _seed(other, "7", thread_id="<X@test>")
+        # Task 4100: a Drafts or Sent row never falls back to ``thread_id``,
+        # which can hold the In-Reply-To of its parent. A row that the delete
+        # route already set to ``trash`` keeps the fallback.
+        draft = _seed(m, "8", thread_id="<PARENT@test>", folder="drafts")
+        sent = _seed(m, "9", thread_id="<PARENT@test>", folder="Sent")
+        own = _seed(m, "10", thread_id="<PARENT@test>", imid="<OWN@test>",
+                    folder="drafts")
+        trashed = _seed(m, "11", thread_id="<T@test>", folder="trash")
+        upper = _seed(m, "12", thread_id="<U@test>", folder="INBOX")
         imap = _imap(_server())
+        rows = (both, empty, none, foreign, draft, sent, own, trashed, upper)
         async with _as_member(m), core._tenant_session() as db:
-            got = {rid: await core._trash_message_id(db, imap, rid)
-                   for rid in (both, empty, none, foreign)}
-            many = await core._trash_message_ids(db, imap, m.aid, ["4", "5", "6", "7"])
+            got = {rid: await core._trash_message_id(db, imap, rid) for rid in rows}
+            many = await core._trash_message_ids(
+                db, imap, m.aid, ["4", "5", "6", "7", "8", "9", "10", "11", "12"])
             gmail_like = await core._trash_message_id(db, SimpleNamespace(), both)
-        assert got == {both: "<D@test>", empty: "<E@test>", none: None, foreign: None}
-        assert many == {"4": "<D@test>", "5": "<E@test>", "6": None}
+        assert got == {both: "<D@test>", empty: "<E@test>", none: None, foreign: None,
+                       draft: None, sent: None, own: "<OWN@test>",
+                       trashed: "<T@test>", upper: "<U@test>"}
+        assert many == {"4": "<D@test>", "5": "<E@test>", "6": None, "8": None,
+                        "9": None, "10": "<OWN@test>", "11": "<T@test>",
+                        "12": "<U@test>"}
         assert gmail_like is None
     finally:
         _drop(m, other)
