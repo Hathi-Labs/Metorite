@@ -14,7 +14,8 @@
 #         runs only when a side adds or changes a migration (infra/postgres/ or
 #         infra/customer_console/), or when the picker's list holds an R8 suite
 #         (`affected_tests.py --r8`). An R8 suite needs both database variables.
-#         A step with no answer FAILs. A cap hit at a step's own cap is UNPROVEN.
+#         A step with no answer FAILs. A cap hit at the step's own cap is UNPROVEN
+#         (exit 0), except at the picker and at `--r8`: a cap hit there FAILs.
 #   WHO MAY USE auto: a merger that runs --no-tests today. For it, auto is stricter.
 #   A switch of the merge bot, or of a merger that runs the default, to auto
 #   loosens the gate. That switch, and a change of the default, is the owner's.
@@ -58,7 +59,7 @@
 set -euo pipefail
 
 # CIV-MT (task 3277): the merge test is ON by default. PREMERGE_MERGE_TEST=0 or
-# --no-tests turns it off. --with-tests stays as a no-op alias, for old callers.
+# --no-tests turns it off. --with-tests resets the mode to the default (old callers use it).
 # LBB-5a (task 4046): PREMERGE_MERGE_TEST=auto or --auto-tests. In auto, merge_test stays 1,
 # so the type check and the picker run as in the default. Only step 4 asks auto first.
 merge_test=1
@@ -567,7 +568,24 @@ fi
 if [ "$no_picker" = 1 ]; then
   say "UNPROVEN. scripts/premerge_select.py is not in the merge result, so no test was picked. Merge $BASE once the script has landed on it."
 elif [ "$auto_skip" = 1 ]; then
-  say "auto: no migration and no R8 suite in the merge. The trial merge, the fences, the type check and the green pr-check decide."
+  # Where the default says UNPROVEN, auto says UNPROVEN too, never the skip line (review of
+  # PR 2921, P3). The exit stays 0, as in the default. No test ran, so the lines say so.
+  picked_n="$(grep -c . "$logs/sel.txt" || true)"
+  unproven=0
+  if [ "$picked_n" = 0 ]; then
+    say "UNPROVEN. The selector picked no test, so NO test ran on the merge result. Nothing is proven here. pr-check is the evidence."
+    unproven=1
+  fi
+  if [ "$both_full" = 1 ]; then
+    say "UNPROVEN. Both sides changed a file that makes every test affected, and auto ran no test (no migration and no R8 suite in the merge). pr-check is the evidence."
+    unproven=1
+  elif [ -s "$logs/note.txt" ] && grep -q . "$logs/note.txt"; then
+    say "UNPROVEN. The selector says every test is affected by: $(cat "$logs/note.txt"), and auto ran no test (no migration and no R8 suite in the merge). pr-check is the evidence."
+    unproven=1
+  fi
+  if [ "$unproven" = 0 ]; then
+    say "auto: no migration and no R8 suite in the merge. The trial merge, the fences, the type check and the green pr-check decide."
+  fi
 elif [ "$merge_test" = 0 ]; then
   say "the affected tests did not run (PREMERGE_MERGE_TEST=0 or --no-tests). pr-check and main run them."
 else

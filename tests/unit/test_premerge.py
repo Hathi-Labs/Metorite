@@ -88,7 +88,8 @@ def _at(h: int, m: int) -> int:
 def _run(repo: Path, *args: str, **env: str) -> subprocess.CompletedProcess[str]:
     # The throwaway repo has no scripts/affected_tests.py: stub the test run unless a case sets it.
     # 10:00 UTC is outside every release freeze window, so the cases do not depend on the clock.
-    env = {"PREMERGE_AFFECTED_CMD": "true", "PREMERGE_RERUN_CMD": "true",
+    # PREMERGE_MERGE_TEST=1 pins the default: a merger that exports auto must not run these in auto.
+    env = {"PREMERGE_MERGE_TEST": "1", "PREMERGE_AFFECTED_CMD": "true", "PREMERGE_RERUN_CMD": "true",
            "PREMERGE_NOW": str(_at(10, 0)), **env}
     return subprocess.run([_BASH, SCRIPT.as_posix(), *args], cwd=repo, capture_output=True,
                           text=True, encoding="utf-8", env={**_ENV, **env}, timeout=120)
@@ -746,7 +747,9 @@ def test_premerge_refuses_an_override_that_is_not_a_task_number(repo):
 # variables, so `_run_auto` drops both and sets only the ones a case names. `_run` sets
 # PREMERGE_AFFECTED_CMD=true, and then R counts as true, so `_run_auto` clears it and each case
 # commits a stub picker and a stub scripts/affected_tests.py that answers `--r8`.
-_R8_VARS = ("CUSTOMER_CONSOLE_DATABASE_URL", "TENANT_LADDER_DATABASE_URL")
+# The names are built, never written out: a literal name makes this file an R8 file for
+# `affected_tests.r8_files()`, and then the release R8 gate runs it (review of PR 2921, P3).
+_R8_VARS = tuple(f"{p}_DATABASE_URL" for p in ("CUSTOMER_CONSOLE", "TENANT_LADDER"))
 _R8_SUITE = "tests/unit/test_db_r8.py"
 _PLAIN = "tests/unit/test_plain.py"
 _SKIP_LINE = ("auto: no migration and no R8 suite in the merge. The trial merge, the fences, "
@@ -979,3 +982,44 @@ def test_auto_fails_with_no_picker_where_the_default_passes(repo):
     res = _run_auto(repo, db=_R8_VARS)
     assert res.returncode == 1, res.stdout
     assert "auto: scripts/premerge_select.py is not in the merge result" in res.stderr
+
+
+def test_auto_with_an_empty_picker_list_is_unproven(repo):
+    """Review of PR 2921, P3: where the default says UNPROVEN, auto says it too, not the skip line."""
+    fake = _auto_stubs(repo)
+    _commit(repo, "a_feat.py")
+    _advance_main(repo, "other.py")
+    res = _run_auto(repo, PREMERGE_PYTEST_CMD=f"bash {fake.as_posix()}")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "UNPROVEN. The selector picked no test" in res.stdout
+    assert _SKIP_LINE not in res.stdout and _pytest_ran(repo) == ""
+
+
+def test_auto_with_both_sides_full_and_neither_m_nor_r_is_unproven(repo):
+    fake = _auto_stubs(repo, "FULL", "tests/unit/test_changed.py")
+    _commit(repo, "a_feat.py")
+    _advance_main(repo, "other.py")
+    res = _run_auto(repo, PREMERGE_PYTEST_CMD=f"bash {fake.as_posix()}")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "UNPROVEN. Both sides changed a file that makes every test affected" in res.stdout
+    assert _SKIP_LINE not in res.stdout and _pytest_ran(repo) == ""
+
+
+def test_auto_counts_an_empty_database_variable_as_unset(repo):
+    fake = _auto_stubs(repo, _R8_SUITE)
+    _commit(repo, "a_feat.py")
+    _advance_main(repo, "other.py")
+    res = _run_auto(repo, db=_R8_VARS, PREMERGE_PYTEST_CMD=f"bash {fake.as_posix()}",
+                    **{_R8_VARS[1]: ""})
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert _DB_FAIL in res.stderr and _pytest_ran(repo) == ""
+
+
+def test_auto_counts_a_customer_console_file_as_a_migration(repo):
+    fake = _auto_stubs(repo, _PLAIN)
+    _commit(repo, "a_feat.py")
+    _advance_main(repo, "infra/customer_console/020_x.sql")
+    res = _run_auto(repo, PREMERGE_PYTEST_CMD=f"bash {fake.as_posix()}")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "auto: migration infra/customer_console/020_x.sql" in res.stdout
+    assert f"{_PLAIN}|" in _pytest_ran(repo)

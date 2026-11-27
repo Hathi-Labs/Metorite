@@ -756,7 +756,7 @@ cannot drift.
 LBB-2, the claim gate, dark (task 4041, both flags empty, no flip); LBB-4
 (task 4042); LBB-3a (task 4043); LBB-1a (task 4044); LBB-6a (task 4045). LBB-2b (task 4056)
 merged as 021ea5cd55, live at the next release. Not built: LBB-1b, LBB-2c,
-LBB-3b, LBB-6b. LBB-5a is built, not merged (§7b.9), and the default is unchanged.** Each slice ships dark when it is built. Epic: WS-CIV task 1628.
+LBB-3b, LBB-6b. LBB-5a is built (PR 2921, §7b.9), and the default is unchanged.** Each slice ships dark when it is built. Epic: WS-CIV task 1628.
 Spec task: 4040 (LBB-0). Part A, the backlog itself, is task 4019 (lane-land)
 and task 4039 (pc-land-core). `ci_velocity.md` points here.
 
@@ -1618,8 +1618,8 @@ verifier, an Opus diff-review and R8 tests on a real database.
 
 ### 7b.9 LBB-5a: the merge test runs only where the merge adds the most risk (task 4046)
 
-**Status.** BUILT, 2026-11-27, on branch `lbb5-merge-test-auto-mt-9dfb928d`,
-not merged. The default stays `1`, and no merger uses `auto` yet.
+**Status.** BUILT (PR 2921), 2026-11-27. The default stays `1`, and no
+merger uses `auto` yet.
 Spec, 2026-11-27. The owner chose "build auto now, default
 unchanged; mergers may switch from --no-tests to auto" on task 4046 (answer
 a5af3552, 06:59 UTC). Tier HIGH: the merge path.
@@ -1673,8 +1673,9 @@ In `auto`:
    `auto: R8 suite <file>`, the first of each.
 
 **When `auto` FAILs, and when it says UNPROVEN.** A step that gives no answer
-at all FAILs. A step that runs and hits its time cap prints UNPROVEN and
-exits 0, as the default mode does. The merger then writes "UNPROVEN" in its
+at all FAILs. A step that runs and hits its own time cap prints UNPROVEN and
+exits 0, as the default mode does. The picker and `--r8` are the two
+exceptions: a cap hit there FAILs (the list below). The merger then writes "UNPROVEN" in its
 DONE line. For a merger that runs `--no-tests` today, that is never looser.
 - The picker fails, times out or is killed: FAIL, as the default mode does.
 - The picker is absent: FAIL. The default mode prints UNPROVEN and exits 0
@@ -1697,8 +1698,13 @@ DONE line. For a merger that runs `--no-tests` today, that is never looser.
 default mode, `auto` skips step 4 when M and R are both false. Then one case
 can pass: (a) a hermetic test that passes on each side alone and fails after
 the merge, as the collisions of 2026-11-13 and 2026-11-14 did
-(`premerge_select.py`). The type check case (TS2739) passes only when the
-type check hits its cap, and then the line says UNPROVEN.
+(`premerge_select.py`).
+
+The type check case (TS2739) passes only where the type check gives no
+verdict, as in the default mode. Then the line says UNPROVEN. Four cases
+give no verdict. One is a type check at its cap, and one
+is an `npm ci` that does not finish. The others are a `tsc` failure with no
+TS error, and a baseline on main with no verdict.
 
 One gap of M is accepted. A migration on one side can leave the picker's
 list with no ladder suite, and then step 4 does not test the migration. The
