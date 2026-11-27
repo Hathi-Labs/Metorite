@@ -109,7 +109,13 @@ def _result(label: str, link: str, sent: bool) -> str:
 
 #: The page's canvases, `VIEW_MODES` in `app/projects/lib/commands.ts`.
 #: `tests/unit/test_projects_show_view.py` holds the two lists equal.
-CANVASES = ("overview", "board", "list", "table", "calendar", "timeline", "agents")
+#: WS-39 SP-3a added `backlog`. Only a Sprints project, in an org that
+#: `PROJECTS_SPRINTS_ORGS` holds, offers it. On any other project the page
+#: draws its default canvas (`viewTabs.canvasOnScreen`), as it does for a
+#: dark `agents`.
+CANVASES = (
+    "overview", "board", "list", "table", "calendar", "timeline", "backlog", "agents",
+)
 
 
 async def _saved_view(pid: str, name: str) -> dict[str, Any]:
@@ -130,7 +136,7 @@ async def show_view(
 ) -> str:
     """Change what the member's open Projects page shows, for one project.
     Nothing is saved. mode is overview, board, list, table, calendar,
-    timeline or agents. view_name opens a saved view of the project by name, with its
+    timeline, backlog (a Sprints project only) or agents. view_name opens a saved view of the project by name, with its
     filters and grouping. filters is a JSON object in save_view's words:
     query, status_category, assignee, unassigned, overdue, watching, archived
     and tags. It REPLACES the filters on screen, and {} clears them. group_by

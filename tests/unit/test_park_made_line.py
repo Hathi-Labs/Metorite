@@ -1062,6 +1062,9 @@ ACT_RAN_SITES: dict[str, set[str]] = {
         "_act_ran", "create_project", "create_task", "set_reminder"},
     "apps/skills/skill-projects/skill_projects/forms.py": {"_write_batch", "_vocab_write"},
     "apps/agents/agent-crm/agents.py": {"update_deal_status"},
+    # P-1b (task 3922): the task from a mail. `_made` reads the answer of the
+    # write, and calls it only when the route made a new task.
+    "apps/skills/skill-my-tasks/skill_my_tasks/core.py": {"_made"},
 }
 _SKIP_DIRS = {"node_modules", ".venv", "__pycache__", ".next", ".git", "site-packages"}
 

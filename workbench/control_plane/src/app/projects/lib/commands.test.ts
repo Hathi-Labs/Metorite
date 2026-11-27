@@ -428,9 +428,10 @@ describe("the shortcuts sheet is generated, never written", () => {
 });
 
 describe("the Agents canvas (SW-112)", () => {
-  it("is the seventh and last canvas", () => {
-    expect(VIEW_MODES).toHaveLength(7);
+  it("is the last canvas, after the Backlog of WS-39 SP-3a", () => {
+    expect(VIEW_MODES).toHaveLength(8);
     expect(VIEW_MODES[VIEW_MODES.length - 1].id).toBe("agents");
+    expect(VIEW_MODES[VIEW_MODES.length - 2].id).toBe("backlog");
   });
 
   it("honours no grouping and no lanes", () => {

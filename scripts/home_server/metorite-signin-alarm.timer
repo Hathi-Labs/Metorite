@@ -1,0 +1,12 @@
+# Every 10 minutes (MCP-G17g). The timer ships DISABLED: `install` copies it and
+# `enable` turns it on. Enabling it is OWNER-GATE (`deploy`).
+[Unit]
+Description=Metorite sign-in alarm every 10 minutes (MCP-G17g)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=10min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

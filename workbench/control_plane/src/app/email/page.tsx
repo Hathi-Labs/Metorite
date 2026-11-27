@@ -39,6 +39,9 @@ import { StorageNotice } from "./components/StorageNotice";
 import { StorageStep } from "./components/StorageStep";
 import { SyncBanner } from "./components/SyncBanner";
 import { EmailDeepLink } from "./components/EmailDeepLink";
+import { useMarkDone } from "./components/useMarkDone";
+import { useUndo } from "@/components/UndoProvider";
+import { MARK_DONE_KEY } from "./lib/markDone";
 import Modal from "@/components/ui/Modal";
 import {
   useEmailStore, isRealFolder, backfillKey, scopeBusy, ALL_INBOXES,
@@ -716,6 +719,19 @@ export default function EmailPage() {
 
   const handleBack = () => setMobileView("inbox");
 
+  // Mark done (task 3995): the gateway says whether this organization has it.
+  const { enabled: canMarkDone, markDone } = useMarkDone();
+  // Ctrl+Z reaches the acts of this app only (`UndoProvider`). With Mark done
+  // off, Email puts nothing on the stack, so it claims no scope: a claim would
+  // clear the history of the surface the member came from.
+  const { setScope: setUndoScope } = useUndo();
+  useEffect(() => {
+    if (canMarkDone) setUndoScope("email");
+  }, [canMarkDone, setUndoScope]);
+  useEffect(() => {
+    void useEmailStore.getState().fetchMarkDone();
+  }, []);
+
   // ── Keyboard shortcuts (Gmail/Superhuman style) ──
   const navigateList = useCallback(
     (dir: 1 | -1) => {
@@ -773,6 +789,10 @@ export default function EmailPage() {
         case "u":
           if (em) { e.preventDefault(); updateEmail(em.id, { isRead: !em.isRead }); }
           break;
+        case MARK_DONE_KEY:
+          // A held key must not run down the list.
+          if (em && canMarkDone && !e.repeat) { e.preventDefault(); void markDone([em]); }
+          break;
         case "#":
         case "Delete":
           if (em) { e.preventDefault(); deleteEmail(em.id); }
@@ -785,6 +805,7 @@ export default function EmailPage() {
     selectedEmail, navigateList, openCompose, handleToolbarAction,
     updateEmail, deleteEmail, composeOpen, showAddModal, noAccounts,
     disconnecting, editingMailbox, removingAccount, automationFeature,
+    canMarkDone, markDone,
   ]);
 
   // ── Render ──

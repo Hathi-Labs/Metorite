@@ -822,7 +822,8 @@ def test_one_row_rule_and_one_hook() -> None:
     one, so each of the four readers calls ``_attachable_rows`` and none of
     them repeats a row test. ``_reconnect_rows`` (task 3866) reads
     ``needs_reconnect_meta``, so it calls ``_row_may_attach`` itself, with
-    ``parked``."""
+    ``parked``. TOF-5a-1: the skill map (``_mcp_reach_rows``) is a fifth
+    reader of ``_attachable_rows``."""
     import inspect
 
     from orchestrator import _tool_injection as ti
@@ -834,7 +835,7 @@ def test_one_row_rule_and_one_hook() -> None:
     note = inspect.getsource(ti._note_withheld_servers)
     assert "servers_for_org" not in note, "no header read and no OAuth refresh"
     for reader in (ti._mcp_may_attach, ti._note_withheld_servers, ti._note_mail_skipped,
-                   ti._with_server_words):
+                   ti._with_server_words, ti._mcp_reach_rows):
         src = inspect.getsource(reader)
         assert "_attachable_rows(" in src, reader.__name__
         assert "_MAF_HTTP_TRANSPORTS" not in src, f"{reader.__name__} repeats the row rule"

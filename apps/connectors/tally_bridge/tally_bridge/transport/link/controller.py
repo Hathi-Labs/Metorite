@@ -60,6 +60,7 @@ class LinkController:
         api_factory: Callable[[str], LinkApi] = LinkApi,
         copy_at: Callable[[], str | None] | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        on_disconnect: Callable[[], object] | None = None,
     ) -> None:
         self._store = store
         self._link_url = link_url
@@ -69,6 +70,9 @@ class LinkController:
         self._api_factory = api_factory
         self._copy_at = copy_at
         self._sleep = sleep
+        #: TLY-4 (§3.8.13 point 6): the local copy goes at a Disconnect, by the
+        #: admin (a revoke) or on this machine (an unlink).
+        self._on_disconnect = on_disconnect
         #: Set after the app is built: ``dispatch.McpDispatcher`` over its MCP app.
         self.dispatch: Callable[[p.LinkRequest], Awaitable[p.LinkReply]] | None = None
         self._pair_task: asyncio.Task[None] | None = None
@@ -214,6 +218,7 @@ class LinkController:
             if url:
                 revoked = await self._revoke_quietly(self._api_factory(url), stored.credential)
             self._store.delete()
+            self._disconnected_here()
         if self._loop_stop is not None:
             self._loop_stop.set()
         self._code, self._error, self._disconnected = None, None, False
@@ -279,7 +284,30 @@ class LinkController:
                 self._loop_stop = None
             if result == REVOKED:
                 self._disconnected = True
+                self._disconnected_here()
                 log.warning("Disconnected by your admin. Pair this machine again to reconnect.")
+
+    def copy_allowed(self) -> bool:
+        """TLY-4: may the local copy run now? Always with link mode off
+        (address mode). In link mode, only while a confirmed link exists: after
+        a Disconnect the copy stays deleted. An unreadable store says no."""
+        if not self._link_url():
+            return True
+        try:
+            stored = self._store.load()
+        except Exception:
+            return False
+        return stored is not None and stored.confirmed
+
+    def _disconnected_here(self) -> None:
+        """Delete the local copy of the books. An error is logged: the link is
+        gone in any case, and the uninstall deletes the copy too."""
+        if self._on_disconnect is None:
+            return
+        try:
+            self._on_disconnect()
+        except Exception:
+            log.exception("could not delete the local copy after the disconnect")
 
     @staticmethod
     async def _relay(outer: asyncio.Event, inner: asyncio.Event) -> None:

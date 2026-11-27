@@ -126,6 +126,15 @@ class Observation:
     #: TS-5a. True when the chat had read outside mail before this turn, so the
     #: packs are held (the mark of ``egress``).
     held: bool = False
+    #: CSY-3. Each call of the fake MCP server's tool that the orchestrator's own run
+    #: made: name, arguments, result.
+    mcp_calls: list[tuple[str, dict[str, Any], str]] = field(default_factory=list)
+    #: CSY-3. The queries that the fake SERVER itself received this turn (the ground
+    #: truth: a call that the run made and the server never saw would not show here).
+    mcp_served: list[str] = field(default_factory=list)
+    #: CSY-3. The "Connected systems" block (CSY-1) as a request of the orchestrator
+    #: carried it in this turn, or "".
+    connected: str = ""
     #: Task 2874. EVERY tool call of the orchestrator's own run in this turn, in order:
     #: name, arguments, result (:func:`checks_2874.ordered_calls_of`).
     ordered: list[tuple[str, dict[str, Any], str]] = field(default_factory=list)
@@ -1337,6 +1346,101 @@ def _schema_tokens(obs: Observation, _arg: Any) -> bool | None:
     return 0 < obs.schema_tokens <= SCHEMA_TOKEN_BUDGET
 
 
+# ── CSY-3: the connected-systems chats (chat_connected_systems.md §8.2) ─────
+#
+# A scripted run plays a known-good plan, so these checks prove the PATH (the server is
+# attached, named in the context, offered, called and gated by the real code) and the
+# checks themselves. They never prove the model's choice.
+
+
+def _mcp_name() -> str:
+    from evals.one_assistant_measure.mcp_fixture import FULL
+
+    return FULL
+
+
+def _email_pack_tools() -> frozenset[str]:
+    """The tools of the real ``email`` pack, from its skill family."""
+    from acb_skills.skill_families import SKILL_FAMILIES
+
+    return frozenset(SKILL_FAMILIES["email"]["tools"])
+
+
+def connected_block_in(body: dict[str, Any]) -> str:
+    """The "Connected systems" block (CSY-1, §3.2) in the messages of one request,
+    from its header to the end of that text, or "" when no message holds it."""
+    from acb_skills.server_brief import BLOCK_HEADER
+
+    for message in body.get("messages") or []:
+        content = message.get("content") if isinstance(message, dict) else None
+        parts = content if isinstance(content, list) else [{"text": content}]
+        for part in parts:
+            text = part.get("text") if isinstance(part, dict) else None
+            if isinstance(text, str) and BLOCK_HEADER in text:
+                return text[text.index(BLOCK_HEADER):]
+    return ""
+
+
+def _connected_block(obs: Observation, _arg: Any) -> bool:
+    """CSY-1. The request told the model about the server: the block holds the brief of
+    the server (its name and its tool) and the standing rule, which says to try a system
+    before "not found". A reason line alone does not pass."""
+    from acb_skills.server_brief import STANDING_RULE
+
+    from evals.one_assistant_measure.mcp_fixture import SERVER, TOOL
+
+    return (f"({SERVER})" in obs.connected and f"Tools (named {SERVER}_<tool>): " in obs.connected
+            and TOOL in obs.connected and STANDING_RULE in obs.connected)
+
+
+def _mcp_ok(obs: Observation) -> list[tuple[str, dict[str, Any], str]]:
+    return [c for c in obs.mcp_calls if c[2] and not refused(c[2])]
+
+
+def _mcp_called(obs: Observation, _arg: Any) -> bool:
+    """The chat called the server, the server ANSWERED (the result is no refusal), and
+    the server itself saw the query. A call that the run made and the server never got
+    does not pass."""
+    return bool(_mcp_ok(obs)) and bool(obs.mcp_served)
+
+
+def _mcp_not_called(obs: Observation, _arg: Any) -> bool:
+    """The chat made no call to the server, and the server saw none."""
+    return not obs.mcp_calls and not obs.mcp_served
+
+
+def _mcp_offered(obs: Observation, _arg: Any) -> bool:
+    """The server's tool was in a request of the orchestrator. Without it, a chat that
+    "did not call the server" proves nothing: the server was never there to call."""
+    return _mcp_name() in obs.tool_names
+
+
+def _server_after_metorite(obs: Observation, _arg: Any) -> bool:
+    """A Metorite tool ran first, and the server's tool ran after it. The turn tried
+    Metorite, then the server, before it answered."""
+    work = work_tool_names()
+    names = [name for name, _, _ in obs.ordered]
+    if _mcp_name() not in names:
+        return False
+    first_server = names.index(_mcp_name())
+    return any(n in work for n in names[:first_server])
+
+
+def _no_mail_pack_with_mcp(obs: Observation, _arg: Any) -> bool:
+    """OA-7b. No request of the turn held a tool of the email pack beside the server's
+    tool. A turn with no request read fails: the check proves nothing without one."""
+    if not obs.tool_names:
+        return False
+    return not (obs.tool_names & _email_pack_tools() and _mcp_name() in obs.tool_names)
+
+
+def _mail_without_server(obs: Observation, _arg: Any) -> bool:
+    """The email pack won. A tool of the pack was in a request, the server's tool was in
+    none, and the server saw no call."""
+    return bool(obs.tool_names & _email_pack_tools()) and _mcp_name() not in obs.tool_names \
+        and _no_mail_pack_with_mcp(obs, None) and not obs.mcp_served and not obs.mcp_calls
+
+
 KINDS: dict[str, Callable[[Observation, Any], bool | None]] = {
     "answer_all": _answer_all,
     "answer_some": _answer_some,
@@ -1384,6 +1488,13 @@ KINDS: dict[str, Callable[[Observation, Any], bool | None]] = {
     "no_studio_ran": _no_studio_ran,
     "held_note": _held_note,
     "schema_tokens": _schema_tokens,
+    "mcp_called": _mcp_called,
+    "mcp_not_called": _mcp_not_called,
+    "mcp_offered": _mcp_offered,
+    "server_after_metorite": _server_after_metorite,
+    "no_mail_pack_with_mcp": _no_mail_pack_with_mcp,
+    "mail_without_server": _mail_without_server,
+    "connected_block": _connected_block,
 }
 
 #: The checks that run on EVERY turn, with no entry in the scenario. Each gives

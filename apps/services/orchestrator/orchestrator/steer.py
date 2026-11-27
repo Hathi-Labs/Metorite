@@ -459,6 +459,10 @@ _GUIDANCE_SEQ = itertools.count()
 
 _CLOSED: set[str] = set()
 
+#: Steer ids that this process buffered for a thread (HRD-16). Cleared at run
+#: start with the buffer.
+_SEEN_STEER_IDS: dict[str, set[str]] = {}
+
 
 def buffer_guidance(
     thread_id: str, author: str, text: str, *, signal_id: str = "",
@@ -477,6 +481,13 @@ def buffer_guidance(
         return False
     if thread_id in _CLOSED:
         return False
+    # HRD-16: one steer, one note. The same id twice (the bus and a replay)
+    # counts once, even after the first note was read.
+    if signal_id:
+        seen = _SEEN_STEER_IDS.setdefault(thread_id, set())
+        if signal_id in seen:
+            return True
+        seen.add(signal_id)
     who = (author or "someone").strip()
     note = f"[steer from {who}] {text.strip()}"
     buf = _PENDING_GUIDANCE.setdefault(thread_id, [])
@@ -561,6 +572,7 @@ def clear_guidance(thread_id: str) -> None:
     Called at run START, so it also reopens the thread for steering.
     """
     _PENDING_GUIDANCE.pop(thread_id, None)
+    _SEEN_STEER_IDS.pop(thread_id, None)
     _CLOSED.discard(thread_id)
 
 
