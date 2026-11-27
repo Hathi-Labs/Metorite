@@ -116,7 +116,7 @@ def test_flags_is_the_one_reader_of_the_setting() -> None:
                 readers.add(path.relative_to(ROOT).as_posix())
     assert readers == {
         "apps/services/gateway/gateway/package_host/flags.py",
-        "packages/acb_common/acb_common/settings.py",
+        "packages/acb_common/acb_common/flag_registry.py",
     }
 
 

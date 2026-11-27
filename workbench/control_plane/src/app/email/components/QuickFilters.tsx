@@ -110,6 +110,7 @@ export function QuickFilters() {
   const accountId = useEmailStore((s) => (s.viewAll ? null : s.selectedAccountId));
   const selectedFolder = useEmailStore((s) => s.selectedFolder);
   const emails = useEmailStore((s) => s.emails);
+  const markStamp = useEmailStore((s) => s.markStamp);
   const searchFilters = useEmailStore((s) => s.searchFilters);
   const setSearchFilters = useEmailStore((s) => s.setSearchFilters);
   const labelColors = useEmailStore((s) => s.labelColors);
@@ -134,7 +135,7 @@ export function QuickFilters() {
     return () => {
       alive = false;
     };
-  }, [accountId, selectedFolder, emails.length]);
+  }, [accountId, selectedFolder, emails.length, markStamp]);
 
   const isActive = (f: SearchFilter) =>
     searchFilters.some((x) => filterKey(x) === filterKey(f));

@@ -353,7 +353,8 @@ def _old_draft_db() -> AsyncMock:
     """A thread with an old rule draft that the member did not edit, so the
     real thread check trashes it. The order is the two reads, then the delete."""
     text = "Thanks, we are on it."
-    row = SimpleNamespace(id="d1", provider_message_id="old-draft", body_text=text)
+    row = SimpleNamespace(id="d1", provider_message_id="old-draft", body_text=text,
+                          internet_message_id=None)  # task 4100
     db = AsyncMock()
     reads = [
         MagicMock(fetchone=MagicMock(return_value=row)),
@@ -512,7 +513,8 @@ async def test_a_draft_edited_while_the_model_wrote_is_kept(monkeypatch) -> None
     order: list[str] = []
     actions = _ai_draft_patches(monkeypatch, answer="Hello Ravi", order=order)
     original = "Thanks, we are on it."
-    row = lambda body: SimpleNamespace(id="d1", provider_message_id="old", body_text=body)  # noqa: E731
+    row = lambda body: SimpleNamespace(id="d1", provider_message_id="old", body_text=body,  # noqa: E731
+                                       internet_message_id=None)  # task 4100
     orig = SimpleNamespace(draft_text=original)
     db = AsyncMock()
     db.execute.side_effect = [

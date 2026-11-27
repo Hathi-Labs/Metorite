@@ -215,12 +215,39 @@ def test_open_prs_older_than_2d(dm, tmp_path):
     assert got[0] == {"number": 1, "title": "old", "age_days": 5.0}
 
 
+def test_built_not_live(dm, tmp_path):
+    prs = [
+        {"number": 1, "title": "old", "created_at": _iso(NOW - timedelta(days=5)), "draft": False},
+        {"number": 2, "title": "fresh", "created_at": _iso(NOW - timedelta(hours=23)), "draft": False},
+        {"number": 3, "title": "draft", "created_at": _iso(NOW - timedelta(days=9)), "draft": True},
+        {"number": 4, "title": "day", "created_at": _iso(NOW - timedelta(hours=30)), "draft": False},
+    ]
+    runs, jobs = _pr_fixture()
+    gh = FakeGh(runs, jobs, open_prs=prs)
+    out = dm.collect(gh, days=7, max_runs=200, now=NOW, durations=_durations_file(tmp_path, {}))
+    got = out["built_not_live"]
+    assert got["open_prs"] == 3
+    assert [p["number"] for p in got["over_24h"]] == [1, 4]
+    assert got["over_24h"][0] == {"number": 1, "title": "old", "age_days": 5.0}
+    assert got["oldest_days"] == 5.0
+    assert [p["number"] for p in out["open_prs_older_than_2d"]] == [3, 1]
+
+
+def test_built_not_live_with_no_open_pr(dm, tmp_path):
+    runs, jobs = _pr_fixture()
+    out = dm.collect(FakeGh(runs, jobs), days=7, max_runs=200, now=NOW,
+                     durations=_durations_file(tmp_path, {}))
+    assert out["built_not_live"] == {"open_prs": 0, "over_24h": [], "oldest_days": 0.0}
+
+
 def test_failing_gh_call_gives_null_and_error(dm, tmp_path):
     runs, jobs = _pr_fixture()
     gh = FakeGh(runs, jobs, fail=("workflows/deploy.yml", "pulls?state=open"))
     out = dm.collect(gh, days=7, max_runs=200, now=NOW, durations=_durations_file(tmp_path, {}))
     assert out["batch_main"] is None
     assert out["open_prs_older_than_2d"] is None
+    assert out["built_not_live"] is None
+    assert any("built_not_live" in e for e in out["errors"])
     assert out["selection_misses"] is None
     assert out["pr_check"]["runs"] == 5
     assert any("batch_main" in e for e in out["errors"])
@@ -278,7 +305,8 @@ def test_main_writes_out_file_and_compare(dm, tmp_path, monkeypatch, capsys):
 def test_command_file_names_every_metric_key_and_holds_thresholds():
     text = COMMAND.read_text(encoding="utf-8")
     for key in ("pr_check", "queue_wait", "batch_main", "slowest_tests",
-                "open_prs_older_than_2d", "selection_misses",
+                "open_prs_older_than_2d", "built_not_live", "over_24h", "oldest_days",
+                "selection_misses",
                 "median_min", "p90_min", "red_rate", "top_failing_jobs",
                 "max_min", "batch_red_after_pr_green"):
         assert key in text, key

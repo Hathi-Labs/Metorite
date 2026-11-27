@@ -161,3 +161,8 @@ def cascade_closure(table: str) -> frozenset[str]:
 def columns_of(table: str) -> frozenset[str]:
     """Column names declared for ``table`` across every migration."""
     return _parse()[1].get(table, frozenset())
+
+
+def tables() -> frozenset[str]:
+    """Every table that the migrations create and do not drop."""
+    return frozenset(_parse()[1])
