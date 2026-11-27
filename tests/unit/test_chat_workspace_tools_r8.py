@@ -23,8 +23,8 @@ b. Bob, of the same org, in a run bound to the id of Alice's chat, lists no
    file, gets no card for a write, and the disk does not change.
 c. Carol, of org B, gets the same answer as Bob.
 
-Mutation run on 2026-11-27, red here: send the memory id in place of the
-member. Cases a, b and c then send the wrong address.
+Mutation to run with a database: send the memory id in place of the member.
+Cases a, b and c then send the wrong address.
 """
 
 from __future__ import annotations
