@@ -50,7 +50,7 @@ describe("C3: a chat card holds no scroll box", () => {
   it("§24.11 (WD-1): the dock's body is its one scroll box, and it holds no other", () => {
     const dock = src("components/WaitingDock.tsx");
     expect(dock.match(/overflow-y-auto/g)?.length).toBe(1);
-    expect(dock).toMatch(/data-dock-body=""[^>]*?className="overflow-y-auto/);
+    expect(dock).toMatch(/data-dock-body=""[^>]*?className=\{?["`]overflow-y-auto/);
     // The fold of the dock's queue adds no scroll box to the queue.
     expect(src("components/ConfirmationQueue.tsx")).not.toMatch(/overflow-(y-)?auto/);
   });
@@ -77,9 +77,10 @@ describe("C1: the composer form draws no card", () => {
     expect(form).not.toMatch(/<WaitingDock\b/);
     const before = chat.slice(0, chat.indexOf("<form onSubmit={handleSubmit}"));
     const host = before.slice(before.lastIndexOf("<div ref={dockHostRef}"));
-    expect(host).toContain("<WaitingDock questions={dockQuestions} pointer={dockPointer}");
-    expect(host).toContain("{showDock && (");
-    expect(chat).toContain("const showDock = dockShown(dockOn, dockSources);");
+    expect(host).toMatch(/<WaitingDock\s[^>]*questions=\{dockQuestions\}\s+pointer=\{dockPointer\}/);
+    // Only with the flag on. F1 (2026-11-28): the dock stays mounted while
+    // the flag is on, so it can hold its height after its last item leaves.
+    expect(chat.slice(0, chat.indexOf("<div ref={dockHostRef}"))).toMatch(/\{dockOn && \(\s*$/);
     // D9: the approvals draw in the thread with the flag on too. Only a
     // question card that waits leaves the thread for the dock.
     expect(chat).toContain("const askHere = !!elicitation && (!dockOn || !elicitationWaits);");
