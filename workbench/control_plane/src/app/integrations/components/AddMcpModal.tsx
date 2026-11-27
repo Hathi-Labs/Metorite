@@ -26,6 +26,7 @@ import * as api from "../lib/api";
 import {
   ALWAYS_CONFIRM_HELP,
   ALWAYS_CONFIRM_LABEL,
+  DESCRIPTION_HINT,
   EMPTY_MCP_FORM,
   mcpBody,
   mcpFormReady,
@@ -131,7 +132,7 @@ export function McpFormFields({
           <Input value={form.label} onChange={set("label")} placeholder="Brave Search" />
         </Field>
       </div>
-      <Field label="Description (optional)">
+      <Field label="Description (optional)" hint={DESCRIPTION_HINT}>
         <Input value={form.description} onChange={set("description")} placeholder="What the server offers" />
       </Field>
       <Field label="URL" hint="Use an https address. Private and local addresses are refused.">

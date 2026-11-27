@@ -45,7 +45,7 @@ import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import AppIcon from "@/components/Icon";
 import { clipWords } from "@/lib/fencedText";
 import Readout from "@/components/Readout";
-import { withoutIds } from "@/lib/readout";
+import { withoutFrame, withoutIds } from "@/lib/readout";
 import { useContext, useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import type { ToolEvent } from "@/components/MarkdownMessage";
@@ -64,6 +64,7 @@ import { ToolCardShell, DismissableCard } from "@/components/ToolCardShell";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
 import { placementOf } from "@/lib/chatPlacement";
 import { DRAFT_TOOLS, DraftPinContext } from "@/lib/pinnedDraft";
+import { cardOutcomeOf, memberLineOf, NOT_DONE_AT_CARD } from "@/lib/cardOutcomes";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
@@ -1801,7 +1802,10 @@ function ManageInboxCard({ event: e }: { event: ToolEvent }) {
   const args = e.args as Record<string, unknown> | undefined;
   const action = String(args?.action ?? "").toLowerCase();
   const ids = args?.message_ids;
-  const count = Array.isArray(ids) ? ids.length : 0;
+  // §18.13 (task 3977): a trash that checked Drafts answers with what went.
+  // The member can pick more or fewer drafts than the call named.
+  const went = /^Trashed (\d+) message\(s\):/.exec((e.result || "").trimStart());
+  const count = went ? Number(went[1]) : Array.isArray(ids) ? ids.length : 0;
   const meta = INBOX_ACTION_META[action];
   // Unknown action or no count → fall back to the generic confirmation.
   if (!meta || count === 0) return <ActionResultCard event={e} />;
@@ -2266,7 +2270,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
       id={`tool:${e.id}`}
       title={meta.label}
       icon={iconName}
-      summary={withoutIds(detail.split(/\r?\n/)[0] ?? "")}
+      summary={withoutIds(withoutFrame(detail).split(/\r?\n/)[0] ?? "")}
       receipt={!failed && !readsOnly(e)}
       header="own"
     >
@@ -2292,7 +2296,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
  *  member, a send that the tool refused, or a cancel. The card for it never
  *  says the act is done. Before EM-T8e-2, "Email sent" stood over a "Not sent."
  *  answer, which told the member that mail went out. */
-export type NoAction = "question" | "not-sent" | "unchanged" | "cancelled" | "refused" | "revised";
+export type NoAction = "question" | "not-sent" | "unchanged" | "cancelled" | "refused" | "revised" | "unconfirmed";
 
 export function noActionOf(raw: string | null | undefined): NoAction | null {
   const t = (raw || "").trimStart();
@@ -2302,11 +2306,25 @@ export function noActionOf(raw: string | null | undefined): NoAction | null {
   // button whose body is the refusal.
   if (/^Refused:/.test(t)) return "refused";
   if (/^(Send from which mailbox\?|Which mailbox\?)/.test(t)) return "question";
+  // HRD-7: a card outcome from the one table (`lib/cardOutcomes.ts`). Each
+  // keeps the chip that its text of before drew (D200).
+  const outcome = cardOutcomeOf(t);
   // §18.11: a chat message closed the card, and the model writes the new
   // draft. Nothing was sent, so the card never says "Email sent".
+  if (outcome === "closed by your message") return "revised";
+  // No card could show. Its text of before started "Nothing changed.".
+  if (outcome === "no card") return "unchanged";
+  // A parked card still waits for the member: never "Cancelled", never "sent".
+  if (outcome === "parked") return "question";
+  if (outcome !== null && NOT_DONE_AT_CARD.has(outcome)) return "cancelled";
+  // The texts of before HRD-7, which a stored chat still holds.
   if (/^The member wrote in the chat while the card was open/.test(t)) return "revised";
   if (/^Not sent\./.test(t)) return "not-sent";
   if (/^Nothing changed\./.test(t)) return "unchanged";
+  // Task 4026: a draft trash that counts 0 (§18.13). The tool writes this head
+  // only when a trash was not confirmed, or its answer was lost. So the card
+  // claims no change and no "nothing changed", and draws no check mark.
+  if (/^Trashed 0 message\(s\):/.test(t)) return "unconfirmed";
   if (/^(Send cancelled|Cancelled)\b/.test(t)) return "cancelled";
   return null;
 }
@@ -2318,7 +2336,13 @@ const NO_ACTION_META: Record<NoAction, { icon: string; label: string }> = {
   cancelled: { icon: "X", label: "Cancelled" },
   refused: { icon: "CircleSlash", label: "Not done" },
   revised: { icon: "PencilLine", label: "Draft being changed" },
+  unconfirmed: { icon: "CircleHelp", label: "Not confirmed" },
 };
+
+/** The words of an unconfirmed trash. The result holds counts and words for
+ *  the model, so the member reads these. */
+export const UNCONFIRMED_NOTE =
+  "The mailbox did not confirm the trash. A message can still be in its folder, or in Trash. Check your mailbox.";
 
 /** The words of a closed card that a chat message revised. The result itself
  *  is the model's instruction, so the member never reads it. Fix round 6:
@@ -2339,9 +2363,12 @@ function NoActionCard({ event: e, kind }: { event: ToolEvent; kind: NoAction }) 
           {/* No clamp: a question lists each mailbox, and each one matters. */}
           {kind === "revised" ? (
             <p className="mt-0.5 text-xs text-muted-foreground">{REVISED_NOTE}</p>
+          ) : kind === "unconfirmed" ? (
+            <p className="mt-0.5 text-xs text-muted-foreground">{UNCONFIRMED_NOTE}</p>
           ) : result && (
             <div className="mt-0.5">
-              <Readout result={result} />
+              {/* HRD-7: a card outcome shows its head only. Its next step is for the model. */}
+              <Readout result={memberLineOf(result)} />
             </div>
           )}
       </RollupBody>
@@ -2353,7 +2380,7 @@ function NoActionCard({ event: e, kind }: { event: ToolEvent; kind: NoAction }) 
 /** A `read_thread` result as a member reads it: each line as sent, with no
  *  id. Exported for its test. */
 export function threadText(raw: string | null | undefined): string {
-  return (raw || "")
+  return withoutFrame(raw || "")
     .split(/\r?\n/)
     .map((line) => withoutIds(line))
     .join("\n")

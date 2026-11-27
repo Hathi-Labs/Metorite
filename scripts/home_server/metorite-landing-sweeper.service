@@ -1,0 +1,17 @@
+# The landing sweeper of the home box (LBB-3a, task 4043). A user unit of `dev`.
+# metorite-landing-sweeper.timer starts it every 2 hours. In `dry` mode it reads
+# every open PR and appends what it WOULD do to ~/lanes/landing-sweeper.tsv.
+# It writes to GitHub never, and it holds no secret: `gh` uses its own login.
+# The mode comes from ~/.config/metorite/landing-sweeper.env
+# (LANDING_SWEEPER_MODE=dry). With no file, or `off`, it exits 0 and calls nothing.
+# Install: copy landing_sweeper.py to ~/.local/lib/metorite/ (OWNER-GATE `deploy`).
+# Logs:    journalctl --user -u metorite-landing-sweeper.service
+[Unit]
+Description=Metorite landing sweeper: a dry report of what each open PR needs (LBB-3a)
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-%h/.config/metorite/landing-sweeper.env
+ExecStart=/usr/bin/python3 %h/.local/lib/metorite/landing_sweeper.py
+TimeoutStartSec=900

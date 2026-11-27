@@ -25,12 +25,14 @@ export interface LayoutBodyProps {
   renderView: (id: string) => ReactNode;
   /** The title of a view, for the label of its region. */
   titleOf: (id: string) => string;
+  /** A control row above the table of a table workspace, such as the Columns menu (STU-LY-2b). */
+  tableHeader?: ReactNode;
 }
 
 /** The presets that this file draws. A later slice adds one. */
 export const DRAWN_LAYOUTS: readonly LayoutName[] = ["table_workspace", "board"];
 
-export default function LayoutBody({ layout, regions, renderView, titleOf }: LayoutBodyProps) {
+export default function LayoutBody({ layout, regions, renderView, titleOf, tableHeader }: LayoutBodyProps) {
   if (!DRAWN_LAYOUTS.includes(layout)) {
     return <p data-layout-pending={layout} className="text-sm text-muted-foreground">This layout is not drawn yet.</p>;
   }
@@ -40,6 +42,7 @@ export default function LayoutBody({ layout, regions, renderView, titleOf }: Lay
     <div data-layout={layout} className="flex min-w-0 flex-col gap-3">
       {main && node ? (
         <section aria-label={titleOf(main)} className="min-w-0">
+          {layout === "table_workspace" && tableHeader ? <div className="mb-2">{tableHeader}</div> : null}
           {layout === "table_workspace" ? (
             // With the record panel open the page is narrow. The table keeps a readable width and scrolls
             // inside its own strip, so no column shrinks to one character (capture finding, task 3315).

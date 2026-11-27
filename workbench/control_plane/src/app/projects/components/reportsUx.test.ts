@@ -178,6 +178,28 @@ describe("(11) the gallery", () => {
     expect(markup).not.toContain("What is wrong right now?");
   });
 
+  it("a card under Coming later carries no Coming soon badge", () => {
+    expect(VIEW).not.toContain("Coming soon");
+  });
+
+  it("a coming-soon card names what it waits for in its tooltip only", () => {
+    expect(VIEW).not.toMatch(/>\s*Waits for:/);
+    expect(VIEW).toContain("title={template.waits_for ? `Waits for: ${template.waits_for}`");
+  });
+});
+
+describe("(12) the empty line and the rail scope", () => {
+  const markup = html(
+    createElement(ReportsHome, {
+      rows: [],
+      templates: [SOON, LIVE],
+      templatesError: null,
+      cardLine: () => "",
+      onOpen: () => {},
+      onStart: () => {},
+    })
+  );
+
   it("the empty state is one line, with no row of buttons", () => {
     expect(markup).toContain("You have not saved a report yet. Pick a question above.");
     expect(markup).not.toContain("Start with:");
@@ -212,16 +234,10 @@ describe("(11) the gallery", () => {
 
   it("the rail tag says the scope in the chips' words", () => {
     expect(VIEW).not.toMatch(/"All" : "Project"/);
+    // H-202. A scope that is not in the list reads as `scopePhrase` says it.
+    expect(VIEW).not.toMatch(/\?\? "Project"/);
+    expect(VIEW).toContain('?.label ?? "In a project"');
     expect(VIEW.match(/scopeLabel=\{scopeName\}/g)?.length).toBe(2);
-  });
-
-  it("a card under Coming later carries no Coming soon badge", () => {
-    expect(VIEW).not.toContain("Coming soon");
-  });
-
-  it("a coming-soon card names what it waits for in its tooltip only", () => {
-    expect(VIEW).not.toMatch(/>\s*Waits for:/);
-    expect(VIEW).toContain("title={template.waits_for ? `Waits for: ${template.waits_for}`");
   });
 });
 

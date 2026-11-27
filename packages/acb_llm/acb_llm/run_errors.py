@@ -89,6 +89,15 @@ RUN_ERROR_CODES: tuple[str, ...] = (
     # starts, and the chat route names the code from that body. The chat
     # keeps the member's words and never retries by itself.
     "too_many_runs",
+    # AO-3 (incident 2026-11-17): the AI Router could not answer. Every step
+    # of its chain refused, the Router was down, or it answered a 502 or a
+    # 503. The chat draws the resting card with "Try again". A transport
+    # failure (nothing listened) stays `connection`.
+    "ai_unavailable",
+    # HRD-16, the browser's own: a card answer that a run already took, from
+    # another device or a double tap. `POST /agent/respond-input` refuses the
+    # repeat with 409 `answered_once`, and the chat sends nothing again.
+    "answered_once",
 )
 
 #: The longest raw text a RUN_ERROR keeps. It is shown inside the fold only.
@@ -105,6 +114,12 @@ def classify_status(status: int) -> str:
     ⚠️ **A 401 is ``unknown``, not ``permission``.** It means our own key to
     our own Router is wrong. The member cannot fix that, and "ask an admin"
     would send them to a person who cannot fix it either.
+
+    ⚠️ **A 502 or a 503 is ``ai_unavailable`` (AO-3).** A model call goes to
+    our own Router door, and that door answers 502 when the Router produced
+    no answer: every step of the chain refused, or the Router was down. A
+    refused connection, where nothing listened, is ``connection``, because
+    it carries no status.
     """
     if status == 402:
         return "credits"
@@ -121,7 +136,7 @@ def classify_status(status: int) -> str:
     if status in (400, 404, 413, 422):
         return "model_refused"
     if status in (502, 503):
-        return "connection"
+        return "ai_unavailable"
     return "unknown"
 
 

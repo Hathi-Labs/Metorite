@@ -125,8 +125,9 @@ reference tied to code. Do not put product specs in `docs/`.
    whatever SQL they get. Five live bugs shipped green that way.
 7. **R1 — migration numbers are taken at build time and re-checked at merge.**
    Three collisions in two weeks. `bash scripts/premerge.sh` does the re-check,
-   right before `gh pr merge`. It runs the collision fences only. Add
-   `--with-tests` to run the affected tests too (D176).
+   right before `gh pr merge`. It runs the collision fences, and it runs the tests
+   that both sides can affect when the branch is behind main. Add `--no-tests` to skip them (D176).
+   A builder keeps the number it booked. lane-merge renumbers at merge (CIV-RN).
 8. **Verify delivery by evidence, never by a green job.** Migration ledger
    lines, the deployed SHA, the log line. Four deploys once reported success
    while shipping nothing.
@@ -222,6 +223,12 @@ delivery makes a silent failed deploy more likely, not less.
 > wait for **approval** → **verify** independently and **review** by risk tier,
 > beside the **gate**: GitHub `pr-check`, then `premerge.sh` (D218). Then **merge
 > it**. Production takes it at the next release slot (05:30, 13:30 or 21:30 UTC).
+
+**Release freeze.** `premerge.sh` and the merge bot refuse a merge from 04:20,
+12:20 and 20:20 UTC. It ends when the release run of that slot starts, or 30
+minutes after the slot. A merge in the window can turn the last batch red, and then the
+slot ships an older commit. Override for a Rung 0 fix:
+`PREMERGE_FREEZE_OK=<task number>`. Fence: `tests/unit/test_release_freeze.py`.
 
 **Merging is not skipping the loop.** Verify always runs, and the verifier is
 never the implementer. A small slice (LOW, or STANDARD in build) skips the
@@ -416,6 +423,10 @@ Rules that make it work:
   commands, the keeper, the merge queue, the accounts and the traps. **To size
   lanes, sub-agents, runners and CI to the machines you have, or to add a
   machine such as a cloud VPS, read `docs/dev_capacity.md`.**
+- **Google Cloud is the aroh deployment** (D229, D230). Project
+  `metorite-513907` holds the dev box `aroh-dev-1`. Every new resource there
+  takes the name `aroh`. **Read `docs/gcp_aroh.md` before you touch it.** It
+  holds the access, the network plan, the box and the traps.
 - **GitHub `pr-check` is the gate (D218).** Push when the verifier passes, not
   after each commit, so `pr-check` runs once for each round.
   `bash scripts/ci_local.sh` runs the whole pr-check suite locally. It is

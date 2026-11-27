@@ -20,13 +20,25 @@ as defects otherwise:
 These run the real encoder against real images: PyMuPDF is a gateway dependency
 already, no Postgres is involved, and a fake image codec would tell us nothing
 about the one that ships. `tests/live/live_ws28q.py` is the database half.
+
+Since task 2186 the encoder runs in the confined child of
+`gateway/signature_image_worker.py`, and section 5 is its fence: the request
+process decodes nothing, and a child past its time bound is stopped with a
+plain sentence. A real decode needs a child that can confine itself, so on a
+Linux kernel with no Landlock those tests skip (the child fails closed there).
 """
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import base64
+import struct
+import sys
+import time
+import zlib
 from contextlib import asynccontextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -34,6 +46,8 @@ import pytest
 from acb_auth import UserContext, UserRole, build_access
 from fastapi import HTTPException
 from gateway import avatar
+from gateway import signature_image as si
+from gateway import signature_image_worker as worker
 from gateway.routes.people import core as people_core
 from gateway.routes.people import fields as people_fields
 from gateway.routes.people import profile as people_profile
@@ -44,6 +58,29 @@ from tests.unit._sql_match import hits
 
 def run(coro):
     return asyncio.run(coro)
+
+
+def _confinable() -> bool:
+    """True where the real child can confine itself: any dev box, or Linux
+    x86-64 with Landlock at the ABI that the parent asks."""
+    if sys.platform != "linux":
+        return True
+    import platform
+
+    cc = worker._load_confine(si._confine_path())
+    return platform.machine() == "x86_64" and cc.landlock_abi() >= si.MIN_LANDLOCK_ABI
+
+
+#: A real decode needs a confinable child, because the parent refuses any
+#: other answer on Linux. The box and the CI runners have Landlock.
+needs_child = pytest.mark.skipif(
+    not _confinable(),
+    reason="this Linux kernel cannot confine the child, so it fails closed here",
+)
+linux_only = pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="RLIMIT_AS is set on Linux only; the box and CI run Linux",
+)
 
 
 # ── Real images, built with the library that will decode them ───────────────
@@ -90,6 +127,7 @@ BLUE = (30, 30, 200)
 # 1. The stored image is the server's, whatever arrived
 # ══════════════════════════════════════════════════════════════════════════
 
+@needs_child
 @pytest.mark.parametrize("size", [(1000, 400), (400, 1000), (64, 64),
                                   (1200, 1200), (1, 1)])
 def test_every_upload_leaves_as_the_same_square(size) -> None:
@@ -99,29 +137,34 @@ def test_every_upload_leaves_as_the_same_square(size) -> None:
     assert (out.width, out.height) == (avatar.AVATAR_PX, avatar.AVATAR_PX)
 
 
+@needs_child
 def test_a_tiny_image_is_scaled_UP_not_left_small() -> None:
     """Otherwise a 16x16 favicon renders as a smudge beside 256px neighbours."""
     out = decoded(avatar.normalise(image(16, 16)))
     assert out.width == avatar.AVATAR_PX
 
 
+@needs_child
 def test_the_output_is_a_jpeg_whatever_went_in() -> None:
     for fmt in ("png", "jpg"):
         assert avatar.normalise(image(300, 300, fmt)).startswith(b"\xff\xd8\xff")
 
 
+@needs_child
 def test_the_stored_form_is_a_data_uri() -> None:
     uri = avatar.to_data_uri(avatar.normalise(image(300, 300)))
     assert uri.startswith("data:image/jpeg;base64,")
     assert base64.b64decode(uri.split(",", 1)[1]).startswith(b"\xff\xd8\xff")
 
 
+@needs_child
 def test_the_stored_image_is_small_whatever_arrived() -> None:
     """Weight is bounded by the OUTPUT, not by the input — which is why the
     upload cap is a guard against the decoder, not what keeps the table small."""
     assert len(avatar.normalise(image(1600, 1200))) < 60_000
 
 
+@needs_child
 def test_an_alpha_image_composites_onto_white_not_black() -> None:
     """JPEG has no alpha, and the default for "no alpha" is exactly the kind of
     thing that is only wrong in the corner of somebody's profile picture."""
@@ -137,11 +180,13 @@ def test_an_alpha_image_composites_onto_white_not_black() -> None:
 # 2. The crop is enforced, not requested
 # ══════════════════════════════════════════════════════════════════════════
 
+@needs_child
 def test_no_crop_takes_the_centre() -> None:
     wide = image(900, 300, bands=(RED, GREEN, BLUE))
     assert band_at(avatar.normalise(wide)) == GREEN
 
 
+@needs_child
 def test_a_fractional_crop_selects_the_region_asked_for() -> None:
     """Fractions, not pixels: a 1000x400 pixel image opens as a 750x300 POINT
     page, so a pixel rectangle would silently crop the wrong region. Measured —
@@ -151,11 +196,13 @@ def test_a_fractional_crop_selects_the_region_asked_for() -> None:
     assert band_at(avatar.normalise(wide, crop=(0.7, 0.0, 1.0))) == BLUE
 
 
+@needs_child
 def test_a_zoomed_crop_is_still_square() -> None:
     out = decoded(avatar.normalise(image(900, 300), crop=(0.4, 0.2, 0.5)))
     assert (out.width, out.height) == (avatar.AVATAR_PX, avatar.AVATAR_PX)
 
 
+@needs_child
 @pytest.mark.parametrize("crop", [
     (9.0, 9.0, 1.0),        # off the edge entirely
     (-5.0, -5.0, 1.0),
@@ -170,6 +217,7 @@ def test_a_nonsense_crop_is_clamped_rather_than_refused(crop) -> None:
     assert (out.width, out.height) == (avatar.AVATAR_PX, avatar.AVATAR_PX)
 
 
+@needs_child
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), "left", None])
 def test_a_crop_value_that_is_not_a_number_is_survived(bad) -> None:
     """NaN passes every comparison in the clamp — all of them answer False — so
@@ -179,6 +227,7 @@ def test_a_crop_value_that_is_not_a_number_is_survived(bad) -> None:
     assert out.width == avatar.AVATAR_PX
 
 
+@needs_child
 def test_a_client_that_sends_no_crop_at_all_still_gets_a_square() -> None:
     """The cropper is a courtesy; the square is a guarantee (D-PC-17). A caller
     hitting the API directly cannot produce a non-square avatar."""
@@ -232,6 +281,7 @@ def test_an_upload_over_the_cap_is_refused_before_the_decoder() -> None:
     assert "limit" in str(exc.value).lower()
 
 
+@needs_child
 def test_a_truncated_image_is_a_sentence_not_a_traceback() -> None:
     truncated = image(400, 400)[:80]
     with pytest.raises(avatar.AvatarError) as exc:
@@ -336,9 +386,11 @@ STRANGER = _user("someone@fracktal.in", "feature:people")
 class _Upload:
     def __init__(self, data: bytes):
         self._data = data
+        self.asked: list[int] = []
 
-    async def read(self) -> bytes:
-        return self._data
+    async def read(self, size: int = -1) -> bytes:
+        self.asked.append(size)
+        return self._data if size < 0 else self._data[:size]
 
 
 def test_the_avatar_is_self_writable_and_upload_only() -> None:
@@ -354,6 +406,7 @@ def test_the_payload_is_the_writable_set_less_the_upload_only_ones() -> None:
         set(people_fields.WRITABLE_FIELDS) - set(people_fields.UPLOAD_ONLY_FIELDS))
 
 
+@needs_child
 def test_a_member_with_no_grants_may_set_their_own_picture(monkeypatch) -> None:
     db = FakeDB()
     bind(monkeypatch, db)
@@ -364,6 +417,7 @@ def test_a_member_with_no_grants_may_set_their_own_picture(monkeypatch) -> None:
     assert stored["by"] == SUBJECT.email
 
 
+@needs_child
 def test_the_upload_stamps_when_it_changed(monkeypatch) -> None:
     """`updated_at` stops being able to answer "when did they last change their
     picture" the moment anything else on the row moves."""
@@ -384,6 +438,7 @@ def test_a_stranger_may_not_set_somebody_elses(monkeypatch) -> None:
     assert not db.issued("UPDATE people SET avatar")
 
 
+@needs_child
 def test_an_admin_may_set_anyones(monkeypatch) -> None:
     db = FakeDB()
     bind(monkeypatch, db)
@@ -446,3 +501,486 @@ def test_both_doors_share_one_normaliser() -> None:
         body = inspect.getsource(module)
         assert "store_avatar(" in body
         assert "def store_avatar" not in body
+
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 5. The decode runs in a confined child, never in the request (task 2186)
+# ══════════════════════════════════════════════════════════════════════════
+
+AVATAR_PY = Path(avatar.__file__)
+
+
+def test_the_avatar_module_imports_no_decoder() -> None:
+    """The request process holds the byte cap and the sniff only. A decoder
+    import here would put native code on the member's bytes in the gateway."""
+    tree = ast.parse(AVATAR_PY.read_text(encoding="utf-8"))
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            names.add(node.module.split(".")[0])
+    assert not names & {"pymupdf", "fitz", "PIL", "cv2"}, names
+
+
+def _no_decode_in_parent(monkeypatch) -> list[bytes]:
+    """Make the decoder of THIS process refuse. The child is another process,
+    so a decode that still works was done there."""
+    import pymupdf
+
+    seen: list[bytes] = []
+
+    def _refuse(*args: Any, **kwargs: Any) -> Any:
+        seen.append(kwargs.get("stream") or b"")
+        raise AssertionError("the request process decoded the upload")
+
+    monkeypatch.setattr(pymupdf, "open", _refuse)
+    return seen
+
+
+@needs_child
+@pytest.mark.parametrize("fmt", ["png", "jpg"])
+def test_a_valid_image_decodes_in_the_child_not_the_request(monkeypatch, fmt) -> None:
+    seen = _no_decode_in_parent(monkeypatch)
+    out = avatar.normalise(image(600, 400, fmt), crop=(0.1, 0.0, 0.8))
+    assert out.startswith(b"\xff\xd8\xff")
+    pix = decoded(out)
+    assert (pix.width, pix.height) == (avatar.AVATAR_PX, avatar.AVATAR_PX)
+    assert seen == []
+
+
+@needs_child
+def test_the_route_stores_a_picture_with_no_decoder_in_the_request(monkeypatch) -> None:
+    seen = _no_decode_in_parent(monkeypatch)
+    db = FakeDB()
+    bind(monkeypatch, db)
+    run(people_self.upload_my_avatar(
+        _Upload(image(300, 300, "jpg")), 0.0, 0.0, 1.0, user=SUBJECT))
+    assert db.params_for("UPDATE people SET avatar")["avatar"].startswith(
+        "data:image/jpeg;base64,")
+    assert seen == []
+
+
+@pytest.fixture
+def sleeping_child(monkeypatch):
+    """A child that reads its stdin and then sleeps for 30 s, and a bound of
+    half a second. The hook is the one of the signature image tests."""
+    started: list[asyncio.subprocess.Process] = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def _spy(*args, **kwargs):
+        proc = await real_exec(*args, **kwargs)
+        started.append(proc)
+        return proc
+
+    monkeypatch.setattr(si.asyncio, "create_subprocess_exec", _spy)
+    monkeypatch.setattr(si, "_worker_argv", lambda spec: [
+        sys.executable, "-c",
+        "import sys, time; sys.stdin.buffer.read(); time.sleep(30)"])
+    monkeypatch.setattr(si, "TIMEOUT_S", 0.5)
+    return started
+
+
+def test_the_parent_stops_a_child_past_its_time_bound(sleeping_child) -> None:
+    """THE fence of task 2186: one slow image cannot hold a gateway worker."""
+    began = time.monotonic()
+    with pytest.raises(avatar.AvatarError) as caught:
+        avatar.normalise(image(10, 10))
+    took = time.monotonic() - began
+    assert str(caught.value) == (
+        "Reading that image took longer than 0.5 seconds, so it was stopped. "
+        "Upload a smaller picture.")
+    assert caught.value.status == 503
+    assert took < 10, f"the bound did not stop the child ({took:.1f} s)"
+    [proc] = sleeping_child
+    assert proc.returncode is not None, "the child still runs after the refusal"
+
+
+def test_the_route_answers_a_slow_child_with_a_plain_503(
+        monkeypatch, sleeping_child) -> None:
+    """The time bound is this server's refusal, not the member's image."""
+    db = FakeDB()
+    bind(monkeypatch, db)
+    with pytest.raises(HTTPException) as exc:
+        run(people_self.upload_my_avatar(
+            _Upload(image(300, 300)), 0.0, 0.0, 1.0, user=SUBJECT))
+    assert exc.value.status_code == 503
+    assert exc.value.detail.startswith("Reading that image took longer than")
+    assert not db.issued("UPDATE people SET avatar")
+    assert sleeping_child and all(p.returncode is not None for p in sleeping_child)
+
+
+def test_the_slot_is_free_after_a_timeout(sleeping_child) -> None:
+    for _ in range(si.MAX_CHILDREN + 1):
+        with pytest.raises(avatar.AvatarError):
+            avatar.normalise(image(10, 10))
+    _both_slots_free()
+
+
+def _both_slots_free() -> None:
+    """Each slot of the process can be taken, so no refusal kept one."""
+    taken = 0
+    try:
+        while si._SLOT.acquire(blocking=False):
+            taken += 1
+    finally:
+        for _ in range(taken):
+            si._SLOT.release()
+    assert taken == si.MAX_CHILDREN
+
+
+class _Log:
+    """Records each warning of a module logger."""
+
+    def __init__(self) -> None:
+        self.lines: list[tuple[str, dict]] = []
+
+    def warning(self, event: str, **fields: Any) -> None:
+        self.lines.append((event, fields))
+
+    def __getattr__(self, name: str) -> Any:
+        return lambda *a, **k: None
+
+
+@pytest.fixture
+def logs(monkeypatch) -> dict[str, _Log]:
+    caught = {"si": _Log(), "avatar": _Log()}
+    monkeypatch.setattr(si, "_log", caught["si"])
+    monkeypatch.setattr(avatar, "_log", caught["avatar"])
+    return caught
+
+
+def _upload_as_self(monkeypatch) -> tuple[HTTPException, FakeDB]:
+    db = FakeDB()
+    bind(monkeypatch, db)
+    with pytest.raises(HTTPException) as exc:
+        run(people_self.upload_my_avatar(
+            _Upload(image(10, 10)), 0.0, 0.0, 1.0, user=SUBJECT))
+    return exc.value, db
+
+
+# ── The four refusals of this server are 503, and each is logged ───────────
+
+
+def test_busy_is_a_503_with_its_sentence(monkeypatch, logs) -> None:
+    monkeypatch.setattr(si, "SLOT_WAIT_S", 0.2)
+    held = [si._SLOT.acquire(blocking=False) for _ in range(si.MAX_CHILDREN)]
+    assert all(held)
+    try:
+        exc, db = _upload_as_self(monkeypatch)
+    finally:
+        for _ in held:
+            si._SLOT.release()
+    assert exc.status_code == 503
+    assert exc.detail == "Other images are being read now. Try again in a moment."
+    assert not db.issued("UPDATE people SET avatar")
+    assert ("avatar.server_refusal", {"reason": "busy"}) in logs["avatar"].lines
+    _both_slots_free()
+
+
+def test_no_start_is_a_503_with_its_sentence(monkeypatch, logs, tmp_path) -> None:
+    missing = str(tmp_path / "no-such-interpreter")
+    monkeypatch.setattr(si, "_worker_argv", lambda spec: [missing])
+    exc, db = _upload_as_self(monkeypatch)
+    assert exc.status_code == 503
+    assert exc.detail == "The image reader could not start. Try again in a moment."
+    assert not db.issued("UPDATE people SET avatar")
+    assert ("avatar.server_refusal", {"reason": "no_start"}) in logs["avatar"].lines
+    _both_slots_free()
+
+
+def _answering_child(monkeypatch, line: str) -> None:
+    """A fake child that reads the bytes and writes one answer line."""
+    monkeypatch.setattr(si, "_worker_argv", lambda spec: [
+        sys.executable, "-c",
+        f"import sys; sys.stdin.buffer.read(); print({line!r})"])
+
+
+_UNAVAILABLE = ("This server cannot isolate the image reader, so it cannot take "
+                "profile pictures now. Ask your administrator.")
+
+
+def test_a_child_that_cannot_confine_is_a_503_and_logged(monkeypatch, logs) -> None:
+    _answering_child(monkeypatch, '{"refused": "unavailable"}')
+    exc, db = _upload_as_self(monkeypatch)
+    assert (exc.status_code, exc.detail) == (503, _UNAVAILABLE)
+    assert not db.issued("UPDATE people SET avatar")
+    [(event, fields)] = logs["si"].lines
+    assert event == "signature_image.unavailable" and fields["kind"] == "avatar"
+    _both_slots_free()
+
+
+def test_an_unconfined_answer_is_a_503_and_logged(monkeypatch, logs) -> None:
+    import json
+
+    _answering_child(monkeypatch, json.dumps({"ok": _ok()[1]}))
+    exc, _db = _upload_as_self(monkeypatch)
+    assert (exc.status_code, exc.detail) == (503, _UNAVAILABLE)
+    [(event, fields)] = logs["si"].lines
+    assert event == "signature_image.unconfined_answer" and fields["kind"] == "avatar"
+    _both_slots_free()
+
+
+def test_a_missing_confine_module_is_a_503(monkeypatch, logs) -> None:
+    def _none() -> str:
+        raise si.SignatureImageError("no module", 503, code="unavailable")
+
+    monkeypatch.setattr(si, "_confine_path", _none)
+    exc, _db = _upload_as_self(monkeypatch)
+    assert (exc.status_code, exc.detail) == (503, _UNAVAILABLE)
+    assert ("avatar.server_refusal", {"reason": "unavailable"}) in logs["avatar"].lines
+    _both_slots_free()
+
+
+def test_the_signature_refusal_of_a_confine_fault_is_still_its_own() -> None:
+    """``read_answer`` logs now, and the signature sentence does not move."""
+    with pytest.raises(si.SignatureImageError) as caught:
+        si._parse(b'{"refused": "unavailable"}', "logo")
+    assert caught.value.status == 503
+    assert "signature images" in str(caught.value)
+
+
+# ── No pooled connection is held while the child runs (task 2186) ──────────
+
+
+def _counting_sessions(monkeypatch, db: FakeDB) -> dict[str, int]:
+    state = {"open": 0, "opened": 0}
+
+    @asynccontextmanager
+    async def _tenant_session(organization_id: str | None = None):
+        state["open"] += 1
+        state["opened"] += 1
+        try:
+            yield db
+            await db.commit()
+        finally:
+            state["open"] -= 1
+
+    for module in (people_core, people_self, people_profile, tasks_people):
+        monkeypatch.setattr(module, "_tenant_session", _tenant_session, raising=False)
+    return state
+
+
+def _fake_normalise(monkeypatch, state: dict[str, int], during=None) -> list[int]:
+    """Replace the child with a fake that records the sessions open at its call."""
+    open_at_call: list[int] = []
+
+    async def _normalise(data: bytes, *, crop=None, size=avatar.AVATAR_PX) -> bytes:
+        open_at_call.append(state["open"])
+        if during is not None:
+            during()
+        return b"\xff\xd8\xff\xe0fake"
+
+    monkeypatch.setattr(avatar, "normalise_async", _normalise)
+    return open_at_call
+
+
+@pytest.mark.parametrize("door", ["self", "admin"])
+def test_no_session_is_open_while_the_child_runs(monkeypatch, door) -> None:
+    db = FakeDB()
+    state = _counting_sessions(monkeypatch, db)
+    open_at_call = _fake_normalise(monkeypatch, state)
+    upload = _Upload(image(300, 300))
+    if door == "self":
+        run(people_self.upload_my_avatar(upload, 0.0, 0.0, 1.0, user=SUBJECT))
+    else:
+        run(people_profile.upload_avatar(PERSON.id, upload, 0.0, 0.0, 1.0, user=ADMIN))
+    assert open_at_call == [0], "a session was open while the child ran"
+    assert state["opened"] == 2, "the write session must ask again"
+    assert db.issued("UPDATE people SET avatar")
+    assert upload.asked == [avatar.MAX_UPLOAD_BYTES + 1]
+
+
+def test_the_admin_door_stops_when_the_row_went_while_the_child_ran(
+        monkeypatch) -> None:
+    db = FakeDB()
+    state = _counting_sessions(monkeypatch, db)
+    _fake_normalise(monkeypatch, state, during=lambda: setattr(db, "row", None))
+    with pytest.raises(HTTPException) as exc:
+        run(people_profile.upload_avatar(
+            PERSON.id, _Upload(image(300, 300)), 0.0, 0.0, 1.0, user=ADMIN))
+    assert exc.value.status_code == 404
+    assert not db.issued("UPDATE people SET avatar")
+
+
+def test_the_admin_door_stops_when_the_right_went_while_the_child_ran(
+        monkeypatch) -> None:
+    """The subject's own upload, and the row's address moved meanwhile: the
+    caller is no longer the subject, and holds no admin grant."""
+    db = FakeDB()
+    state = _counting_sessions(monkeypatch, db)
+    moved = SimpleNamespace(**{**vars(PERSON), "email": "other@fracktal.in"})
+    _fake_normalise(monkeypatch, state, during=lambda: setattr(db, "row", moved))
+    subject = _user("priya@fracktal.in", "feature:people")
+    with pytest.raises(HTTPException) as exc:
+        run(people_profile.upload_avatar(
+            PERSON.id, _Upload(image(300, 300)), 0.0, 0.0, 1.0, user=subject))
+    assert exc.value.status_code == 403
+    assert not db.issued("UPDATE people SET avatar")
+
+
+def test_the_self_door_stops_when_my_row_changed_while_the_child_ran(
+        monkeypatch) -> None:
+    db = FakeDB()
+    state = _counting_sessions(monkeypatch, db)
+    other = SimpleNamespace(**{**vars(PERSON), "id": "22222222-2222-2222-2222-222222222222"})
+    _fake_normalise(monkeypatch, state, during=lambda: setattr(db, "row", other))
+    with pytest.raises(HTTPException) as exc:
+        run(people_self.upload_my_avatar(
+            _Upload(image(300, 300)), 0.0, 0.0, 1.0, user=SUBJECT))
+    assert exc.value.status_code == 409
+    assert not db.issued("UPDATE people SET avatar")
+
+
+def test_an_upload_past_the_cap_is_read_no_further_and_refused(monkeypatch) -> None:
+    db = FakeDB()
+    bind(monkeypatch, db)
+    upload = _Upload(b"\xff\xd8\xff" + b"\x00" * (3 * avatar.MAX_UPLOAD_BYTES))
+    with pytest.raises(HTTPException) as exc:
+        run(people_self.upload_my_avatar(upload, 0.0, 0.0, 1.0, user=SUBJECT))
+    assert exc.value.status_code == 400
+    assert "2 MB limit" in exc.value.detail
+    assert upload.asked == [avatar.MAX_UPLOAD_BYTES + 1]
+
+
+# ── The request decodes nothing, with no real child needed ─────────────────
+
+
+def test_the_request_decodes_nothing_with_a_fake_child(monkeypatch) -> None:
+    """The runtime fence on every system, even one with no Landlock: the
+    decoder of THIS process refuses, and a fake child answers. The bytes that
+    come back are the child's, so no decode ran here."""
+    import json
+
+    import pymupdf
+
+    seen: list[str] = []
+
+    def _refuse(*args: Any, **kwargs: Any) -> Any:
+        seen.append("decode")
+        raise AssertionError("the request process decoded the upload")
+
+    monkeypatch.setattr(pymupdf, "open", _refuse)
+    monkeypatch.setattr(pymupdf, "Document", _refuse)
+    child_jpeg = b"\xff\xd8\xff\xe0from-the-child"
+    answer = {**_ok()[1], "data": base64.b64encode(child_jpeg).decode(),
+              "confined": True, "unconfined_os": sys.platform}
+    _answering_child(monkeypatch, json.dumps({"ok": answer}))
+    assert avatar.normalise(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64) == child_jpeg
+    assert seen == []
+
+
+@pytest.mark.parametrize("script", [
+    # A crash: a traceback on stderr and no answer.
+    "import sys; sys.stdin.buffer.read(); raise SystemExit('boom')",
+    # A child that ends with nothing to say.
+    "import sys; sys.stdin.buffer.read()",
+    # Garbage, and a JSON line that is no answer.
+    "import sys; sys.stdin.buffer.read(); print('\\x00garbage')",
+    "import sys; sys.stdin.buffer.read(); print('{\"ok\": 1}')",
+    # A flood past the answer cap: the parent kills it.
+    "import sys\nsys.stdin.buffer.read()\nwhile True: sys.stdout.write('x' * 65536)",
+])
+def test_a_child_that_crashes_or_answers_garbage_is_a_plain_refusal(
+        monkeypatch, script) -> None:
+    monkeypatch.setattr(si, "_worker_argv", lambda spec: [sys.executable, "-c", script])
+    with pytest.raises(avatar.AvatarError) as caught:
+        avatar.normalise(image(10, 10))
+    assert str(caught.value) == avatar._UNREADABLE
+
+
+def _ok(**fields: Any) -> tuple[str, Any]:
+    good = {"content_type": "image/jpeg", "width": 256, "height": 256,
+            "data": base64.b64encode(b"\xff\xd8\xff\xe0jpeg").decode()}
+    return "ok", {**good, **fields}
+
+
+@pytest.mark.parametrize("item", [
+    _ok(content_type="image/png"),
+    _ok(width=255),
+    _ok(height=True),
+    _ok(width=256.0),
+    _ok(data="not base64!"),
+    _ok(data=base64.b64encode(b"<html>").decode()),
+    _ok(data=base64.b64encode(b"\xff\xd8\xff" + b"\x00" * avatar.MAX_OUTPUT_BYTES).decode()),
+    _ok(data=None),
+    ("refused", "too_big"),
+    ("refused", "no such code"),
+])
+def test_the_parent_trusts_no_field_of_the_child(item) -> None:
+    with pytest.raises(avatar.AvatarError) as caught:
+        avatar._stored_image(item, 256)
+    assert str(caught.value) == avatar._UNREADABLE
+
+
+def test_an_unconfined_answer_is_refused_with_its_own_sentence() -> None:
+    """An ``ok`` with no confinement mark is no picture (``read_answer``)."""
+    import json
+
+    answer = json.dumps({"ok": _ok()[1]}).encode()
+    with pytest.raises(avatar.AvatarError) as caught:
+        avatar._stored_image(si.read_answer(answer), 256)
+    assert "cannot isolate the image reader" in str(caught.value)
+    assert "profile pictures" in str(caught.value)
+    assert avatar._stored_image(_ok(), 256).startswith(b"\xff\xd8\xff")
+
+
+def _bomb_png(width: int, height: int, *, rgb: bool = False) -> bytes:
+    """A real PNG of zeros, built one row at a time: 1-bit grey, or 8-bit RGB.
+
+    The file is tiny, and the image is huge. The test process never holds
+    the raw image, and never decodes it: that is the point of the child."""
+    def chunk(tag: bytes, body: bytes) -> bytes:
+        return (struct.pack(">I", len(body)) + tag + body
+                + struct.pack(">I", zlib.crc32(tag + body) & 0xFFFFFFFF))
+
+    depth, colour, row_bytes = (8, 2, width * 3) if rgb else (1, 0, (width + 7) // 8)
+    packer = zlib.compressobj(9)
+    row = b"\x00" * (1 + row_bytes)
+    body = b"".join(packer.compress(row) for _ in range(height)) + packer.flush()
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, depth, colour, 0, 0, 0))
+            + chunk(b"IDAT", body) + chunk(b"IEND", b""))
+
+
+@needs_child
+@pytest.mark.parametrize(("width", "height"), [
+    (20_000, 20_000),    # past the edge cap: 400 megapixels
+    (7_000, 7_000),      # under the edge cap, past the pixel cap: 49 megapixels
+])
+def test_a_decompression_bomb_is_refused_in_the_child(monkeypatch, width, height) -> None:
+    bomb = _bomb_png(width, height)
+    assert len(bomb) < avatar.MAX_UPLOAD_BYTES       # the byte cap lets it in
+    seen = _no_decode_in_parent(monkeypatch)
+    began = time.monotonic()
+    with pytest.raises(avatar.AvatarError) as caught:
+        avatar.normalise(bomb)
+    assert "too large" in str(caught.value)
+    assert time.monotonic() - began < si.TIMEOUT_S
+    assert seen == []
+
+
+@needs_child
+def test_the_largest_source_under_the_caps_still_decodes(monkeypatch) -> None:
+    """The bounds fit the caps: a 39.6-megapixel RGB source decodes inside the
+    memory bound and the time bound. So the caps, not the memory, refuse a
+    bomb above."""
+    bomb = _bomb_png(6_000, 6_600, rgb=True)
+    assert len(bomb) < avatar.MAX_UPLOAD_BYTES
+    seen = _no_decode_in_parent(monkeypatch)
+    out = decoded(avatar.normalise(bomb))
+    assert (out.width, out.height) == (avatar.AVATAR_PX, avatar.AVATAR_PX)
+    assert seen == []
+
+
+@linux_only
+@needs_child
+def test_linux_a_child_past_its_memory_bound_is_a_plain_refusal(monkeypatch) -> None:
+    """The memory bound is the child's own ``RLIMIT_AS``. With a bound that
+    MuPDF cannot load in, the child dies or refuses, and the parent answers
+    with a sentence, never a traceback. The gateway process lives on."""
+    monkeypatch.setattr(si, "MEMORY_BYTES", 64 * 1024 * 1024)
+    with pytest.raises(avatar.AvatarError) as caught:
+        avatar.normalise(image(300, 300))
+    assert str(caught.value) in (avatar._UNREADABLE, avatar._CHILD_REFUSALS["pixels"])

@@ -141,7 +141,8 @@ export const SCOPE_COPY: Record<string, { label: string; detail: string }> = {
   },
   "context:read": {
     label: "Read company context",
-    detail: "The organization name, its branding and the memory you may read.",
+    // EA-5 (D-EA-6): the tool get_company_context returns these two and no more.
+    detail: "The organization name and its slug.",
   },
   [OFFLINE_ACCESS]: {
     label: "Stay connected",

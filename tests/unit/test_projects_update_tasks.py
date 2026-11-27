@@ -34,6 +34,7 @@ import uuid
 from typing import Any
 
 import pytest
+from acb_skills.ask_tools import CARD_DECLINED, card_outcome_text
 
 pytest.importorskip("skill_projects", reason="skill-projects not installed")
 
@@ -87,6 +88,11 @@ def responder(call: dict) -> Any:
             ],
             "counts": {},
         }
+    if method == "GET" and path == "/projects/tasks" and (call["params"] or {}).get("include_descendants"):
+        # H-254: the subtree count is one read of the descendants.
+        parent = str(call["params"]["parent_task_id"])
+        rows = [{"id": CHILD, "status_category": "todo", "depth": 1}] if parent in PARENTS else []
+        return {"rows": rows, "total": len(rows)}
     if method == "GET" and path.endswith("/relations"):
         subs = [{"id": CHILD, "title": "step", "category": "todo"}] if parts[3] in PARENTS else []
         return {"subtasks": subs, "links": [], "blocked_by": []}
@@ -219,7 +225,7 @@ async def test_a_declined_card_writes_nothing(monkeypatch) -> None:
     answer_rows(monkeypatch, [])
     calls = fake_gateway(monkeypatch, responder)
     out = await skill_projects.update_tasks(_twelve())
-    assert out == W.CANCELLED
+    assert out == card_outcome_text(CARD_DECLINED)
     assert _patched(calls) == []
 
 

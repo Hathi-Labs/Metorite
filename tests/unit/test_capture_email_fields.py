@@ -12,10 +12,49 @@ complete. These tests lock:
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import types
 
+import pytest
 from gateway.routes.tasks import capture_email as ce
+
+
+@pytest.mark.parametrize(("stored", "name", "address"), [
+    ({"name": "ceo@company.test", "email": "mallory@evil.test"},
+     "ceo@company.test", "mallory@evil.test"),
+    ({"email": "ravi@x.test"}, "ravi@x.test", "ravi@x.test"),
+    ({"name": "Priya"}, "Priya", ""),
+    ({}, "", ""),
+])
+async def test_preview_gives_the_address_of_the_same_mail(
+    monkeypatch, stored: dict, name: str, address: str,
+):
+    """Task 3973: the chat card names the sender by address too, because the
+    sender sets the name. Mutation: drop ``from_email`` from the preview answer,
+    or fill it from the name -> red."""
+    row = types.SimpleNamespace(
+        id="e1", subject="Quote", from_address=json.dumps(stored), snippet="hi",
+        thread_id="t1")
+
+    async def load(_db, _uid, account_id, email_id):
+        assert (account_id, email_id) == ("a1", "e1")
+        return row
+
+    async def none(*_a, **_k):
+        return None
+
+    async def empty(*_a, **_k):
+        return []
+
+    monkeypatch.setattr(ce, "_tenant_session", lambda: contextlib.nullcontext())
+    monkeypatch.setattr(ce, "_uid", lambda _user: "member@x.test")
+    monkeypatch.setattr(ce, "_load_email", load)
+    monkeypatch.setattr(ce, "_find_existing_capture", none)
+    monkeypatch.setattr(ce, "_find_similar_tasks", empty)
+    got = await ce.preview_capture_from_email(
+        ce.CaptureFromEmailRequest(account_id="a1", email_id="e1"), user=object())
+    assert (got.from_name, got.from_email, got.subject) == (name, address, "Quote")
 
 
 def test_coerce_mins_accepts_numbers_and_strings():

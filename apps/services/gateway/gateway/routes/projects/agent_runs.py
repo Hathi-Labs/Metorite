@@ -17,6 +17,10 @@ decisions EA12-1 to EA12-13) and row EA-12a of §15.
                                                   → {activity, run, created, archived}
     POST /projects/agent-runs/{run_id}/outside-decision
                                                   → {activity, run, created}  (MCP-G15)
+    POST /projects/agent-runs/{run_id}/children   → {run, created, ended}
+                                                          (SW-39, SW-114)
+    GET  /projects/agent-runs/{run_id}/children   → {rows}  (SW-39)
+    PUT  /projects/agent-runs/{run_id}/plan       → {activity, run}           (SW-32)
 
 An outside agent works on a task inside a RUN. The run holds typed
 ACTIVITIES: ``prompt``, ``thought``, ``action``, ``response``,
@@ -92,6 +96,12 @@ The rules, each one stated in the spec:
   is not ``awaiting`` stay open to each member who sees the task. The list of
   ``agent_questions.py`` reads the same text, so it never offers a button that
   this route refuses.
+* **Images on a question** (WS-55 CIV-14b, spec §12.9). An agent activity
+  takes ``attachment_ids``: at most four images of the run's OWN task, read
+  after the replay check (:func:`_task_images`). Another task's file is 422.
+  ``content.attachments`` keeps each id, name, type and size, so the card
+  draws the images from the cookie serve route. Dark behind
+  ``mcp_image_upload_orgs`` (``agent_oauth.image_upload_allowed``).
 """
 
 from __future__ import annotations
@@ -104,22 +114,40 @@ import unicodedata
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from acb_auth import UserContext, agent_oauth, get_current_user
 from acb_auth.agent_oauth import ACTOR_VIA_PATTERN, PROJECTS_WRITE, actor_via_for
 from acb_common import get_logger
+from acb_common.image_probe import RASTER_MIMES
 from acb_common.no_person import NO_PERSON_PRESENT, NO_PERSON_TEXT, no_person_present
 from fastapi import Depends, HTTPException, Query, Response
+from gateway.routes.projects.attachments import served_url
+from gateway.routes.projects.claim_gate import check_claim_gate
+from gateway.routes.projects.claim_scope import (
+    apply_warning,
+    check_claim_scope,
+    record_outside_claim,
+)
 from gateway.routes.projects.core import (
+    LANE_STAGE_REVIEW,
+    LANE_STAGE_TODO,
+    STARTED_CATEGORY,
     TaskModel,
     _tenant_session,
     actor,
+    apply_status_transition,
+    board_lanes,
     emit,
     from_jsonb,
+    lane_like,
     load_visible_task,
+    lock_task,
+    pick_lane,
     record_activity,
+    require_row,
     resolve_visibility,
     router,
     row_to_dict,
@@ -132,6 +160,7 @@ from gateway.routes.projects.filters import (
     AGENT_RUN_STATE_SQL,
     AGENT_RUN_WAITING_MAX_MIN,
     BOUND_ORG_SQL,
+    OPEN_STRANDS_SQL,
     agent_questions_allowed,
     agent_run_lease_s,
     agent_run_waiting_cap_min,
@@ -147,7 +176,7 @@ from gateway.routes.projects.filters import (
     open_strand_sql,
     run_idle_s_sql,
     run_life_at_sql,
-    strand_fits_sql,
+    stranded_of,
     task_closed_sql,
     waiting_of,
 )
@@ -202,6 +231,36 @@ AGENT_LABEL_MAX = 40
 #: SW-7b. The longest ``agent_label`` that a body may send before the clean.
 #: A longer value is 422, so no big text reaches the clean.
 AGENT_LABEL_INPUT_MAX = 200
+#: SW-104 (``agent_coordination.md`` §3.12.3). The longest ``host`` and
+#: ``model`` after the clean, in characters. The CHECKs of the migration hold
+#: the same number. A body may send at most :data:`AGENT_LABEL_INPUT_MAX`.
+AGENT_PLACE_MAX = 60
+#: SW-104. A ``host`` or a ``model`` of a body holds no C0 or C1 control
+#: character, else 422 at the schema. The edge has the same pattern.
+AGENT_PLACE_PATTERN = r"^[^\x00-\x1f\x7f-\x9f]+$"
+#: SW-104 (§3.12.7 rule 5). The kind of the machine of an agent session.
+HostKind = Literal["computer", "server", "cloud"]
+#: The kinds, in the order of the spec. The CHECK of the migration holds them.
+AGENT_HOST_KINDS: tuple[str, ...] = ("computer", "server", "cloud")
+#: SW-104 (SW-50). The kind that a box token sets.
+BOX_HOST_KIND = "server"
+#: SW-107 (``agent_coordination.md`` §3.12.3). ``dispatched_by`` of a body is
+#: the id of a run, else 422 at the schema. The edge has the same pattern.
+DISPATCHED_BY_PATTERN = (
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+#: SW-107. The gateway walks this many dispatcher steps up from the named run,
+#: and drops a value that reaches the run itself within them.
+DISPATCH_LOOP_STEPS = 5
+#: SW-107. The fixed text of each dropped ``dispatched_by``, by its code. A
+#: run of another organization and a run that does not exist read the same,
+#: so the answer tells nothing about another organization. The edge holds the
+#: same codes (``tools.DISPATCH_TEXTS``), and a pin test compares them.
+DISPATCH_DROPS: dict[str, str] = {
+    "unknown": "Metorite kept no dispatcher: your organization has no run with that id.",
+    "self": "Metorite kept no dispatcher: a run cannot dispatch itself.",
+    "loop": "Metorite kept no dispatcher: that run would make a loop of dispatchers.",
+    "no_run": "Metorite kept no dispatcher, because the claim opened no run.",
+}
 #: ``wait_s`` of the long poll, at most.
 MAX_WAIT_S = 20
 #: The long poll reads again after this many seconds.
@@ -283,9 +342,13 @@ class OptionIn(BaseModel):
 class StartIn(BaseModel):
     """``POST /projects/tasks/{id}/agent-runs``.
 
-    An agent sends ``external_link``, ``idempotency_key`` and
-    ``agent_label`` only. SW-7b: ``agent_label`` is the display name of the
-    agent's own session, and a member's body that names it is 422. A member
+    An agent sends ``external_link``, ``idempotency_key``, ``agent_label``,
+    ``host``, ``model`` and ``host_kind`` only. SW-7b: ``agent_label`` is the
+    display name of the agent's own session, and a member's body that names
+    it is 422. SW-104: ``host``, ``model`` and ``host_kind`` name the machine
+    and the model of the session, by the same rule. SW-107:
+    ``dispatched_by`` is the run of the session that dispatched this one, by
+    the same rule. A member
     (EA-12d) also sends ``connection_id``, one of their own live agent
     connections, and ``body``, the first ``prompt``. The tenant and the member
     never come from this body (R5).
@@ -298,6 +361,12 @@ class StartIn(BaseModel):
     connection_id: str | None = None
     body: str | None = Field(default=None, max_length=MAX_BODY)
     agent_label: str | None = Field(default=None, max_length=AGENT_LABEL_INPUT_MAX)
+    host: str | None = Field(default=None, max_length=AGENT_LABEL_INPUT_MAX,
+                             pattern=AGENT_PLACE_PATTERN)
+    model: str | None = Field(default=None, max_length=AGENT_LABEL_INPUT_MAX,
+                              pattern=AGENT_PLACE_PATTERN)
+    host_kind: HostKind | None = None
+    dispatched_by: str | None = Field(default=None, pattern=DISPATCHED_BY_PATTERN)
 
 
 #: Task 1045a. The longest ``note`` of a wait, in characters.
@@ -305,6 +374,15 @@ MAX_WAITING_NOTE = 200
 #: The code of the 422 for a wait that passes the cap of
 #: ``filters.agent_run_waiting_cap_min`` (D140.8, SW-4 item 2).
 WAITING_TOO_LONG = "waiting_too_long"
+
+#: CIV-14b (spec §12.9 item 2). The codes of a 422 of ``attachment_ids``: an
+#: id that is not a file of the run's task, and a file that is not a png,
+#: jpeg, gif or webp image. The edge maps each code to a fixed text.
+ATTACHMENT_NOT_ON_TASK = "attachment_not_on_task"
+ATTACHMENT_NOT_IMAGE = "attachment_not_image"
+#: CIV-14b fix round 1. The code of a 422 of ``attachment_ids`` on a type
+#: outside ``agent_oauth.IMAGE_ACTIVITY_TYPES``.
+ATTACHMENTS_NOT_ON_TYPE = "attachments_not_on_type"
 
 
 class WaitingIn(BaseModel):
@@ -326,7 +404,9 @@ class ActivityIn(BaseModel):
     ``selected`` answers it, on a ``prompt``. ``signal`` is the member's
     ``continue`` (the default) or ``stop``. The server sets ``select`` and
     ``in_reply_to`` itself (EA12-7). Task 1045a: ``waiting`` goes on an
-    agent ``thought``, ``action`` or ``response`` only.
+    agent ``thought``, ``action`` or ``response`` only. CIV-14b:
+    ``attachment_ids`` goes on an agent activity only, at most
+    ``agent_oauth.ACTIVITY_IMAGES_MAX`` images of the run's task.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -341,6 +421,8 @@ class ActivityIn(BaseModel):
     parameters: dict[str, str] | None = None
     signal: Literal["continue", "stop"] | None = None
     waiting: WaitingIn | None = None
+    attachment_ids: list[uuid.UUID] | None = Field(
+        default=None, min_length=1, max_length=agent_oauth.ACTIVITY_IMAGES_MAX)
 
 
 #: SW-24. The most characters of one text of a handoff note.
@@ -460,6 +542,35 @@ class OutsideDecisionIn(BaseModel):
     where: str = Field(min_length=1, max_length=MAX_WHERE)
     selected: list[str] | None = Field(default=None, min_length=1, max_length=10)
     idempotency_key: str = Field(min_length=1, max_length=128)
+
+
+#: SW-32 (task 1049). The most steps of a run plan, the most characters of one
+#: step, and the four statuses of a step. The edge holds copies, and
+#: ``test_agent_runs_r8.py`` pins them. The migration CHECK holds the 30.
+MAX_PLAN_STEPS = 30
+MAX_PLAN_STEP = 200
+PLAN_STATUSES: tuple[str, ...] = ("pending", "inProgress", "completed", "canceled")
+#: The action name of the activity that each plan write leaves on the run.
+PLAN_ACTION = "set_run_plan"
+
+
+class PlanStepIn(BaseModel):
+    """One step of a run plan. ``content`` is untrusted text: the gateway
+    stores it as a JSON string and no reader runs it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    content: str = Field(min_length=1, max_length=MAX_PLAN_STEP)
+    status: Literal["pending", "inProgress", "completed", "canceled"]
+
+
+class PlanIn(BaseModel):
+    """``PUT /projects/agent-runs/{id}/plan`` (SW-32, D140.7). The list
+    replaces the whole plan. An empty list clears it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    steps: list[PlanStepIn] = Field(max_length=MAX_PLAN_STEPS)
 
 
 #: The two options of every typed archive request. The server fixes them,
@@ -676,13 +787,110 @@ def clean_agent_label(value: str | None) -> str | None:
     Display data only. No authorization check, no visibility rule, no run
     slot and no session key reads it. Fence: ``test_agent_label_fence.py``.
     """
+    return _clean_name(value, AGENT_LABEL_MAX)
+
+
+def _clean_name(value: str | None, cap: int) -> str | None:
+    """The one clean of a name that an agent sends (SW-7b, SW-104)."""
     cleaned = _clean_body(value)
     if cleaned is None:
         return None
     kept = "".join(
         " " if ch.isspace() else ch for ch in cleaned
         if ch.isspace() or not unicodedata.category(ch).startswith("C"))
-    return _clean_body(" ".join(kept.split())[:AGENT_LABEL_MAX])
+    return _clean_body(" ".join(kept.split())[:cap])
+
+
+def clean_agent_place(value: str | None) -> str | None:
+    """SW-104 (``agent_coordination.md`` §3.12.3). The clean of ``host`` and
+    ``model``: the rules of :func:`clean_agent_label`, with the cap
+    :data:`AGENT_PLACE_MAX`. ``None`` when nothing is left.
+
+    Display data only. No authorization check, no visibility rule, no run
+    slot and no session key reads it. Fence: ``test_agent_label_fence.py``.
+    """
+    return _clean_name(value, AGENT_PLACE_MAX)
+
+
+@dataclass(frozen=True, slots=True)
+class AgentPlace:
+    """SW-104. The machine, the kind of machine and the model of an agent
+    session, each cleaned, or ``None`` when the agent sent none."""
+
+    host: str | None = None
+    model: str | None = None
+    host_kind: str | None = None
+
+    def empty(self) -> bool:
+        return self.host is None and self.model is None and self.host_kind is None
+
+
+def agent_place_of(user: UserContext, host: str | None, model: str | None,
+                   host_kind: str | None) -> AgentPlace:
+    """SW-104. The cleaned ``host``, ``model`` and ``host_kind`` of the body
+    of a claim or a start.
+
+    Only a signed agent names its own machine and model, as only it names its
+    session (:func:`agent_label_of`). So a person's body that names one is
+    422. The values come only from that body, never from a header. A box
+    token's connection name wins later (:func:`_box_place`).
+    """
+    if host is None and model is None and host_kind is None:
+        return AgentPlace()
+    if getattr(user, "agent", None) is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Only an agent sends host, model and host_kind, the place of its session.",
+        )
+    return AgentPlace(host=clean_agent_place(host), model=clean_agent_place(model),
+                      host_kind=host_kind if host_kind in AGENT_HOST_KINDS else None)
+
+
+def dispatched_by_of(user: UserContext, value: str | None) -> str | None:
+    """SW-107. The ``dispatched_by`` of the body of a claim or a start, as a
+    canonical run id, or ``None``.
+
+    Only a signed agent names the run that dispatched it, as only it names
+    its session (:func:`agent_label_of`). So a person's body that names one
+    is 422. The schema already refused a value that is not an id. The value
+    is only a claim of the agent: :func:`set_run_dispatcher` checks it.
+    """
+    if value is None:
+        return None
+    if getattr(user, "agent", None) is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Only an agent sends dispatched_by, the run that dispatched it.",
+        )
+    return str(uuid.UUID(value))
+
+
+#: SW-104 (SW-50). The name and the credential of the caller's own
+#: connection. RLS keeps the read in the bound tenant.
+_BOX_NAME_SQL = (
+    "SELECT client_name, credential FROM agent_connection"
+    " WHERE id = CAST(:cid AS uuid)"
+)
+
+
+async def _box_place(db: Any, user: UserContext, place: AgentPlace) -> AgentPlace:
+    """SW-104. For a box token, the connection name wins over ``host``, and
+    ``host_kind`` is ``server`` (``agent_coordination.md`` §3.12.3, §3.12.7
+    rule 5). Any other caller keeps *place*. The model stays the agent's own.
+
+    The stamp ``mcp:box:`` of branch 0 marks a box caller, and the row's
+    ``credential`` confirms it. Display data only: the result chooses no run.
+    """
+    agent = getattr(user, "agent", None)
+    if agent is None or not str(getattr(agent, "actor_via", "")).startswith(
+            agent_oauth.BOX_STAMP_PREFIX):
+        return place
+    row = (await db.execute(text(_BOX_NAME_SQL),
+                            {"cid": str(agent.connection_id)})).fetchone()
+    if row is None or row.credential != agent_oauth.BOX_CREDENTIAL:
+        return place
+    return AgentPlace(host=clean_agent_place(row.client_name) or place.host,
+                      model=place.model, host_kind=BOX_HOST_KIND)
 
 
 def agent_label_of(user: UserContext, value: str | None) -> str | None:
@@ -735,6 +943,22 @@ def _jsonb(value: Any) -> str | None:
     return None if value is None else json.dumps(value, ensure_ascii=False)
 
 
+def with_image_urls(content: Any) -> Any:
+    """*content* of an activity with the ``url`` of each image (CIV-14b).
+
+    The row keeps the id, the name, the type and the size of each image, and
+    no url. The url is the cookie serve route (``attachments.served_url``),
+    built at each read, so the path of the BFF never sits in the database.
+    Any other content comes back as it is."""
+    images = content.get("attachments") if isinstance(content, dict) else None
+    if not isinstance(images, list):
+        return content
+    return {**content, "attachments": [
+        {**item, "url": served_url(item.get("attachment_id"), str(item.get("name") or "image"))}
+        for item in images if isinstance(item, dict)
+    ]}
+
+
 def _activity_out(row: Any) -> dict[str, Any]:
     return {
         "id": str(row.id),
@@ -742,7 +966,7 @@ def _activity_out(row: Any) -> dict[str, Any]:
         "task_id": str(row.task_id),
         "seq": int(row.seq),
         "type": row.type,
-        "content": from_jsonb(row.content) or {},
+        "content": with_image_urls(from_jsonb(row.content) or {}),
         "content_metadata": from_jsonb(row.content_metadata),
         "ephemeral": bool(row.ephemeral),
         "signal": row.signal,
@@ -818,15 +1042,10 @@ SELECT DISTINCT ON (a.run_id) a.*
  ORDER BY a.run_id, a.seq DESC
 """
 
-#: SW-10a (spec §12.6). The open strand of each run that still fits it, for
-#: ``stranded`` on the runs wire. The rule is ``filters.open_strand_sql``.
-_OPEN_STRANDS_SQL = f"""
-SELECT DISTINCT ON (s.run_id) s.run_id, s.reason, s.nudged_at, s.recovered_at
-  FROM pm_agent_run_strands s
-  JOIN pm_agent_runs r ON {strand_fits_sql('s', 'r')}
- WHERE s.run_id = ANY(CAST(:ids AS uuid[])) AND r.task_id IS NOT NULL
- ORDER BY s.run_id, s.nudged_at DESC
-"""
+#: SW-10a (spec §12.6). The open strand of each run, for ``stranded`` on the
+#: runs wire. The one text lives in ``filters`` (task 1045d), because the
+#: task row reads it too.
+_OPEN_STRANDS_SQL = OPEN_STRANDS_SQL
 
 
 #: Task 1045a. The note of the newest waiting line of each run. Any later
@@ -851,15 +1070,8 @@ def _waiting_out(row: Any, notes: dict[str, Any]) -> dict[str, Any] | None:
     return {**found, "note": notes.get(str(row.id))}
 
 
-def _stranded_out(found: Any, idle_s: Any) -> dict[str, Any]:
-    """``stranded`` of one run: the reason, the first miss, the second miss
-    (the recovery record) and the seconds since the last activity."""
-    return {
-        "reason": found.reason,
-        "nudged_at": wire(found.nudged_at),
-        "recovered_at": wire(found.recovered_at),
-        "idle_s": int(float(idle_s)) if idle_s is not None else None,
-    }
+#: The shape of one open strand. The one builder lives in ``filters``.
+_stranded_out = stranded_of
 
 
 async def _runs_out(db: Any, rows: list[Any]) -> list[dict[str, Any]]:
@@ -932,6 +1144,19 @@ async def _runs_out(db: Any, rows: list[Any]) -> list[dict[str, Any]]:
             # Code (backend-worker-3)". Display data only: no gate reads it,
             # and the edge sends it on as untrusted text.
             "agent_label": getattr(row, "agent_label", None),
+            # SW-104: the machine, its kind and the model of the session, as
+            # the agent or its box token reported them. Display data only.
+            "agent_host": getattr(row, "agent_host", None),
+            "agent_model": getattr(row, "agent_model", None),
+            "agent_host_kind": getattr(row, "agent_host_kind", None),
+            # SW-107: the run that dispatched this one, an id or None. The
+            # gateway checked it on the write. Display data only.
+            "dispatched_by_run_id": wire(getattr(row, "dispatched_by_run_id", None)),
+            # SW-39: `run`, or `child` for a sub-agent, and its parent run.
+            # A task run is always `run` with no parent: a child has no task,
+            # so no task-run read returns one (`child_run_out` shows it).
+            "kind": getattr(row, "kind", None) or "run",
+            "parent_run_id": wire(getattr(row, "parent_run_id", None)),
             "status": row.status,
             "state": row.state,
             "started_by": row.started_by,
@@ -954,6 +1179,8 @@ async def _runs_out(db: Any, rows: list[Any]) -> list[dict[str, Any]]:
             # Task 1045a (agent_coordination.md §3.2): the wait of a run that
             # reads `waiting`, else null.
             "waiting": _waiting_out(row, notes),
+            # SW-32 (task 1049): the checklist that the agent keeps, or null.
+            "plan": from_jsonb(getattr(row, "plan", None)),
         })
         if answer_change_enabled():
             # SW-43. Only with the flag on, so a flag-off wire is unchanged.
@@ -1063,6 +1290,15 @@ def _validate_fields(payload: ActivityIn) -> None:
         raise HTTPException(status_code=422, detail="Only a prompt carries selected.")
     if (payload.action is not None or payload.parameters is not None) and kind != "action":
         raise HTTPException(status_code=422, detail="Only an action carries action and parameters.")
+    if payload.attachment_ids is not None and kind not in agent_oauth.IMAGE_ACTIVITY_TYPES:
+        # CIV-14b: the card draws images on a question and on the line of the
+        # newest thought or action only. A response or an error becomes a
+        # comment, which draws no image, so it would store images that no one
+        # sees. A person attaches in the Files tab, so a prompt takes none.
+        raise HTTPException(status_code=422, detail={
+            "error": ATTACHMENTS_NOT_ON_TYPE,
+            "message": "Only a thought, an action or an elicitation carries attachment_ids.",
+        })
     if payload.waiting is not None:
         _validate_waiting(payload)
 
@@ -1287,6 +1523,60 @@ def _refuse_a_marked_prompt(kind: str, run_id: str) -> None:
         )
 
 
+#: CIV-14b. The files of ONE task among the given ids. The join row is the
+#: rule of the serve route: a file is readable by each person who can see a
+#: task that it hangs off. FORCE RLS binds the tenant of both tables.
+_TASK_IMAGES_SQL = (
+    "SELECT a.id, a.name, a.mime, a.size_bytes"
+    "  FROM pm_task_attachments ta"
+    "  JOIN attachments a ON a.id = ta.attachment_id"
+    " WHERE ta.task_id = CAST(:tid AS uuid)"
+    "   AND ta.attachment_id = ANY(CAST(:ids AS uuid[]))"
+)
+
+
+async def _image_content(db: Any, task_id: str, ids: list[str] | None) -> dict[str, Any]:
+    """The ``content`` keys of the images of an activity: ``{}`` with no
+    ids, else ``{"attachments": [...]}`` from :func:`_task_images`."""
+    if not ids:
+        return {}
+    return {"attachments": await _task_images(db, task_id, ids)}
+
+
+async def _task_images(db: Any, task_id: str, ids: list[str]) -> list[dict[str, Any]]:
+    """The image rows of *ids* on the task, in the order of *ids*, once each.
+
+    CIV-14b (spec §12.9 item 2). An id that is not a file of THIS task is a
+    422 with :data:`ATTACHMENT_NOT_ON_TASK`: the serve route would serve a
+    file of any task that the reader can see, so the check is here. A file
+    whose stored type is not a png, jpeg, gif or webp image is a 422 with
+    :data:`ATTACHMENT_NOT_IMAGE`. Each row holds the id, the name, the type
+    and the size, and no address.
+    """
+    wanted = list(dict.fromkeys(i.lower() for i in ids))
+    rows = (await db.execute(
+        text(_TASK_IMAGES_SQL), {"tid": task_id, "ids": wanted},
+    )).fetchall()
+    found = {str(r.id).lower(): r for r in rows}
+    if any(i not in found for i in wanted):
+        raise HTTPException(status_code=422, detail={
+            "error": ATTACHMENT_NOT_ON_TASK,
+            "message": "Each attachment_id must be a file of the task of this run.",
+        })
+    out: list[dict[str, Any]] = []
+    for i in wanted:
+        row = found[i]
+        mime = str(row.mime or "").split(";")[0].strip().lower()
+        if mime not in RASTER_MIMES:
+            raise HTTPException(status_code=422, detail={
+                "error": ATTACHMENT_NOT_IMAGE,
+                "message": "Each attachment_id must be a PNG, JPEG, GIF or WebP image.",
+            })
+        out.append({"attachment_id": i, "name": str(row.name or ""), "mime": mime,
+                    "size": int(row.size_bytes or 0)})
+    return out
+
+
 async def _write_activity(
     db: Any,
     run: Any,
@@ -1310,6 +1600,7 @@ async def _write_activity(
     metadata: dict[str, Any] | None = None,
     withdraws: str | None = None,
     waiting: WaitingIn | None = None,
+    attachment_ids: list[str] | None = None,
 ) -> _Written:
     """Write one activity on a LOCKED run, inside the caller's transaction.
 
@@ -1343,6 +1634,12 @@ async def _write_activity(
     ``content.waiting``, so the note stays with its line, and
     :func:`_move_run` sets ``waiting_on`` and ``waiting_until``. An activity
     with no *waiting* clears both, whoever writes it.
+
+    CIV-14b (spec §12.9 item 2). *attachment_ids* are images of the run's
+    task, read AFTER the replay check, so a retry returns its first row.
+    :func:`_task_images` refuses an id of another task or a file that is not
+    an image, and ``content.attachments`` keeps the id, the name, the type and
+    the size of each. The card draws each one from the cookie serve route.
     """
     run_id = str(run.id)
     task_id = str(run.task_id)
@@ -1356,6 +1653,8 @@ async def _write_activity(
     me = _member(user)
     if is_agent and run.member_email != me:
         raise HTTPException(status_code=403, detail="This agent run belongs to another member.")
+    # CIV-14b: before any write, so a refused id moves no status.
+    images = await _image_content(db, task_id, attachment_ids)
 
     new_status = transition(run.status, event or _event_of(kind, signal))
     reopened_end: str | None = None
@@ -1394,6 +1693,7 @@ async def _write_activity(
         )
     if extra:
         content.update(extra)
+    content.update(images)
     if waiting is not None:
         content["waiting"] = {
             "on": waiting.on, "until_minutes": waiting.until_minutes,
@@ -1539,6 +1839,36 @@ async def _task_creator(db: Any, task_id: str) -> str | None:
     )).scalar()
 
 
+#: SW-39 (``agent_coordination.md`` §3.11.9). The end of each open child of
+#: one run. A child takes the status of its parent. The index
+#: ``pm_agent_runs_parent`` serves the read. A child has no task and no app,
+#: so it names its own subject: ``kind = 'child'``.
+_END_CHILDREN_SQL = (
+    "UPDATE pm_agent_runs SET status = :status, ended_at = :ts, last_activity_at = :ts,"
+    " waiting_on = NULL, waiting_until = NULL"
+    " WHERE parent_run_id = CAST(:rid AS uuid) AND kind = 'child'"
+    "   AND status = ANY(:open)"
+)
+
+
+async def _end_children(db: Any, run_id: str, new_status: str, ts: Any) -> None:
+    """SW-39. A child ends when its parent ends. Each move of a run to a
+    terminal status calls this, in the caller's transaction:
+    :func:`_move_run` (finish, release, stop, the sweeps, the task close, an
+    app request) and :func:`_take_over`. Each child that is still open takes
+    the parent's terminal status. A move to an open status ends nothing.
+
+    No race with a new child: :func:`start_child_run` locks the parent row
+    before it reads the parent's status, and each move holds the parent row
+    from its UPDATE to the commit. So a new child sees the closed parent, or
+    this UPDATE sees the new child."""
+    if new_status not in TERMINAL_STATUSES:
+        return
+    await db.execute(text(_END_CHILDREN_SQL), {
+        "rid": str(run_id), "status": new_status, "ts": ts,
+        "open": list(AGENT_RUN_OPEN_STATUSES)})
+
+
 async def _move_run(
     db: Any, run: Any, new_status: str, *, ts: Any, user: UserContext | None,
     via: str | None,
@@ -1623,6 +1953,8 @@ async def _move_run(
     update = text(f"UPDATE pm_agent_runs SET {', '.join(sets)} WHERE id = CAST(:rid AS uuid)")
     if not (run.status in TERMINAL_STATUSES and new_status in OPEN_STATUSES):
         await db.execute(update, params)
+        # SW-39: the open children of the run end with it.
+        await _end_children(db, str(run.id), new_status, ts)
         return await _close_question_bells(db, run, new_status)
     # A reopen starts from a terminal status, never from `awaiting`, so it
     # closes no question and returns `[]` below.
@@ -1909,6 +2241,8 @@ async def _take_over(db: Any, holder: Any, *, me: str, via: str | None) -> bool:
     )).fetchone()
     if moved is None:
         return False
+    # SW-39: the open children of the old run end with it.
+    await _end_children(db, str(holder.id), to, ts)
     await _close_question_bells(db, holder, to)
     client = agent_oauth.client_label(via) if via else "the app"
     await _system_activity(
@@ -2013,10 +2347,12 @@ _INSERT_RUN_SQL = (
     "INSERT INTO pm_agent_runs "
     "(task_id, member_email, connection_id, client_via, status, started_by, "
     " started_at, external_link, last_activity_at, last_agent_activity_at, "
-    " idempotency_key, session_key, agent_label) "
+    " idempotency_key, session_key, agent_label, agent_host, agent_model, "
+    " agent_host_kind) "
     "VALUES (CAST(:tid AS uuid), :me, CAST(:cid AS uuid), :via, :status, :by, "
     "        :started, :link, :ts, :agent_ts, :key, CAST(:sk AS text), "
-    "        CAST(:label AS text)) "
+    "        CAST(:label AS text), CAST(:host AS text), CAST(:model AS text), "
+    "        CAST(:kind AS text)) "
     "ON CONFLICT DO NOTHING RETURNING id"
 )
 
@@ -2055,10 +2391,130 @@ async def _set_run_label(db: Any, run_id: str, label: str | None) -> None:
     await db.execute(text(_SET_LABEL_SQL), {"rid": run_id, "label": label})
 
 
+#: SW-104. The newest place of the run's own agent session wins, value by
+#: value. A value that the call did not send keeps the old one.
+_SET_PLACE_SQL = (
+    "UPDATE pm_agent_runs SET"
+    " agent_host = COALESCE(CAST(:host AS text), agent_host),"
+    " agent_model = COALESCE(CAST(:model AS text), agent_model),"
+    " agent_host_kind = COALESCE(CAST(:kind AS text), agent_host_kind)"
+    " WHERE id = CAST(:rid AS uuid)"
+    "   AND (agent_host IS DISTINCT FROM COALESCE(CAST(:host AS text), agent_host)"
+    "        OR agent_model IS DISTINCT FROM COALESCE(CAST(:model AS text), agent_model)"
+    "        OR agent_host_kind IS DISTINCT FROM"
+    "           COALESCE(CAST(:kind AS text), agent_host_kind))"
+)
+
+
+def _place_binds(place: AgentPlace | None) -> dict[str, str | None]:
+    """The binds ``host``, ``model`` and ``kind`` of *place* (SW-104)."""
+    place = place or AgentPlace()
+    return {"host": place.host, "model": place.model, "kind": place.host_kind}
+
+
+async def _set_run_place(db: Any, run_id: str, place: AgentPlace | None) -> None:
+    """SW-104. Set the machine, its kind and the model of an open run that the
+    caller already owns, as :func:`_set_run_label` sets the label. A value
+    that the call did not send keeps the old one. A Resume and a reopen clear
+    them with the label (:func:`_clear_run_label`). The run came from the
+    gate, so the place never chooses the run."""
+    if place is None or place.empty():
+        return
+    await db.execute(text(_SET_PLACE_SQL), {"rid": run_id, **_place_binds(place)})
+
+
+#: SW-107. The named run and its dispatchers, up to
+#: :data:`DISPATCH_LOOP_STEPS` steps. It runs in the caller's tenant session,
+#: so RLS hides a run of another organization, and the walk stops there. Only
+#: a task run can dispatch (AD-16).
+_DISPATCH_CHAIN_SQL = (
+    "WITH RECURSIVE chain (id, up, step) AS ("
+    " SELECT r.id, r.dispatched_by_run_id, 1 FROM pm_agent_runs r"
+    "  WHERE r.id = CAST(:d AS uuid) AND r.task_id IS NOT NULL"
+    " UNION ALL"
+    " SELECT r.id, r.dispatched_by_run_id, c.step + 1 FROM chain c"
+    "   JOIN pm_agent_runs r ON r.id = c.up"
+    "  WHERE c.step < :steps AND r.task_id IS NOT NULL"
+    ") SELECT id, step FROM chain"
+)
+
+#: SW-107. A value replaces the old one. The call writes only on a change.
+_SET_DISPATCHER_SQL = (
+    "UPDATE pm_agent_runs SET dispatched_by_run_id = CAST(:d AS uuid)"
+    " WHERE id = CAST(:rid AS uuid)"
+    "   AND dispatched_by_run_id IS DISTINCT FROM CAST(:d AS uuid)"
+)
+
+
+async def set_run_dispatcher(db: Any, run_id: str | None,
+                             dispatched_by: str | None) -> str | None:
+    """SW-107 (``agent_coordination.md`` §3.12.3). Set the dispatcher of a run
+    that the caller already owns. Return ``None``, or the code of
+    :data:`DISPATCH_DROPS` when the value drops.
+
+    *db* is the caller's tenant session, so RLS hides a run of another
+    organization. The value drops when the session cannot read that run, when
+    it is the run itself, or when the run is among its dispatchers within
+    :data:`DISPATCH_LOOP_STEPS` steps. A dropped value fails nothing: the
+    caller adds the text of its code as a ``warning``. A call with no value
+    keeps the old one, as :func:`_set_run_place` does. A Resume and a reopen
+    keep the dispatcher by design, so a lane that restarts keeps its line
+    (§3.12.3).
+
+    The chain read takes no lock, and the UPDATE's foreign key check takes a
+    KEY SHARE lock on the dispatcher row. A dispatcher that a delete removes
+    between the two makes that check fail (23503). A savepoint maps the
+    failure to the ``unknown`` drop, so the claim still works.
+
+    Two concurrent calls can each pass the loop check and together make a
+    loop, because neither sees the other's write. So each reader that walks
+    the dispatchers (the map, SW-109) must bound its walk. The map reads one
+    step only.
+
+    Display data only. The run came from the gate, so the value never
+    chooses a run, and no authorization check, visibility rule, run slot or
+    session key reads it. Fence: ``test_agent_label_fence.py``.
+    """
+    if dispatched_by is None:
+        return None
+    if run_id is None:
+        return "no_run"
+    chain = (await db.execute(text(_DISPATCH_CHAIN_SQL), {
+        "d": dispatched_by, "steps": DISPATCH_LOOP_STEPS})).fetchall()
+    if not chain:
+        return "unknown"
+    for row in chain:
+        if str(row.id) == run_id:
+            return "self" if int(row.step) == 1 else "loop"
+    try:
+        async with _savepoint(db):
+            await db.execute(text(_SET_DISPATCHER_SQL), {"rid": run_id, "d": dispatched_by})
+    except IntegrityError:
+        # The dispatcher went after the chain read (23503). Drop, never fail.
+        return "unknown"
+    return None
+
+
+def warn_dispatch(result: dict[str, Any], dropped: str | None) -> None:
+    """SW-107. Add the fixed text of a dropped ``dispatched_by`` to the
+    ``warning`` of *result*, after any warning it holds (SW-63), and its code
+    as ``dispatched_by_dropped``. The text holds no user text."""
+    if dropped is None:
+        return
+    said = result.get("warning")
+    note = DISPATCH_DROPS[dropped]
+    result["warning"] = f"{said} {note}" if isinstance(said, str) and said else note
+    result["dispatched_by_dropped"] = dropped
+
+
 #: SW-7b. The clear of the label when the run passes to the next session.
+#: SW-104: the machine, its kind and the model of that session go with it.
 _CLEAR_LABEL_SQL = (
-    "UPDATE pm_agent_runs SET agent_label = NULL"
-    " WHERE id = CAST(:rid AS uuid) AND agent_label IS NOT NULL"
+    "UPDATE pm_agent_runs SET agent_label = NULL, agent_host = NULL,"
+    " agent_model = NULL, agent_host_kind = NULL"
+    " WHERE id = CAST(:rid AS uuid)"
+    "   AND (agent_label IS NOT NULL OR agent_host IS NOT NULL"
+    "        OR agent_model IS NOT NULL OR agent_host_kind IS NOT NULL)"
 )
 
 
@@ -2067,7 +2523,9 @@ async def _clear_run_label(db: Any, run_id: str) -> None:
     its connection: a Resume (it clears the key) and a reopen. A label never
     outlives its session on an open run, so a call with no label can always
     keep the old one (:func:`_set_run_label`). It is a separate statement,
-    so no run-slot rule names the label (the fence of §3.7)."""
+    so no run-slot rule names the label (the fence of §3.7). SW-104: the
+    machine, its kind and the model go in the same statement, by the same
+    rule. SW-107: the dispatcher stays by design (§3.12.3)."""
     await db.execute(text(_CLEAR_LABEL_SQL), {"rid": run_id})
 
 
@@ -2151,6 +2609,17 @@ async def start_agent_run(
 
     201 with ``created: true``, or 200 with ``created: false`` and the run
     that the key or the open-run rule found (EA12-6).
+
+    SW-45 (review P1). An agent's start on a task that does not hold the
+    session member gets the scope check of ``claim_task``
+    (``claim_scope.check_claim_scope``).
+    Outside the member's own apps, mode ``warn`` starts the run, writes one
+    timeline line for a new run, and the answer has ``warning`` and
+    ``outside_apps``. Mode ``refuse`` answers 403 ``outside_apps`` and
+    writes nothing. A replay of the same key is not checked again. The MCP
+    ``ask_on_task`` starts its run here, so it gets the same answer. A run
+    that the member queued here (``via is None``) lets the member's agent
+    in, and a run that an agent started does not.
     """
     task_id = _parse_uuid(task_id, "Task")
     _require_write_scope(user)
@@ -2160,6 +2629,11 @@ async def start_agent_run(
     body = _clean_body(payload.body)
     # SW-7b: an agent's own label, display data only. A person's is 422.
     label = agent_label_of(user, payload.agent_label)
+    # SW-104: and its machine, its kind and its model. A person's is 422.
+    place = agent_place_of(user, payload.host, payload.model, payload.host_kind)
+    # SW-107: the run that dispatched it. A person's is 422.
+    dispatched_by = dispatched_by_of(user, payload.dispatched_by)
+    dropped: str | None = None
     if via is not None and (payload.connection_id is not None or payload.body is not None):
         raise HTTPException(
             status_code=422, detail="An agent sends no connection_id and no body to start a run.",
@@ -2172,9 +2646,11 @@ async def start_agent_run(
     written: _Written | None = None
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_task(db, vis, task_id)
+        task = await load_visible_task(db, vis, task_id)
         if via is not None:
             client_via, connection_id = via, str(user.agent.connection_id)  # type: ignore[union-attr]
+            # SW-104 (SW-50): a box token's connection name wins over `host`.
+            place = await _box_place(db, user, place)
         else:
             cid = _parse_uuid(str(payload.connection_id), "Connection")
             conn = (await db.execute(
@@ -2210,6 +2686,12 @@ async def start_agent_run(
             response.status_code = 200
             return replay
 
+        # SW-45 (review P1): an agent's start on a task that does not hold
+        # the member holds it as a claim does. So the claim's ONE check runs here, before
+        # any write, and `refuse` has no second door.
+        # LBB-2: the claim gate runs in it too, right after the scope check.
+        scope_note = await _start_scope(db, user, via, task, vis, label)
+
         # EA-14a: ONE AI for each task. The gate returns this caller's own
         # open run, or None for a free task, or it raises 409 `task_held`.
         # SW-13c: an agent's own run is of its own connection. A member's
@@ -2228,6 +2710,7 @@ async def start_agent_run(
                 "started": ts if via is not None else None,
                 "link": link, "ts": ts, "agent_ts": ts if via is not None else None,
                 "key": payload.idempotency_key, "sk": own_session, "label": label,
+                **_place_binds(place),
             })).fetchone()
             if made is None:  # a concurrent start won the open-run or the key index
                 # A retry with the same key that lost the race replays the
@@ -2246,6 +2729,10 @@ async def start_agent_run(
             await _set_run_link(db, str(existing.id), link)
             # SW-7b: and the label of its session.
             await _set_run_label(db, str(existing.id), label)
+            # SW-104: and its machine, its kind and its model.
+            await _set_run_place(db, str(existing.id), place)
+            # SW-107: and its dispatcher, checked in this tenant session.
+            dropped = await set_run_dispatcher(db, str(existing.id), dispatched_by)
             existing = await _load_run(db, str(existing.id))
         if existing is not None:
             # The open run is the answer (EA12-6). A member's instruction is
@@ -2261,6 +2748,8 @@ async def start_agent_run(
             out = (await _runs_out(db, [existing]))[0]
             created = False
         else:
+            # SW-107: the new run's dispatcher. Only an agent sends one.
+            dropped = await set_run_dispatcher(db, str(made.id), dispatched_by)
             run = await _load_run(db, str(made.id))
             if via is None:
                 # The member's instruction is the first prompt. It is the act
@@ -2271,9 +2760,360 @@ async def start_agent_run(
             run = await _load_run(db, str(made.id))
             out = (await _runs_out(db, [run]))[0]
             created = True
+            # SW-45: the ONE timeline line, only for the start that made the run.
+            await _record_start_scope(db, user, task_id, scope_note)
     if written is not None and written.commented:
         await emit("pm.task.comment_added", {"task_id": task_id})
-    return {"run": out, "created": created}
+    # SW-45: the warning of a start outside the own apps first. SW-107: then
+    # the fixed text of a dropped dispatcher.
+    result = _with_scope_warning({"run": out, "created": created}, scope_note)
+    warn_dispatch(result, dropped)
+    return result
+
+
+async def _start_scope(db: Any, user: UserContext, via: str | None, task: Any,
+                       vis: Any, label: str | None = None) -> dict[str, Any] | None:
+    """SW-45: the scope check of an agent's start, or ``None`` for a member.
+    It reads the assignees of the task. Only the session member among them
+    is a pass (review P1 of 2026-11-17). The other passes are in
+    ``check_claim_scope``.
+
+    LBB-2 (``engineering_practice.md`` §7b.2): then the claim gate of the
+    start, with the start's *label*, before any write. A member's start is
+    never checked, and a start on the agent's own open run passes (trap 2)."""
+    if via is None:
+        return None
+    current = {
+        str(r.assignee) for r in (await db.execute(
+            text("SELECT assignee FROM pm_task_assignees WHERE task_id = CAST(:tid AS uuid)"),
+            {"tid": str(task.id)},
+        )).fetchall()
+    }
+    note = await check_claim_scope(db, user, task, current, vis)
+    await check_claim_gate(db, user, str(task.id), vis, label)
+    return note
+
+
+def _with_scope_warning(result: dict[str, Any],
+                        note: dict[str, Any] | None) -> dict[str, Any]:
+    """SW-45: *result* with the warning of *note*, in mode ``warn``."""
+    if note is not None:
+        apply_warning(result, note)
+    return result
+
+
+async def _record_start_scope(db: Any, user: UserContext, task_id: str,
+                              note: dict[str, Any] | None) -> None:
+    """SW-45: the ONE timeline line of a new run outside the own apps."""
+    if note is not None:
+        await record_outside_claim(db, user, task_id, note)
+
+
+# ── Child runs (WS-MCP SW-39, SW-114) ───────────────────────────────────────
+
+#: SW-39. The ONE refusal of a child start. An unknown run, a run of another
+#: organization (RLS hides it), a closed run, a child, a run of another
+#: member, and a run that no longer holds its task all read the same, so the
+#: answer tells nothing about another organization or another member.
+CHILD_PARENT_REFUSED = "No open run of yours holds a task with that id."
+#: SW-39. A person never starts a child run: a hook of the agent reports it.
+CHILD_PERSON_REFUSED = "Only an agent starts a child run, for one of its sub-agents."
+#: SW-114. The 403 of a child write under an agent run of the caller's OWN
+#: member that another connection holds. The caller's member owns both
+#: connections, so the answer tells the member only about the member's own
+#: run. A run of another member stays the 404 of :data:`CHILD_PARENT_REFUSED`.
+CHILD_OTHER_CONNECTION = "That run belongs to another connection of yours."
+#: SW-114. The most OPEN children of one run. The start of one more is 429.
+MAX_OPEN_CHILDREN = 20
+CHILD_CAP_REFUSED = (
+    "This run already has 20 open sub-agents. Stop one before you start another.")
+#: SW-114. The 409 of a start whose key another run of the member holds. Only
+#: the member's own runs can hold it, because the unique index of migration
+#: 267 is on (organization, member, key).
+CHILD_KEY_USED = "That agent_id is the key of another run of yours."
+#: SW-114. The shape of ``agent_id``, the id that Claude Code gives a
+#: sub-agent. The edge has the same pattern and cap, and a pin test holds them.
+CHILD_AGENT_ID_MAX = 64
+CHILD_AGENT_ID_PATTERN = r"^[A-Za-z0-9._:-]+$"
+#: SW-114. The status that a stop gives an open child.
+CHILD_STOPPED_STATUS = "completed"
+
+
+class ChildIn(BaseModel):
+    """``POST /projects/agent-runs/{run_id}/children`` (SW-39, SW-114,
+    §3.12.7 rule 11). One event of a sub-agent under an open run of the
+    caller. ``agent_id`` is the id of the sub-agent, and the key of its
+    child: a replayed start writes nothing. ``event`` is ``start`` or
+    ``stop``. ``agent_label`` is the name of its agent type, needed for a
+    start. ``host``, ``model`` and ``host_kind`` are its place (SW-104). The
+    parent, the member, the connection and the tenant come from the path and
+    the signed context, never from this body (R5)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str = Field(min_length=1, max_length=CHILD_AGENT_ID_MAX,
+                          pattern=CHILD_AGENT_ID_PATTERN)
+    event: Literal["start", "stop"] = "start"
+    agent_label: str | None = Field(default=None, min_length=1,
+                                    max_length=AGENT_LABEL_INPUT_MAX)
+    host: str | None = Field(default=None, max_length=AGENT_LABEL_INPUT_MAX,
+                             pattern=AGENT_PLACE_PATTERN)
+    model: str | None = Field(default=None, max_length=AGENT_LABEL_INPUT_MAX,
+                              pattern=AGENT_PLACE_PATTERN)
+    host_kind: HostKind | None = None
+
+
+def child_key(parent_id: str, agent_id: str) -> str:
+    """SW-114. The ``idempotency_key`` of a child: the parent and the
+    ``agent_id`` of the sub-agent. The unique index
+    ``pm_agent_runs_idempotency_key`` (migration 267) is on organization,
+    member and key, and it takes a row with no task. So one sub-agent has at
+    most one child under one parent, and a replay finds it. A parent id of
+    36 characters and an id of at most 64 give at most 107 characters, under
+    the CHECK of 128."""
+    return f"child:{parent_id}:{agent_id}"
+
+
+#: SW-39. The one writer of a child run. No task, no app, no lease and no
+#: session key: a child shows only under its parent. SW-114: the key of
+#: :func:`child_key`. A conflict on the key writes nothing and returns no id.
+#: ``organization_id`` takes the default of the bound tenant.
+_INSERT_CHILD_SQL = (
+    "INSERT INTO pm_agent_runs "
+    "(task_id, app, kind, parent_run_id, member_email, connection_id, client_via,"
+    " status, started_by, started_at, last_activity_at, last_agent_activity_at,"
+    " idempotency_key, session_key, agent_label, agent_host, agent_model,"
+    " agent_host_kind) "
+    "VALUES (NULL, NULL, 'child', CAST(:parent AS uuid), :me, CAST(:cid AS uuid), :via,"
+    "        'in_progress', :via, :ts, :ts, :ts, :key, NULL, CAST(:label AS text),"
+    "        CAST(:host AS text), CAST(:model AS text), CAST(:kind AS text)) "
+    "ON CONFLICT DO NOTHING RETURNING id"
+)
+
+#: SW-39. The one column list of a child run, over the alias ``c``. The map
+#: read of SW-110 (``agent_summary._MAP_CHILDREN_SQL``) reads the same list.
+CHILD_COLUMNS = (
+    "c.id, c.parent_run_id, c.kind, c.status, c.agent_label, c.agent_host,"
+    " c.agent_model, c.agent_host_kind, c.created_at, c.started_at, c.ended_at,"
+    " c.last_activity_at"
+)
+
+#: SW-39. The columns of the children of one run, in the org of the bound
+#: session (``filters.BOUND_ORG_SQL``) beside FORCE RLS. A child names its
+#: own subject, ``kind = 'child'``.
+_CHILD_SELECT = (
+    f"SELECT {CHILD_COLUMNS}"
+    " FROM pm_agent_runs c"
+    f" JOIN (SELECT {BOUND_ORG_SQL} AS id) bound_org ON c.organization_id = bound_org.id"
+    " WHERE c.kind = 'child' AND c.parent_run_id = CAST(:rid AS uuid)"
+)
+
+#: SW-39. The children of one run, newest first. The caller reads the parent
+#: first, with the visibility of its task.
+_CHILDREN_SQL = (
+    f"{_CHILD_SELECT}"
+    "   AND (CAST(:child AS uuid) IS NULL OR c.id = CAST(:child AS uuid))"
+    " ORDER BY c.created_at DESC, c.id DESC LIMIT :limit"
+)
+#: SW-39. The most children that one read returns.
+MAX_CHILDREN = 100
+
+#: SW-114. The one child of a parent with this key (:func:`child_key`). The
+#: key names the parent too, and the read names both.
+_CHILD_BY_KEY_SQL = f"{_CHILD_SELECT} AND c.idempotency_key = :key"
+
+#: SW-114. The count of the open children of one run, for the cap. The
+#: parent row is locked first, so two starts under one parent count in turn.
+_OPEN_CHILDREN_SQL = (
+    "SELECT count(*) FROM pm_agent_runs"
+    " WHERE kind = 'child' AND parent_run_id = CAST(:rid AS uuid)"
+    "   AND status = ANY(:open)"
+)
+
+#: SW-114. The stop of one open child: the child of this parent with this
+#: key, of this member. It never ends a run that is not a child of the
+#: parent, and an ended child stays as it is.
+_STOP_CHILD_SQL = (
+    "UPDATE pm_agent_runs SET status = :status, ended_at = :ts, last_activity_at = :ts,"
+    " waiting_on = NULL, waiting_until = NULL"
+    " WHERE kind = 'child' AND parent_run_id = CAST(:rid AS uuid)"
+    "   AND idempotency_key = :key AND member_email = :me"
+    "   AND status = ANY(:open)"
+    " RETURNING id"
+)
+
+
+def child_run_out(row: Any) -> dict[str, Any]:
+    """The wire shape of one child run (SW-39). The name, the place and the
+    model are the agent's own text: display data only."""
+    return {
+        "id": str(row.id),
+        "parent_run_id": wire(row.parent_run_id),
+        "kind": row.kind,
+        "status": row.status,
+        "agent_label": row.agent_label,
+        "agent_host": row.agent_host,
+        "agent_model": row.agent_model,
+        "agent_host_kind": row.agent_host_kind,
+        "created_at": wire(row.created_at),
+        "started_at": wire(row.started_at),
+        "ended_at": wire(row.ended_at),
+        "last_activity_at": wire(row.last_activity_at),
+    }
+
+
+async def _parent_for_child(db: Any, user: UserContext, parent_id: str, *,
+                            start: bool = True) -> Any:
+    """SW-39. The parent of a child: a task run of the caller's member and
+    connection. For a start it must be open and hold its task, on a task that
+    the caller still sees. It locks the parent row first, so a parent that
+    ends at the same time either ends before this read or sees the new child
+    (:func:`_end_children`). Any miss is 404 :data:`CHILD_PARENT_REFUSED`.
+
+    SW-114: a run of the caller's own member that another connection holds is
+    403 :data:`CHILD_OTHER_CONNECTION`. The member test comes first, so a run
+    of another member is still the one 404. A run that a person started has
+    no connection, so it is the 404 too. A stop (*start* false) needs only
+    the member and the connection: an ended parent has no open child, so the
+    stop that follows changes nothing.
+
+    The read runs in the caller's tenant session, so RLS hides a run of
+    another organization. A child has no task, so the task-run lock and load
+    never find one, and a child is never a parent (no grandchildren)."""
+    refused = HTTPException(status_code=404, detail=CHILD_PARENT_REFUSED)
+    await db.execute(text(_LOCK_TASK_RUN_SQL), {"rid": parent_id})
+    parent = (await db.execute(text(_LOAD_TASK_RUN_SQL), {"rid": parent_id})).fetchone()
+    if (parent is None or getattr(parent, "kind", "run") != "run"
+            or parent.member_email != _member(user) or parent.connection_id is None):
+        raise refused
+    if str(parent.connection_id) != (_agent_connection(user) or ""):
+        raise HTTPException(status_code=403, detail=CHILD_OTHER_CONNECTION)
+    if not start:
+        return parent
+    if parent.status not in OPEN_STATUSES:
+        raise refused
+    holder = (await db.execute(
+        text(_HOLDER_SQL), {"tid": str(parent.task_id), "open": list(AGENT_RUN_OPEN_STATUSES)},
+    )).fetchone()
+    if holder is None or str(holder.id) != str(parent.id):
+        raise refused
+    try:
+        await load_visible_task(db, await resolve_visibility(db, user), str(parent.task_id))
+    except HTTPException as exc:
+        raise refused from exc
+    return parent
+
+
+def _child_writes_on(user: UserContext) -> bool:
+    """SW-114. The child writes are dark behind ``AGENT_MAP_ORGS``, the flag
+    of the map that draws them. ``agent_summary.agent_map_allowed`` is the one
+    reader of that flag. The organization is the one of the signed context,
+    which also binds the tenant session, never a value of the request (R5).
+    The import is local because ``agent_summary`` imports this module."""
+    from gateway.routes.projects.agent_summary import agent_map_allowed
+
+    return agent_map_allowed(getattr(user, "organization_id", None))
+
+
+@router.post("/agent-runs/{run_id}/children", status_code=201, dependencies=_ENABLED)
+async def start_child_run(
+    run_id: str, payload: ChildIn, response: Response,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """SW-39 and SW-114 (``agent_coordination.md`` §3.11.9, §3.12.7 rule 11).
+    One event of a sub-agent under the caller's open run *run_id*. Answers
+    ``{run, created, ended}``, where ``run`` is the child or null.
+
+    A ``start`` writes one child, 201. The child holds no lease and no claim,
+    so a second normal run on the task still meets ``task_held``. It has no
+    session key of its own. It ends when its parent ends
+    (:func:`_end_children`), and a delete of the parent deletes it (ON
+    DELETE CASCADE). A replayed start with the same ``agent_id`` writes
+    nothing and answers the first child, 200. The 21st open child is 429.
+
+    A ``stop`` ends the open child of that ``agent_id``, 200. A stop of an
+    unknown or ended child changes nothing, and answers 200 too.
+
+    Only a signed agent sends one: a person's call is 422.
+
+    Dark (SW-114): the route answers the one 404 of :data:`CHILD_PARENT_REFUSED`
+    while ``AGENT_MAP_ORGS`` leaves out the caller's organization. That check
+    comes first, before any read, lock or write (:func:`_child_writes_on`)."""
+    if not _child_writes_on(user):
+        raise HTTPException(status_code=404, detail=CHILD_PARENT_REFUSED)
+    if getattr(user, "agent", None) is None:
+        raise HTTPException(status_code=422, detail=CHILD_PERSON_REFUSED)
+    _require_write_scope(user)
+    _agent_via(user)  # 403 for a connection with no client stamp
+    try:
+        parent_id = str(uuid.UUID(str(run_id)))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=CHILD_PARENT_REFUSED) from exc
+    key = child_key(parent_id, payload.agent_id)
+    if payload.event == "stop":
+        return await _stop_child(user, parent_id, key, response)
+    label = clean_agent_label(payload.agent_label)
+    if label is None:
+        raise HTTPException(status_code=422, detail="agent_label names the agent type.")
+    place = agent_place_of(user, payload.host, payload.model, payload.host_kind)
+    async with _tenant_session() as db:
+        parent = await _parent_for_child(db, user, parent_id)
+        old = (await db.execute(text(_CHILD_BY_KEY_SQL), {
+            "rid": parent_id, "key": key})).fetchone()
+        if old is not None:
+            response.status_code = 200
+            return {"run": child_run_out(old), "created": False, "ended": False}
+        open_now = (await db.execute(text(_OPEN_CHILDREN_SQL), {
+            "rid": parent_id, "open": list(AGENT_RUN_OPEN_STATUSES)})).scalar()
+        if int(open_now or 0) >= MAX_OPEN_CHILDREN:
+            raise HTTPException(status_code=429, detail=CHILD_CAP_REFUSED)
+        place = await _box_place(db, user, place)
+        ts = await _clock(db)
+        made = (await db.execute(text(_INSERT_CHILD_SQL), {
+            "parent": parent_id, "me": parent.member_email, "cid": _agent_connection(user),
+            "via": parent.client_via, "ts": ts, "key": key, "label": label,
+            **_place_binds(place),
+        })).fetchone()
+        if made is None:
+            raise HTTPException(status_code=409, detail=CHILD_KEY_USED)
+        row = (await db.execute(text(_CHILDREN_SQL), {
+            "rid": parent_id, "child": str(made.id), "limit": 1})).fetchone()
+    return {"run": child_run_out(row), "created": True, "ended": False}
+
+
+async def _stop_child(user: UserContext, parent_id: str, key: str,
+                      response: Response) -> dict[str, Any]:
+    """SW-114. End the open child of *key* under the caller's run. The parent
+    check is the one of :func:`_parent_for_child` with ``start=False``. The
+    UPDATE names the child, the parent, the key and the member, so it never
+    ends another run. An unknown or ended child changes nothing."""
+    async with _tenant_session() as db:
+        parent = await _parent_for_child(db, user, parent_id, start=False)
+        ts = await _clock(db)
+        ended = (await db.execute(text(_STOP_CHILD_SQL), {
+            "rid": parent_id, "key": key, "me": parent.member_email, "ts": ts,
+            "status": CHILD_STOPPED_STATUS, "open": list(AGENT_RUN_OPEN_STATUSES),
+        })).fetchone()
+        row = (await db.execute(text(_CHILD_BY_KEY_SQL), {
+            "rid": parent_id, "key": key})).fetchone()
+    response.status_code = 200
+    return {"run": child_run_out(row) if row is not None else None,
+            "created": False, "ended": ended is not None}
+
+
+@router.get("/agent-runs/{run_id}/children", dependencies=_ENABLED)
+async def list_child_runs(
+    run_id: str, user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """SW-39. The child runs of one run, newest first. A viewer sees a child
+    only under a parent that the viewer can see: the parent loads with the
+    visibility of its task (D12), else 404, as ``get_agent_run`` does."""
+    run_id = _parse_uuid(run_id, "Agent run")
+    async with _tenant_session() as db:
+        await _load_visible_run(db, user, run_id)
+        rows = (await db.execute(text(_CHILDREN_SQL), {
+            "rid": run_id, "child": None, "limit": MAX_CHILDREN})).fetchall()
+    return {"rows": [child_run_out(r) for r in rows]}
 
 
 @router.get("/agent-runs", dependencies=_ENABLED)
@@ -2505,6 +3345,13 @@ async def post_agent_activity(
     _require_write_scope(user)
     agent = _agent_via(user) is not None
     _validate(payload, agent=agent)
+    if payload.attachment_ids is not None and not agent_oauth.image_upload_allowed(
+            getattr(user, "organization_id", None)):
+        # CIV-14b: dark until `mcp_image_upload_orgs` names the org.
+        raise HTTPException(status_code=422, detail={
+            "error": agent_oauth.IMAGE_UPLOAD_OFF,
+            "message": "Images on an activity are off for this organization.",
+        })
     async with _tenant_session() as db:
         await _load_visible_run(db, user, run_id)
         run = await _lock_run(db, run_id)
@@ -2516,6 +3363,8 @@ async def post_agent_activity(
             allow_multiple=bool(payload.allow_multiple), selected=payload.selected,
             action=payload.action, parameters=payload.parameters, signal=payload.signal,
             waiting=payload.waiting,
+            attachment_ids=([str(a) for a in payload.attachment_ids]
+                            if payload.attachment_ids is not None else None),
         )
         if not written.created:
             response.status_code = 200
@@ -2828,12 +3677,141 @@ async def may_answer_run(db: Any, run: Any, user: UserContext) -> bool:
     return bool(held)
 
 
+# ── The lane of a released task (task 3648) ─────────────────────────────────
+
+#: The references of a task that show started work.
+_REFS_OF_TASK_SQL = "SELECT kind, state FROM pm_task_refs WHERE task_id = CAST(:tid AS uuid)"
+
+MOVES_SINCE_MAX = 50
+
+#: Every status move of a task since a run began, oldest first, with who wrote
+#: it. The first one is the claim's own move. Later ones are the agent's or a
+#: person's.
+_MOVES_SINCE_SQL = (
+    "SELECT created_by, created_at, meta FROM pm_activities"
+    " WHERE task_id = CAST(:tid AS uuid) AND type = 'status_change'"
+    " AND created_at >= :since ORDER BY created_at, id LIMIT " + str(MOVES_SINCE_MAX + 1)
+)
+
+
+#: A pull request in these states is open. A pull request with no state read
+#: (no GitHub token) counts as open: the agent attached it for review.
+_OPEN_PR_STATES = frozenset({None, "open", "draft"})
+
+#: Why the release left or moved the task: the closed list of the ``reason``
+#: of ``task_status`` in the answer of the tool.
+RELEASE_REASONS = (
+    "already_released", "not_started_lane", "archived",
+    "open_pull_request", "started_work", "nothing_started", "no_todo_lane",
+    "no_status_before_claim", "no_task",
+)
+
+
+def _lane_report(lane: Any, *, moved: bool, reason: str) -> dict[str, Any]:
+    return {"name": getattr(lane, "name", None), "category": getattr(lane, "category", None),
+            "moved": moved, "reason": reason}
+
+
+async def _settle_task_lane(
+    db: Any, run: Any, user: UserContext, handoff: dict[str, str] | None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Move the task of a released run to the right lane, in the release's own
+    transaction. Returns the report for the tool and the status move, if any.
+
+    The owner's stages: Backlog is a task nobody started. To Do is a task
+    planned soon AND a started task that is paused or given back. In progress
+    is work that moves now: a live run, or an open pull request that waits.
+
+    **A release undoes what the claim of this agent did (owner default,
+    2026-11-17).** It acts only when the last status move of the task is the
+    claim's own move into a started lane: the same member, through the same
+    client (``meta.via``), and written no earlier than this run. A task that
+    was already in progress before the claim is the live work of a person:
+    the release leaves the status alone, whatever refs it holds. For a task
+    that the claim moved, in this order:
+
+    1. An open pull request: it stays in progress, in a review lane if the
+       board has one.
+    2. Started work (a handoff ``done``, or a branch, a commit or a pull
+       request on the task): the To Do lane (:func:`pick_lane`). A board with
+       no To Do lane keeps the task where it is. **It never goes to Backlog.**
+    3. Nothing started: the lane that the claim left (:func:`lane_like`).
+
+    A task that is archived, or not in a started lane, stays.
+    (``pm_agent_runs_one_open_per_task`` allows ONE open run for each task, so
+    no other live run holds the task when this one is released.)
+    """
+    tid = str(run.task_id) if run.task_id is not None else None
+    if tid is None:
+        return {"name": None, "category": None, "moved": False, "reason": "no_task"}, None
+    task = await lock_task(db, tid)
+    status = await require_row(db, "pm_task_statuses", str(task.status_id), "Status")
+    if getattr(task, "archived_at", None) is not None:
+        return _lane_report(status, moved=False, reason="archived"), None
+    if status.category != STARTED_CATEGORY:
+        return _lane_report(status, moved=False, reason="not_started_lane"), None
+    moves = (await db.execute(
+        text(_MOVES_SINCE_SQL), {"tid": tid, "since": run.created_at},
+    )).fetchall()
+    # The move of THIS claim is the first status move since the run began. It
+    # counts only when it was made by the member of the RUN (not by whoever
+    # presses Release: an admin or an assignee may close the run), through the
+    # same client (`meta.via`, which a person's move in the app never
+    # carries), and into a started lane. Each later move must be the agent's
+    # own too. A move that a person made by hand, even the same member's, is
+    # never reversed (verifier F4), and a task that was in progress before the
+    # claim has no such move: it is a person's live work, and the release
+    # leaves it alone (owner default, F5). The lane that the claim LEFT is the
+    # `from` of the first move, also when the agent moved the task again.
+    owner = str(run.member_email or "").strip().lower()
+    metas = [from_jsonb(m.meta) for m in moves]
+    # A claim moves a task only OUT of backlog or todo into a started lane
+    # (`claim_task`). So the first move must leave a lane that is not started:
+    # the agent's own move from one started lane to another (In progress to In
+    # review, as the routine asks) is never the claim (verifier N2).
+    mine = bool(moves) and len(moves) <= MOVES_SINCE_MAX and all(
+        str(m.created_by or "").strip().lower() == owner
+        and isinstance(meta, dict) and meta.get("via") == run.client_via
+        for m, meta in zip(moves, metas, strict=True)
+    ) and metas[0].get("to_category") == STARTED_CATEGORY \
+        and metas[0].get("from_category") not in (None, STARTED_CATEGORY)
+    meta = metas[0] if mine else None
+    if not mine:
+        return _lane_report(status, moved=False, reason="no_status_before_claim"), None
+    refs = (await db.execute(text(_REFS_OF_TASK_SQL), {"tid": tid})).fetchall()
+    lanes = await board_lanes(db, str(task.project_id))
+
+    if any(r.kind == "pull_request" and r.state in _OPEN_PR_STATES for r in refs):
+        target = pick_lane(lanes, LANE_STAGE_REVIEW)
+        reason = "open_pull_request"
+    elif (handoff and handoff.get("done")) or any(
+        r.kind in ("branch", "commit", "pull_request") for r in refs
+    ):
+        target = pick_lane(lanes, LANE_STAGE_TODO)
+        reason = "started_work" if target is not None else "no_todo_lane"
+    else:
+        target = lane_like(lanes, meta.get("from"), meta.get("from_category"))
+        reason = "nothing_started" if target is not None else "no_status_before_claim"
+
+    if target is None or str(target.id) == str(status.id):
+        return _lane_report(status, moved=False, reason=reason), None
+    moved = await apply_status_transition(db, task, str(target.id), created_by=actor(user))
+    return _lane_report(target, moved=True, reason=reason), {
+        "task_id": tid, "from": moved["from"].name, "to": moved["to"].name,
+        "to_category": moved["to"].category,
+    }
+
+
 @router.post("/agent-runs/{run_id}/release", dependencies=_ENABLED)
 async def release_agent_run(
     run_id: str, payload: ReleaseIn, user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Give a task up without finishing it: the run moves to ``released``.
-    The task keeps its status, and every assignee stays.
+    Every assignee stays. The task goes to the right lane (task 3648,
+    :func:`_settle_task_lane`): an open pull request keeps it in progress,
+    started work puts it in To Do, and a task that nobody started goes back
+    to the lane it had. It never goes to Backlog. The answer names the lane
+    in ``task_status``.
 
     * An agent releases its OWN run only: the same member and the same
       client stamp.
@@ -2851,6 +3829,8 @@ async def release_agent_run(
     handoff = _handoff_of(payload.handoff)
     cleared: list[str] = []
     written: _Written | None = None
+    lane: dict[str, Any] | None = None
+    move: dict[str, Any] | None = None
     async with _tenant_session() as db:
         await _load_visible_run(db, user, run_id)
         run = await _lock_run(db, run_id)
@@ -2878,13 +3858,30 @@ async def release_agent_run(
                 db, run, actor_email=me, via=via,
                 body=f"Released by {await _member_name(db, me)}/{client}",
             )
+            # Task 3648: the task goes to the right lane in the same
+            # transaction, so a released task is never left In progress with
+            # nobody on it.
+            lane, move = await _settle_task_lane(db, run, user, handoff)
         out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
+        if lane is None:
+            # A second release of a released run: no write, the lane as it is.
+            held = None
+            if run.task_id is not None:
+                task = await require_row(db, "pm_tasks", str(run.task_id), "Task")
+                held = await require_row(db, "pm_task_statuses", str(task.status_id), "Status")
+            lane = (_lane_report(held, moved=False, reason="already_released")
+                    if held is not None
+                    else {"name": None, "category": None, "moved": False,
+                          "reason": "no_task"})
     # AP-BUG-3: a release of an awaiting run closes its question, and a
     # release emits no `pm.*` event, so each cleared member's My Day moves here.
     if written is not None and written.commented:
         await emit("pm.task.comment_added", {"task_id": out_run["task_id"]})
     await _bump_cleared(user, cleared)
-    return {"run": out_run, "released": True}
+    if move is not None:
+        await emit("pm.task.updated", {"task_id": move["task_id"]})
+        await emit("pm.task.status_changed", move)
+    return {"run": out_run, "released": True, "task_status": lane}
 
 
 # ── Resume (WS-55 SW-11a, spec §12.7) ───────────────────────────────────────
@@ -3669,7 +4666,8 @@ async def _earlier_archive_request(db: Any, task_id: str, me: str, key: str) -> 
 
 async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
                           via: str, link: str | None = None,
-                          label: str | None = None) -> tuple[str | None, bool]:
+                          label: str | None = None,
+                          place: AgentPlace | None = None) -> tuple[str | None, bool]:
     """The id of the agent's open run on the task, or of a new
     ``in_progress`` run (EA12-6), and True when this call made it.
 
@@ -3686,13 +4684,14 @@ async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
     if existing is not None:
         await _set_run_link(db, str(existing.id), link)
         await _set_run_label(db, str(existing.id), label)
+        await _set_run_place(db, str(existing.id), place)
         return str(existing.id), False
     ts = await _clock(db)
     made = (await db.execute(text(_INSERT_RUN_SQL), {
         "tid": task_id, "me": me, "cid": str(user.agent.connection_id),  # type: ignore[union-attr]
         "via": via, "status": "in_progress", "by": via, "started": ts,
         "link": link, "ts": ts, "agent_ts": ts, "key": None,
-        "sk": _agent_session(user), "label": label,
+        "sk": _agent_session(user), "label": label, **_place_binds(place),
     })).fetchone()
     if made is not None:
         return str(made.id), True
@@ -3704,6 +4703,7 @@ async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
     if existing is not None:
         await _set_run_link(db, str(existing.id), link)
         await _set_run_label(db, str(existing.id), label)
+        await _set_run_place(db, str(existing.id), place)
     return (str(existing.id) if existing is not None else None), False
 
 
@@ -3720,7 +4720,8 @@ async def _open_or_new_run(db: Any, user: UserContext, task_id: str, me: str,
 
 async def open_run_for_claim(db: Any, task_id: str, user: UserContext,
                              link: str | None = None,
-                             label: str | None = None) -> str | None:
+                             label: str | None = None,
+                             place: AgentPlace | None = None) -> str | None:
     """WS-55 EA-13c (spec §12.2 item 3, EA3-42). A claim by an agent opens
     its run, so the card reads "working" even when the agent skips
     ``start_agent_run``. ``claim_task`` calls it in the claim's OWN
@@ -3733,7 +4734,9 @@ async def open_run_for_claim(db: Any, task_id: str, user: UserContext,
       nothing and returns that run. CIV-14a: a *link* (already checked by
       ``check_run_link``) is the one exception. It sets the link of the run
       or of the new run, and the newest link wins. SW-7b: a *label*
-      (already cleaned by ``agent_label_of``) acts in the same way. Else it
+      (already cleaned by ``agent_label_of``) acts in the same way, and so
+      does a SW-104 *place* (``agent_place_of``). A box token's connection
+      name wins over its host (:func:`_box_place`). Else it
       inserts one ``in_progress`` run, started by the stamp, with the
       connection and ``last_agent_activity_at`` now. No activity row, no
       comment and no notification (C7 and C9 of EA-6b).
@@ -3751,8 +4754,9 @@ async def open_run_for_claim(db: Any, task_id: str, user: UserContext,
     """
     if getattr(user, "agent", None) is None or not agent_runs_enabled():
         return None
+    place = await _box_place(db, user, place or AgentPlace())
     run_id, made = await _agent_open_run(db, user, task_id, _member(user),
-                                         _agent_via(user) or "", link, label)
+                                         _agent_via(user) or "", link, label, place)
     if run_id is not None and not made:
         # SW-43. The claim finds the run of the agent: that is a read.
         await _stamp_answer_read(db, await _load_run(db, run_id), user)
@@ -4075,6 +5079,71 @@ async def record_outside_decision(
     # move out of `awaiting`. A replay clears nothing, so it moves no My Day.
     await _bump_cleared(user, written.cleared)
     return {"activity": out_activity, "run": out_run, "created": written.created}
+
+
+def _plan_steps(payload: PlanIn) -> list[dict[str, str]]:
+    """The steps as stored: the text with no NUL and no edge space. A step
+    that is empty after that is 422."""
+    steps: list[dict[str, str]] = []
+    for step in payload.steps:
+        content = " ".join(step.content.replace("\x00", "").split())
+        if not content:
+            raise HTTPException(status_code=422, detail="Each plan step needs text.")
+        steps.append({"content": content, "status": step.status})
+    return steps
+
+
+@router.put("/agent-runs/{run_id}/plan", dependencies=_ENABLED)
+async def set_run_plan(
+    run_id: str, payload: PlanIn, user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """The agent sets the plan of its run (SW-32, task 1049, D140.7).
+
+    * **Replace.** The list is the whole plan. An empty list clears it. Over
+      30 steps, a step over 200 characters or an unknown status is 422.
+    * **The agent's OWN run.** Only an agent writes it, and
+      :func:`may_end_run` refuses another member or another client stamp
+      with 403.
+      A run that ended is 409, by the status machine. A person gets 403.
+    * **A wait.** The activity carries no ``waiting``, so a plan write ends a
+      wait of the run (task 1045a). The agent posts its wait after the plan.
+    * **A heartbeat.** The call writes one ``action`` activity, with the
+      counts as its parameters. The plan itself stays in ``plan``, so the
+      step text is in no activity and in no comment.
+
+    Fence: ``tests/unit/test_agent_runs_r8.py`` (the plan tests).
+    """
+    run_id = _parse_uuid(run_id, "Agent run")
+    _require_write_scope(user)
+    if _agent_via(user) is None:
+        raise HTTPException(
+            status_code=403, detail="Only the agent of a run sets its plan.",
+        )
+    steps = _plan_steps(payload)
+    counts = {
+        "steps": str(len(steps)),
+        "completed": str(sum(1 for s in steps if s["status"] == "completed")),
+        "in_progress": str(sum(1 for s in steps if s["status"] == "inProgress")),
+    }
+    async with _tenant_session() as db:
+        await _load_visible_run(db, user, run_id)
+        run = await _lock_run(db, run_id)
+        if not await may_end_run(db, run, user):
+            raise HTTPException(
+                status_code=403,
+                detail="This agent run belongs to another member or another agent client.")
+        written = await _write_activity(
+            db, run, user, kind="action", key=None, body=None,
+            action=PLAN_ACTION, parameters=counts,
+        )
+        await db.execute(
+            text("UPDATE pm_agent_runs SET plan = CAST(:plan AS jsonb)"
+                 " WHERE id = CAST(:rid AS uuid)"),
+            {"plan": _jsonb(steps), "rid": run_id},
+        )
+        out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
+        out_activity = _activity_out(written.activity)
+    return {"activity": out_activity, "run": out_run}
 
 
 def _outside_labels(question: Any, selected: list[str] | None) -> list[str]:

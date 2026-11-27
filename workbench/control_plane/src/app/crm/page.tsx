@@ -31,6 +31,7 @@ import SelectButton from "@/components/ui/SelectButton";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
 import { CARD_PAGE_ATTR } from "@/components/CardPanel";
+import SidePanelMotion from "@/components/ui/SidePanelMotion";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useAccess } from "@/components/AccessProvider";
 import { ShellJob } from "@/lib/shell/doJob";
@@ -1211,7 +1212,10 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
 
         {/* The record card (ORC-1, D181): one mount, here in the row. At the
             side stop it is a column beside `<main>`. At the full stop and on
-            a phone it stands over the page, and it keeps its state. */}
+            a phone it stands over the page, and it keeps its state. At the
+            side stop it opens and closes with the one side-panel motion
+            (task 7). */}
+        <SidePanelMotion>
         {view.record && (
           <RecordSheet
             entity={view.record.entity}
@@ -1297,7 +1301,9 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
             onOpenRelated={(entity, id) => openAlone(openRecord(view, PARAM_FOR[entity], id))}
           />
         )}
+        </SidePanelMotion>
 
+        <SidePanelMotion>
         {view.moduleRecord && (
           // A generic record (CRM-Q6b), on the same record page shell.
           <ModuleRecordSheet
@@ -1310,6 +1316,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
             onOpenLink={openLink}
           />
         )}
+        </SidePanelMotion>
       </div>
 
       <ShellJob

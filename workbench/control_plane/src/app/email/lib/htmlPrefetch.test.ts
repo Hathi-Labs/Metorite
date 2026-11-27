@@ -792,7 +792,9 @@ describe("email-html-flag-off", () => {
       createElement(MessageContent, { text: "Hello", remoteId: remoteHtmlId({ id: "a", htmlRemote: false }) }),
     );
     expect(now).toBe(before);
-    expect(now).toBe('<div class="text-sm text-foreground/85 leading-relaxed whitespace-pre-wrap break-words max-w-2xl">Hello</div>');
+    expect(now).toBe(
+      '<div data-email-body="" class="select-text"><div class="text-sm text-foreground/85 leading-relaxed whitespace-pre-wrap break-words max-w-2xl">Hello</div></div>',
+    );
     expect(now).not.toContain('role="status"');
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(peek(messageHtmlKey("a"))).toBeUndefined();

@@ -14,7 +14,12 @@
  *
  * Fence: `agentQuestions.test.ts`.
  */
-import { ARCHIVE_REQUEST_KIND, type AgentActivity, type AgentOption } from "./agentRuns";
+import {
+  ARCHIVE_REQUEST_KIND,
+  type AgentActivity,
+  type AgentImage,
+  type AgentOption,
+} from "./agentRuns";
 
 /** The sidebar entry, as `?app=questions` opens it. */
 export const QUESTIONS_APP_ID = "questions";
@@ -48,6 +53,8 @@ export interface QuestionBody {
   allow_multiple: boolean;
   /** A typed archive request only: when it expires. The card draws the expired state from it. */
   expires_at?: string | null;
+  /** CIV-14b. The images that the agent put on the question. Absent when it put none. */
+  attachments?: AgentImage[];
 }
 
 /** One row of `GET /projects/agent-questions`. */
@@ -58,6 +65,12 @@ export interface QuestionRow {
   task_number: number | null;
   task_title: string;
   agent_name: string | null;
+  /**
+   * Task 4071. The label of the run's session, such as `lane-devx`. Many lanes
+   * on one box share a client, so the label tells them apart. Text that a
+   * client sent: draw it as text. An older gateway sends no key.
+   */
+  agent_label?: string | null;
   client_via: string | null;
   asked_at: string | null;
   run_started_at: string | null;
@@ -104,6 +117,7 @@ function row(raw: QuestionRow): QuestionRow {
       options: Array.isArray(q.options) ? q.options : [],
       allow_multiple: q.allow_multiple === true,
       ...(typeof q.expires_at === "string" ? { expires_at: q.expires_at } : {}),
+      ...(Array.isArray(q.attachments) ? { attachments: q.attachments } : {}),
     },
     can_answer: raw.can_answer === true,
     why: WHY_VALUES.includes(String(raw.why)) ? (raw.why as QuestionWhy) : null,
@@ -148,6 +162,10 @@ export function questionsQuery(opts: {
 
 export const QUESTIONS_COPY = {
   title: "Questions",
+  /** AMR-4: the pager of the phone view of Agents. */
+  pagerWord: "Question",
+  previous: "Previous question",
+  next: "Next question",
   allProjects: "All projects",
   projectFilter: "Project",
   sortOldest: "Oldest first",
@@ -262,9 +280,19 @@ export function durationText(iso: string | null | undefined, now: number): strin
   return `${Math.floor(hours / 24)} d ${hours % 24} h`;
 }
 
-/** "Claude Code asked 3 h ago". */
-export function askedLine(r: Pick<QuestionRow, "agent_name" | "asked_at">, now: number): string {
-  const agent = r.agent_name || "An agent";
+/**
+ * The name of the agent that asked: "<lane> on <client>" when the run has a
+ * label, else the client name. Null when both are absent. Task 4071.
+ */
+export function agentName(r: Pick<QuestionRow, "agent_name" | "agent_label">): string | null {
+  const label = r.agent_label?.trim();
+  if (!label) return r.agent_name || null;
+  return r.agent_name ? `${label} on ${r.agent_name}` : label;
+}
+
+/** "Claude Code asked 3 h ago", or "lane-devx on Box metorite-home asked 3 h ago". */
+export function askedLine(r: Pick<QuestionRow, "agent_name" | "agent_label" | "asked_at">, now: number): string {
+  const agent = agentName(r) || "An agent";
   const age = ageText(r.asked_at, now);
   return age === "just now" ? `${agent} asked just now` : age ? `${agent} asked ${age} ago` : `${agent} asked`;
 }
@@ -324,7 +352,7 @@ export function questionActivity(r: QuestionRow): AgentActivity {
     id: r.activity_id,
     seq: 0,
     type: "elicitation",
-    content: { body: r.question.body },
+    content: { body: r.question.body, attachments: r.question.attachments ?? null },
     signal: "select",
     signal_metadata: { options: r.question.options, allow_multiple: r.question.allow_multiple },
     // A typed request carries the server's expiry, so the card reads it as the panel does.

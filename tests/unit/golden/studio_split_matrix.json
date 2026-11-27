@@ -14,8 +14,11 @@
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
     "my_tasks_edit_day_rule",
+    "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
+    "my_tasks_list_calendar_connections",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -23,6 +26,7 @@
     "my_tasks_schedule",
     "my_tasks_set_one_thing",
     "my_tasks_start_my_day",
+    "my_tasks_suggest_title",
     "my_tasks_unschedule",
     "my_tasks_update_calendar_settings",
     "bulk_manage_inbox",
@@ -58,7 +62,7 @@
     "sync_account"
    ],
    "offered": [
-    "projects-cycles"
+    "mail-tasks"
    ],
    "packs": [
     "calendar-day",
@@ -67,7 +71,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 103,
+   "tools": 107,
    "via_loader": []
   },
   "calendar_projects_and_calendar_day_sticky_with_email|held=on": {
@@ -84,8 +88,11 @@
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
     "my_tasks_edit_day_rule",
+    "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
+    "my_tasks_list_calendar_connections",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -93,6 +100,7 @@
     "my_tasks_schedule",
     "my_tasks_set_one_thing",
     "my_tasks_start_my_day",
+    "my_tasks_suggest_title",
     "my_tasks_unschedule",
     "my_tasks_update_calendar_settings",
     "bulk_manage_inbox",
@@ -138,6 +146,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
+    "mail-tasks",
     "studio"
    ],
    "packs": [
@@ -147,7 +156,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 103,
+   "tools": 107,
    "via_loader": [
     "projects-assistant"
    ]
@@ -207,7 +216,8 @@
    "offered": [
     "crm-records",
     "projects-authority",
-    "projects-cycles"
+    "projects-cycles",
+    "mail-tasks"
    ],
    "packs": [
     "projects-reports",
@@ -284,6 +294,7 @@
     "projects-authority",
     "projects-cycles",
     "calendar-day",
+    "mail-tasks",
     "studio"
    ],
    "packs": [
@@ -354,7 +365,8 @@
    "offered": [
     "crm-records",
     "projects-authority",
-    "projects-cycles"
+    "projects-cycles",
+    "mail-tasks"
    ],
    "packs": [
     "projects-reports",
@@ -431,6 +443,7 @@
     "projects-authority",
     "projects-cycles",
     "calendar-day",
+    "mail-tasks",
     "studio"
    ],
    "packs": [
@@ -488,7 +501,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "studio"
@@ -545,7 +559,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "studio"
@@ -727,8 +742,11 @@
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
     "my_tasks_edit_day_rule",
+    "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
+    "my_tasks_list_calendar_connections",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -736,6 +754,7 @@
     "my_tasks_schedule",
     "my_tasks_set_one_thing",
     "my_tasks_start_my_day",
+    "my_tasks_suggest_title",
     "my_tasks_unschedule",
     "my_tasks_update_calendar_settings"
    ],
@@ -748,7 +767,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 108,
+   "tools": 112,
    "via_loader": []
   },
   "studio_with_a_sticky_pair_and_two_word_packs|held=on": {
@@ -800,8 +819,11 @@
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
     "my_tasks_edit_day_rule",
+    "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
+    "my_tasks_list_calendar_connections",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -809,6 +831,7 @@
     "my_tasks_schedule",
     "my_tasks_set_one_thing",
     "my_tasks_start_my_day",
+    "my_tasks_suggest_title",
     "my_tasks_unschedule",
     "my_tasks_update_calendar_settings"
    ],
@@ -822,7 +845,8 @@
     "projects-reminders",
     "projects-reports",
     "projects-authority",
-    "projects-cycles"
+    "projects-cycles",
+    "mail-tasks"
    ],
    "packs": [
     "studio",
@@ -832,7 +856,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 108,
+   "tools": 112,
    "via_loader": [
     "projects-assistant"
    ]
@@ -886,8 +910,11 @@
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
     "my_tasks_edit_day_rule",
+    "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
+    "my_tasks_list_calendar_connections",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -895,6 +922,7 @@
     "my_tasks_schedule",
     "my_tasks_set_one_thing",
     "my_tasks_start_my_day",
+    "my_tasks_suggest_title",
     "my_tasks_unschedule",
     "my_tasks_update_calendar_settings"
    ],
@@ -907,7 +935,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 108,
+   "tools": 112,
    "via_loader": []
   },
   "studio_with_a_sticky_pair_the_follower_used_later|held=on": {
@@ -959,8 +987,11 @@
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
     "my_tasks_edit_day_rule",
+    "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
+    "my_tasks_list_calendar_connections",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -968,6 +999,7 @@
     "my_tasks_schedule",
     "my_tasks_set_one_thing",
     "my_tasks_start_my_day",
+    "my_tasks_suggest_title",
     "my_tasks_unschedule",
     "my_tasks_update_calendar_settings"
    ],
@@ -981,7 +1013,8 @@
     "projects-reminders",
     "projects-reports",
     "projects-authority",
-    "projects-cycles"
+    "projects-cycles",
+    "mail-tasks"
    ],
    "packs": [
     "studio",
@@ -991,7 +1024,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 108,
+   "tools": 112,
    "via_loader": [
     "projects-assistant"
    ]
@@ -1022,8 +1055,11 @@
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
     "my_tasks_edit_day_rule",
+    "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
+    "my_tasks_list_calendar_connections",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -1031,6 +1067,7 @@
     "my_tasks_schedule",
     "my_tasks_set_one_thing",
     "my_tasks_start_my_day",
+    "my_tasks_suggest_title",
     "my_tasks_unschedule",
     "my_tasks_update_calendar_settings",
     "studio_describe",
@@ -1066,7 +1103,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 108,
+   "tools": 112,
    "via_loader": []
   },
   "studio_with_crm_records_and_calendar_day|held=on": {
@@ -1095,8 +1132,11 @@
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
     "my_tasks_edit_day_rule",
+    "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
+    "my_tasks_list_calendar_connections",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -1104,6 +1144,7 @@
     "my_tasks_schedule",
     "my_tasks_set_one_thing",
     "my_tasks_start_my_day",
+    "my_tasks_suggest_title",
     "my_tasks_unschedule",
     "my_tasks_update_calendar_settings",
     "studio_describe",
@@ -1140,7 +1181,8 @@
     "projects-reminders",
     "projects-reports",
     "projects-authority",
-    "projects-cycles"
+    "projects-cycles",
+    "mail-tasks"
    ],
    "packs": [
     "crm-records",
@@ -1150,7 +1192,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 108,
+   "tools": 112,
    "via_loader": [
     "projects-assistant"
    ]
@@ -1295,6 +1337,7 @@
     "projects-authority",
     "projects-cycles",
     "calendar-day",
+    "mail-tasks",
     "studio"
    ],
    "packs": [
@@ -1457,7 +1500,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "email",
@@ -1594,7 +1638,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "projects-reminders",
@@ -1742,7 +1787,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "projects-reminders",
@@ -1966,7 +2012,8 @@
     "projects-reminders",
     "projects-reports",
     "projects-authority",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "crm-records",
@@ -2023,7 +2070,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "studio"
@@ -2080,7 +2128,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "studio"
@@ -2126,7 +2175,14 @@
     "studio_app_read",
     "studio_workflow_read",
     "studio_workflow_publish",
-    "studio_workflow_live"
+    "studio_workflow_live",
+    "studio_workflow_runs",
+    "studio_workflow_check",
+    "studio_workflow_catalog",
+    "studio_workflow_run",
+    "studio_workflow_save",
+    "studio_workflow_build",
+    "studio_workflow_module"
    ],
    "offered": [
     "email-setup",
@@ -2148,7 +2204,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 82,
+   "tools": 89,
    "via_loader": [
     "crm-assistant",
     "projects-assistant"
@@ -2185,7 +2241,14 @@
     "studio_app_read",
     "studio_workflow_read",
     "studio_workflow_publish",
-    "studio_workflow_live"
+    "studio_workflow_live",
+    "studio_workflow_runs",
+    "studio_workflow_check",
+    "studio_workflow_catalog",
+    "studio_workflow_run",
+    "studio_workflow_save",
+    "studio_workflow_build",
+    "studio_workflow_module"
    ],
    "offered": [
     "email-setup",
@@ -2198,7 +2261,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "studio",
@@ -2207,7 +2271,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 82,
+   "tools": 89,
    "via_loader": [
     "crm-assistant",
     "projects-assistant"
@@ -2229,8 +2293,11 @@
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
     "my_tasks_edit_day_rule",
+    "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
+    "my_tasks_list_calendar_connections",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -2238,6 +2305,7 @@
     "my_tasks_schedule",
     "my_tasks_set_one_thing",
     "my_tasks_start_my_day",
+    "my_tasks_suggest_title",
     "my_tasks_unschedule",
     "my_tasks_update_calendar_settings",
     "bulk_manage_inbox",
@@ -2273,7 +2341,7 @@
     "sync_account"
    ],
    "offered": [
-    "projects-cycles"
+    "mail-tasks"
    ],
    "packs": [
     "calendar-day",
@@ -2282,7 +2350,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 103,
+   "tools": 107,
    "via_loader": []
   },
   "calendar_projects_and_calendar_day_sticky_with_email|held=on": {
@@ -2299,8 +2367,11 @@
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
     "my_tasks_edit_day_rule",
+    "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
+    "my_tasks_list_calendar_connections",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -2308,6 +2379,7 @@
     "my_tasks_schedule",
     "my_tasks_set_one_thing",
     "my_tasks_start_my_day",
+    "my_tasks_suggest_title",
     "my_tasks_unschedule",
     "my_tasks_update_calendar_settings",
     "bulk_manage_inbox",
@@ -2353,6 +2425,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
+    "mail-tasks",
     "studio",
     "studio-more"
    ],
@@ -2363,7 +2436,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 103,
+   "tools": 107,
    "via_loader": [
     "projects-assistant"
    ]
@@ -2424,6 +2497,7 @@
     "crm-records",
     "projects-authority",
     "projects-cycles",
+    "mail-tasks",
     "studio"
    ],
    "packs": [
@@ -2501,6 +2575,7 @@
     "projects-authority",
     "projects-cycles",
     "calendar-day",
+    "mail-tasks",
     "studio",
     "studio-more"
    ],
@@ -2573,6 +2648,7 @@
     "crm-records",
     "projects-authority",
     "projects-cycles",
+    "mail-tasks",
     "studio"
    ],
    "packs": [
@@ -2650,6 +2726,7 @@
     "projects-authority",
     "projects-cycles",
     "calendar-day",
+    "mail-tasks",
     "studio",
     "studio-more"
    ],
@@ -2709,7 +2786,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "studio",
@@ -2768,7 +2846,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "studio",
@@ -2910,8 +2989,11 @@
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
     "my_tasks_edit_day_rule",
+    "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
+    "my_tasks_list_calendar_connections",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -2919,6 +3001,7 @@
     "my_tasks_schedule",
     "my_tasks_set_one_thing",
     "my_tasks_start_my_day",
+    "my_tasks_suggest_title",
     "my_tasks_unschedule",
     "my_tasks_update_calendar_settings"
    ],
@@ -2931,7 +3014,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 95,
+   "tools": 99,
    "via_loader": []
   },
   "studio_with_a_sticky_pair_and_two_word_packs|held=on": {
@@ -2972,8 +3055,11 @@
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
     "my_tasks_edit_day_rule",
+    "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
+    "my_tasks_list_calendar_connections",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -2981,6 +3067,7 @@
     "my_tasks_schedule",
     "my_tasks_set_one_thing",
     "my_tasks_start_my_day",
+    "my_tasks_suggest_title",
     "my_tasks_unschedule",
     "my_tasks_update_calendar_settings"
    ],
@@ -2995,6 +3082,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
+    "mail-tasks",
     "studio-more"
    ],
    "packs": [
@@ -3005,7 +3093,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 95,
+   "tools": 99,
    "via_loader": [
     "projects-assistant"
    ]
@@ -3051,8 +3139,11 @@
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
     "my_tasks_edit_day_rule",
+    "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
+    "my_tasks_list_calendar_connections",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -3060,6 +3151,7 @@
     "my_tasks_schedule",
     "my_tasks_set_one_thing",
     "my_tasks_start_my_day",
+    "my_tasks_suggest_title",
     "my_tasks_unschedule",
     "my_tasks_update_calendar_settings"
    ],
@@ -3072,7 +3164,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 98,
+   "tools": 102,
    "via_loader": []
   },
   "studio_with_a_sticky_pair_the_follower_used_later|held=on": {
@@ -3116,8 +3208,11 @@
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
     "my_tasks_edit_day_rule",
+    "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
+    "my_tasks_list_calendar_connections",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -3125,6 +3220,7 @@
     "my_tasks_schedule",
     "my_tasks_set_one_thing",
     "my_tasks_start_my_day",
+    "my_tasks_suggest_title",
     "my_tasks_unschedule",
     "my_tasks_update_calendar_settings"
    ],
@@ -3139,6 +3235,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
+    "mail-tasks",
     "studio"
    ],
    "packs": [
@@ -3149,7 +3246,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 98,
+   "tools": 102,
    "via_loader": [
     "projects-assistant"
    ]
@@ -3180,8 +3277,11 @@
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
     "my_tasks_edit_day_rule",
+    "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
+    "my_tasks_list_calendar_connections",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -3189,6 +3289,7 @@
     "my_tasks_schedule",
     "my_tasks_set_one_thing",
     "my_tasks_start_my_day",
+    "my_tasks_suggest_title",
     "my_tasks_unschedule",
     "my_tasks_update_calendar_settings",
     "studio_describe",
@@ -3213,7 +3314,7 @@
    "skipped": [
     "studio-more"
    ],
-   "tools": 95,
+   "tools": 99,
    "via_loader": []
   },
   "studio_with_crm_records_and_calendar_day|held=on": {
@@ -3242,8 +3343,11 @@
     "my_tasks_day_digest",
     "my_tasks_delete_day_rule",
     "my_tasks_edit_day_rule",
+    "my_tasks_enrich",
     "my_tasks_get_calendar_settings",
+    "my_tasks_list_calendar_connections",
     "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -3251,6 +3355,7 @@
     "my_tasks_schedule",
     "my_tasks_set_one_thing",
     "my_tasks_start_my_day",
+    "my_tasks_suggest_title",
     "my_tasks_unschedule",
     "my_tasks_update_calendar_settings",
     "studio_describe",
@@ -3275,6 +3380,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
+    "mail-tasks",
     "studio-more"
    ],
    "packs": [
@@ -3287,7 +3393,7 @@
    "skipped": [
     "studio-more"
    ],
-   "tools": 95,
+   "tools": 99,
    "via_loader": [
     "projects-assistant"
    ]
@@ -3443,6 +3549,7 @@
     "projects-authority",
     "projects-cycles",
     "calendar-day",
+    "mail-tasks",
     "studio-more"
    ],
    "packs": [
@@ -3609,7 +3716,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "email",
@@ -3750,7 +3858,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "projects-reminders",
@@ -3891,7 +4000,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "projects-reminders",
@@ -4100,7 +4210,8 @@
     "projects-reminders",
     "projects-reports",
     "projects-authority",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "projects-cycles",
@@ -4158,7 +4269,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "studio",
@@ -4217,7 +4329,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "studio",
@@ -4265,7 +4378,14 @@
     "studio_app_read",
     "studio_workflow_read",
     "studio_workflow_publish",
-    "studio_workflow_live"
+    "studio_workflow_live",
+    "studio_workflow_runs",
+    "studio_workflow_check",
+    "studio_workflow_catalog",
+    "studio_workflow_run",
+    "studio_workflow_save",
+    "studio_workflow_build",
+    "studio_workflow_module"
    ],
    "offered": [],
    "packs": [
@@ -4276,7 +4396,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 82,
+   "tools": 89,
    "via_loader": []
   },
   "studio_with_workflow_words_and_studio_workflows_on|held=on": {
@@ -4311,7 +4431,14 @@
     "studio_app_read",
     "studio_workflow_read",
     "studio_workflow_publish",
-    "studio_workflow_live"
+    "studio_workflow_live",
+    "studio_workflow_runs",
+    "studio_workflow_check",
+    "studio_workflow_catalog",
+    "studio_workflow_run",
+    "studio_workflow_save",
+    "studio_workflow_build",
+    "studio_workflow_module"
    ],
    "offered": [
     "email-setup",
@@ -4324,7 +4451,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "studio",
@@ -4334,7 +4462,7 @@
    "skills": [],
    "skills_skipped": [],
    "skipped": [],
-   "tools": 82,
+   "tools": 89,
    "via_loader": [
     "projects-assistant"
    ]

@@ -60,9 +60,10 @@ _ROOT = Path(__file__).resolve().parents[2]
 _STORE = _ROOT / "apps/services/gateway/gateway/studio/objects_store.py"
 _DRAFT_EDIT = _ROOT / "workbench/control_plane/src/lib/studio/draftEdit.ts"
 #: The store calls that take a REQUIRED ``viewer``: the six of C8a, ``read_tree`` since
-#: its door (D18-2a), and ``aggregate_records`` since C2d-a. The name stays ``_SIX``.
+#: its door (D18-2a), ``aggregate_records`` since C2d-a, and ``list_record_changes``
+#: (C4a-2). The name stays ``_SIX`` for the fences.
 _SIX = ("get_record", "query_records", "apply_writes", "create_record", "update_record",
-        "delete_record", "read_tree", "aggregate_records")
+        "delete_record", "read_tree", "aggregate_records", "list_record_changes")
 
 ME = "ana@x.test"
 SLIP_FIELDS = [
