@@ -29,6 +29,14 @@
  *
  * **Reduced motion** skips the two moving phases. The panel opens and closes
  * at once, and the full-view switch is instant.
+ *
+ * **Every docked side panel moves the same way** (task 7, owner answer
+ * 2026-11-22: "one shared motion for all right-side panels"). The task panel
+ * of Projects and the record card at its side stop (the CRM, My Day) open in
+ * `components/ui/SidePanelMotion.tsx`. It takes the assistant's dock form on
+ * the same two tokens, through `useSidePanelPresence` below. Unlike the
+ * assistant, such a panel unmounts once it has closed, so the presence keeps
+ * the last content on screen while the panel closes.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -170,6 +178,68 @@ export function usePanelPhase(open: boolean, durationMs: number): { phase: Panel
 
   const settle = useCallback(() => setPhase((p) => nextPhase(p, "settled")), []);
   return { phase, settle };
+}
+
+// ── A docked side panel ──────────────────────────────────────────────────────
+
+/**
+ * The mark of a panel that stands in the page row as a column. The frame of
+ * `SidePanelMotion` takes a width only when it holds this mark. A record card
+ * puts it on its host at the side stop (`CardPanel`). A card over the page
+ * has none, so its frame draws no box and does not move.
+ */
+export const SIDE_DOCKED_ATTR = "data-side-docked";
+
+/** A host passes `cond ? <Panel/> : null`. Only a real node is content. */
+export function isPanelContent<T>(content: T | null | undefined | boolean): content is T {
+  return content !== null && content !== undefined && typeof content !== "boolean";
+}
+
+/**
+ * What a side panel draws in each phase: the content while the host gives
+ * one, then the last content while the panel closes, and nothing once it has
+ * closed. Null means the frame unmounts.
+ *
+ * A host that gives content again during the close opens the panel again,
+ * with the new content.
+ */
+export function presenceContent<T>(content: T | null, kept: T | null, phase: PanelPhase): T | null {
+  if (content !== null) return content;
+  return phase === "closed" ? null : kept;
+}
+
+/**
+ * A frame with no box of its own has nothing to move: a card that stands over
+ * the page leaves its frame `display: contents`. Its phase settles at once,
+ * so the card leaves with no wait. `display` is the frame's computed value.
+ */
+export function settlesAtOnce(display: string | null | undefined): boolean {
+  return !display || display === "contents" || display === "none";
+}
+
+/**
+ * The phase of a docked side panel, and the content to draw (`presenceContent`).
+ *
+ * `content` is what the host gives now: a node while the panel is open, and
+ * null (or false) when it closes. The panel stays mounted through `closing`
+ * with the last node, and the motion runs on `--panel-duration`, as the
+ * assistant's does. Reduced motion skips both moving phases
+ * (`usePanelPhase`), so the panel unmounts at once.
+ */
+export function useSidePanelPresence<T>(content: T | null | undefined | boolean): {
+  content: T | null;
+  phase: PanelPhase;
+  settle: () => void;
+} {
+  const now = isPanelContent(content) ? content : null;
+  const { phase, settle } = usePanelPhase(now !== null, PANEL_MOTION.durationMs);
+  // The last content the host gave. The documented way to keep a value from
+  // an earlier render: a state that a render adjusts (react.dev, "Storing
+  // information from previous renders"). A ref may not be read in a render.
+  const [kept, setKept] = useState<T | null>(now);
+  if (now !== null && now !== kept) setKept(now);
+  if (now === null && phase === "closed" && kept !== null) setKept(null);
+  return { content: presenceContent(now, kept, phase), phase, settle };
 }
 
 // ── Focus ────────────────────────────────────────────────────────────────────

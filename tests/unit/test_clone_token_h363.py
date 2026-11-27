@@ -687,16 +687,38 @@ def test_a_read_only_store_is_reported(tmp_path: Path, home: Path, monkeypatch) 
 _SECRET_URL = re.compile(r"""https?://[^/\s'"]*\{[^}]+\}[^/\s'"]*@""")
 
 
+#: The one allowed line, by path and by the exact text of the line. WS-43g1
+#: (task 4009): the egress proxy of a sandbox run reads its grant token from
+#: the userinfo of HTTP_PROXY, the only place where curl and pip take proxy
+#: credentials. The token is the run's own grant, not a platform secret: it
+#: lives 30 minutes at most, the grants file holds only its hash, and
+#: ``write_egress_env_file`` keeps it out of the ``docker run`` argv. A second
+#: line, or a change to this one, fails the test again.
+_ALLOWED_SECRET_URLS: frozenset[tuple[str, str]] = frozenset({
+    ("apps/services/orchestrator/orchestrator/sandbox_broker.py",
+     'url = f"http://grant:{grant.token}@{EGRESS_PROXY_NAME}:{EGRESS_PROXY_PORT}"'),
+})
+
+
 def test_no_source_builds_a_url_with_a_secret() -> None:
     hits: list[str] = []
+    allowed_seen: dict[tuple[str, str], int] = {}
     for top in ("apps", "packages"):
         for path in (REPO_ROOT / top).rglob("*.py"):
             if "node_modules" in path.parts or "/tests/" in path.as_posix():
                 continue
+            rel = path.relative_to(REPO_ROOT).as_posix()
             text = path.read_text(encoding="utf-8", errors="replace")
             for n, line in enumerate(text.splitlines(), 1):
-                if _SECRET_URL.search(line):
-                    hits.append(f"{path.relative_to(REPO_ROOT)}:{n}: {line.strip()[:120]}")
+                if not _SECRET_URL.search(line):
+                    continue
+                key = (rel, line.strip())
+                # An allowed line passes once. A second copy of it fails.
+                if key in _ALLOWED_SECRET_URLS:
+                    allowed_seen[key] = allowed_seen.get(key, 0) + 1
+                    if allowed_seen[key] == 1:
+                        continue
+                hits.append(f"{rel}:{n}: {line.strip()[:120]}")
     assert not hits, "a URL with a secret in it:\n" + "\n".join(hits)
 
 

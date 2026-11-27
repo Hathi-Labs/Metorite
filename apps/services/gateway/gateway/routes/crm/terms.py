@@ -130,7 +130,7 @@ async def resolve_term(
     question of the term, for the chat to ask first."""
     from gateway.crm_sync import runs
     from gateway.routes.crm.access import ADMIN_PERMISSION
-    from gateway.routes.crm.modules import _require_module, mirrored_modules
+    from gateway.routes.crm.modules import mirrored_modules, resolve_module
     from gateway.routes.crm.questions import (
         _ask_model,
         chat_card_questions,
@@ -146,10 +146,10 @@ async def resolve_term(
         raise HTTPException(status_code=422, detail={
             "code": "term_empty", "message": "The term holds no word."})
     member = (getattr(user, "email", None) or "").strip().lower()
-    qid = terms.term_id(module, word)
     async with _tenant_session() as db:
         await _require_mirror(db, org)
-        _require_module(await mirrored_modules(db), module)
+        module = resolve_module(await mirrored_modules(db), module)
+        qid = terms.term_id(module, word)
         inputs = await load_for_terms(db, org)
         src = inputs.sources.get(module) if inputs is not None else None
         if inputs is None or src is None:

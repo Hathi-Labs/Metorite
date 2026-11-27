@@ -124,6 +124,14 @@ export interface ReplyForm {
   /** §18.11, a new mail only: the draft number, 2 or more ("Draft 2"). */
   draft?: number;
   /**
+   * HRD-8b, a new mail only: what differs from the card that this card
+   * replaces (`revises`): its act kind, its To, its Cc and its Bcc. The gateway
+   * computes it (`redraft.changed_since`). The card says so in one plain line
+   * (`changedLinkLine`) and claims nothing more. A part that is equal is not
+   * here.
+   */
+  changed?: LinkChange;
+  /**
    * §18.11 fix round 5, a new mail only: the SAME card, shown again because
    * the revise of a chat message did not run. It takes its slot back, with
    * the member's edits, and says why.
@@ -138,6 +146,62 @@ export interface ReplyForm {
    * ticked, is dropped.
    */
   unticked?: string[];
+  /**
+   * Task 3978 (§18.13.1), a new mail only: one line that names the draft of
+   * this email that the chat saved earlier. Discard then asks
+   * `EARLIER_QUESTION` on this card. The tool sets it only while the draft is
+   * the chat's own text.
+   */
+  earlier?: string;
+  /** Task 3978: what "Delete it" does at the mailbox's provider (`EARLIER_EFFECTS`), if known. */
+  earlierEffect?: string;
+}
+
+/** Task 3978: the question that Discard or Reject asks on a card with an `earlier` draft. */
+export const EARLIER_QUESTION = "Keep the earlier draft, or delete it?";
+/** Task 3978: what Keep does. It holds for each provider. */
+export const EARLIER_HINT = "Nothing is sent. Keep leaves the draft in Drafts.";
+/**
+ * Task 3978: what "Delete it" does, one sentence for each provider whose
+ * effect is known (`draft_choice.DELETE_EFFECTS` holds the same text). The
+ * server picks one. The card draws it whole, in a line of its own, so no clip
+ * cuts it. With none (IMAP, or a mailbox that could not be read), the card
+ * promises nothing about the delete.
+ */
+export const EARLIER_EFFECTS = [
+  "Delete removes it from Gmail for good.",
+  "Delete moves it to Deleted Items in Outlook.",
+] as const;
+/**
+ * Task 3978: the answer of Discard or Reject, then "Delete it". It is a
+ * decline, so the card sends and saves nothing. The tool then trashes the
+ * earlier draft. Each other answer keeps it. `ask_tools.DELETE_EARLIER_ANSWER`
+ * holds the same text.
+ */
+export const DELETE_EARLIER_ANSWER = 'REJECT {"earlier":"delete"}' as const;
+
+/** Task 3978: the earlier draft that a card asks about: its line, and the effect of a delete. */
+export interface EarlierDraft {
+  line: string;
+  effect?: string;
+}
+
+/**
+ * Task 3978: the `earlier` and `earlier_effect` keys of a card event, checked,
+ * or {}. The ONE reader for a new-mail form and for a plain card. A line over
+ * 300 characters is cut, and an effect that is not one of `EARLIER_EFFECTS`
+ * is dropped.
+ */
+export function earlierFromEvent(v: Record<string, unknown>): { earlier?: string; earlierEffect?: string } {
+  const line = typeof v.earlier === "string" ? v.earlier.slice(0, 300).trim() : "";
+  if (!line) return {};
+  const effect = (EARLIER_EFFECTS as readonly unknown[]).includes(v.earlier_effect) ? String(v.earlier_effect) : "";
+  return { earlier: line, ...(effect ? { earlierEffect: effect } : {}) };
+}
+
+/** Task 3978: the hint under the question: what Keep does, then the effect of a delete. */
+export function earlierHint(effect?: string): string {
+  return effect ? `${EARLIER_HINT} ${effect}` : EARLIER_HINT;
 }
 
 /** The kept unticks of a new-mail form (§18.11 rule 7): each a person of the
@@ -156,13 +220,60 @@ function untickedNames(value: unknown, all: ReplyRecipients, ticked: ReplyForm["
   return out.length ? { unticked: out } : {};
 }
 
+/** The act kinds that a link names (`redraft.ACT_OF_KIND`). */
+export type LinkAct = "new" | "forward" | "reply";
+/** The people that a card adds to a list and drops from it, by lower case. */
+export interface LinkPeople {
+  added: string[];
+  removed: string[];
+}
+/** What differs between a card and the card that it replaces (HRD-8b). */
+export interface LinkChange {
+  act?: { was: LinkAct; now: LinkAct };
+  to?: LinkPeople;
+  cc?: LinkPeople;
+  bcc?: LinkPeople;
+}
+
+const LINK_ACTS: readonly string[] = ["new", "forward", "reply"];
+const MAX_LINK_PEOPLE = 100;
+
+function linkPeople(value: unknown): LinkPeople | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const { added, removed } = value as Record<string, unknown>;
+  const keep = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((a): a is string => typeof a === "string" && a.length > 0 && a.length <= 320).slice(0, MAX_LINK_PEOPLE) : [];
+  const out = { added: keep(added), removed: keep(removed) };
+  return out.added.length || out.removed.length ? out : undefined;
+}
+
+/** `changed` of a link, or nothing. Anything that is not the gateway's shape is dropped. */
+function changeOf(value: unknown): { changed?: LinkChange } {
+  if (!value || typeof value !== "object") return {};
+  const v = value as Record<string, unknown>;
+  const out: LinkChange = {};
+  const act = v.act as Record<string, unknown> | undefined;
+  if (act && typeof act.was === "string" && typeof act.now === "string"
+      && LINK_ACTS.includes(act.was) && LINK_ACTS.includes(act.now) && act.was !== act.now) {
+    out.act = { was: act.was as LinkAct, now: act.now as LinkAct };
+  }
+  const to = linkPeople(v.to);
+  if (to) out.to = to;
+  const cc = linkPeople(v.cc);
+  if (cc) out.cc = cc;
+  const bcc = linkPeople(v.bcc);
+  if (bcc) out.bcc = bcc;
+  return out.act || out.to || out.cc || out.bcc ? { changed: out } : {};
+}
+
 /** The link of a redraft (§18.11): a card id that the gateway minted, and a
- *  draft number from 2 to 99. Anything else is no link. */
-function linkOf(value: Record<string, unknown>): { revises?: string; draft?: number } {
+ *  draft number from 2 to 99. Anything else is no link. `changed` rides only
+ *  with a link (HRD-8b). */
+function linkOf(value: Record<string, unknown>): { revises?: string; draft?: number; changed?: LinkChange } {
   const { revises, draft } = value;
   if (typeof revises !== "string" || !/^[0-9a-f]{32}$/.test(revises)) return {};
   if (typeof draft !== "number" || !Number.isInteger(draft) || draft < 2 || draft > 99) return {};
-  return { revises, draft };
+  return { revises, draft, ...changeOf(value.changed) };
 }
 
 /** The ticked people of each choice, by lower case. */
@@ -252,6 +363,7 @@ export function replyFromEvent(value: unknown, requestId?: string): ReplyForm | 
     ...(isNew ? linkOf(v) : {}),
     ...(isNew && v.reopened === true ? { reopened: true as const } : {}),
     ...(isNew ? untickedNames(v.unticked, replyAll, ticked ?? undefined) : {}),
+    ...(isNew ? earlierFromEvent(v) : {}),
   };
 }
 
@@ -740,6 +852,17 @@ export interface NewMailEdits {
    * the member to check the people and the text.
    */
   startedBare?: true;
+}
+
+/**
+ * True for the edits of a new-mail form. The queue keeps the edits of a new
+ * mail and of a task card in one map (`FormEdits`), so a reader of one kind
+ * asks here, and never casts (EAC-2). `redraftCard.ts` reads only this kind.
+ */
+export function isNewMailEdits(x: unknown): x is NewMailEdits {
+  if (!x || typeof x !== "object") return false;
+  const v = x as Record<string, unknown>;
+  return typeof v.subject === "string" && typeof v.body === "string" && typeof v.ticks === "object" && Array.isArray(v.fileTicks);
 }
 
 /** True when the people the member left ticked differ from the card's start. */

@@ -48,12 +48,14 @@ from gateway.routes.projects.cascade import (
     emit_all,
 )
 from gateway.routes.projects.core import (
+    ARCHIVED_PROJECT_REFUSAL,
     COMPLETED_CATEGORY,
     _tenant_session,
     actor,
     archive_note,
     assert_assignable_here,
     can_manage_settings,
+    project_is_archived,
     clean_payload,
     emit,
     lift_subtasks_to_grandparent,
@@ -162,6 +164,17 @@ def validate_personal(
                 "DONE is not an overlay write. Complete each task through "
                 "POST /projects/tasks/{id}/complete, which moves it into the "
                 "project's done lane and sets your disposition with it."
+            ),
+        )
+    if "focus_on" in values:
+        # WS-MDC CC-2 (D-MD-3): the cap of today's focus holds for one mark
+        # at a time (`personal.mark_focus`). A selection of fifty would pass
+        # it in one body, so the bulk route takes no mark and no clear.
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Today's focus is set on one task at a time, through "
+                "PATCH /projects/tasks/{id}/personal, which holds the cap."
             ),
         )
     return values
@@ -427,7 +440,15 @@ async def _act_on_one(
         values["clarified_at"] = now()
         # D77 — un-checking a closed task (the card, Focus mode, Undo all
         # arrive here) reopens it for the board, through the one reopen.
-        await reopen_if_closed(db, task, email, values.get("disposition"))
+        try:
+            await reopen_if_closed(db, task, email, values.get("disposition"))
+        except HTTPException as exc:
+            # ARC-2b. The reopen refuses a task in an archived project before
+            # it writes anything, so this task fails with the sentence, its
+            # overlay stays as it was, and the rest of the selection goes on.
+            if exc.status_code == 409 and exc.detail == ARCHIVED_PROJECT_REFUSAL:
+                return "failed", ARCHIVED_PROJECT_REFUSAL
+            raise
         await _upsert_personal(db, task_id, email, values)
         return "applied", "personal"
 
@@ -557,6 +578,8 @@ async def bulk_edit(
     cascaded = Cascade()
     completed_by_cascade = 0
     archived_by_cascade = 0
+    #: project id -> whether it carries ``archived_at`` (ARC-2b), one read each.
+    archived_projects: dict[str, bool] = {}
 
     async with _tenant_session() as db:
         # RX-5. A date with no time is local noon of the member who writes,
@@ -579,6 +602,21 @@ async def bulk_edit(
             except HTTPException:
                 skipped.append({"task_id": task_id, "reason": "not_found"})
                 continue
+
+            # ARC-2b (spec §9b.6 rule 2). Every act but MY overlay is work on
+            # the project, so an archived project refuses it per task, with
+            # the sentence, and the rest go on. The overlay is not project
+            # work. Only its reopen of a closed task is, and `_act_on_one`
+            # names that task as failed.
+            if action != "personal":
+                pid = str(task.project_id)
+                if pid not in archived_projects:
+                    archived_projects[pid] = await project_is_archived(db, pid)
+                if archived_projects[pid]:
+                    failed.append(
+                        {"task_id": task_id, "reason": ARCHIVED_PROJECT_REFUSAL},
+                    )
+                    continue
 
             if action == "delete" and not await may_delete_task(db, user, task, led=led):
                 # A task the member sees and may not delete is a per-task

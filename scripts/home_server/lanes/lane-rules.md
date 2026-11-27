@@ -16,7 +16,15 @@ You are a lane on the home box `metorite-home`. You run as user `dev` in
    `unheld` true. Claim it.
    - Never take a task outside your lane.
    - Never take a task that a live session holds.
+   - Never take a task that another member holds, even when the hold went
+     quiet. Ask on the task with `ask_on_task` first. A contributor's fleet
+     works beside yours (`docs/contributor_playbook.md`).
    - Refuse OWNER-GATE work (`work_plan.md` §6).
+   - Send your place with each `claim_task`: `agent_label` is your lane name,
+     `host` is the machine, `host_kind` is `computer`, `server` or `cloud`, and
+     `model` is your model. Send a value only when you know it. While Remote
+     Control is on, build `external_link` from `CLAUDE_CODE_BRIDGE_SESSION_ID`
+     as `https://claude.ai/code/<id>`. The map of agents shows these values.
 2. **Read the whole task.** After `claim_task`, call `get_task_context`. Read
    the description and EVERY comment. When the task has more than 20
    comments, read the older ones with `get_task_timeline` (kind comments).
@@ -28,8 +36,10 @@ You are a lane on the home box `metorite-home`. You run as user `dev` in
      stops the session on a permission prompt that nobody can answer.
    - Run each command as `cd <worktree path> && ...` in Bash. Give subagents
      the absolute path.
-   - Sonnet does the work. Use Opus only for a HIGH-tier slice or an
-     adversarial review.
+   - Route each dispatch by job (D218). Haiku does lookups. Sonnet does LOW
+     slices and verifies LOW and STANDARD. Opus does HIGH, shared-seam and
+     review work. Fable plans a feature once. Set the effort. `next-ticket.md`
+     step 1c holds the table.
 4. **Never wait on the owner, and never wait in silence.** When a slice needs
    a decision, a D145 preview or a flag flip, you MUST call `ask_on_task`. A
    thought or a comment that says "waits on the owner" does NOT reach the
@@ -42,9 +52,9 @@ You are a lane on the home box `metorite-home`. You run as user `dev` in
      worktree. Start it again only when the owner asks for a live look.
 5. **Put the small slices of one feature into one pull request** where you
    can. Never skip the verifier or a required gate.
-6. **Local CI:** `bash scripts/ci_local.sh`. When another run holds the lane,
-   do not wait more than 20 minutes. Push the branch, and use GitHub's
-   pr-check on the SAME SHA as the full-suite evidence.
+6. **The gate is GitHub `pr-check` (D218).** Push when your verifier passes.
+   `bash scripts/ci_local.sh` is optional: run it when GitHub is down, or for
+   an early signal. When another run holds the lane, do not wait for it.
 7. **A test that is red on `main` is not yours.** Before you blame your
    change, read the newest `main` run with `gh run list --branch main`. Do not
    edit a spec that another task repairs.
@@ -96,10 +106,12 @@ You are a lane on the home box `metorite-home`. You run as user `dev` in
     - Hand a pull request over when the verifier passed, the review of its
       risk tier passed, and the owner approved its preview (if it needed one).
       Only GitHub checks or `premerge.sh` may remain.
-    - To hand it over, append ONE line to `~/lanes/merge-queue.tsv`, with tabs
-      between the fields: pull request, task, worktree path, your lane name,
-      and a short note.
-      `printf '%s\t%s\t%s\t%s\t%s\n' 1234 567 /home/dev/wt-x lane-x "note" >> ~/lanes/merge-queue.tsv`
+    - To hand it over, run
+      `bash scripts/home_server/lane_handover.sh <PR> <task> <worktree> <lane> <tier> "note"`.
+      The tier is `LOW`, `STANDARD` or `HIGH`. The PR body needs a line that
+      starts with `VERIFY: PASS`. The script appends the line to
+      `~/lanes/merge-bot-queue.tsv`, and the merge bot reads it. Never append
+      to a queue or a log by hand.
     - Comment on the task: "Handed to lane-merge: <pull request URL>. Verify:
       <result>. Review: <result>. Only GitHub checks remain." Then call
       `release_task`. Lane-merge claims the task, merges it, and moves it to
@@ -110,7 +122,12 @@ You are a lane on the home box `metorite-home`. You run as user `dev` in
     - When a required check of your pull request goes red, lane-merge
       comments the failing test on the task and releases it. Find it with
       `my_work` or `search_tasks`, fix it, push, and hand it over again. Read
-      `~/lanes/merge-queue.log` for `BACK` lines after each hand-over.
+      `~/lanes/merge-bot.log` for `BACK` lines after each hand-over.
+    - A `RESOLVED <pull request> <rules>` line means that the merge bot merged
+      `main` into your branch, resolved a conflict, and pushed the merge
+      commit (CIV-34a). Do not hand it over again. Before your next commit on
+      that branch, run `git pull --ff-only` in its worktree. A push without it
+      is refused, because your branch is behind the bot's commit.
 15. **Save GitHub runs.** A red run costs a full set of jobs.
     - Before each push, run the tests that your diff can affect on this box:
       `timeout 2400 uv run python scripts/affected_tests.py --run`. For
@@ -119,3 +136,19 @@ You are a lane on the home box `metorite-home`. You run as user `dev` in
     - Push only on a pass. Push once for each round of fixes, not once for
       each commit.
     - Do not push to "see what CI says". Run the test here.
+16. **A conflict in `ai_studio.md` section 14 (CIV-HS, task 3337).** Section 14
+    holds one index line for each slice. The row text is in
+    `project-docs/specs/ai_studio_rows/<id>.md`. Take main's section 14. Then
+    put your row text in its row file and your index line back. Run
+    `python scripts/ai_studio_rows.py check` before you push.
+17. **A new per-org flag, or a flag conflict (CIV-HS slice 3, task 3284).** A
+    `*_orgs` or `*_modes` field goes in
+    `packages/acb_common/acb_common/flag_registry.py`, at its sorted place, with its
+    comment block. It does not go in `settings.py`. On a conflict in `settings.py`,
+    keep main's side and move your field there. Add one line to the `_READERS` table
+    of `tests/unit/test_flag_reload.py` when the reader is `reader(org) -> bool`.
+    Run `tests/unit/test_flag_registry.py` before you push.
+18. **A conflict in `tests/fences.json` or `docs/flag_reload.md` (CIV-HS, task 3284).**
+    Take main's side of the file and add your entry anywhere in its list. Then run
+    `python scripts/sort_fence_lists.py`. It sorts both files in place. Do not sort by
+    hand. `--check` only reports.

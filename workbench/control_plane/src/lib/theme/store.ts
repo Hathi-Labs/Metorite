@@ -49,13 +49,40 @@ type AppearanceState = {
   /** True once local preferences have been read out of storage. */
   hydrated: boolean;
 
-  setUserDensity: (density: Density | null) => void;
-  setAccent: (color: string | null) => void;
+  /**
+   * The member's density. `origin` is "member" for a click, and "server" when
+   * `syncAppearance.ts` applies the server copy. Only a member change tells
+   * the listeners of `onMemberAppearanceChange` (PKG-20).
+   */
+  setUserDensity: (density: Density | null, origin?: AppearanceOrigin) => void;
+  setAccent: (color: string | null, origin?: AppearanceOrigin) => void;
   setOrgDefaults: (org: { density: Density; allowUserOverride: boolean }) => void;
   hydrate: () => void;
   /** Read storage again, for an appearance scope that just moved. */
   rehydrate: () => void;
 };
+
+/** Who changed a member value: the member, or the server copy (PKG-20). */
+type AppearanceOrigin = "member" | "server";
+
+const memberChangeListeners = new Set<() => void>();
+
+/**
+ * Hear each density or accent change that the MEMBER made, and not a change
+ * that applied the server copy. `syncAppearance.ts` listens, to send the
+ * server copy (PKG-20, `package_host.md` §9.5). Returns the cleanup.
+ */
+export function onMemberAppearanceChange(listener: () => void): () => void {
+  memberChangeListeners.add(listener);
+  return () => {
+    memberChangeListeners.delete(listener);
+  };
+}
+
+function tellMemberChange(origin: AppearanceOrigin): void {
+  if (origin !== "member") return;
+  for (const listener of memberChangeListeners) listener();
+}
 
 /** The density actually in force, honouring the org's override policy. */
 export function effectiveDensity(s: AppearanceState): Density {
@@ -98,17 +125,20 @@ export const useAppearanceStore = create<AppearanceState>((set, get) => ({
   allowUserOverride: true,
   hydrated: false,
 
-  setUserDensity: (density) => {
+  setUserDensity: (density, origin = "member") => {
     themeStorage.setDensity(density);
     set({ userDensity: density });
     applyToDocument(get());
+    // The browser write is first. The server copy follows it.
+    tellMemberChange(origin);
   },
 
-  setAccent: (color) => {
+  setAccent: (color, origin = "member") => {
     const next = color && isSafeColor(color) ? color : null;
     themeStorage.setAccent(next);
     set({ accent: next });
     applyToDocument(get());
+    tellMemberChange(origin);
   },
 
   setOrgDefaults: ({ density, allowUserOverride }) => {
@@ -134,4 +164,4 @@ export const useAppearanceStore = create<AppearanceState>((set, get) => ({
   },
 }));
 
-export type { AppearanceState, ThemeMode };
+export type { AppearanceOrigin, AppearanceState, ThemeMode };

@@ -44,7 +44,10 @@ The public half (metadata, ``token``, ``revoke``) is the edge unit
    subset of what the client requested. ``include_personal`` is false in a
    body that leaves it out, so a broken client fails closed. The consent page
    ticks it by default, and sends it on each approve
-   (D-EA-4).
+   (D-EA-4). ⚠️ EA-17c-3: the connection stores the member's choice, and
+   the code carries every requested resource scope
+   (``agent_oauth.mint_scope``), so the connection scopes alone narrow the
+   token. ``offline_access`` stays the member's choice.
 7. ⚠️ **The client's metadata comes through ``gateway.outbound_guard``**, the
    one SSRF seam, with a size cap and a time cap of its own. Only this half
    fetches. The edge never imports the guard. The document must name its own
@@ -817,6 +820,12 @@ async def approve_authorize(
     if not chosen:
         raise _error("invalid_scope", "Choose one scope or more.")
     granted = agent_oauth.scope_string(chosen)
+    # EA-17c-3 (D-EA-13 rule 2): the code, and so the token, carries every
+    # resource scope that the agent asked for. The connection holds the
+    # grant, and every reader intersects the two, so a cleared scope stays
+    # off until Change access turns it on. `offline_access` stays the
+    # member's choice.
+    token_scope = agent_oauth.mint_scope(validated.scopes, chosen)
     view = _client_view(req.client_id, validated.metadata)
 
     connection_id = await agent_tokens.create_connection(
@@ -842,7 +851,7 @@ async def approve_authorize(
             code_challenge=req.code_challenge or "",
             redirect_uri=req.redirect_uri,
             resource=agent_oauth.resource(),
-            scope=granted,
+            scope=token_scope,
         )
     except Exception:
         tenant = current_tenant()
@@ -905,6 +914,10 @@ class AgentConnectionOut(BaseModel):
 
 class AgentConnectionsOut(BaseModel):
     connections: list[AgentConnectionOut]
+    #: True when ``agent_change_access_orgs`` holds the organization of the
+    #: session (EA-17c-2). The view shows "Change access" only then. The
+    #: admin list leaves it False, because Change access is the member's own.
+    change_access: bool = False
 
 
 def connection_out(row: agent_tokens.ConnectionRow) -> AgentConnectionOut:
@@ -1010,7 +1023,10 @@ async def list_my_connections(
     org = str(current_tenant())
     rows = await agent_tokens.list_connections(org, member_email=email)
     await audit_new_addresses(org, rows)
-    body = AgentConnectionsOut(connections=[connection_out(r) for r in rows])
+    body = AgentConnectionsOut(
+        connections=[connection_out(r) for r in rows],
+        change_access=agent_oauth.change_access_allowed(current_tenant()),
+    )
     return JSONResponse(body.model_dump(), headers=_NO_STORE)
 
 

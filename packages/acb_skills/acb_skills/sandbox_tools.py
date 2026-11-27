@@ -76,7 +76,6 @@ from __future__ import annotations
 
 import copy
 import functools
-import inspect
 import json
 import os
 import shlex
@@ -98,7 +97,7 @@ from agent_framework import (
 )
 
 from acb_skills.addendum import render_run_sections
-from acb_skills.egress import _register_platform_callable, _register_platform_wrapper
+from acb_skills.egress import _register_platform_callable
 from acb_skills.tool_guard import RefuseTools, WithholdTools, tool_name
 from acb_skills.write_artifact import announce_artifact, artifact_context
 
@@ -190,18 +189,6 @@ def _audit_decision(tool_name: str, command: str) -> tuple[bool, str]:
         would_deny=not approved, reason=code, surface="sandbox_tool",
     )
     return not enforced, code
-
-
-def _with_steer(text: str) -> Any:
-    """Drain a pending mid-run steer at this tool boundary, as the B6 gate does."""
-    try:
-        from orchestrator.steer import decorate_tool_result
-    except ImportError:
-        return text
-    try:
-        return decorate_tool_result(text)
-    except Exception:
-        return text
 
 
 def _format(label: str, result: Any, saved: list[str]) -> str:
@@ -473,10 +460,11 @@ async def run_command(command: str, timeout_s: int = _DEFAULT_TIMEOUT_SECONDS) -
         The exit code, the time, the output (cut to its first and last 6 KB
         when it is long), and the files the command saved.
     """
-    text = await _run_in_sandbox(
+    # Task 2494: a mid-run steer never joins a tool result. The model reads
+    # it as a user turn of its next call (``orchestrator.steer.SteerTurns``).
+    return await _run_in_sandbox(
         command, timeout_s, tool_name="run_command", label="run_command",
     )
-    return _with_steer(text)
 
 
 async def request_network_access(reason: str, hosts: list[str]) -> str:
@@ -551,7 +539,6 @@ class SandboxScriptRunner:
         elif isinstance(args, (list, tuple)):
             argv = [str(a) for a in args]
         command = " ".join(shlex.quote(p) for p in ["python3", path, *argv])
-        # The steer drain runs at the tool, which _steered() wraps.
         return await self._run(
             command, _DEFAULT_TIMEOUT_SECONDS,
             tool_name="run_skill_script", label=f"skill script {script.name}",
@@ -736,31 +723,6 @@ class RefuseHostTools(RefuseTools):
 
 
 _one_tool_name = tool_name
-
-
-def _steered(item: Any) -> Any:
-    """A copy of a provider tool whose result drains a pending steer (review P2).
-
-    The B6 gate does this for an agent's own tools (``_gate_own_maf_tools``).
-    The file tools and the skill tools join the run through a context
-    provider, so the gate never sees them. The copy keeps the tool's name,
-    description and schema, and the original object is never changed.
-    """
-    func = getattr(item, "func", None)
-    if not callable(func) or getattr(func, "__cc_steered__", False):
-        return item
-
-    @functools.wraps(func)
-    async def call(*args: Any, **kwargs: Any) -> Any:
-        result = func(*args, **kwargs)
-        if inspect.isawaitable(result):
-            result = await result
-        return _with_steer(result)
-
-    call.__cc_steered__ = True  # type: ignore[attr-defined]
-    clone = copy.copy(item)
-    clone.func = _register_platform_wrapper(func, call)
-    return clone
 
 
 # ── Paged reads of the sandbox files (agent reads page, part 2) ─────────────
@@ -962,7 +924,7 @@ async def _add_tools(
     store = TenantFileStore(
         workspace=binding.workspace, outputs_rel=binding.outputs_rel,
         run_data=binding.run_data, guard=guard, member=member,
-        inputs_rel=binding.inputs_rel,
+        inputs_rel=binding.inputs_rel, instance=binding.instance,
     )
     files = FileAccessProvider(
         store,
@@ -986,11 +948,10 @@ async def _add_tools(
     # Agent reads page, part 2: a window on each file read, a page on each list.
     context.tools[before:] = page_file_tools(context.tools[before:])
     # H-236: the provider tools ARE the platform's, so record each one by
-    # identity under its tool name before the steer wrap copies it.
+    # identity under its tool name. Task 2494: no tool result carries a steer,
+    # so these tools need no steer wrap. The model reads a steer as a user turn.
     for added in context.tools[before:]:
         _register_platform_callable(getattr(added, "func", None), _one_tool_name(added))
-    # The steer drain at every tool these two providers added (review P2).
-    context.tools[before:] = [_steered(t) for t in context.tools[before:]]
     context.extend_tools(SOURCE_ID, [tool(run_command, approval_mode="never_require")])
     context.extend_middleware(SOURCE_ID, [WithholdHostTools(), RefuseHostTools()])
     # WS-43u (§16.3): the rules for code, keyed on `run_command`. They come
@@ -1087,7 +1048,9 @@ def code_task_session_parts(binding: Any) -> tuple[Any, Any, list[Any]]:
     broker = sb.get_broker()
     member = str(artifact_context().get("member") or "")
     guard = _WorkspaceGuard(broker, binding.workspace)
-    store = WorkspaceFileStore(workspace=binding.workspace, guard=guard, member=member)
+    store = WorkspaceFileStore(
+        workspace=binding.workspace, guard=guard, member=member, instance=binding.instance,
+    )
     skills = SkillsProvider(
         LockedSkillsSource(binding.workspace, guard, member, run=run_code_task_command),
         source_id=f"{SOURCE_ID}-code-task-skills",
@@ -1155,8 +1118,19 @@ async def _sweep_app_links(binding: Any, *, since: float) -> list[str]:
     from acb_skills import safe_open
 
     del since
-    links = await asyncio.to_thread(safe_open.remove_links, binding.workspace)
-    repos = await asyncio.to_thread(safe_open.remove_nested_git, binding.workspace)
+
+    def _remove_both(workspace: Any) -> tuple[list[str], list[str]]:
+        # ONE thread call for both removals (task 2465). A thread cannot be
+        # cancelled. When the 30 s timeout of `_sweep_after` cancels the await,
+        # this function still ends, so a nested `.git` is never left behind
+        # because the link sweep was slow. Two `to_thread` calls would let the
+        # cancel land between them, and the second would never start.
+        return (
+            safe_open.remove_links(workspace),
+            safe_open.remove_nested_git(workspace),
+        )
+
+    links, repos = await asyncio.to_thread(_remove_both, binding.workspace)
     if links or repos:
         _log.warning(
             "sandbox_tools.app_dir_swept", links=len(links), nested_git=len(repos),

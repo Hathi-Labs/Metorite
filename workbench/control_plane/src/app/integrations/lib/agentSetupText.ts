@@ -44,5 +44,5 @@ You work on tasks in Metorite through the MCP connection. Follow the server inst
 - End with one result: review or done, a question that waits on a named person, or release_task with a note of what is done and what is left.
 - Then call finish_agent_run with a summary.
 
-When your server offers read_playbook or resources, read the playbook topic kit/team-setup for the full setup.
+When your server offers read_playbook or resources, read the playbook topic kit/agents-md for the core rules and kit/team-setup for the full setup.
 `;

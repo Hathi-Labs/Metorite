@@ -67,7 +67,7 @@ from gateway.routes.apps._common import (
     get_app_or_404,
     manifest_scopes,
     parse_db_manifest,
-    record_app_audit,
+    record_app_audit_in,
     require_app_user,
     router,
 )
@@ -156,7 +156,7 @@ async def _apply_publish_review(proposal: ActionProposal) -> dict[str, Any]:
     (``publish.py``'s org+write-scope publish gate, §4.8): flips the held
     version to ``review_status='approved'`` and repoints ``apps.live_version``
     (+ ``visibility``, if the publish also changed it). Own session, own
-    commit — mirrors ``record_app_audit``'s use-and-close shape, on the same
+    commit — the use-and-close shape of the old unbound audit writer, on the same
     async engine as the rest of this package (``_common._get_db``).
 
     ⚠️ H4, DELIBERATELY NOT H2 (`saas_multitenancy_handover.md`): this is a
@@ -284,6 +284,28 @@ def _audit_args(args: dict[str, Any]) -> Any:
     return args if len(encoded) <= 1000 else {"_truncated": encoded[:1000]}
 
 
+async def _audit_tool(row: Any, email: str, detail: dict[str, Any]) -> None:
+    """Write one ``tool`` row of ``app_audit`` in the tenant that the request
+    bound. Best-effort: a failure logs and never raises (task 1317).
+
+    ``app_audit`` has FORCE RLS, so the row needs a bound session. This file
+    is an H4-exempt file (``_apply_publish_review``), so it opens
+    ``_tenant_session()`` here, as its request handlers do, and runs the one
+    statement through ``record_app_audit_in``. An import of a helper that
+    opens the session would need a reviewed edge in ``test_db_engine_seam.py``.
+    Only ``call_app_tool`` reaches this, inside a bound request.
+    Fence: ``test_app_audit_bound_r8.py``.
+    """
+    try:
+        async with _tenant_session() as db:
+            await record_app_audit_in(
+                db, app_id=str(row.id), user_email=email, kind="tool",
+                app_version=row.live_version, detail=detail,
+            )
+    except Exception as exc:
+        _log.warning("apps.audit_failed", kind="tool", error=str(exc)[:160])
+
+
 # ── The route ─────────────────────────────────────────────────────────────
 
 class ToolCallRequest(BaseModel):
@@ -300,19 +322,17 @@ async def _run_read_only_tool(
     try:
         result = await spec.handler(merged_args)
     except Exception as exc:
-        await record_app_audit(
-            app_id=str(row.id), user_email=_uid(user), kind="tool",
-            app_version=row.live_version,
-            detail={"tool": tool, "args": _audit_args(merged_args),
-                    "ok": False, "error": str(exc)[:500]},
+        await _audit_tool(
+            row, _uid(user),
+            {"tool": tool, "args": _audit_args(merged_args),
+             "ok": False, "error": str(exc)[:500]},
         )
         raise HTTPException(
             status_code=502, detail={"error": str(exc)[:500]},
         ) from exc
-    await record_app_audit(
-        app_id=str(row.id), user_email=_uid(user), kind="tool",
-        app_version=row.live_version,
-        detail={"tool": tool, "args": _audit_args(merged_args), "ok": True},
+    await _audit_tool(
+        row, _uid(user),
+        {"tool": tool, "args": _audit_args(merged_args), "ok": True},
     )
     return {"result": result}
 
@@ -347,28 +367,25 @@ async def _run_destructive_tool(
         outcome = {"ok": False, "error": str(exc)[:500]}
 
     if outcome.get("status") == "pending":
-        await record_app_audit(
-            app_id=str(row.id), user_email=email, kind="tool",
-            app_version=row.live_version,
-            detail={"tool": tool, "args": _audit_args(merged_args),
-                    "queued": True, "action_id": outcome.get("action_id")},
+        await _audit_tool(
+            row, email,
+            {"tool": tool, "args": _audit_args(merged_args),
+             "queued": True, "action_id": outcome.get("action_id")},
         )
         return JSONResponse(status_code=202, content={
             "queued": True, "action_id": outcome.get("action_id"),
         })
     if outcome.get("ok"):
-        await record_app_audit(
-            app_id=str(row.id), user_email=email, kind="tool",
-            app_version=row.live_version,
-            detail={"tool": tool, "args": _audit_args(merged_args), "ok": True},
+        await _audit_tool(
+            row, email,
+            {"tool": tool, "args": _audit_args(merged_args), "ok": True},
         )
         return {"result": outcome.get("result")}
 
-    await record_app_audit(
-        app_id=str(row.id), user_email=email, kind="tool",
-        app_version=row.live_version,
-        detail={"tool": tool, "args": _audit_args(merged_args),
-                "ok": False, "error": outcome.get("error")},
+    await _audit_tool(
+        row, email,
+        {"tool": tool, "args": _audit_args(merged_args),
+         "ok": False, "error": outcome.get("error")},
     )
     raise HTTPException(
         status_code=502,

@@ -40,6 +40,8 @@ from typing import Any
 
 import pytest
 
+from tests.unit import _r8_lists as r8_lists
+
 pytest.importorskip("sqlalchemy")
 
 from acb_common.db import TenantUnbound
@@ -383,6 +385,43 @@ def test_a_system_key_at_a_point_of_many_claims_is_no_conflict() -> None:
     assert got.id == "install-1"
 
 
+def test_a_fields_key_of_another_app_is_taken_and_of_the_same_app_is_not() -> None:
+    """PKG-14a-2 and PKG-Q29: a ``fields`` claim meets the conflict rule of
+    §4, as a ``nav`` or a ``jobs`` claim does. The refusal names the point,
+    the key and the holder, and it writes nothing."""
+    claim = [Contribution("fields", "task:warranty_end", {"type": "date", "many": False})]
+    other = str(uuid.uuid4())
+    db = _FakeDb(held=(("fields", "task:warranty_end", "install-0", other, "org", "org"),))
+    with pytest.raises(ClaimTaken) as exc:
+        _run(store.install(db, **_args(contributions=claim)))
+    err = exc.value
+    assert (err.point, err.key, err.status) == ("fields", "task:warranty_end", 409)
+    assert err.holder == store.Holder(source="org", package=other, install_id="install-0",
+                                      scope_subject="org")
+    assert not any(s.startswith("INSERT") for s, _ in db.calls)
+    same = _FakeDb(held=(("fields", "task:warranty_end", "install-0", APP, "org", "org"),))
+    assert _run(store.install(same, **_args(contributions=claim))).id == "install-1"
+    # The same field key on another record kind is another key.
+    free = _FakeDb(held=(("fields", "crm.deal:warranty_end", "install-0", other, "org", "org"),))
+    assert _run(store.install(free, **_args(contributions=claim))).id == "install-1"
+
+
+def test_a_fields_key_that_a_system_package_holds_stays_with_it(monkeypatch) -> None:
+    """No system file holds a ``fields`` key today. When one does, the store
+    refuses each install that claims it, also with no other holder."""
+    from acb_common.app_manifests.shell_manifest import SystemContribution
+
+    held = SystemContribution(point="fields", key="task:warranty_end", package="projects")
+    monkeypatch.setattr(store, "_system_keys", lambda: {("fields", held.key): held})
+    db = _FakeDb()
+    with pytest.raises(ClaimTaken) as exc:
+        _run(store.install(db, **_args(contributions=[
+            Contribution("fields", "task:warranty_end", {"type": "date"})])))
+    assert exc.value.holder == store.Holder(source="system", package="projects")
+    assert not any(s.startswith("INSERT") for s, _ in db.calls)
+    assert "fields" not in store.MANY_CLAIMS
+
+
 # ── d. The one writer ──────────────────────────────────────────────────────
 
 
@@ -409,11 +448,21 @@ def test_only_the_store_writes_an_install_or_a_claim() -> None:
     assert _WRITE.search(store._DELETE_INSTALL_SQL)
     assert _WRITE.search(store._SET_STATE_SQL)
     assert "FOR UPDATE" in store._STATE_SQL
+    # PKG-11a: the store holds the UPDATE of the scope, and the read before
+    # it takes the row lock. ``promotion.py`` writes ``app_grants`` only.
+    assert _WRITE.search(store._PROMOTE_SQL)
+    assert store._INSTALL_FOR_UPDATE_SQL.endswith("FOR UPDATE")
+    share = (_ROOT / "apps/services/gateway/gateway/package_host/promotion.py").read_text(
+        encoding="utf-8")
+    assert not _WRITE.search(share)
     # And each UPDATE of the lifetime (PKG-10a).
     for sql in (store._KEEP_SQL, store._RESTORE_SQL, store._ARCHIVE_SQL):
         assert _WRITE.search(sql), sql
     for sql in (store._LIFE_SQL, store._DUE_SQL, store._SPENT_SQL):
         assert "FOR UPDATE" in sql, sql
+    # And the UPDATE of the member of a run with no viewer (WS-STU B6a).
+    assert _WRITE.search(store._SET_RUN_AS_SQL)
+    assert "FOR UPDATE" in store._RUN_AS_LOCK_SQL
 
 
 def test_the_store_reads_apps_and_never_writes_it() -> None:
@@ -428,22 +477,14 @@ def test_the_store_reads_apps_and_never_writes_it() -> None:
 def test_the_r8_twin_is_named_in_the_ci_skip_guard() -> None:
     """The `--must-run` list of pr-check.yml is kept by hand. Without the
     entry, the R8 twin skips in CI with no database and the job stays green."""
-    workflow = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8")
-    assert "tests/unit/test_package_host_store_r8.py" in workflow
+    assert "tests/unit/test_package_host_store_r8.py" in r8_lists.must_run()
 
 
 def test_the_disposal_r8_suite_is_named_in_the_ci_skip_guard() -> None:
     """PKG-9. Without the entry, ``test_package_disposal_r8.py`` skips in CI
     with no database and the job stays green. The name must be in the
     ``--must-run`` list itself, not only somewhere in the file."""
-    lines = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(
-        encoding="utf-8").splitlines()
-    start = next(i for i, line in enumerate(lines) if line.strip() == "--must-run \\")
-    listed: list[str] = []
-    for line in lines[start + 1:]:
-        listed.append(line.strip().removesuffix("\\").strip())
-        if not line.rstrip().endswith("\\"):
-            break
+    listed = r8_lists.must_run()
     assert "tests/unit/test_package_disposal_r8.py" in listed
 
 
@@ -567,14 +608,7 @@ def test_the_lifetime_r8_suite_is_named_in_each_must_run_list(workflow: str) -> 
     """PKG-10a. Without the entry, ``test_package_lifetime_r8.py`` skips in
     CI with no database and the job stays green. The name must be in the
     ``--must-run`` list itself, next to the PKG-9 suite."""
-    lines = (_ROOT / ".github" / "workflows" / workflow).read_text(
-        encoding="utf-8").splitlines()
-    start = next(i for i, line in enumerate(lines) if line.strip() == "--must-run \\")
-    listed: list[str] = []
-    for line in lines[start + 1:]:
-        listed.append(line.strip().removesuffix("\\").strip())
-        if not line.rstrip().endswith("\\"):
-            break
+    listed = r8_lists.must_run()
     assert "tests/unit/test_package_lifetime_r8.py" in listed
     assert "tests/unit/test_package_disposal_r8.py" in listed
 
@@ -584,13 +618,6 @@ def test_the_expiry_loop_r8_suite_is_named_in_each_must_run_list(workflow: str) 
     """PKG-10b. Without the entry, ``test_package_expiry_loop_r8.py`` skips
     in CI with no database and the job stays green. The name must be in the
     ``--must-run`` list itself, next to the PKG-10a suite."""
-    lines = (_ROOT / ".github" / "workflows" / workflow).read_text(
-        encoding="utf-8").splitlines()
-    start = next(i for i, line in enumerate(lines) if line.strip() == "--must-run \\")
-    listed: list[str] = []
-    for line in lines[start + 1:]:
-        listed.append(line.strip().removesuffix("\\").strip())
-        if not line.rstrip().endswith("\\"):
-            break
+    listed = r8_lists.must_run()
     assert "tests/unit/test_package_expiry_loop_r8.py" in listed
     assert "tests/unit/test_package_lifetime_r8.py" in listed

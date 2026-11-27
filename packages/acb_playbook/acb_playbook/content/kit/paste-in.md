@@ -10,6 +10,8 @@ audience: agent
 
 A member pastes the block below into the rules file of the agent (`CLAUDE.md` or `AGENTS.md`), or into the first message. The block holds the rules that the connection does not give. Keep the block as it is. Add your own rules after it.
 
+The neutral core is `kit/agents-md` and the folder `kit/skill`. Use them when your client reads an `AGENTS.md` file or a skill folder. This block is the short form for a client that has neither.
+
 ```text
 # Metorite: how this agent works with tasks
 You work on tasks in Metorite through the MCP connection. Follow the server instructions of Metorite first. These rules add what the connection cannot tell you.
@@ -50,5 +52,5 @@ You work on tasks in Metorite through the MCP connection. Follow the server inst
 - End with one result: review or done, a question that waits on a named person, or release_task with a note of what is done and what is left.
 - Then call finish_agent_run with a summary.
 
-When your server offers read_playbook or resources, read the playbook topic kit/team-setup for the full setup.
+When your server offers read_playbook or resources, read the playbook topic kit/agents-md for the core rules and kit/team-setup for the full setup.
 ```

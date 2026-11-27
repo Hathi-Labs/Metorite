@@ -25,6 +25,7 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._customer_console_ladder import apply_ladder
 
 _URL = os.environ.get("CUSTOMER_CONSOLE_DATABASE_URL", "").strip()
@@ -451,10 +452,7 @@ def test_the_admin_write_is_audited_with_the_person_who_made_it(client, eng):
 
 
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
-    workflow = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(
-        encoding="utf-8"
-    )
-    assert "tests/unit/test_operator_admin.py" in workflow
+    assert "tests/unit/test_operator_admin.py" in r8_lists.must_run()
 
 
 def test_this_suite_is_named_in_the_spec_verification_block() -> None:

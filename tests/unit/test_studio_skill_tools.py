@@ -66,6 +66,16 @@ from gateway.studio import skills_store as store
 
 from tests.unit.test_studio_builder_tools import MEMBER, ROWS
 
+#: WS-24c slice 2: an empty internal token sends no ``Authorization`` header.
+#: These tests set one, and check the exact bearer.
+_INTERNAL = "test-internal-token"
+
+
+@pytest.fixture(autouse=True)
+def _internal_token_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", _INTERNAL)
+
+
 CATALOG_IDS = frozenset(r["id"] for r in ROWS)
 #: A row of the member's own package. ``GET /studio/actions`` lists it, and
 #: the skill route never serves it (``catalog_rows()`` holds no package row).
@@ -353,7 +363,7 @@ async def test_every_call_uses_the_internal_bearer_and_the_member_of_the_run(gw,
     await st.studio_skill_list()
     assert gw.calls
     for _m, _p, body, headers in gw.calls:
-        assert headers["X-User-Email"] == MEMBER and headers["Authorization"].startswith("Bearer ")
+        assert headers["X-User-Email"] == MEMBER and headers["Authorization"] == f"Bearer {_INTERNAL}"
         assert MEMBER not in json.dumps(body)
 
 
@@ -1147,7 +1157,7 @@ async def test_in_a_held_chat_a_publish_still_shows_its_card(held, card) -> None
 
 async def test_a_version_with_only_instructions_keeps_the_rest_of_the_body(gw, card) -> None:
     """Mutation: an omitted field is sent empty, or the copy drops a key -> red."""
-    stored = {**BODY, "cards": [{"k": 1}], "knowledge": {"a": ["b"]}, "tests": [1, 2]}
+    stored = {**BODY, "cards": [{"k": 1}], "knowledge": {"a": ["b"]}, "tests": [{"id": "t1", "input": "x", "expect": []}]}
     sid = gw.seed(body=stored)
     out = await st.studio_skill_save(skill_id=sid, instructions="Write three bullets.", based_on=await _based_on(sid))
     assert out["ok"], out
@@ -1242,7 +1252,7 @@ def test_the_rules_say_that_a_cut_text_never_goes_back() -> None:
     line = "When a read says truncated, do not send that text back."
     root = Path(__file__).resolve().parents[2]
     agent = (root / "apps/agents/agent-studio-builder/instructions.md").read_text(encoding="utf-8")
-    for text in (" ".join(tp.rules_for("studio").split()), " ".join(agent.split())):
+    for text in (" ".join(tp.rules_for("studio-more").split()), " ".join(agent.split())):
         assert line in text and "Change long instructions in Studio." in text
 
 
@@ -1415,7 +1425,7 @@ def test_the_rules_say_to_send_based_on_from_a_read() -> None:
             "read of the skill.")
     root = Path(__file__).resolve().parents[2]
     agent = (root / "apps/agents/agent-studio-builder/instructions.md").read_text(encoding="utf-8")
-    for text in (" ".join(tp.rules_for("studio").split()), " ".join(agent.split())):
+    for text in (" ".join(tp.rules_for("studio-more").split()), " ".join(agent.split())):
         assert line in text
 
 

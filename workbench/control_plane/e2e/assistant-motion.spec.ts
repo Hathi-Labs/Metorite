@@ -517,7 +517,9 @@ test.describe("the assistant opens, closes and goes full screen as one element",
     await expect(menu).toBeVisible();
     await expect(menu.getByRole("menuitem", { name: "Share this conversation" })).toBeVisible();
     await expect(menu.getByRole("menuitem", { name: "This chat's files" })).toBeVisible();
-    await expect(menu.getByRole("menuitem", { name: /^Auto/ })).toBeVisible();
+    // Two "Auto" rows: the model ("Auto (the assistant picks) Change the model") and the thinking mode ("Auto Let the model decide").
+    await expect(menu.getByRole("menuitem", { name: "Auto (the assistant picks) Change the model", exact: true })).toBeVisible();
+    await expect(menu.getByRole("menuitem", { name: "Auto Let the model decide", exact: true })).toBeVisible();
     await expect(menu.locator("[data-chat-more-context]")).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(menu).toHaveCount(0);
@@ -683,7 +685,7 @@ test.describe("the phone opens on the chat, and one nudge (WS-62 CF-2)", () => {
     await expect(bubble).toBeVisible({ timeout: 60_000 });
     await expect(bubble).toHaveText(/Ask me anything\. I can read your mail, plan your week and move your tasks\./);
     // Under the field, centred on it, with the tail up.
-    const field = page.locator("[data-ask-field] input");
+    const field = page.locator("[data-ask-field] input, [data-ask-field] textarea");
     const b = (await bubble.boundingBox())!;
     const f = (await field.boundingBox())!;
     expect(b.y).toBeGreaterThanOrEqual(f.y + f.height);
