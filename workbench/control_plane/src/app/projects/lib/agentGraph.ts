@@ -2,19 +2,17 @@
  * The Agents view · the map (WS-MCP AMR-5, `agent_coordination.md` §3.12.8).
  *
  * A fixed layered layout, left to right: the scope, the person, the
- * orchestrator, the agent, the sub-agents, and "You" for the questions. One
- * pure function places the nodes, so a vitest proves it (§3.12.4 rule 6). No
- * layout library.
+ * orchestrator and the agent. The sub-agents of one open agent add a column.
+ * One pure function places the nodes, so a vitest proves it (§3.12.4 rule 6).
+ * No layout library.
  *
  * AMR-4 (§3.12.9): an agent draws its sub-agents as a count. The one agent that
  * is open adds a column of at most `SUB_ROWS_MAX` rows. `planMap` bounds the
  * agent cards.
  *
- * The lines:
+ * The lines (decision G1: no wait line, because a wait is a fact of the card):
  *  - `tree`  neutral: a node holds the node.
  *  - `dispatch` neutral, with an arrow: one agent dispatched another.
- *  - `you`   warning: the agent waits on the viewer. Any other wait is text on
- *    the card. No line is invented.
  */
 import {
   type LensModel,
@@ -25,9 +23,6 @@ import {
   membersOf,
 } from "./agentLenses";
 import { type PlanOptions, SUB_ROWS_MAX, isActive, personNodeId, planMap, sessionNodeId } from "./agentScale";
-
-/** The one "waits on" node of the map: the viewer. Any other wait is text on the card. */
-export type BlockKey = "you";
 
 export type GraphNode = { id: string; x: number; y: number; w: number; h: number } & (
   /** The scope: everyone, or one person. */
@@ -41,14 +36,13 @@ export type GraphNode = { id: string; x: number; y: number; w: number; h: number
   | { kind: "rest"; person: string; count: number; open: boolean }
   /** `next`: where a click starts the next cards of the state (`StateNode.next`). */
   | { kind: "bucket"; person: string; state: LensState; sessions: LensSession[]; next: number }
-  | { kind: "block"; block: BlockKey; sessions: LensSession[] }
   | { kind: "sub"; sessionId: string; row: SubRow }
   | { kind: "submore"; sessionId: string; count: number }
   /** The open session's rows are loading, or did not load. */
   | { kind: "subnote"; sessionId: string; failed: boolean }
 );
 
-export type GraphEdgeKind = "tree" | "dispatch" | "you";
+export type GraphEdgeKind = "tree" | "dispatch";
 
 export interface GraphEdge {
   id: string;
@@ -80,12 +74,11 @@ export interface OpenSubs {
 
 /** The columns, left to right. With no orchestrator drawn, the agents take its column. */
 export const GRAPH_X = { root: 0, person: 206, orch: 456, session: 716 } as const;
-export const GRAPH_W = { root: 170, person: 214, orch: 224, session: 280, block: 150, sub: 240 } as const;
-export const GRAPH_H = { root: 96, person: 72, card: 116, orch: 76, session: 60, row: 40, block: 56, sub: 30 } as const;
+export const GRAPH_W = { root: 170, person: 214, orch: 224, session: 280, sub: 240 } as const;
+export const GRAPH_H = { root: 96, person: 72, card: 116, orch: 76, session: 60, row: 40, sub: 30 } as const;
 export const ROOT_ID = "root";
 /** The space between the agents and the next column. */
 export const COLUMN_GAP = 40;
-export const SUB_SHIFT = GRAPH_W.sub + COLUMN_GAP;
 /** The lowest top of the root: two cards down, so the first view holds it. */
 const ROOT_LOWEST = 140;
 const GAP = 10;
@@ -94,20 +87,6 @@ const PERSON_GAP = 24;
 export { personNodeId, sessionNodeId };
 export const restNodeId = (person: string): string => `r:${person}`;
 export const bucketNodeId = (person: string, state: LensState): string => `k:${person}:${state}`;
-export const blockNodeId = (block: BlockKey): string => `b:${block}`;
-
-/** The word of the "waits on" node. */
-export const YOU_WORD = "You";
-
-export function blockSentence(n: number): string {
-  return n === 1 ? "1 session waits on you" : `${n} sessions wait on you`;
-}
-
-/** The "waits on" target of a session: only a question for the viewer draws a line. */
-export function blockOf(s: LensSession): BlockKey | null {
-  return s.state === "you" ? "you" : null;
-}
-
 /**
  * The sub-agent rows of the open session, from the top of its card: at most
  * `SUB_ROWS_MAX`, then one row that opens the full list. Returns the bottom of
@@ -323,25 +302,6 @@ export function layoutGraph(model: LensModel, options: GraphOptions): Graph {
     }
   }
 
-  // The "waits on you" lines. They always draw.
-  const asks = inScope.filter((s) => s.state === "you" && rep.has(s.id));
-  if (asks.length > 0) {
-    const sources = [...new Set(asks.map((s) => rep.get(s.id)!))];
-    const h = GRAPH_H.block * u;
-    const at = sources.reduce((sum, id) => sum + place.get(id)!.y + place.get(id)!.h / 2, 0) / sources.length - h / 2;
-    const id = blockNodeId("you");
-    nodes.push({
-      id,
-      kind: "block",
-      block: "you",
-      sessions: asks,
-      x: subX + (subsOpen ? SUB_SHIFT * u : 0),
-      y: Math.max(at, 0),
-      w: GRAPH_W.block * u,
-      h,
-    });
-    for (const from of sources) link(from, id, "you");
-  }
   for (const edge of edges) {
     const from = nodes.find((n) => n.id === edge.from)!;
     const to = nodes.find((n) => n.id === edge.to)!;
@@ -357,10 +317,8 @@ export function layoutGraph(model: LensModel, options: GraphOptions): Graph {
  */
 export function relatedNodes(graph: Graph, id: string): Set<string> {
   const lit = new Set<string>([id]);
-  const down = (edge: GraphEdge) => edge.kind === "tree" || edge.kind === "dispatch";
   const walk = (at: string, direction: "up" | "down") => {
     for (const edge of graph.edges) {
-      if (!down(edge)) continue;
       const [near, far] = direction === "up" ? [edge.to, edge.from] : [edge.from, edge.to];
       if (near === at && !lit.has(far)) {
         lit.add(far);
@@ -368,21 +326,7 @@ export function relatedNodes(graph: Graph, id: string): Set<string> {
       }
     }
   };
-  const node = graph.nodes.find((n) => n.id === id);
   walk(id, "up");
-  if (node?.kind === "block") {
-    for (const edge of graph.edges) {
-      if (edge.to !== id) continue;
-      lit.add(edge.from);
-      walk(edge.from, "up");
-    }
-    return lit;
-  }
-  const above = new Set(lit);
   walk(id, "down");
-  for (const edge of graph.edges) {
-    // Only the lines of this node and of what it dispatched, never of its parents.
-    if (!down(edge) && lit.has(edge.from) && (edge.from === id || !above.has(edge.from))) lit.add(edge.to);
-  }
   return lit;
 }

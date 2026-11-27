@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { type Graph, type GraphNode, type GraphOptions, GRAPH_X, ROOT_ID, SUB_SHIFT, layoutGraph, relatedNodes } from "./agentGraph";
+import { type Graph, type GraphNode, type GraphOptions, GRAPH_X, ROOT_ID, layoutGraph, relatedNodes } from "./agentGraph";
 import { type SubRow, buildLensModel } from "./agentLenses";
 import { BEN, fleet, mapOf, run, session, splitFleet, workingFleet } from "./agentLensesFixtures";
 import { CARDS_MAX, NEW_VIEW, SUB_ROWS_MAX, bucketView, foldView, restView } from "./agentScale";
@@ -42,12 +42,11 @@ function expectWholeLines(g: Graph) {
 }
 
 describe("the map", () => {
-  it("places the columns: scope, person, orchestrator, agent, and You", () => {
+  it("places the four columns: scope, person, orchestrator and agent", () => {
     expect(node(ROOT_ID)!.x).toBe(GRAPH_X.root);
     expect(node("p:ana@x.test")!.x).toBe(GRAPH_X.person);
     expect(node("s:boss")!.x).toBe(GRAPH_X.orch);
     expect(node("s:lane-a")!.x).toBe(GRAPH_X.session);
-    expect(node("b:you")!.x).toBeGreaterThan(GRAPH_X.session);
     expectNoOverlap(graph);
     expectWholeLines(graph);
   });
@@ -55,7 +54,7 @@ describe("the map", () => {
     const g = layoutGraph(buildLensModel(mapOf([session("a")])), options());
     expect(node("s:a", g)!.x).toBe(GRAPH_X.orch);
   });
-  it("draws the dispatch lines, across people too, and the line to You", () => {
+  it("draws the dispatch lines, across people too", () => {
     expect(pairs()).toEqual(
       expect.arrayContaining([
         `${ROOT_ID}>p:ana@x.test:tree`,
@@ -63,23 +62,18 @@ describe("the map", () => {
         "s:boss>s:lane-a:dispatch",
         "s:boss>s:lane-b:dispatch",
         "p:ben@x.test>s:lane-b:tree",
-        "s:lane-b>b:you:you",
       ]),
     );
   });
-  it("draws no node and no line for a wait on something else: the card says it", () => {
-    expect(kind(graph, "block").map((n) => n.id)).toEqual(["b:you"]);
-    expect(graph.edges.some((e) => e.from === "s:lane-a" && e.kind !== "tree" && e.to.startsWith("b:"))).toBe(false);
+  it("draws no wait line and no waits-on node (decision G1)", () => {
+    const ids = new Set(graph.nodes.map((n) => n.kind as string));
+    expect(ids.has("block")).toBe(false);
+    expect([...new Set(graph.edges.map((e) => e.kind))].sort()).toEqual(["dispatch", "tree"]);
   });
-  it("draws no line to You for a question of another member (EA3-50)", () => {
-    const g = layoutGraph(buildLensModel(fleet(), new Map(), { email: "ana@x.test" }), options());
-    expect(g.nodes.some((n) => n.id === "b:you")).toBe(false);
-    expect(g.edges.some((e) => e.kind === "you")).toBe(false);
-  });
-  it("keeps the line to You and the dispatch line when a person folds", () => {
+  it("keeps the dispatch line when a person folds", () => {
     const g = layoutGraph(model, options({ ...foldView(NEW_VIEW, "p:ben@x.test", false, "ben@x.test") }));
     expect(node("s:lane-b", g)).toBeUndefined();
-    expect(pairs(g)).toEqual(expect.arrayContaining(["s:boss>p:ben@x.test:dispatch", "p:ben@x.test>b:you:you"]));
+    expect(pairs(g)).toContain("s:boss>p:ben@x.test:dispatch");
     expectNoOverlap(g);
     expectWholeLines(g);
   });
@@ -252,12 +246,10 @@ describe("the subagents of one agent", () => {
   map.sessions[1] = { ...map.sessions[1], subagents: { total: 20, working: 1, failed: 1, done: 18, names: [] } };
   const m = buildLensModel(map, new Map(), BEN);
   const rows: SubRow[] = Array.from({ length: 20 }, (_, i) => ({ id: `c${i}`, name: `c${i}`, state: "done", model: null, age: i }));
-  it("opens as at most 8 rows and a row for the rest, and moves You right", () => {
-    const shut = layoutGraph(m, options());
+  it("opens as at most 8 rows and a row for the rest", () => {
     const g = layoutGraph(m, options({ subs: { sessionId: "lane-a", rows } }));
     expect(kind(g, "sub")).toHaveLength(SUB_ROWS_MAX);
     expect(kind(g, "submore")[0]).toMatchObject({ count: 12 });
-    expect(node("b:you", g)!.x - node("b:you", shut)!.x).toBe(SUB_SHIFT);
     expectNoOverlap(g);
   });
   it("draws one note while the rows load", () => {
@@ -282,16 +274,11 @@ describe("a fold never loses an agent or a line (the verifier's repair)", () => 
     new Map(),
     { email: "ana@x.test" },
   );
-  it("keeps the line to You when the folded orchestrator joins a state node", () => {
+  it("keeps each line whole when the folded orchestrator joins a state node", () => {
     let view = foldView(NEW_VIEW, "s:aboss", false, "ana@x.test");
-    const folded = layoutGraph(m, options({ ...view }));
-    expect(folded.edges.some((e) => e.kind === "you")).toBe(true);
-    const bucket = kind(folded, "bucket").find((b) => b.state === "waiting")!;
+    const bucket = kind(layoutGraph(m, options({ ...view })), "bucket").find((b) => b.state === "waiting")!;
     view = bucketView(view, "ana@x.test", "waiting", bucket.next);
     const walked = layoutGraph(m, options({ ...view }));
-    expect(cards(walked)).not.toContain("aboss");
-    expect(walked.edges.filter((e) => e.kind === "you")).toHaveLength(1);
-    expect(kind(walked, "block")[0].sessions.map((s) => s.id)).toEqual(["ask"]);
     expectWholeLines(walked);
   });
   it("counts the agents under a folded orchestrator", () => {
@@ -336,9 +323,5 @@ describe("relatedNodes", () => {
     const lit = relatedNodes(graph, "s:lane-a");
     // The idle agent that lane-a dispatched sits in Ana's "idle or done" node.
     expect([...lit].sort()).toEqual([ROOT_ID, "p:ana@x.test", "s:boss", "s:lane-a", "r:ana@x.test"].sort());
-  });
-  it("lights the agents of You and the chain above each", () => {
-    const lit = relatedNodes(graph, "b:you");
-    expect([...lit].sort()).toEqual(["b:you", ROOT_ID, "p:ana@x.test", "p:ben@x.test", "s:boss", "s:lane-b"].sort());
   });
 });

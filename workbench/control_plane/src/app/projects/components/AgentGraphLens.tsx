@@ -41,8 +41,6 @@ import {
   type GraphEdgeKind,
   type GraphNode,
   type GraphOptions,
-  YOU_WORD,
-  blockSentence,
   layoutGraph,
   relatedNodes,
 } from "../lib/agentGraph";
@@ -71,7 +69,6 @@ const CARD_SQUARES = 28;
 const LINE: Record<GraphEdgeKind, string> = {
   tree: "color-mix(in srgb, var(--muted-foreground) 45%, transparent)",
   dispatch: "color-mix(in srgb, var(--muted-foreground) 70%, transparent)",
-  you: "var(--warning)",
 };
 
 /** What a node can ask of the map. */
@@ -338,30 +335,7 @@ export function GraphCard({ data }: { data: NodeData }) {
       </div>
     );
   }
-  const sentence = blockSentence(node.sessions.length);
-  return (
-    <div data-agent-edge="warning" data-agent-graph-block={node.block} className={`h-full rounded-lg ${ring(selected)}`}>
-      <div
-        role="button"
-        tabIndex={0}
-        aria-pressed={selected}
-        aria-label={`${YOU_WORD}. ${sentence}.`}
-        onClick={pick}
-        onKeyDown={pressKeys(pick)}
-        className={CARD_FACE}
-      >
-        <span className="flex min-w-0 items-center gap-2">
-          <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-secondary text-warning">
-            <Icon name="MessageCircleQuestion" size={15} aria-hidden />
-          </span>
-          <span className="flex min-w-0 flex-col">
-            <span className="truncate text-sm font-semibold">{YOU_WORD}</span>
-            <span className="truncate text-xs text-muted-foreground">{sentence}</span>
-          </span>
-        </span>
-      </div>
-    </div>
-  );
+  return null;
 }
 
 function FlowNode({ data }: NodeProps<Node<NodeData>>) {
@@ -528,7 +502,6 @@ const LEGEND_EDGES: ReadonlyArray<[string, string]> = [
 ];
 const LEGEND_LINES: ReadonlyArray<[GraphEdgeKind, string]> = [
   ["dispatch", "Dispatched"],
-  ["you", "Waits on you"],
 ];
 
 export function Legend() {

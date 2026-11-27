@@ -298,7 +298,6 @@ export function AgentLenses({
   const onPick = useCallback((node: GraphNode) => {
     if (node.kind === "root") setSelection({ kind: "root", person: node.person });
     else if (node.kind === "person") setSelection({ kind: "person", person: node.person });
-    else if (node.kind === "block") setSelection({ kind: "block", block: node.block });
     else if (node.kind === "session" || node.kind === "orch") setSelection({ kind: "session", id: node.session.id });
   }, []);
   /** Unfolds the way to a session, selects it and centres its card. */

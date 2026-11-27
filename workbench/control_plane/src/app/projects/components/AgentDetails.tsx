@@ -20,7 +20,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { relativeTime } from "@/lib/taskCard";
 
 import { type TaskRow, projectsApi } from "../lib/api";
-import { type BlockKey, ROOT_ID, YOU_WORD, blockOf, blockSentence } from "../lib/agentGraph";
+import { ROOT_ID } from "../lib/agentGraph";
 import {
   DISPATCHED_BY_LABEL,
   DISPATCHED_LABEL,
@@ -57,22 +57,14 @@ export type LensSelection =
   | { kind: "session"; id: string }
   | { kind: "person"; person: string }
   /** The root of the map: one person, or everyone with "". */
-  | { kind: "root"; person: string }
-  | { kind: "block"; block: BlockKey };
+  | { kind: "root"; person: string };
 
 /** The node of the graph that a selection lights. */
 export function selectionNodeId(selection: LensSelection | null): string | null {
   if (!selection) return null;
   if (selection.kind === "session") return `s:${selection.id}`;
   if (selection.kind === "root") return ROOT_ID;
-  return selection.kind === "person" ? `p:${selection.person}` : `b:${selection.block}`;
-}
-
-/** The sessions that a "waits on" selection lists, the longest wait first. */
-export function blockSessions(model: LensModel, block: BlockKey): LensSession[] {
-  return model.sessions
-    .filter((s) => blockOf(s) === block)
-    .sort((a, b) => (a.lastAt ?? "").localeCompare(b.lastAt ?? ""));
+  return `p:${selection.person}`;
 }
 
 /** The title of a selection, or `null` when it left the map. */
@@ -85,11 +77,8 @@ export function selectionTitle(
   if (selection.kind === "person") {
     return model.people.some((p) => p.person === selection.person) ? nameOf(selection.person) : null;
   }
-  if (selection.kind === "root") {
-    if (!selection.person) return model.sessions.length > 0 ? EVERYONE : null;
-    return model.people.some((p) => p.person === selection.person) ? nameOf(selection.person) : null;
-  }
-  return blockSessions(model, selection.block).length > 0 ? YOU_WORD : null;
+  if (!selection.person) return model.sessions.length > 0 ? EVERYONE : null;
+  return model.people.some((p) => p.person === selection.person) ? nameOf(selection.person) : null;
 }
 
 export interface DetailsProps {
@@ -407,21 +396,10 @@ export function AgentDetails(props: DetailsProps) {
     const person = model.people.find((p) => p.person === selection.person);
     return person ? <PersonDetails {...props} person={person} /> : null;
   }
-  if (selection.kind === "root") {
-    const sessions = selection.person ? model.sessions.filter((s) => s.person === selection.person) : model.sessions;
-    return (
-      <div className="flex flex-col gap-3" data-agent-details="root">
-        <CountDetails {...props} sessions={sessions} />
-      </div>
-    );
-  }
-  const sessions = blockSessions(model, selection.block);
+  const sessions = selection.person ? model.sessions.filter((s) => s.person === selection.person) : model.sessions;
   return (
-    <div className="flex flex-col gap-3" data-agent-details="block">
-      <p className="text-xs text-muted-foreground">
-        {blockSentence(sessions.length)}. The longest wait comes first.
-      </p>
-      <SessionList sessions={sessions} nowMs={nowMs} onSelect={onSelect} />
+    <div className="flex flex-col gap-3" data-agent-details="root">
+      <CountDetails {...props} sessions={sessions} />
     </div>
   );
 }
