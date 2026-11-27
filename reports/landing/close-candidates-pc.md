@@ -13,12 +13,17 @@ closes no pull request.
 | 2653, skill offer draft | 3829 | Replaced | PR 2884 holds the same code in one clean commit. The Secret scan read two test literals in an old commit of PR 2653 | PR 2884 merged on 2026-11-26 (`dcbc49983`). Close now |
 | 2534, mark a session stale on an unread steer | 3640 | Main has the behaviour | The final PR 2521 (`3829199e07`) added `rows_for_digest`. `test_r8_a_late_steer_drops_the_session` passes: the next turn drops the session. Main merged at `165ec0928a`, 89 R8 tests passed | Nothing. The PR only changes the drop reason, and it can drop one more session than needed |
 
+## Approved by the owner
+
+| PR | Task | Owner answer | What stays to do |
+|---|---|---|---|
+| 1692, spec for chat-built tools | 1655 | 2026-11-26, on the task: "Close PR 1692 and keep decision D182 as the record" | The close act. The PC lane closes no pull request |
+
 ## Not on this list, but the owner must answer
 
 | PR | Task | Question | Recommendation |
 |---|---|---|---|
-| 1692, spec for chat-built tools | 1655 | D187, D224 and D233 replaced parts of this spec. Close it, or write it again? | Close it. Keep D182 as the record |
 | 1793, seat tiers | 1280 | The task waits on the base price (D204 point 9) | Give the numbers, or let the per-seat price be the base price |
-| 1400, chat wave 2 | 2124 | Does a move to a new parent move the task to the project of that parent? | Cut the PR again in small slices |
+| 1400, chat wave 2 | 2124 | Answered 2026-11-26: a task moves with its new parent. Cut the missing parts again in small PRs | The re-cut task. Close PR 1400 after its last part merges |
 | 2094, agent work review | 349 | Keep the new column, or use the policy store of SW-94? | Use the policy store |
 | 2515, MM-1c acts | 3615 | Do you accept `proactive_loop.md` section 5.3? | Drop that one hunk and land the rest |
