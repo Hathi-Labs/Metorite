@@ -1512,8 +1512,10 @@ holds, so it needs no migration and no backfill.
    owner stays A, with the same label, so nothing changes for L.
 3. **A landing lane that adopts the PR.** Lane D claims the task and adds the
    same URL again, with or without `landing`. The reference keeps its
-   `created_at`, so the owner stays A, and the PR stays bound to L. D's
-   `queued` mark exempts it for 24 hours.
+   `created_at`, so the owner stays A, and the PR stays bound to L. While D
+   holds an open run on the task, the PR does not count for L (§7b.10, rule
+   1). After D releases, it counts for L again. D's `queued` mark exempts it
+   for 24 hours.
 4. **A reference with no owner run.** A person adds it outside a run, a text
    link (`via = 'text'`) or the webhook (`via = 'github'`) adds it while no
    run holds the task, or the task had no run then. No row qualifies, and the
@@ -1533,8 +1535,10 @@ rule.
   does. A resume or a reopen clears the label, and a reopen sets `ended_at`
   NULL again. Then the PR binds to the no-label bucket until a claim labels
   the run again.
-- **An adopted PR stays with the lane that opened it** (case 3). If that lane
-  has stopped, the PR counts for a label that claims nothing.
+- **An adopted PR stays with the lane that opened it** (case 3). It does not
+  count while the adopter holds an open run (§7b.10). If the first lane has
+  stopped, the PR counts for a label that claims nothing after the adopter
+  releases.
 - **A dead lane's run keeps `ended_at` NULL.** The sweeps end runs only on
   closed tasks. So that run owns each later reference on its task until a
   takeover ends it.
@@ -1612,8 +1616,9 @@ verifier, an Opus diff-review and R8 tests on a real database.
 
 ### 7b.10 LBB-2c: the claim gate before `CLAIM_GATE_ORGS` (task 4064)
 
-**Status.** Spec, 2026-11-27. Three fixes that must be on main before anyone
-sets `CLAIM_GATE_ORGS` (the flip list of §7b.2). None needs an owner
+**Status.** Spec, 2026-11-27. Four items that must be on main before anyone
+sets `CLAIM_GATE_ORGS` (the flip list of §7b.2). The §7b header names what is
+built. PR 2921 brings it up to date. None needs an owner
 decision: each keeps the three doors that the owner approved. Tier HIGH: the
 claim path.
 
@@ -1626,10 +1631,18 @@ claim path.
   push to D's branch, or mark the PR `queued` when no merger has it.
 - **The rule.** In `_counted_sql` (`claim_gate.py`), a reference does not
   count while an open run on its task belongs to another session. "Open" is a
-  status in `AGENT_RUN_OPEN_STATUSES`. "Another session" is a run whose member
-  is not the caller's member, or whose label is not the caller's label (`IS
-  DISTINCT FROM`). One task has at most one open run
-  (`pm_agent_runs_one_open_per_task`, migration 289).
+  status in `AGENT_RUN_OPEN_STATUSES`, and its holder is not free: the clause
+  adds `NOT holder_free_sql('o')` (`filters.py`). So a stale run, whose lease
+  ended or whose connection is gone, does not hide the PR. "Another session"
+  is a run whose member is not the caller's member, or whose label is not
+  the caller's label (`IS DISTINCT FROM`). One task has at most one open run
+  (`pm_agent_runs_one_open_per_task`, migration 475).
+- **Accepted, in writing.** The test is member plus label, the bucket of the
+  owner run. The 409 `task_held` reads the session key. So two gaps remain:
+  - Two sessions in one bucket (the same label, or both with no label): the
+    deadlock of the defect stays until the holder's lease ends.
+  - L's own session under another label is "another session", so it exempts
+    the PR.
 - When D releases or finishes, its run is no longer open, and PR N counts for
   L again (the owner run of §7b.8 does not change).
 - The `answered` read of the refusal stays the same, because a run with an
@@ -1652,11 +1665,18 @@ claim path.
 - **The seams it meets.** These all exist, and the build updates each one:
   - the edge input schema of `set_assignees` and its description;
   - `_TAKES_LABEL` in `tests/unit/test_agent_label_fence.py`;
-  - the field-parity row of `PUT /projects/tasks/{task_id}/assignees` in both
-    manifests (`skill_projects/manifest.py` and
-    `acb_common/app_manifests/projects.py`). The row is a FIELD_EXEMPT entry
-    for `agent_label`, as the landing route has;
-  - `tests/unit/test_mcp_edge_coverage.py`.
+  - the field-parity row of `PUT /projects/tasks/{task_id}/assignees` in
+    `skill_projects/manifest.py` (FIELD_EXEMPT, an entry for `agent_label`,
+    as the landing route has). `acb_common/app_manifests/projects.py` has no
+    field table;
+  - `tests/unit/test_mcp_edge_coverage.py`;
+  - the edge reuses `tools._LABEL_INPUT` and sets `params["agent_label"]`, as
+    the label fence pins;
+  - the edge sends the key only when it is set, because
+    `tests/unit/test_mcp_edge_assignees.py` pins the exact body;
+  - `AssigneesIn` joins the bound-model test of `test_agent_label_fence.py`;
+  - a person's body that names a label gets 422. Today `AssigneesIn` has no
+    `extra="forbid"`, so the PUT ignores the field.
 
 **3. The text of `add_task_reference`.** The edge description says that an
 unmarked PR "can block your next claim" in every org. That is false while
@@ -1674,24 +1694,40 @@ gate is on".
   - lane L's PR, and lane D with an open run on its task: L's claim of a new
     task is not refused;
   - D releases: L's claim is refused again;
-  - D's open run with L's member and label (a resume of L's own run) does not
-    exempt the PR;
+  - an open run with L's member and label (L's own run C after a BACK, case
+    2 of §7b.8) does not exempt the PR;
+  - an open run of another member with L's label exempts the PR;
+  - a stale open run of D (its lease ended) does not exempt the PR;
+  - the landing route (`my_work` rows) does not list a PR that another
+    session holds;
   - `set_assignees` with label Y refuses Y's PR, and lets through the PR of
     the no-label bucket;
-  - `set_assignees` with no label behaves as today.
+  - `set_assignees` with no label behaves as today;
+  - a person's `PUT` that names a label gets 422.
+- Two LBB-2b tests change, and the PR names each one:
+  - the case 3 test (`test_claim_gate_r8.py`, the adopter): while D's run is
+    open, L's claim is not refused. After D releases, it is refused;
+  - the tie-break test of C12: its older qualifying run is open today, and
+    rule 1 would exempt the PR. Its fixture moves to a production shape with
+    no open run: run A was reopened and then released again, so both runs are
+    terminal and both windows hold the reference.
 - `tests/unit/test_claim_gate_edge.py`: the edge sends `agent_label` on
   `set_assignees`, and the description text of `add_task_reference`.
 - `tests/unit/test_agent_label_fence.py`: `set_assignees` is in
   `_TAKES_LABEL`.
-- The mutation that names rule 1: drop the new NOT EXISTS clause, and the
-  first fence turns red.
+- The mutations that name each rule. Each turns its fence red:
+  - drop the new NOT EXISTS clause;
+  - drop its member arm (only the label compares);
+  - drop `NOT holder_free_sql('o')`;
+  - the door passes no label to `check_claim_gate` (item 2).
 
 **Done when.**
-1. Each fence above passes, and every LBB-2 and LBB-2b test passes
-   unchanged.
-2. The mutation of rule 1 turns its fence red.
-3. The flip list of §7b.2 names LBB-2c as done once it is on main and in a
-   release.
+1. Each fence above passes. Every LBB-2 and LBB-2b test passes unchanged,
+   except the two named above.
+2. Each mutation above turns its fence red.
+
+The flip list of §7b.2 already holds "Before `CLAIM_GATE_ORGS`, LBB-2c is on
+main". No Done-when line waits for a release.
 
 **Verify with.**
 
@@ -1702,7 +1738,7 @@ PYTEST_ADDOPTS="-o timeout_method=thread" uv run pytest -p no:cacheprovider \
   tests/unit/test_agent_label_fence.py tests/unit/test_mcp_edge_claim.py \
   tests/unit/test_agent_claim_scope_r8.py tests/unit/test_task_refs_route.py \
   tests/unit/test_mcp_edge_coverage.py tests/unit/test_projects_field_parity.py \
-  tests/unit/test_projects_door_coverage.py tests/unit/test_hand_over.py
+  tests/unit/test_projects_door_coverage.py tests/unit/test_hand_over.py   tests/unit/test_mcp_edge_assignees.py
 uv run ruff check apps/services/gateway/gateway/routes/projects/claim_gate.py \
   apps/services/gateway/gateway/routes/projects/tasks.py \
   apps/services/agent_edge/agent_edge/tools.py
