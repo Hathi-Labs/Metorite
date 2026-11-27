@@ -26,6 +26,7 @@
 import Icon from "@/components/Icon";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
+import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { Input } from "@/components/ui/Input";
 import SelectButton from "@/components/ui/SelectButton";
 import { useCallback, useEffect, useReducer, useState } from "react";
@@ -90,6 +91,9 @@ export function RelationsBlock({
   const [busy, setBusy] = useState(false);
   /** Per-link-row pending and error, keyed by `link_id` (WS-27bd item 2). */
   const [rows, dispatch] = useReducer(rowsReducer, NO_ROWS);
+  /** SW-25. A link with a note asks first: the note goes with the link, and
+   *  nothing can put it back. */
+  const [asking, setAsking] = useState<Relations["links"][number] | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -301,9 +305,16 @@ export function RelationsBlock({
                       icon="X"
                       loading={pending}
                       aria-label={`Unlink ${l.title}`}
-                      onClick={() => void removeLink(l.link_id)}
+                      onClick={() =>
+                        l.note ? setAsking(l) : void removeLink(l.link_id)
+                      }
                     />
                   </div>
+                  {l.note ? (
+                    <p className="mt-0.5 break-words px-1 text-[11px] text-muted-foreground">
+                      {l.note}
+                    </p>
+                  ) : null}
                   {failure ? (
                     <p
                       role="alert"
@@ -329,6 +340,22 @@ export function RelationsBlock({
           </ul>
         </div>
       ))}
+
+      <ConfirmDialog
+        open={asking !== null}
+        title="Remove this link and its note?"
+        subject={asking?.title}
+        body="The note is deleted with the link. This cannot be undone."
+        confirmLabel="Remove link"
+        confirmVariant="destructive"
+        icon="Unlink"
+        onConfirm={() => {
+          const link = asking;
+          setAsking(null);
+          if (link) void removeLink(link.link_id);
+        }}
+        onCancel={() => setAsking(null)}
+      />
 
       {linking ? (
         <form onSubmit={addLink} className="flex flex-wrap items-center gap-1">

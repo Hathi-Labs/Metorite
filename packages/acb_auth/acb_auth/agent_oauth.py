@@ -1089,6 +1089,9 @@ REQUEST_READ_ROUTE: tuple[str, str] = ("GET", "/agent-access/requests/{request_i
 #: ``record_outside_decision``. An agent records a decision that its member
 #: made outside Metorite, on its OWN awaiting run. It writes an agent
 #: ``response`` and never a ``prompt``, and it refuses a typed request.
+#: SW-25 adds no write route: `add_task_link` takes the types `relates_to`
+#: and `affects` and a `note` over the SW-16a POST. The route checks both
+#: ends. Its one read, ``GET /projects/affects-notes``, is in MCP_ROUTES.
 #: SW-16a adds the link pair: the POST and the DELETE of a task link, the
 #: routes of ``add_task_link`` and ``remove_task_link``. The route checks that
 #: the member sees BOTH tasks. SW-16b owns the write fence for these routes.
@@ -1269,6 +1272,10 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # WS-39 TPL-1a: `list_templates`. It answers 404 while
     # `PROJECTS_TEMPLATES_ORGS` does not hold the org.
     ("GET", "/projects/templates"),
+    # WS-MCP SW-25: the unread affects notes of the tasks that `my_work`
+    # holds. A read. BOTH ends pass the visibility clause of the member, and
+    # the route never marks a note read.
+    ("GET", "/projects/affects-notes"),
     # WS-MCP SW-113 (agent_coordination.md §3.12.7 rule 12): `get_agent_map`.
     # The edge sends `shape=map` only. The route answers 404 while
     # `AGENTS_VIEW_ORGS` or `AGENT_MAP_ORGS` does not hold the org, and for a

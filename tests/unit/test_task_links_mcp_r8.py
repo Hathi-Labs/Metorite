@@ -28,14 +28,14 @@ Run::
 * L2. ``E/tools.py``: ``_add_task_link`` swaps the two ids. ``test_task_id_blocks_the_target``.
 * L3. ``G/tasks.py``: ``create_link`` skips the load of the target. ``test_a_hidden_target_reads_as_a_task_that_does_not_exist``.
 * L4. ``E/tools.py``: ``_LINK_DETAILS`` loses the cycle row. ``test_a_loop_is_refused_in_plain_words``.
-* L5. ``G/relations.py``: ``insert_task_link`` loses ``ON CONFLICT``. ``test_the_same_link_twice_keeps_one_row``.
+* L5. ``G/relations.py``: ``insert_task_link_row`` loses ``ON CONFLICT``. ``test_the_same_link_twice_keeps_one_row``.
 * L6. ``G/tasks.py``: ``AGENT_PATCH_FIELDS`` loses ``type_id``. ``test_the_type_is_set_and_cleared``.
 * L7. ``G/tasks.py``: ``patch_task`` drops ``assert_epic_has_no_parent``. ``test_an_epic_type_on_a_task_with_a_parent_is_refused``.
 * L8. ``E/tools.py``: ``_update_task`` drops ``_check_type``. ``test_a_type_of_another_project_is_refused``.
 * L9. ``G/relations.py``: ``delete_task_link`` writes no activity. ``test_an_agent_removal_writes_one_row_on_each_task`` and ``test_a_person_removal_writes_the_record_too``.
 * L10. ``G/tasks.py``: ``delete_link`` passes no ``far_end_vis``. ``test_a_pinned_agent_cannot_remove_a_link_that_leaves_its_pin``.
 * L11. ``G/tasks.py``: ``delete_link`` passes ``far_end_vis`` for a person too. ``test_a_person_may_still_remove_a_link_to_a_hidden_task``.
-* L12. ``G/relations.py``: ``insert_task_link`` loses ``if not row.inserted``. ``test_a_second_identical_add_writes_nothing``.
+* L12. ``G/relations.py``: ``insert_task_link_row`` loses ``if not row.inserted``. ``test_a_second_identical_add_writes_nothing``.
 * L13. ``E/tools.py``: ``_meta_link`` loses ``link_action``. ``test_the_timeline_keeps_the_mark_of_a_removal``.
 * L14. ``G/activities.py``: ``get_timeline`` skips ``drop_unseen_link_targets``. ``test_a_pinned_agent_reads_no_outside_id``.
 * L15. ``G/relations.py``: ``drop_unseen_link_targets`` drops each target. ``test_a_reader_who_sees_the_far_end_keeps_the_target``.
@@ -121,9 +121,9 @@ class TestTheRecords:
             ("DELETE", {"task_id": ID_A, "link_id": ID_A}, {}),
         ]
 
-    def test_link_type_is_blocks_only(self):
+    def test_link_type_is_blocks_relates_to_and_affects(self):
         schema = self._listed("add_task_link")["inputSchema"]["properties"]["link_type"]
-        assert schema["enum"] == ["blocks"]
+        assert schema["enum"] == ["blocks", "relates_to", "affects"]
         assert self._listed("add_task_link")["inputSchema"]["required"] == [
             "task_id", "target_task_id", "link_type"]
 
@@ -516,7 +516,7 @@ class TestTheReachAndTheLoopOfALink:
 
         a = live.task(live.team, live.s.todo, "sw16a race A")
         b = live.task(live.team, live.s.todo, "sw16a race B")
-        real = pm_tasks.insert_task_link
+        real = pm_tasks.insert_task_link_row
         both_here = asyncio.Event()
         arrived = 0
 
@@ -532,7 +532,7 @@ class TestTheReachAndTheLoopOfALink:
                 await asyncio.wait_for(both_here.wait(), 2)
             return await real(db, *args, **kwargs)
 
-        monkeypatch.setattr(pm_tasks, "insert_task_link", paused)
+        monkeypatch.setattr(pm_tasks, "insert_task_link_row", paused)
 
         async def both() -> list[dict[str, Any]]:
             return list(await asyncio.gather(*(
@@ -550,7 +550,7 @@ class TestTheReachAndTheLoopOfALink:
     async def test_remove_refuses_a_link_that_is_not_blocks(self, live):
         a = live.task(live.team, live.s.todo, "sw16a kind A")
         b = live.task(live.team, live.s.todo, "sw16a kind B")
-        link_id = await _person_link(live, a, b, "relates_to")
+        link_id = await _person_link(live, a, b, "duplicates")
         stamps = _stamps(live, a, b)
         rows = len(_link_rows(live, a)), len(_link_rows(live, b))
         refused = await _mcp(live, "write", "remove_task_link", {

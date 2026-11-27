@@ -7,6 +7,9 @@
  * which section is what these assert.
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -91,6 +94,13 @@ describe("populated", () => {
       link("duplicates", "incoming", "b"),
     ]);
     expect(got.map((s) => s.label)).toEqual(["Duplicates", "Duplicated by"]);
+  });
+
+  it("labels the two ends of an affects link, with the note kept (SW-25)", () => {
+    const withNote = { ...link("affects", "incoming", "a"), note: "Renames a column." };
+    const got = populated([link("affects", "outgoing", "b"), withNote]);
+    expect(got.map((s) => s.label)).toEqual(["Affected by", "Affects"]);
+    expect(got[0].links[0].note).toBe("Renames a column.");
   });
 
   it("is empty for a task with no links at all", () => {
@@ -191,5 +201,20 @@ describe("completeRelations", () => {
   it("keeps null meaning null, because the caller renders nothing for it", () => {
     expect(completeRelations(null)).toBeNull();
     expect(completeRelations(undefined)).toBeNull();
+  });
+});
+
+describe("unlinking a row that holds a note", () => {
+  // SW-25. The note goes with the link, and no screen can put it back.
+  // DESIGN_SYSTEM.md: an irreversible act asks first, in ConfirmDialog.
+  const block = readFileSync(
+    join(__dirname, "../components/RelationsBlock.tsx"),
+    "utf-8",
+  );
+
+  it("asks before it deletes a note", () => {
+    expect(block).toMatch(/l\.note \? setAsking\(l\) : void removeLink\(l\.link_id\)/);
+    expect(block).toContain("<ConfirmDialog");
+    expect(block).toContain("This cannot be undone.");
   });
 });

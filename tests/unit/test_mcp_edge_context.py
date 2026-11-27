@@ -160,6 +160,8 @@ class _Board(_Gateway):
             return 200, self._runs_page(r.pairs)
         if r.path == "/projects/tasks":
             return 200, {"rows": self.assigned, "total": len(self.assigned)}
+        if r.path == "/projects/affects-notes":  # SW-25: no notes on this board
+            return 200, {"notes": []}
         if parts[:2] == ["projects", "tasks"] and len(parts) == 3:
             row = self.tasks.get(parts[2])
             return (200, row) if row is not None else (404, {"detail": "Not Found"})
