@@ -285,6 +285,61 @@ def test_the_session_is_a_transient_unit_and_has_no_token(tmp_path, monkeypatch)
         assert "METORITE_WATCHER_TOKEN" not in (kw.get("env") or {})
 
 
+def _session_argv(tmp_path, monkeypatch, cmd=None):
+    """The argv after ``--`` of the systemd-run call, with a marked prompt."""
+    calls = []
+    monkeypatch.setattr(aw, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(aw, "REPO", tmp_path / "repo")
+    monkeypatch.setattr(aw, "prompt_for", lambda _r, _w="": "PROMPT-MARK")
+    monkeypatch.setattr(aw.subprocess, "run", lambda c, **kw: calls.append(c))
+    if cmd is None:
+        monkeypatch.delenv("WATCHER_CLAUDE_CMD", raising=False)
+    else:
+        monkeypatch.setenv("WATCHER_CLAUDE_CMD", cmd)
+    assert aw.start_session(run()) is True
+    systemd = [c for c in calls if c and c[0] == "systemd-run"]
+    assert len(systemd) == 1
+    return systemd[0][systemd[0].index("--") + 1 :]
+
+
+def test_the_prompt_comes_right_after_p_and_before_the_list_flag(tmp_path, monkeypatch):
+    # Task 4050: --allowedTools takes each word after it, so a prompt at the
+    # end was read as a tool name and claude -p started with no prompt.
+    argv = _session_argv(tmp_path, monkeypatch)
+    assert argv == ["claude", "-p", "PROMPT-MARK", "--allowedTools", "mcp__metorite__*"]
+
+
+def test_an_override_with_print_gets_the_prompt_after_print(tmp_path, monkeypatch):
+    argv = _session_argv(
+        tmp_path, monkeypatch, "claude --model opus --print --allowedTools a b"
+    )
+    assert argv == ["claude", "--model", "opus", "--print", "PROMPT-MARK", "--allowedTools", "a", "b"]
+
+
+def test_an_override_with_no_p_fails_before_any_worktree(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(aw, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(aw, "REPO", tmp_path / "repo")
+    monkeypatch.setattr(aw.subprocess, "run", lambda c, **kw: calls.append(c))
+    monkeypatch.setenv("WATCHER_CLAUDE_CMD", "claude --allowedTools mcp__metorite__*")
+    with pytest.raises(ValueError):
+        aw.start_session(run())
+    assert calls == [], "no worktree and no unit for a command that is not headless"
+
+
+def test_a_start_with_no_p_releases_the_wake(tmp_path, monkeypatch):
+    monkeypatch.setattr(aw.subprocess, "run", lambda c, **kw: None)
+    monkeypatch.setattr(aw, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(aw, "REPO", tmp_path / "repo")
+    monkeypatch.setenv("WATCHER_CLAUDE_CMD", "claude")
+    got = aw.tick(
+        [run()], state_dir=tmp_path, start=aw.start_session, now=NOW,
+        free_mb=lambda: 99999, live=lambda: 0,
+    )
+    assert got == []
+    assert not list(tmp_path.glob("*.attempt")), "a failed start must not lock the wake"
+
+
 def test_the_log_never_holds_the_token(tmp_path, capsys, monkeypatch):
     token = "mbt_" + "A" * 43
     monkeypatch.setenv("METORITE_WATCHER_TOKEN", token)

@@ -222,6 +222,11 @@ _PACKAGE_FIELDS = (
     "(package_host.md §8.3). No chat tool reaches it yet. PKG-14b adds the "
     "tool with the task panel, and the door adds nothing before then."
 )
+_FOCUS_LOG = (
+    "WS-MDC CC-5a: the dark focus-session log of the member "
+    "(my_day_command_centre.md §9.3). No chat tool reaches it yet. CC-10 adds "
+    "the tools, and the door adds nothing before then."
+)
 _AGENT_DELETE = (
     "The typed tool delete_task of §9 serves this route, after the yes of the "
     "member (EA3-51). MCP_ROUTES stays its allowlist."
@@ -419,6 +424,8 @@ PROJECTS_DOOR = App(
         Route("GET", "/projects/plan/order", "my_work", "A", off_door=TYPED, sandbox=True),
         # SW-45: the MCP `my_work` reads the free tasks of the own apps.
         Route("GET", "/projects/my/own-app-free", "own_app_free", "A", off_door=TYPED),
+        # LBB-2: the MCP `my_work` reads the open PRs to land of an agent label.
+        Route("GET", "/projects/agent-work/landing", "land_your_pr", "A", off_door=TYPED),
         Route("GET", "/projects/my/project", "my_work", "A", off_door=LATER, sandbox=True),
         Route("POST", "/projects/my/project", "", "X", reason=_MY_PROJECT),
         Route("POST", "/projects/my/tasks", "create_personal_task", "B", off_door=LATER),
@@ -466,6 +473,9 @@ PROJECTS_DOOR = App(
         Route("POST", "/projects/my/calendar/replan", "", "X", reason=_PLANNER),
         Route("POST", "/projects/my/calendar/rollover", "", "X", reason=_PLANNER),
         Route("GET", "/projects/my/calendar/estimate-stats", "", "X", reason=_PLANNER),
+        Route("POST", "/projects/my/focus-sessions", "", "X", reason=_FOCUS_LOG),
+        Route("PATCH", "/projects/my/focus-sessions/{session_id}", "", "X", reason=_FOCUS_LOG),
+        Route("GET", "/projects/my/focus-sessions", "", "X", reason=_FOCUS_LOG),
         # ── calendar.py · search.py · export.py · delta.py ──
         Route("GET", "/projects/calendar", "calendar", "A", off_door=LATER, sandbox=True),
         Route("GET", "/projects/search", "find_tasks", "A", off_door=TYPED, sandbox=True),

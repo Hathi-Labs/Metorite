@@ -6,7 +6,7 @@ told the assistant to keep, in this shape (§4.2)::
 
     {"v": 1, "learning": true,
      "address": {"name", "formality", "greeting"},
-     "style":   {"length", "language", "notes"},
+     "style":   {"length", "language", "languages", "notes"},
      "aliases": [{"id", "alias", "email"}],
      "facts":   [{"id", "text", "kind", "source", "at"}]}
 
@@ -28,6 +28,11 @@ Route                      Does
 ``GET .../export``         The whole profile as a download, JSON or text
                            (PZ-9). Read-only, and only the member's own
 =========================  ===============================================
+
+**Languages (PZ-52).** ``style.languages`` is an ordered list of at most 6
+BCP 47 tags. ``style.language`` stays and always holds the first tag, so an
+old client that sends only ``language`` still works and reads a list of one.
+``acb_common.assistant_profile._clean_style`` is the one check.
 
 **The shape follows** ``routes/shell/prefs.py``. The write is strict and the
 read is lenient: a stored key or item of the wrong shape drops from the
