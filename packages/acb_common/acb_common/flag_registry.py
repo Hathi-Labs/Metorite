@@ -1245,6 +1245,17 @@ class FlagRegistry(BaseSettings):
     # tests/unit/test_decide_seam.py.
     projects_decide_orgs: str = ""
 
+    # ── The Goals of Projects (WS-39 WM-5, task 984) ───────────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, a task write or a type write that sends a Goal field
+    # gets 422 `goals_off`, and `GET /projects/tasks/{id}` adds no roll-up to
+    # a Goal. The one reader is
+    # `gateway.routes.projects.core.goals_allowed`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). A flip is OWNER-GATE
+    # (`enforcement-flip`). Fence: tests/unit/test_goal_rollup_r8.py.
+    projects_goals_orgs: str = ""
+
     # ── The cycles of Projects (WS-39 SP-1, D195) ───────────────────────────
     #
     # The flag `PROJECTS_SPRINTS` of the board, as a per-org list

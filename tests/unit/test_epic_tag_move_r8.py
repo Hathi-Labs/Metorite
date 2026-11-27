@@ -21,6 +21,8 @@ Run::
   ``test_a_task_with_a_parent_is_skipped_and_listed``.
 * M2. ``G/epic_tag_move.py``: drop the ``if dry_run: continue`` before the UPDATE.
   ``test_a_dry_run_writes_nothing``.
+* M3. ``G/epic_tag_move.py``: drop the ``is_goal`` skip (WS-39 WM-5).
+  ``test_a_goal_is_skipped_and_listed``.
 """
 
 from __future__ import annotations
@@ -182,6 +184,26 @@ async def test_a_task_whose_project_has_no_epic_type_is_skipped(board, app_engin
     assert got["moved"] == 0
     assert [s["reason"] for s in got["skipped"]] == ["its project has no epic type"]
     assert _row(board, tid)[0] == proj["types"]["Task"]
+    assert _activities(board, tid) == []
+
+
+@_DB_GATE
+async def test_a_goal_is_skipped_and_listed(board, app_engine) -> None:  # noqa: F811
+    """WS-39 WM-5. A type is never a Goal and an epic, and an epic may point
+    at the Goal, so the move leaves a Goal to a person."""
+    _assert_non_priv(app_engine)
+    proj = _project(board, board.org_a)
+    with board.admin_engine.begin() as c:
+        proj["types"]["Goal"] = str(c.execute(text(
+            "INSERT INTO pm_task_types (project_id, name, is_goal, organization_id) "
+            "VALUES (CAST(:p AS uuid), 'Goal', true, CAST(:o AS uuid)) RETURNING id"),
+            {"p": proj["id"], "o": board.org_a}).scalar())
+    tid = _task(board, board.org_a, proj, "goal", tags=["Epic"], kind="Goal")
+
+    got = await _move(board, board.org_a)
+    assert got["moved"] == 0
+    assert [s["reason"] for s in got["skipped"]] == ["it is a Goal"]
+    assert _row(board, tid)[0] == proj["types"]["Goal"]
     assert _activities(board, tid) == []
 
 
