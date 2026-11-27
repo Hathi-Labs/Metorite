@@ -158,6 +158,42 @@ def sandbox_excluded(pair: tuple[str, str | None]) -> bool:
     return template is not None and (method, template) in _SANDBOX_EXCLUDED
 
 
+# ── The writes of the sandbox door (SBX-3a, ``agent_sandbox.md`` §12.5) ─────
+#
+# Code in the sandbox writes only through the batch route. The gateway holds
+# each row for a card, and runs an approved row as the member, through the
+# route's own handler. A row joins only with ``sandbox_write=True`` on its own
+# line. Fence: ``tests/unit/test_sandbox_routes_coverage.py``.
+
+#: The one path in for a write of the sandbox door (decision 4).
+SANDBOX_BATCH_PAIR: tuple[str, str] = ("POST", "/sandbox/v1/batch")
+
+#: Each ``(method, template)`` pair that a ``sandbox_write=True`` row names,
+#: mapped to the write scope of its one app.
+_SANDBOX_WRITE_SCOPE_OF: Mapping[tuple[str, str], str] = {
+    (row.method, row.path): one.write_scope
+    for one in SANDBOX_APPS for row in one.routes if row.sandbox_write
+}
+
+#: The write rows of the sandbox door, each mapped to its class (B or C).
+SANDBOX_WRITE_ROUTES: Mapping[tuple[str, str], str] = {
+    (row.method, row.path): row.cls
+    for one in SANDBOX_APPS for row in one.routes if row.sandbox_write
+}
+
+#: The write scope of each app of :data:`SANDBOX_APPS`.
+SANDBOX_WRITE_SCOPES: frozenset[str] = frozenset(one.write_scope for one in SANDBOX_APPS)
+
+
+def sandbox_write_scope(pair: tuple[str, str | None]) -> str | None:
+    """The write scope that a pair of :data:`SANDBOX_WRITE_ROUTES` needs, or
+    ``None`` for any pair off the list."""
+    method, template = pair
+    if template is None:
+        return None
+    return _SANDBOX_WRITE_SCOPE_OF.get((method, template))
+
+
 __all__ = [
     "APPS",
     "APP_ID_PATTERN",
@@ -168,8 +204,11 @@ __all__ = [
     "OP_PATTERN",
     "PROJECTS",
     "SANDBOX_APPS",
+    "SANDBOX_BATCH_PAIR",
     "SANDBOX_READ_SCOPES",
     "SANDBOX_ROUTES",
+    "SANDBOX_WRITE_ROUTES",
+    "SANDBOX_WRITE_SCOPES",
     "TOOL_APPS",
     "UUID_PATTERN",
     "VERSION_ARG",
@@ -192,5 +231,6 @@ __all__ = [
     "route_for",
     "sandbox_excluded",
     "sandbox_scope",
+    "sandbox_write_scope",
 ]
 

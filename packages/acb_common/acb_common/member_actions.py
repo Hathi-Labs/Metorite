@@ -23,8 +23,13 @@ OFF), when the act is in a shared mailbox (§19.4), or when the member turned
 ``learning`` off (D-PZ-7).
 
 **``via`` is the seam's word.** A route seam says ``app``. A chat card that
-calls the same route is also recorded as ``app`` until MM-1b (task 3614) adds
-a card marker, so that one yes is one row.
+calls the same route is also recorded as ``app``, because the route cannot
+tell the card from a press in the app. The card answer is its own row (MM-1b,
+task 3614): ``app="chat"``, ``card_approve`` or ``card_reject``,
+``via="card"``, no features, written by ``orchestrator.card_act`` from the
+outcome of ``ask_tools.CARD_OUTCOMES``. So one yes on an email card gives two
+rows today. The spec (§19.4) does not say how to join them, and a learner
+must not count the yes twice. That question is open.
 
 **A job is not the member.** A job that calls a route seam as the member, for
 example the send-later sweep, runs inside :func:`job_acts`. The writer then

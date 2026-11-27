@@ -36,7 +36,7 @@ because Metorite will not use the Copilot SDK. Task 2464 is built
 2026-11-27). It holds the egress proxy, the grant and the host firewall
 script. The owner answered on task 4009 (answer `b5dbe733`, 2026-11-27):
 "Approve the merge. Build one network per run in WS-43g2." WS-43g2a (task 4070)
-is built dark on branch `mt-8d60758e-ws43g2a`, and it is not merged. WS-43g2b
+merged dark (`a95d58d09`, PR 2924). WS-43g2b
 (task 4092) is spec only (§11, WS-43g2).
 
 **Amended 2026-11-27 (tasks 4070 and 4092).** The WS-43g2 spec. §7.3 gets
@@ -1994,7 +1994,7 @@ until its PR merges.
 | WS-43d | `run_command`, the file store, the safe opener, skills. ▶ Projects track step 1 (D86). Built, dark, merged in PR #603 | WS-43c, D85 (PR #598) for `covers()` | AGENT-SAFE |
 | WS-43e | `code_task` on a MAF harness session, and no host git. Built 2026-10-08, dark, in review | WS-43d | AGENT-SAFE |
 | WS-43f | `run_script` and `install_dependency` in the broker | WS-43e | AGENT-SAFE |
-| WS-43g | Egress proxy, the approved grant, the host firewall script. WS-43g1 merged dark (`d2bffe963`). WS-43g2a is built dark (task 4070), not merged. WS-43g2b is spec only | WS-43c, WS-43d. WS-43g2b also needs SBX-3a and SBX-3b | AGENT-SAFE. The flip and the firewall install are owner acts |
+| WS-43g | Egress proxy, the approved grant, the host firewall script. WS-43g1 merged dark (`d2bffe963`). WS-43g2a merged dark (task 4070, `a95d58d09`, PR 2924). WS-43g2b is spec only | WS-43c, WS-43d. WS-43g2b also needs SBX-3a and SBX-3b | AGENT-SAFE. The flip and the firewall install are owner acts |
 | WS-43h | app-builder on the MAF harness. Built 2026-11-08, dark (task 2280) | WS-43d, WS-43e | AGENT-SAFE |
 | WS-43i | Parity eval through the broker | WS-43f, WS-43h | AGENT-SAFE on a local stack. The flips are owner acts |
 | WS-43j | Retire the Copilot `code_task` path | WS-43i, 14 days on production | **OWNER-GATE** to merge (WS43-G7). ⏸ Parked by D86 |
@@ -2790,7 +2790,7 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
 
 **Gate.** AGENT-SAFE. It ships dark.
 
-### WS-43g — Egress: the proxy, the approved grant and the host firewall 🔲 · ✅ **WS-43g1 merged 2026-11-27, dark (`d2bffe963`, PR 2887, task 4009)** · 🔨 **WS-43g2a built dark 2026-11-27 (task 4070, branch `mt-8d60758e-ws43g2a`), not merged** · 📝 WS-43g2b (task 4092) spec only
+### WS-43g — Egress: the proxy, the approved grant and the host firewall 🔲 · ✅ **WS-43g1 merged 2026-11-27, dark (`d2bffe963`, PR 2887, task 4009)** · 🔨 **WS-43g2a merged 2026-11-27, dark (`a95d58d09`, PR 2924, task 4070)** · 📝 WS-43g2b (task 4092) spec only
 
 **Scope.**
 
@@ -2897,8 +2897,8 @@ So the container of one member could reach the container of the other.
   WS-43g2a merges.
 
 **Status, 2026-11-27.** WS-43g1 merged, and it is dark (`d2bffe963`, PR 2887,
-task 4009). WS-43g2a is built dark on branch `mt-8d60758e-ws43g2a` (task
-4070), and it is not merged. Its tests for done-when 10 to 13 and the network
+task 4009). WS-43g2a merged dark (`a95d58d09`, PR 2924,
+task 4070). Its tests for done-when 10 to 13 and the network
 half of 5 pass. `sandbox_egress_enabled` stays off. WS-43g2b and WS-43g3 are
 not built.
 

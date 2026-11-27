@@ -921,3 +921,35 @@ key that the file gained after the start stays dormant until a restart.
 
 The reload covers the gateway only. The workbench, the agent edge and the
 customer console still read their flags at start.
+
+## Flip with the tool, not by hand
+
+Task 4086. Run `scripts/flag_flip.sh` on the box as `acb`, from `/opt/acb/app`:
+
+    bash scripts/flag_flip.sh TOOL_PACKS_ORGS --add <org id> --task <n>
+    bash scripts/flag_flip.sh DECIDE_FEATURE_MODES --add email.cold_check=shadow --task <n>
+    bash scripts/flag_flip.sh CRM_ORGS --off --task <n> --dry-run
+
+The tool refuses a name that is not in `acb_common/flag_registry.py`. It
+refuses a flag in `OWNER_ONLY_FLAGS` without `--owner-approved <answer id>`.
+`--off` and `--remove` need no answer id, because closing a flag is the safe
+way. Each refusal comes before any write.
+
+The tool takes the deploy lock, because a release writes `.env` too. It writes
+each env file in place, so the file keeps its inode. It writes the root `.env`.
+For a flag in `EDGE_FLAGS`, it also writes `apps/services/agent_edge/.env`,
+because the edge reads only that file.
+
+Then the tool sends the SIGHUP above, and reads the gateway log after that
+point. When the root `.env` changed, the `flags.reloaded` line must name the
+key. When it did not change, a line that applies nothing proves that the
+gateway loaded this value, at its start or at its last reload. For an edge flag, the tool restarts
+`acb-agent-edge` when its process runs another value, and checks the new
+process.
+
+So the tool also repairs a hand edit. Run it with the value that the files
+already hold. It then makes each service run that value. The chat-turn smoke
+runs after the tool frees the deploy lock.
+
+The tool prints the rollback commands. It appends one line to
+`/opt/acb/acb-flag-flips.log`. Fence: `tests/unit/test_flag_flip.py`.
