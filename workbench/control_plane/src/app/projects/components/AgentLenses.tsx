@@ -28,6 +28,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 
 import { agentMapApi, questionsApi } from "../lib/api";
 import { QUESTIONS_COPY } from "../lib/agentQuestions";
+import { type MapPrefs, readPrefs, writePrefs } from "../lib/agentMapPrefs";
 import { type AgentMap, type AgentMapRead, MAP_RESPONSE_MARK, MAP_TRUNCATED_COPY } from "../lib/agentMap";
 import { type GraphNode, type OpenSubs, ROOT_ID } from "../lib/agentGraph";
 import { type LensSession, type LensState, buildLensModel, lensIcon, matchesFind, subRows } from "../lib/agentLenses";
@@ -62,6 +63,7 @@ const ME_VALUE = "me";
 export const FIND_LABEL = "Find a session, task or subagent";
 export const NEEDS_YOU = "Needs you";
 export const NO_AGENT_OF_YOURS = "No agent of yours is here now.";
+export const NO_AGENT_WORKS = "No agent works now.";
 /** The performance mark and measure of the first drawn map (AMR-4, AMR-5). */
 export const MAP_DRAWN_MARK = "agents-view:map-drawn";
 export const MAP_MEASURE = "agents-view:first-map";
@@ -243,16 +245,36 @@ export function AgentLenses({
   );
   const openSession = useCallback((s: LensSession) => setSelection({ kind: "session", id: s.id }), []);
   const mine = (me ?? "").trim().toLowerCase();
+  // Decision G5: the People choice and Active or All come back for each member.
+  const restored = useRef<string | null>(null);
+  useEffect(() => {
+    if (!mine || restored.current === mine) return;
+    restored.current = mine;
+    const prefs = readPrefs(mine);
+    setPerson(prefs.person);
+    setMode(prefs.mode);
+  }, [mine]);
+  const keep = useCallback(
+    (next: MapPrefs) => {
+      setPerson(next.person);
+      setMode(next.mode);
+      if (mine) writePrefs(mine, next);
+    },
+    [mine],
+  );
   /** The address of the scope: "" for everyone. "Me" is the address of the viewer. */
   // With no address, "Me" matches nobody. It never reads as everyone.
+  // A kept person that left the map reads as everyone.
+  const known = person === "" || person === ME_VALUE || (model?.people.some((p) => p.person === person) ?? false);
+  const choice = known ? person : "";
   const scope =
-    person === ME_VALUE
+    choice === ME_VALUE
       ? (model?.people.find((p) => p.person.toLowerCase() === mine)?.person ?? (mine || ME_VALUE))
-      : person;
+      : choice;
   const selected = selection?.kind === "session" ? selection.id : null;
   const options = useMemo(
-    () => ({ ...view, mode, person: scope, find, nameOf, pin: selected }),
-    [view, mode, scope, find, nameOf, selected],
+    () => ({ ...view, mode, person: scope, find, nameOf, me: mine, pin: selected }),
+    [view, mode, scope, find, nameOf, mine, selected],
   );
 
   const stops = useMemo(() => (model ? questionStops(model, questions.order) : []), [model, questions.order]);
@@ -422,9 +444,12 @@ export function AgentLenses({
   }
 
   const inScope = scope ? model.sessions.filter((s) => s.person === scope) : model.sessions;
+  // Decision G6: under Active with no active agent, say so and offer them all.
+  const idle =
+    mode === "active" && !find.trim() && selected === null && inScope.length > 0 && !inScope.some(isActive);
   const emptyWords =
     inScope.length === 0
-      ? person === ME_VALUE
+      ? choice === ME_VALUE
         ? NO_AGENT_OF_YOURS
         : NO_MATCH_COPY
       : find.trim() && !inScope.some((s) => matchesFind(s, find, nameOf(s.person)))
@@ -445,10 +470,10 @@ export function AgentLenses({
             <SelectButton
               label={PEOPLE_LABEL}
               widthClass="w-36 @max-[36rem]:w-28"
-              value={person}
+              value={choice}
               defaultValue=""
               onChange={(who) => {
-                setPerson(who);
+                keep({ person: who, mode });
                 setView((old) => ({ ...old, latest: null, window: null }));
                 setSelection(null);
               }}
@@ -462,7 +487,7 @@ export function AgentLenses({
               modes={MODES}
               mode={mode}
               onPick={(next) => {
-                setMode(next);
+                keep({ person: choice, mode: next });
                 setView((old) => ({ ...old, window: null }));
               }}
               label={MODE_SWITCH_LABEL}
@@ -507,6 +532,13 @@ export function AgentLenses({
           <p data-agent-lens-empty="" className="p-4 text-sm text-muted-foreground">
             {emptyWords}
           </p>
+        ) : idle ? (
+          <div data-agent-lens-idle="" className="flex flex-col items-start gap-2 p-4">
+            <p className="text-sm text-foreground">{NO_AGENT_WORKS}</p>
+            <Button variant="secondary" size="sm" onClick={() => keep({ person: choice, mode: "all" })}>
+              Show all {inScope.length}
+            </Button>
+          </div>
         ) : (
           <AgentGraphLens
             model={model}

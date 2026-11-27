@@ -145,6 +145,7 @@ export function GraphCard({ data }: { data: NodeData }) {
         subsOpen={subsOpen}
         onToggleSubs={() => onToggleSubs(node.session.id)}
         namesOnly={namesOnly}
+        onMap
       />
     );
   }
@@ -363,6 +364,8 @@ function FlowNode({ data }: NodeProps<Node<NodeData>>) {
 }
 
 const NODE_TYPES = { agentGraph: FlowNode };
+/** The move of a node to its new place (decision G4). */
+export const NODE_MOVE = "transition-transform duration-200 ease-out motion-reduce:transition-none";
 const MIN_ZOOM = 0.3;
 const MAX_ZOOM = 2;
 /** The first view never shrinks the cards below this: a tall graph starts at its top. */
@@ -455,19 +458,23 @@ export function panToShow(
 
 function KeepSelected({ box, graph, selectedId }: { box: React.RefObject<HTMLDivElement | null>; graph: Graph; selectedId: string | null }) {
   const { getViewport, setViewport } = useReactFlow();
-  const node = graph.nodes.find((n) => n.id === selectedId) ?? null;
-  const x = node?.x;
-  const w = node?.w;
+  const latest = useRef(graph);
   useEffect(() => {
-    if (x === undefined || w === undefined) return;
+    latest.current = graph;
+  }, [graph]);
+  // Only a new selection pans. A refresh never moves the view (decision G4).
+  useEffect(() => {
+    if (selectedId === null) return undefined;
     // The wait lets the dock take its width first.
     const timer = window.setTimeout(() => {
+      const node = latest.current.nodes.find((n) => n.id === selectedId);
+      if (!node) return;
       const view = getViewport();
-      const next = panToShow({ x, w }, view, box.current?.getBoundingClientRect().width ?? 0);
+      const next = panToShow(node, view, box.current?.getBoundingClientRect().width ?? 0);
       if (next !== null) void setViewport({ ...view, x: next });
     }, 80);
     return () => window.clearTimeout(timer);
-  }, [box, selectedId, x, w, getViewport, setViewport]);
+  }, [box, selectedId, getViewport, setViewport]);
   return null;
 }
 
@@ -493,42 +500,43 @@ function Controls({ legend, onLegend }: { legend: boolean; onLegend: () => void 
   );
 }
 
-const LEGEND_EDGES: ReadonlyArray<[string, string]> = [
-  ["live", "Working"],
-  ["steady", "Waiting"],
-  ["warning", "Needs you"],
-  ["destructive", "Failed"],
-  ["breathing", "Idle"],
-];
-const LEGEND_LINES: ReadonlyArray<[GraphEdgeKind, string]> = [
-  ["dispatch", "Dispatched"],
+const LEGEND_EDGES: ReadonlyArray<[LensState, string]> = [
+  ["you", "warning"],
+  ["failed", "destructive"],
+  ["working", "live"],
+  ["waiting", "steady"],
+  ["idle", "breathing"],
 ];
 
 export function Legend() {
   return (
-    <Panel position="bottom-right" className="!mb-16 sm:!mb-4">
+    <Panel position="bottom-left" className="!mb-16">
       <dl
         aria-label={LEGEND_LABEL}
         className="grid grid-cols-[1.75rem_auto] items-center gap-x-2 gap-y-1 rounded-xl border border-border bg-card px-3 py-2 text-[11px] text-muted-foreground shadow-md"
       >
-        {LEGEND_EDGES.map(([edge, word]) => (
-          <div key={edge} className="contents">
+        {LEGEND_EDGES.map(([state, edge]) => (
+          <div key={state} className="contents">
             <dt data-agent-edge={edge} aria-hidden className="h-4 w-6 !rounded">
               <span className="relative z-[1] block h-full w-full rounded-sm bg-card" />
             </dt>
-            <dd>{word}</dd>
+            <dd>{lensWord(state)}</dd>
           </div>
         ))}
-        {LEGEND_LINES.map(([kind, word]) => (
-          <div key={kind} className="contents">
-            <dt aria-hidden>
-              <svg width="28" height="8">
-                <path d="M1,4 H27" fill="none" stroke={LINE[kind]} strokeWidth={1.5} />
-              </svg>
-            </dt>
-            <dd>{word}</dd>
-          </div>
-        ))}
+        <div className="contents">
+          <dt aria-hidden className="flex justify-center">
+            <Square state="done" />
+          </dt>
+          <dd>{lensWord("done")}</dd>
+        </div>
+        <div className="contents">
+          <dt aria-hidden>
+            <svg width="28" height="8">
+              <path d="M1,4 H27" fill="none" stroke={LINE.dispatch} strokeWidth={1.5} />
+            </svg>
+          </dt>
+          <dd>Dispatched</dd>
+        </div>
       </dl>
     </Panel>
   );
@@ -591,6 +599,8 @@ export function AgentGraphLens({ model, options, selectedId, nowMs, subs = null,
         position: { x: node.x, y: node.y },
         width: node.w,
         height: node.h,
+        // Decision G4: a move takes 200 ms, and none with reduced motion.
+        className: NODE_MOVE,
         data: {
           node,
           selected: selectedId === node.id,
@@ -647,6 +657,13 @@ export function AgentGraphLens({ model, options, selectedId, nowMs, subs = null,
       data-agent-names-only={namesOnly ? "" : undefined}
       className="min-h-0 flex-1"
       style={{ minHeight: 360 }}
+      onKeyDown={(e) => {
+        // Escape closes the legend first, and keeps the details open.
+        if (e.key === "Escape" && legend) {
+          e.preventDefault();
+          setLegend(false);
+        }
+      }}
     >
       <ReactFlowProvider>
         <ReactFlow

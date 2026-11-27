@@ -18,6 +18,8 @@ import {
   type SubCounts,
   DEFAULT_STATES,
   LENS_STATES,
+  compareSessions,
+  countStates,
   matchesFind,
   personSessions,
 } from "./agentLenses";
@@ -125,6 +127,8 @@ export interface PlanOptions extends MapView {
   /** A find shows each match, whatever the switch, and ignores the folds. */
   find: string;
   nameOf: (email: string) => string;
+  /** The address of the viewer. Their column comes first (decision G4). */
+  me?: string;
   /** The selected session. It always draws. */
   pin: string | null;
 }
@@ -196,7 +200,8 @@ function draftOf(person: LensPerson, options: PlanOptions): Draft | null {
   return {
     person: person.person,
     sessions: matches,
-    ranked: rankSessions(wanted),
+    // By state, then name. Never by the last event, so an activity moves no card.
+    ranked: [...wanted].sort(compareSessions),
     holder,
     cards: wanted.length,
     open,
@@ -204,87 +209,157 @@ function draftOf(person: LensPerson, options: PlanOptions): Draft | null {
   };
 }
 
-/** Draws one person in at most `quota` cards, and the rest as state nodes. */
-function boundPerson(draft: Draft, quota: number, options: PlanOptions): { shown: Set<string>; buckets: StateNode[] } {
-  const { ranked, holder, person } = draft;
+/** Takes a session and the orchestrator that must draw with it, if both fit under `cap`. */
+function takeInto(shown: Set<string>, draft: Draft, s: LensSession, cap: number): boolean {
+  const need = [s.id, draft.holder.get(s.id)?.id].filter((id): id is string => id !== undefined && !shown.has(id));
+  if (shown.size + need.length > cap) return false;
+  need.forEach((id) => shown.add(id));
+  return true;
+}
+
+/** The cards that a person keeps while one of their state nodes is open. */
+function reducedCards(draft: Draft, quota: number, pin: string | null): Set<string> {
   const shown = new Set<string>();
-  /** Takes a session and its orchestrator, if both fit under `cap`. */
-  const take = (s: LensSession, cap: number): boolean => {
-    const need = [s.id, holder.get(s.id)?.id].filter((id): id is string => id !== undefined && !shown.has(id));
-    if (shown.size + need.length > cap) return false;
-    need.forEach((id) => shown.add(id));
-    return true;
-  };
-  if (draft.cards <= quota) {
-    ranked.forEach((s) => take(s, quota));
-    return { shown, buckets: [] };
-  }
-  const pinned = ranked.find((s) => s.id === options.pin);
-  if (pinned) take(pinned, quota);
+  const pinned = draft.ranked.find((s) => s.id === pin);
+  if (pinned) takeInto(shown, draft, pinned, quota);
   const base = Math.max(quota - WINDOW_ROOM, 0);
-  ranked.forEach((s) => take(s, base));
-  /** The sessions of each state outside the cards that an open state node keeps. */
-  const reduced = new Set(shown);
-  const rest = (state: LensState) => ranked.filter((s) => s.state === state && !reduced.has(s.id));
-  const window = options.window?.person === person ? options.window : null;
-  let nextOfWindow = 0;
+  draft.ranked.forEach((s) => takeInto(shown, draft, s, base));
+  return shown;
+}
+
+/** The person that the member opened, in at most `quota` cards. An open state node walks. */
+function boundLatest(draft: Draft, quota: number, options: PlanOptions): { shown: Set<string>; nexts: Map<LensState, number> } {
+  const reduced = reducedCards(draft, quota, options.pin);
+  const rest = (state: LensState) => draft.ranked.filter((s) => s.state === state && !reduced.has(s.id));
+  const shown = new Set(reduced);
+  const nexts = new Map<LensState, number>();
+  const window = options.window?.person === draft.person ? options.window : null;
   if (window) {
     const list = rest(window.state);
     let at = window.start < list.length ? window.start : 0;
-    while (at < list.length && take(list[at], quota)) at += 1;
-    nextOfWindow = at < list.length ? at : 0;
+    while (at < list.length && takeInto(shown, draft, list[at], quota)) at += 1;
+    nexts.set(window.state, at < list.length ? at : 0);
   } else {
-    ranked.forEach((s) => take(s, quota));
-  }
-  const buckets = LENS_STATES.flatMap((state): StateNode[] => {
-    const sessions = ranked.filter((s) => s.state === state && !shown.has(s.id));
-    if (sessions.length === 0) return [];
-    if (window) return [{ state, sessions, next: window.state === state ? nextOfWindow : 0 }];
+    draft.ranked.forEach((s) => takeInto(shown, draft, s, quota));
     // The first click skips the cards of the state that show already.
-    const list = rest(state);
-    const seen = list.findIndex((s) => !shown.has(s.id));
-    return [{ state, sessions, next: Math.max(seen, 0) }];
-  });
-  return { shown, buckets };
+    for (const state of LENS_STATES) nexts.set(state, Math.max(rest(state).findIndex((s) => !shown.has(s.id)), 0));
+  }
+  return { shown, nexts };
+}
+
+const URGENT: readonly LensState[] = ["you", "failed"];
+
+/**
+ * Which cards draw when the open people want more than `CARDS_MAX` (decision
+ * G3). Urgency wins: the selected agent, then each Needs you and Failed agent,
+ * then the person that the member opened, then the rest by state. So Done folds
+ * first, then Idle, Waiting and Working. Inside one state, the people with the
+ * most agents fold first.
+ */
+function share(open: readonly Draft[], options: PlanOptions): Map<string, { shown: Set<string>; nexts: Map<LensState, number> }> {
+  const cards = new Map(open.map((d) => [d.person, new Set<string>()]));
+  let used = 0;
+  const take = (d: Draft, s: LensSession, cap: number) => {
+    const mine = cards.get(d.person)!;
+    const before = mine.size;
+    takeInto(mine, d, s, before + Math.max(cap - used, 0));
+    used += mine.size - before;
+  };
+  const bySize = [...open].sort((a, b) => a.cards - b.cards || a.person.localeCompare(b.person));
+  const latest = open.find((d) => d.person === options.latest) ?? null;
+  for (const d of open) {
+    const pinned = d.ranked.find((s) => s.id === options.pin);
+    if (pinned) take(d, pinned, CARDS_MAX);
+  }
+  /** The room that the click of the member keeps for the person they opened. */
+  const kept = latest ? Math.min(WINDOW_ROOM, latest.cards) : 0;
+  if (latest) for (const s of latest.ranked) if (URGENT.includes(s.state)) take(latest, s, CARDS_MAX);
+  const own = () => (latest ? cards.get(latest.person)!.size : 0);
+  for (const state of URGENT) {
+    for (const d of bySize) {
+      if (d === latest) continue;
+      for (const s of d.ranked) if (s.state === state) take(d, s, CARDS_MAX - Math.max(kept - own(), 0));
+    }
+  }
+  const nexts = new Map<string, Map<LensState, number>>();
+  if (latest) {
+    const quota = CARDS_MAX - (used - own());
+    const bound = boundLatest(latest, quota, options);
+    used += bound.shown.size - own();
+    cards.set(latest.person, bound.shown);
+    nexts.set(latest.person, bound.nexts);
+  }
+  for (const state of LENS_STATES) {
+    for (const d of bySize) {
+      if (d === latest) continue;
+      for (const s of d.ranked) if (s.state === state) take(d, s, CARDS_MAX);
+    }
+  }
+  // Where a click on a state node of another person starts: after the cards that show now.
+  for (const d of open) {
+    if (d === latest) continue;
+    const mine = cards.get(d.person)!;
+    const urgentOfOthers = open
+      .filter((o) => o !== d)
+      .reduce((n, o) => n + o.ranked.filter((s) => URGENT.includes(s.state)).length, 0);
+    const quota = CARDS_MAX - Math.min(urgentOfOthers, CARDS_MAX - Math.min(WINDOW_ROOM, d.cards));
+    const reduced = reducedCards(d, quota, options.pin);
+    nexts.set(
+      d.person,
+      new Map(
+        LENS_STATES.map((state) => {
+          const list = d.ranked.filter((s) => s.state === state && !reduced.has(s.id));
+          return [state, Math.max(list.findIndex((s) => !mine.has(s.id)), 0)];
+        }),
+      ),
+    );
+  }
+  return new Map(open.map((d) => [d.person, { shown: cards.get(d.person)!, nexts: nexts.get(d.person)! }]));
+}
+
+/** The order of the people (decision G4): me, then Needs you, Failed and active counts. */
+function peopleOrder(model: LensModel, me: string): LensPerson[] {
+  const mine = me.trim().toLowerCase();
+  const rank = (p: LensPerson) => {
+    const all = personSessions(p);
+    const counts = countStates(all);
+    return [Number(p.person.toLowerCase() === mine), counts.you, counts.failed, all.filter(isActive).length];
+  };
+  return model.people
+    .map((p) => ({ p, rank: rank(p) }))
+    .sort((a, b) => {
+      for (let i = 0; i < a.rank.length; i += 1) if (a.rank[i] !== b.rank[i]) return b.rank[i] - a.rank[i];
+      return a.p.person.localeCompare(b.p.person);
+    })
+    .map((x) => x.p);
 }
 
 /**
- * Which people are open and which sessions draw (AMR-5). At most `CARDS_MAX`
- * agent cards, orchestrators included. Past that the people with the most
- * agents fold first. The person that the member opened last and the person of
- * the selection stay open, and a person who is still too large folds the rest
- * into one node for each state.
+ * Which people are open and which agents draw (AMR-5). At most `CARDS_MAX`
+ * agent cards, orchestrators included. Past that `share` folds by urgency, and
+ * each state that does not fit draws one state node. A person with no card
+ * left draws as their folded card.
  */
 export function planMap(model: LensModel, options: PlanOptions): PersonPlan[] {
-  const drafts = model.people.flatMap((p) => {
+  const drafts = peopleOrder(model, options.me ?? "").flatMap((p) => {
     if (options.person && p.person !== options.person) return [];
     const draft = draftOf(p, options);
     return draft ? [draft] : [];
   });
-  const pinPerson = options.pin ? (model.byId.get(options.pin)?.person ?? null) : null;
-  const total = () => drafts.reduce((n, d) => n + (d.open ? d.cards : 0), 0);
-  while (total() > CARDS_MAX) {
-    const open = drafts.filter((d) => d.open);
-    const foldable = open
-      .filter((d) => d.person !== options.latest && d.person !== pinPerson)
-      .sort((a, b) => b.cards - a.cards || a.person.localeCompare(b.person));
-    if (open.length < 2 || foldable.length === 0) break;
-    foldable[0].open = false;
-  }
-  const over = total() > CARDS_MAX;
   const open = drafts.filter((d) => d.open);
-  const quotaOf = (draft: Draft): number => {
-    if (!over) return CARDS_MAX;
-    if (open.length < 2) return CARDS_MAX;
-    // Two people stay: the selection keeps its card, and the other one the rest.
-    const pinned = open.find((d) => d.person === pinPerson && d.person !== options.latest) ?? open[1];
-    const kept = Math.min(pinned.cards, 2);
-    return draft === pinned ? kept : CARDS_MAX - kept;
-  };
+  const over = open.reduce((n, d) => n + d.cards, 0) > CARDS_MAX;
+  const shared = over ? share(open, options) : null;
   return drafts.map((draft) => {
     const { person, sessions } = draft;
-    if (!draft.open) return { person, sessions, open: false, shown: new Set<string>(), rest: null, buckets: [] };
-    const { shown, buckets } = boundPerson(draft, quotaOf(draft), options);
+    const mine = shared?.get(person);
+    const shown = mine?.shown ?? new Set(draft.ranked.flatMap((s) => [s.id, ...(draft.holder.has(s.id) ? [draft.holder.get(s.id)!.id] : [])]));
+    if (!draft.open || (draft.cards > 0 && shown.size === 0)) {
+      return { person, sessions, open: false, shown: new Set<string>(), rest: null, buckets: [] };
+    }
+    const buckets = LENS_STATES.flatMap((state): StateNode[] => {
+      const folded = draft.ranked.filter((s) => s.state === state && !shown.has(s.id));
+      return folded.length > 0 ? [{ state, sessions: folded, next: mine?.nexts.get(state) ?? 0 }] : [];
+    });
     const rowsOpen = options.restOpen.has(person);
     const hidden = draft.quiet?.filter((s) => rowsOpen || !shown.has(s.id)).length ?? 0;
     return { person, sessions, open: true, shown, buckets, rest: hidden > 0 ? { count: hidden, open: rowsOpen } : null };

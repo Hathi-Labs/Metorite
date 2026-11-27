@@ -11,7 +11,7 @@ import { buildLensModel } from "../lib/agentLenses";
 import { splitFleet } from "../lib/agentLensesFixtures";
 import { NEW_VIEW } from "../lib/agentScale";
 import { AgentDetails } from "./AgentDetails";
-import { GraphCard } from "./AgentGraphLens";
+import { GraphCard, NODE_MOVE } from "./AgentGraphLens";
 
 const NOW = Date.parse("2026-11-26T12:00:00Z");
 const model = buildLensModel(splitFleet(), new Map(), { email: "ana@x.test" });
@@ -72,8 +72,24 @@ describe("the node cards of the map", () => {
   it("draws the idle or done node", () => {
     expect(text(draw("r:ana@x.test"))).toContain("43 idle or done Show");
   });
-  it("writes another wait on the card of the agent", () => {
-    expect(text(draw("s:lane-2"))).toContain("Waiting on CI · about 4 min");
+  it("writes the wait as a fact of the card (G1, G2)", () => {
+    expect(text(draw("s:lane-2"))).toContain("Waiting · CI · 4 min");
+  });
+  it("draws the name, the task, the age and the machine, then the count at the foot (G2)", () => {
+    const evil = splitFleet();
+    evil.sessions[1] = { ...evil.sessions[1], host: "metorite-home", subagents: { total: 7, working: 2, failed: 0, done: 5, names: [] } };
+    const g = layoutGraph(buildLensModel(evil), { ...NEW_VIEW, mode: "active", person: "", find: "", pin: null, unit: 1, nameOf: (e) => e });
+    const node = g.nodes.find((n) => n.id === "s:lane-1")!;
+    const out = renderToStaticMarkup(createElement(GraphCard, { data: data(node) }));
+    const seen = text(out);
+    const order = ["lane-1", "5m ago", "#7 Task of lane-1", "metorite-home", "7 · 2 working"].map((part) => seen.indexOf(part));
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(out.indexOf("data-agent-card-foot")).toBeLessThan(out.lastIndexOf("data-agent-sub-count"));
+  });
+  it("moves a node in 200 ms, and not with reduced motion (G4)", () => {
+    expect(NODE_MOVE).toContain("duration-200");
+    expect(NODE_MOVE).toContain("motion-reduce:transition-none");
   });
   it("gives each node that folds one chevron", () => {
     for (const id of ["root", "p:ana@x.test", "p:ben@x.test", "s:boss"]) {

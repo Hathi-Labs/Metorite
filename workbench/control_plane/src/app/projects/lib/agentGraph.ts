@@ -15,10 +15,12 @@
  *  - `dispatch` neutral, with an arrow: one agent dispatched another.
  */
 import {
+  type LensGroup,
   type LensModel,
   type LensSession,
   type LensState,
   type SubRow,
+  LENS_STATES,
   matchesFind,
   membersOf,
 } from "./agentLenses";
@@ -72,10 +74,10 @@ export interface OpenSubs {
   failed?: boolean;
 }
 
-/** The columns, left to right. With no orchestrator drawn, the agents take its column. */
+/** The four columns, left to right. They never move, so a refresh keeps each node in place. */
 export const GRAPH_X = { root: 0, person: 206, orch: 456, session: 716 } as const;
 export const GRAPH_W = { root: 170, person: 214, orch: 224, session: 280, sub: 240 } as const;
-export const GRAPH_H = { root: 96, person: 72, card: 116, orch: 76, session: 60, row: 40, sub: 30 } as const;
+export const GRAPH_H = { root: 96, person: 72, card: 116, orch: 76, session: 82, row: 40, sub: 30 } as const;
 export const ROOT_ID = "root";
 /** The space between the agents and the next column. */
 export const COLUMN_GAP = 40;
@@ -121,6 +123,19 @@ function placeSubs(
 type DistributiveOmit<T, K extends keyof never> = T extends unknown ? Omit<T, K> : never;
 
 /**
+ * The groups of a person (decision G4): the orchestrators by urgency, then the
+ * oldest first. The agents with no orchestrator come last. Only a change of a
+ * state moves a group.
+ */
+export function orderGroups(groups: readonly LensGroup[]): LensGroup[] {
+  const urgency = (g: LensGroup) => Math.min(...membersOf(g).map((s) => LENS_STATES.indexOf(s.state)));
+  return [...groups].sort((a, b) => {
+    if (!a.orch || !b.orch) return Number(!a.orch) - Number(!b.orch);
+    return urgency(a) - urgency(b) || b.orch.startedAge - a.orch.startedAge || a.key.localeCompare(b.key);
+  });
+}
+
+/**
  * The one map of the Agents view (AMR-5): the scope, each person, their
  * orchestrators, their agents and the sub-agents of the one open agent.
  * `planMap` bounds the cards. A fold, a state node and the "idle or done" node
@@ -143,11 +158,8 @@ export function layoutGraph(model: LensModel, options: GraphOptions): Graph {
   if (inScope.length === 0) return graph;
   const rootFolded = !find.trim() && folds.get(ROOT_ID) === false;
   const plans = planMap(model, options);
-  const orchestrated = plans.some((p) =>
-    model.people.find((x) => x.person === p.person)?.groups.some((g) => g.orch && p.shown.has(g.orch.id)),
-  );
   const orchX = GRAPH_X.orch;
-  const sessionX = orchestrated ? GRAPH_X.session : GRAPH_X.orch;
+  const sessionX = GRAPH_X.session;
   const subX = (sessionX + GRAPH_W.session + COLUMN_GAP) * u;
   /** Session id to the node that draws it, or that stands for it. */
   const rep = new Map<string, string>();
@@ -183,7 +195,7 @@ export function layoutGraph(model: LensModel, options: GraphOptions): Graph {
     };
 
     if (plan.open) {
-      for (const group of person.groups) {
+      for (const group of orderGroups(person.groups)) {
         const orch = group.orch;
         const lanes = group.sessions.filter((s) => plan.shown.has(s.id));
         if (!orch || !plan.shown.has(orch.id)) {

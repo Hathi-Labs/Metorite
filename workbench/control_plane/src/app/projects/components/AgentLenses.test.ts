@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { buildLensModel } from "../lib/agentLenses";
 import { BEN, fleet, mapOf, run, session, splitFleet, workingFleet } from "../lib/agentLensesFixtures";
 import { AgentDetails, firstRun } from "./AgentDetails";
-import { AgentLenses, type AgentLensesProps, NO_AGENT_OF_YOURS } from "./AgentLenses";
+import { AgentLenses, type AgentLensesProps, NO_AGENT_OF_YOURS, NO_AGENT_WORKS } from "./AgentLenses";
 import { Legend, panToShow, startViewport } from "./AgentGraphLens";
 import { AgentsPhone, type AgentsPhoneProps } from "./AgentsPhone";
 
@@ -74,6 +74,7 @@ describe("the toolbar (AMR-5)", () => {
   it("opens the legend from one button, and keeps it shut at the start", () => {
     const source = readFileSync(new URL("./AgentGraphLens.tsx", import.meta.url), "utf-8");
     expect(source).toContain("{legend ? <Legend /> : null}");
+    expect(source).toContain('e.key === "Escape" && legend');
     expect(source).toContain("useState(false);\n  const [hover");
     expect(typeof Legend).toBe("function");
   });
@@ -118,6 +119,21 @@ describe("the map on the canvas", () => {
     lenses({ read: { kind: "ready", map: workingFleet(500) } });
     // A server render. The browser time (under 1 s) is in the AMR-5 captures.
     expect(performance.now() - from).toBeLessThan(2000);
+  });
+});
+
+describe("the empty state (decision G6)", () => {
+  const quiet = mapOf([session("a", { state: "quiet" }), session("b", { state: "done" })]);
+  it("says that no agent works now, and offers them all", () => {
+    const out = lenses({ read: { kind: "ready", map: quiet } });
+    expect(out).toContain(NO_AGENT_WORKS);
+    expect(out.replace(/<[^>]*>|<!-- -->/g, "")).toContain("Show all 2");
+    expect(out).not.toContain('data-agent-graph=""');
+  });
+  it("draws the map under All", () => {
+    const out = lenses({ read: { kind: "ready", map: quiet }, initialMode: "all" });
+    expect(out).not.toContain(NO_AGENT_WORKS);
+    expect(out).toContain('data-agent-graph=""');
   });
 });
 

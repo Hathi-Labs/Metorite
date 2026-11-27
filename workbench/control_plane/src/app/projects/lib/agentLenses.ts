@@ -152,6 +152,11 @@ export interface LensSession {
   name: string;
   state: LensState;
   lastAt: string | null;
+  /**
+   * Seconds since the oldest listed run started, or 0. The map orders the
+   * orchestrators by it (decision G4). The read holds no start of a session.
+   */
+  startedAge: number;
   client: string;
   host: MapSession["host"];
   hostKind: MapSession["host_kind"];
@@ -283,6 +288,7 @@ export function buildLensModel(
       name: s.name,
       state,
       lastAt: s.last_at,
+      startedAge: Math.max(0, ...runs.map((r) => r.age ?? 0)),
       client: s.client,
       host: s.host,
       hostKind: s.host_kind,
@@ -416,6 +422,40 @@ export function sessionLine(s: LensSession, nowMs: number): string {
     if (s.quietCount === 0) return "No open task";
     return s.quietCount === 1 ? "1 quiet run" : `${s.quietCount} quiet runs`;
   }
+  return run.task_number === null ? run.title : `#${run.task_number} ${run.title}`;
+}
+
+/** The short names of a wait, on a card of the map. */
+const WAIT_SHORT: Record<AgentWaitingOn, string> = {
+  ci: "CI",
+  review: "Review",
+  deploy: "Deploy",
+  member: "A person",
+  agent: "An agent",
+};
+
+/**
+ * The wait fact of a map card (decision G1): "Needs you", "Waiting · CI ·
+ * 25 min", the member that another session asks, or "Failed". `null` for a
+ * session that waits on nothing.
+ */
+export function cardFact(s: LensSession, nowMs: number): string | null {
+  if (s.state === "you" || s.state === "failed") return lensWord(s.state);
+  if (s.state !== "waiting") return null;
+  if (s.askedOf) return s.askedOf;
+  const parts = [lensWord("waiting")];
+  if (s.wait) {
+    parts.push(WAIT_SHORT[s.wait.on]);
+    const until = Date.parse(s.wait.until ?? "");
+    if (!Number.isNaN(until)) parts.push(`${Math.max(1, Math.ceil((until - nowMs) / 60_000))} min`);
+  }
+  return parts.join(" · ");
+}
+
+/** What a session does now: the number and the title of its task, else its latest line. */
+export function workLine(s: LensSession, nowMs: number): string {
+  const run = s.runs[0];
+  if (!run) return sessionLine(s, nowMs);
   return run.task_number === null ? run.title : `#${run.task_number} ${run.title}`;
 }
 

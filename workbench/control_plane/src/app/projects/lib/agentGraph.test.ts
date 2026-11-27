@@ -50,9 +50,9 @@ describe("the map", () => {
     expectNoOverlap(graph);
     expectWholeLines(graph);
   });
-  it("gives the agents the orchestrator column when no orchestrator draws", () => {
+  it("keeps the four columns when no orchestrator draws, so a refresh moves no node", () => {
     const g = layoutGraph(buildLensModel(mapOf([session("a")])), options());
-    expect(node("s:a", g)!.x).toBe(GRAPH_X.orch);
+    expect(node("s:a", g)!.x).toBe(GRAPH_X.session);
   });
   it("draws the dispatch lines, across people too", () => {
     expect(pairs()).toEqual(
@@ -203,20 +203,24 @@ describe("the bound of the map", () => {
     expectNoOverlap(g);
     expectWholeLines(g);
   });
-  it("folds the person with the most agents first", () => {
+  it("folds the people with the most agents first, inside one urgency (G3)", () => {
     const g = layoutGraph(of({ ana: 30, ben: 20, cy: 5 }), options());
-    expect(kind(g, "person").map((n) => [n.person.slice(0, 3), n.folded]).sort()).toEqual([
+    const of_ = (who: string) => cards(g).filter((id) => id.startsWith(who)).length;
+    expect([of_("ana"), of_("ben"), of_("cy")]).toEqual([15, 20, 5]);
+    expect(kind(g, "bucket").map((b) => [b.person.slice(0, 3), b.sessions.length])).toEqual([["ana", 15]]);
+  });
+  it("draws a person with no card left as their folded card", () => {
+    const g = layoutGraph(of({ ana: 60, ben: 40 }), options());
+    expect(kind(g, "person").map((n) => [n.person.slice(0, 3), n.folded])).toEqual([
       ["ana", true],
       ["ben", false],
-      ["cy@", false],
     ]);
-    expect(cards(g)).toHaveLength(25);
-    expect(kind(g, "bucket")).toHaveLength(0);
   });
   it("keeps the person that the member opened, and folds another", () => {
     const view = foldView(NEW_VIEW, "p:ana@x.test", true, "ana@x.test");
-    const g = layoutGraph(of({ ana: 30, ben: 20 }), options({ ...view }));
-    expect(kind(g, "person").map((n) => n.folded)).toEqual([false, true]);
+    const g = layoutGraph(of({ ana: 60, ben: 40 }), options({ ...view }));
+    expect(cards(g).filter((id) => id.startsWith("ana")).length).toBe(CARDS_MAX);
+    expect(kind(g, "person").find((n) => n.person === "ben@x.test")!.folded).toBe(true);
   });
   it("draws the state node of AMR-4 for one person past 40", () => {
     const g = layoutGraph(of({ ana: 55 }), options());
@@ -315,6 +319,94 @@ describe("the layout with lines between two agents", () => {
     expect(g.edges.find((e) => e.to === "s:l3")).toMatchObject({ from: "s:l2", side: true, kind: "dispatch" });
     expectNoOverlap(g);
     expectWholeLines(g);
+  });
+});
+
+describe("urgency wins every fold (decision G3)", () => {
+  const states = (list: Array<[string, string, string]>) =>
+    buildLensModel(
+      mapOf(list.map(([id, who, state]) => session(id, { person: `${who}@x.test`, state }))),
+      new Map(),
+      { email: "ana@x.test" },
+    );
+  const many = (who: string, n: number, state: string) =>
+    Array.from({ length: n }, (_, i): [string, string, string] => [`${who}-${state}-${i}`, who, state]);
+  it("draws the one agent that needs you among 60", () => {
+    const m = states([...many("ana", 59, "working"), ["ask", "ana", "waiting_on_person"]]);
+    expect(cards(layoutGraph(m, options()))).toContain("ask");
+  });
+  it("draws each Needs you and Failed agent of every person while the cap has room", () => {
+    const m = states([
+      ...many("ana", 100, "working"),
+      ...many("ben", 6, "failed"),
+      ...many("cy", 70, "waiting"),
+      ...many("cy", 3, "failed"),
+    ]);
+    const drawn = cards(layoutGraph(m, options()));
+    expect(drawn.filter((id) => id.includes("failed"))).toHaveLength(9);
+    expect(drawn).toHaveLength(CARDS_MAX);
+    // Working folds last: Waiting goes first.
+    expect(drawn.filter((id) => id.includes("waiting"))).toHaveLength(0);
+  });
+  it("folds Done first, then Idle, then Waiting", () => {
+    const m = states([
+      ...many("ana", 20, "working"),
+      ...many("ana", 15, "waiting"),
+      ...many("ana", 10, "quiet"),
+      ...many("ben", 10, "done"),
+      ...many("ben", 1, "working"),
+    ]);
+    const drawn = cards(layoutGraph(m, options({ mode: "all" })));
+    const n = (word: string) => drawn.filter((id) => id.includes(word)).length;
+    expect([n("working"), n("waiting"), n("quiet"), n("done")]).toEqual([21, 15, 4, 0]);
+  });
+});
+
+describe("a calm, stable map (decision G4)", () => {
+  const at = (g: Graph) => g.nodes.map((n) => [n.id, n.x, n.y, n.w, n.h]).sort();
+  const base = () => splitFleet();
+  it("keeps every node in place over new activity lines with no change of state", () => {
+    for (const mode of ["active", "all"] as const) {
+      const first = layoutGraph(buildLensModel(base()), options({ mode }));
+      const next = base();
+      next.sessions = next.sessions.map((s, i) => ({
+        ...s,
+        last_at: new Date(Date.parse("2026-11-26T11:00:00Z") + i * 7000).toISOString(),
+        subagents: { total: i % 3, working: 0, failed: 0, done: 0, names: [] },
+      }));
+      next.runs = next.runs.map((r) => ({ ...r, title: `${r.title}, a new line`, age: (r.age ?? 0) + 30 }));
+      expect(at(layoutGraph(buildLensModel(next), options({ mode })))).toEqual(at(first));
+    }
+  });
+  it("puts me first, then the people by Needs you, Failed and active counts", () => {
+    const m = buildLensModel(
+      mapOf([
+        session("a1", { person: "ana@x.test" }),
+        session("a2", { person: "ana@x.test" }),
+        session("b1", { person: "ben@x.test", state: "failed" }),
+        session("c1", { person: "cy@x.test" }),
+        session("z1", { person: "zed@x.test", state: "quiet" }),
+      ]),
+      new Map(),
+      { email: "cy@x.test" },
+    );
+    const people = kind(layoutGraph(m, options({ me: "cy@x.test" })), "person").map((n) => n.person.split("@")[0]);
+    expect(people).toEqual(["cy", "ben", "ana", "zed"]);
+  });
+  it("orders the orchestrators by urgency, then by their start", () => {
+    const m = buildLensModel(
+      mapOf(
+        [session("young"), session("old"), session("hot"), session("y1"), session("o1"), session("h1", { state: "failed" })],
+        [run("ry", "young", { age: 10 }), run("ro", "old", { age: 900 }), run("rh", "hot", { age: 1 })],
+        [
+          { from: "young", to: "y1" },
+          { from: "old", to: "o1" },
+          { from: "hot", to: "h1" },
+        ],
+      ),
+    );
+    const orchs = kind(layoutGraph(m, options()), "orch").sort((a, b) => a.y - b.y).map((n) => n.session.id);
+    expect(orchs).toEqual(["hot", "old", "young"]);
   });
 });
 

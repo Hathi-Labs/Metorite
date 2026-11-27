@@ -1,7 +1,10 @@
 "use client";
 
 /**
- * The Agents view · the card of one session (WS-MCP AMR-1).
+ * The Agents view · the card of one session (WS-MCP AMR-1 and AMR-5).
+ *
+ * AMR-5 (decision G2): the map draws `onMap`. The phone keeps the card of two
+ * lines.
  *
  * AMR-4: a session with sub-agents says how many, on its second line, in the
  * place of the machine. The count takes a short form, so the task or the
@@ -23,6 +26,7 @@ import {
   type LensSession,
   type LensState,
   type SubCounts,
+  cardFact,
   countWords,
   lensChip,
   lensEdge,
@@ -31,6 +35,7 @@ import {
   machineWord,
   sessionLine,
   subWords,
+  workLine,
 } from "../lib/agentLenses";
 
 export const STATE_PILL = "inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-px text-[11px] font-medium";
@@ -96,6 +101,7 @@ export function SessionCard({
   subsOpen = false,
   onToggleSubs,
   namesOnly = false,
+  onMap = false,
 }: {
   session: LensSession;
   nowMs: number;
@@ -107,6 +113,8 @@ export function SessionCard({
   onToggleSubs?: () => void;
   /** AMR-4: the graph under 60 % zoom shows the name only. */
   namesOnly?: boolean;
+  /** AMR-5 (decision G2): the card of the map, with the task, the machine and a foot. */
+  onMap?: boolean;
 }) {
   const loud = session.state === "you" || session.state === "waiting" || session.state === "failed";
   const age = relativeTime(session.lastAt, nowMs);
@@ -132,6 +140,8 @@ export function SessionCard({
             <Icon name={lensIcon(session.state)} size={18} className="shrink-0 text-muted-foreground" aria-hidden />
             <span className="min-w-0 truncate text-xl font-semibold">{session.name}</span>
           </span>
+        ) : onMap ? (
+          <MapBody session={session} nowMs={nowMs} age={age} holdCount={toggle !== undefined} />
         ) : (
           <>
             <span className="flex min-w-0 items-center gap-1.5">
@@ -179,13 +189,68 @@ export function SessionCard({
           title={subWords(session.subs)}
           data-agent-sub-toggle={session.id}
           onClick={toggle}
-          layout={`!absolute bottom-2 right-2.5 z-10 flex ${CHIP} items-center`}
+          layout={`!absolute right-2.5 z-10 flex ${onMap ? "bottom-1.5" : "bottom-2"} ${CHIP} items-center`}
         >
           {/* The open rows turn the icon, so the button takes no room of its own. */}
           <SubShort subs={session.subs} icon={subsOpen ? "ChevronDown" : "GitFork"} />
         </Button>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * The inside of a map card (decision G2). Line 1: the name and the age. Line 2:
+ * what it does now and the machine. The foot: the wait fact and the count of the
+ * sub-agents.
+ */
+function MapBody({
+  session,
+  nowMs,
+  age,
+  holdCount,
+}: {
+  session: LensSession;
+  nowMs: number;
+  age: string;
+  /** The count is a button above the card, so the body only keeps its room. */
+  holdCount: boolean;
+}) {
+  const fact = cardFact(session, nowMs);
+  const subs = session.subs.total > 0;
+  return (
+    <>
+      <span className="flex min-w-0 items-center gap-1.5">
+        <Icon name={lensIcon(session.state)} size={13} className="shrink-0 text-muted-foreground" aria-hidden />
+        <span className="min-w-0 truncate text-sm font-semibold">{session.name}</span>
+        {age ? <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">{age}</span> : null}
+      </span>
+      <span className="flex min-w-0 items-center gap-1.5">
+        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{workLine(session, nowMs)}</span>
+        {session.host ? (
+          <span className="max-w-[40%] shrink-0 truncate rounded bg-secondary px-1 text-[11px] text-muted-foreground" data-agent-machine="">
+            {session.host}
+          </span>
+        ) : null}
+      </span>
+      <span className="flex h-5 min-w-0 items-center gap-1.5" data-agent-card-foot="">
+        {fact ? (
+          <span data-agent-lens-state={session.state} className={`${STATE_PILL} min-w-0 ${lensChip(session.state)}`}>
+            <span className="truncate">{fact}</span>
+          </span>
+        ) : null}
+        {subs ? (
+          <span
+            className={`${CHIP} ml-auto ${holdCount ? "invisible" : ""}`}
+            aria-hidden={holdCount || undefined}
+            title={holdCount ? undefined : subWords(session.subs)}
+            data-agent-sub-count=""
+          >
+            <SubShort subs={session.subs} />
+          </span>
+        ) : null}
+      </span>
+    </>
   );
 }
 

@@ -890,14 +890,20 @@ This replaces some rules of 2026-11-26. They are the Board, Graph and List switc
 - **One view.** The Agents canvas draws one map. The question that it answers: how the work splits across people, their agents and their subagents, and what needs the member.
 - **One toolbar, one row.** People (Everyone, Me, then each person), one switch (Active or All) and Find. "Needs you N" with a step back and next sits at the right, and only when a question waits. It holds no other control.
 - **Active or All.** Active shows Needs you, Failed, Working and Waiting. It is the default. All adds Idle and Done. "Done" is the word of the ended state `completed`. Its look is the key `lens_done` of `statusAccent.ts`. So a `completed` run keeps its gray chip on every other surface. The test `AgentRepairs.test.ts` holds that rule.
-- **The columns.** Left to right: the scope, the person, the orchestrator, the agent (a session) and its subagents. The scope node reads "Everyone" or the person. It counts the agents, the active ones, the ones that need the member and the subagents. Each level shows its own counts. With no orchestrator on the canvas, the agents take its column.
+- **Four columns.** Left to right: the scope, the person, the orchestrator and the agent (a session). The subagents of one open agent add a column. The columns never move.
+- **The counts.** The scope node reads "Everyone" or the person. It counts the agents, the active ones, the ones that need the member and the subagents. Each level shows its own counts.
 - **One chevron.** Each node that holds others folds and unfolds in place. There are no levels. A click on a node opens the details dock.
 - **The start rule.** A person with active work starts open. A person with none starts folded, as a card with the counts and one square for each agent. Under Active, the idle and done agents of an open person fold into one node, "N idle or done". A click opens it.
-- **The lines.** A dispatch line always draws, between people too. It ends on what stands for a hidden agent: a state node, the "idle or done" node, a folded orchestrator or a person card. The line "waits on you" always draws, to the node "You". Another wait is text on the card. No line is invented.
-- **A question of another member (EA3-50).** That session reads "Waiting for" and the member's name. It counts as waiting, and it draws no line to You.
-- **A node.** An agent is the task card of the board, with the agent edge of `lib/agentCardLook.ts`. A layout function places the nodes (`lib/agentGraph.ts`). `@xyflow/react` pans and zooms.
+- **The lines (G1).** A dispatch line always draws, between people too. It ends on what stands for a hidden agent: a state node, the "idle or done" node, a folded orchestrator or a person card. A plain line joins the scope, a person and an orchestrator to what each holds. The map draws no wait line and no "waits on" column.
+- **A wait (G1).** It is a fact of the card: "Needs you", or "Waiting · CI · 25 min". The details dock keeps the full wait.
+- **The card (G2).** Line 1 holds the name and the age. Line 2 holds the task, or the latest line, and the machine. The foot holds the wait fact and the subagent count. The card keeps the look of `agentCardLook` and `statusAccent`, and adds no colour.
+- **A question of another member (EA3-50).** That session reads "Waiting for" and the member's name. It counts as waiting.
+- **The layout.** A pure function places the nodes (`lib/agentGraph.ts`). `@xyflow/react` pans and zooms.
+- **A stable map (G4).** The viewer comes first, then the people by Needs you, Failed and active counts. Inside a person, the orchestrators come by urgency, then by start. The start is that of the oldest listed run, because the read holds no start of a session. The order changes only when an agent changes its state group. A node moves in 200 ms, and not at all with reduced motion. After the first view, a refresh never moves the viewport.
+- **Remembered filters (G5).** People and Active or All stay for each member in `localStorage`, inside try and catch (`lib/agentMapPrefs.ts`). An empty store gives the defaults.
+- **The empty state (G6).** Under Active with no active agent, the view reads "No agent works now." and offers "Show all N".
 - **Find.** The map draws the matches, whatever the switch and the folds, with their orchestrator as context. A person with no match does not draw.
-- **The controls.** Fit, zoom out, zoom in and one "Legend" button. The legend starts shut.
+- **The controls.** Fit, zoom out, zoom in and one "Legend" button. The button opens the states and the dispatch line. The legend starts shut, and Escape closes it.
 - **Details.** A click opens a dock at the right. A narrow window uses the shared `Modal`.
 - **The acts.** The view only reads (rule 7 of §3.12.7). The details show the run panel (`AgentRunPanel`) of one task. That panel has no Steer control before SW-86, so a member writes to an agent in its reply box.
 - **The phone, 760 pixels and under.** It shows the counts, then the questions that wait on the member, then the people. The oldest question comes first. AMR-5 does not change it.
@@ -909,8 +915,9 @@ This replaces some rules of 2026-11-26. They are the Board, Graph and List switc
 The owner asked on 2026-11-26 that the view of §3.12.8 stays usable with hundreds of sessions. **Owner, 2026-11-27 (task 4097):** the overview tiles, the levels and the toolbar rule of 2026-11-26 are gone. The map folds in place. The flag `AGENT_LENSES_ORGS` keeps these rules dark too. Where this section and §3.12.8 differ, this section wins.
 
 - **The bound.** The canvas draws at most 40 agent cards, the orchestrators included. The pure function `planMap` (`lib/agentScale.ts`) holds this rule.
-- **Who folds first.** Past 40, the open people with the most agents fold to their cards first. The person that the member opened last stays open, and so does the person of the selected agent.
-- **The state nodes.** A person who is still past 40 draws the most urgent agents, then one node for each state of the rest, "+N working". A click draws the next agents of that state, and walks on to the next ones. So the member reaches every agent by clicks.
+- **Urgency wins (G3).** While the cap has room, a Needs you or Failed agent never folds. The rest fold in this order: Done, Idle, Waiting, Working. Inside one state, the people with the most agents fold first. A person with no card left draws as their folded card.
+- **The click.** The person that the member opened last takes the room first, after each urgent agent. That person keeps room for at least 12 cards.
+- **The state nodes.** A person whose agents do not all fit draws one node for each state of the rest, "+N working". A click draws the next agents of that state, and walks on to the next ones. So the member reaches every agent by clicks.
 - **The selection.** The selected agent always draws. A fold that holds it closes the details.
 - **Six states.** Needs you, Failed, Working, Waiting, Idle and Done.
 - **Subagents are a count.** A card shows the short form, an icon with "7 · 2 working" and the failed count beside its icon. So the task or the question keeps most of the line. The accessible name and the tip say "7 subagents · 2 working · 1 failed". The details say it in full. One agent at a time opens its subagents on the map, as at most 8 rows and then "+N more". The details list each one by state, with the done ones folded. A stopped or released subagent reads Idle.
@@ -2334,9 +2341,10 @@ They keep their own gates.
 
 - **Metorite task.** 4097. Epic 321.
 - **Owner, 2026-11-27.** One map of everyone's work, with a few filters, and no view switch.
-- **Scope.** §3.12.8 and §3.12.9. It deletes the Board, the List, the overview tiles, the breadcrumb and the Waits-on toggle, in a commit of their own.
+- **Scope.** §3.12.8 and §3.12.9. It deletes the Board, the List, the overview tiles, the breadcrumb, the Waits-on toggle and the wait lines, in commits of their own.
+- **Decisions.** G1 to G6 of task 4097 (metorite-78, 2026-11-27, delegated by the owner). §3.12.8 and §3.12.9 hold them.
 - **Done when.** 64 sessions of two people draw one map. It holds the scope, both people and the 4 active agents. It also holds one "43 idle or done" node, and the second person folded. With All, and with 500 working sessions, the map draws at most 40 agent cards, and clicks reach every agent. People narrows the map to one person. The toolbar holds People, Active or All, Find, and "Needs you N" when a question waits. The phone view does not change.
-- **Fence.** `lib/agentGraph.test.ts`, `lib/agentScale.test.ts`, `components/AgentLenses.test.ts` and `components/AgentMapNodes.test.ts`.
+- **Fence.** `lib/agentGraph.test.ts`, `lib/agentScale.test.ts`, `lib/agentMapPrefs.test.ts`, `components/AgentLenses.test.ts` and `components/AgentMapNodes.test.ts`.
 - **Risk.** STANDARD UI on a live screen. **Gate.** AGENT-SAFE. D145 owner preview before the merge. `AGENT_LENSES_ORGS` is on for one org, so the next release shows it there. **Depends on.** AMR-1, AMR-3, AMR-4.
 - **Built, 2026-11-27,** on branch `amr5-mt-e85b25cc-one-agents-map`.
 
