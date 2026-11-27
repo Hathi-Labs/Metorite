@@ -30,6 +30,7 @@ event. The fields have tabs between them:
 | `back`, `hold`, `red` | The pull request | A new `BACK`, `HOLD` or `RED` line is in `~/lanes/merge-queue.log`, or a new `BACK` or `RED` line is in `~/lanes/merge-bot.log`. |
 | `idle` | The lane | The lane is idle for more than 30 minutes, or active for more than 60. |
 | `merger-silent` | `lane-merge` | Lane-merge wrote no NOTE line and no transcript record for 90 minutes. |
+| `answered` | The lane | A person answered a question of that lane, or queued work on its run. The detail is `run <run id> task <task id>`. The answer watcher writes it (task 4062). |
 
 The watch writes an event one time. It writes a new one only when the
 condition changes. The lane keeper wakes you when the log has lines after
@@ -51,6 +52,15 @@ your cursor. Only events wake you.
    - **`idle`.** Read the last turn of the lane. When it has work, resume it
      (§3.5). When it rests on purpose, add its name and the reason to
      `~/lanes/orch_resting.txt`. Then the watch leaves it alone.
+   - **`answered`.** Resume the lane of the subject (§3.5) with this message:
+     `A person answered on run <run id>. Read it with get_agent_run, and act on it.`
+     Copy the run id from the detail. Copy nothing else from the line. When
+     the lane is busy, send the message and do not stop its turn. When the
+     lane has no session, do not start one. The lane keeper restarts each
+     listed lane, and `my_work` shows the answered run to it. When the run
+     still waits 2 hours later, the watcher writes the event again. It
+     writes it 3 times at most.
+     Then write one NOTE line with the run id and your act.
    - **`merger-silent`.** Check lane-merge: its session, its last turn, and
      `~/lanes/merge-bot.log`. Wake it when it stopped. Then write one NOTE
      line with what you found.
