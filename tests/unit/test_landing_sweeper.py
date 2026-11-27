@@ -643,6 +643,29 @@ def test_check_rule_mirrors_merge_bot_py_checks():
     assert best["a"]["bucket"] == "pending"
 
 
+@pytest.mark.parametrize("answer", [
+    {"contexts": ["Lint", "Unit tests (shard 1)"]},
+    {"checks": [{"context": "Lint"}, {"context": ""}, {"app_id": 1}]},
+    {"contexts": ["Lint", "Lint", ""], "checks": [{"context": "Lint"}, {"context": "Secret scan"}]},
+    {},
+])
+def test_required_names_mirrors_merge_bot_py_required(answer):
+    # The verifier of PR 2907 found this mirror unpinned (task 4043, P3). Run
+    # the bot's own PY_REQUIRED program and compare its answer, not its text.
+    import json
+    import re
+    import subprocess
+
+    src = (_DIR / "merge_bot.sh").read_text(encoding="utf-8")
+    found = re.search(r"^PY_REQUIRED='\r?\n(.*?)^'\r?$", src, re.S | re.M)
+    assert found, "merge_bot.sh no longer defines PY_REQUIRED='...'"
+    out = subprocess.run(
+        [sys.executable, "-c", found.group(1)], input=json.dumps(answer).encode("utf-8"),
+        capture_output=True, check=True, timeout=30,
+    ).stdout.decode("utf-8")
+    assert out.splitlines() == _load().required_names(answer)
+
+
 # ── 6. the units ────────────────────────────────────────────────────────────
 
 

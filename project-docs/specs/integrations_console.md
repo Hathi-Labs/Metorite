@@ -1212,6 +1212,7 @@ Each site below reads the resolved access, so the rule reaches it with no change
 - **Console (slice b).** Each row of Connections gets "Who can use", with the three modes, a group picker and a people picker. A row with no rule says "Everyone".
   - **Built (ACC-2).** The control sits under each MCP row and each API connection of the organization that the `GET` lists. No other row gets one. The screen calls a group a "team".
   - A `GET` that answers 404 or 403 draws no control and no error. Another failure draws one line with "Try again".
+  - On a cold load, the list keeps its skeleton until the `GET` answers or fails, so no row grows under the pointer. This holds only when a row can take a rule. The wait ends 2 seconds after the list arrives (`ACCESS_WAIT_MS`). A later answer then adds the controls.
   - A stored rule that no row control covers sits under the list, in "Other stored rules". This holds when no filter is on. A rule with `listed: false` offers only "Set to Everyone", behind a confirm. A listed one offers "Change".
   - With `readable: false`, a banner says that only members with `integrations:manage` can use each integration. Each row then shows "Admins only" as text, with no control, because no save can repair the value.
   - "Chosen" with no team and no person warns before the save, and the button reads "Save as admins only".

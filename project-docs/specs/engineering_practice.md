@@ -728,8 +728,9 @@ cannot drift.
 
 ## 7b. Land before build (owner directive, 2026-11-26)
 
-**Status: ACTIVE spec. No slice is built (verified against code
-2026-11-26).** Each slice ships dark when it is built. Epic: WS-CIV task 1628.
+**Status: ACTIVE spec. LBB-2, the claim gate, is BUILT DARK (2026-11-27,
+task 4041). Both of its flags are empty, and no flip is done. The other
+slices are not built.** Each slice ships dark when it is built. Epic: WS-CIV task 1628.
 Spec task: 4040 (LBB-0). Part A, the backlog itself, is task 4019 (lane-land)
 and task 4039 (pc-land-core). `ci_velocity.md` points here.
 
@@ -852,6 +853,10 @@ opens a fix task.
   thresholds) and `tests/unit/test_built_not_live_r8.py` (the My Day row).
 
 ### 7b.2 The claim gate (rule 2)
+
+**Status: BUILT DARK, 2026-11-27 (task 4041).** Find the migration by its
+CHECK name, `pm_task_refs_landing_state_known`, never by a number (R1). The
+flip of §7b.2 "The flip" is not done.
 
 **What it is, and what it is not.** The gate guides agents that cooperate.
 It is not a security control. It reads `pm_agent_runs.agent_label`, which is
@@ -1392,6 +1397,33 @@ uv run ruff check scripts/home_server/live_check.py tests/unit/test_live_check.p
 **Rollout (not in the build).** Install and enable the units, and set
 `LIVE_CHECK_MODE=dry` with the production gateway URL: gate `deploy`. After
 one day, metorite-78 changes lane-merge.md step f (LBB-1b).
+
+### 7b.7 LBB-6: visibility (task 4045)
+
+**Status: LBB-6a built (the review metric). LBB-6b not built: the My Day row,
+dark behind `BUILT_NOT_LIVE_ORGS`, with a D145 owner preview before the flip.**
+
+**Done when** (LBB-6a):
+1. `scripts/delivery_metrics.py` gives the key `built_not_live`: `open_prs`
+   (open PRs that are not drafts), `over_24h` (each open PR older than 24
+   hours: `number`, `title`, `age_days`, oldest first) and `oldest_days`. It
+   reuses the paging of `_old_prs`. A failing `gh` call gives `null` and an
+   `errors` entry.
+2. `.claude/commands/delivery-review.md` lists `built_not_live` in its metric
+   list. It adds two threshold rows: `built_not_live.open_prs` over 30, and
+   `built_not_live.oldest_days` over 5. Each breach opens one fix task.
+3. Tests in `tests/unit/test_delivery_metrics.py` cover the key (a draft is
+   not counted, a PR of 23 hours is not in `over_24h`, the order), the failing
+   call, and the command file that names the key.
+4. This section holds the status above.
+
+**Fence.** `tests/unit/test_delivery_metrics.py`.
+
+**Verify with.**
+
+```
+PYTEST_ADDOPTS="-o timeout_method=thread" uv run pytest -p no:cacheprovider   tests/unit/test_delivery_metrics.py
+```
 
 ## 8. What to fix before customer #1 — in order
 

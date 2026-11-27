@@ -323,6 +323,11 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # the member's own apps. A tenant that set it would change the claims of
     # every org, so only the operator writes it.
     "AGENT_CLAIM_SCOPE_MODES",
+    # LBB-2: CLAIM_GATE_ORGS refuses an agent's claim of new work while its
+    # old pull requests wait, and CLAIM_GATE_SHADOW_ORGS only logs it. A tenant
+    # that set either would change the claims of every org, so only the
+    # operator writes them.
+    "CLAIM_GATE_ORGS", "CLAIM_GATE_SHADOW_ORGS",
     # WS-ALN ALN-1: the orgs whose task writes enqueue an `align.check` job.
     # A queued row waits for the worker, so only the operator writes it
     # (project_alignment.md §5 item 8).

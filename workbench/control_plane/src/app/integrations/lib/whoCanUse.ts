@@ -110,6 +110,26 @@ export function rowRule(list: AccessList | null | undefined, row: Connection): A
 }
 
 /**
+ * The longest time that the list waits for the access rules, from the moment
+ * the list arrives. After it, the list shows, whatever the rules read does.
+ */
+export const ACCESS_WAIT_MS = 2_000;
+
+/**
+ * True while a row can still grow: the first read of the rules has no answer
+ * and no failure, and a row of the list may take a rule. The list then keeps
+ * its skeleton, so no row moves under the pointer. An answer of `null` (404
+ * and 403) and a failure both end the wait.
+ */
+export function waitsForRules(
+  rows: readonly Connection[] | null | undefined,
+  list: AccessList | null | undefined,
+  error: string | null,
+): boolean {
+  return list === undefined && !error && (rows ?? []).some((r) => serviceOfRow(r) !== null);
+}
+
+/**
  * The stored rules that no row of the list shows: a removed MCP server, an old
  * connector key (`listed: false`), or an API connection that is not connected.
  * An admin must see them to change or clear them. Empty while the whole value

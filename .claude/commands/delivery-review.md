@@ -32,6 +32,8 @@ Change it here and nowhere else.
 | Owner queue, oldest item | over 3 days | The owner wait is the biggest delay that CI cannot fix. |
 | Stale hold | any hold stale over 2 hours | A stale hold blocks a task that nobody works. |
 | `open_prs_older_than_2d` | any PR older than 2 days | Long branches cause collisions (root `CLAUDE.md` §4). |
+| `built_not_live.open_prs` | over 30 | Built is not done. Done means live (owner directive land before build, 2026-11-26, rule 6). A long queue of open PRs is work that no customer can use. |
+| `built_not_live.oldest_days` | over 5 | The oldest open PR shows how long built work waits to go live (same directive). |
 
 ## The rollback rule (D218)
 
@@ -82,6 +84,9 @@ The script prints one JSON object. Its keys:
   points to the top-level `selection_misses`.
 - `slowest_tests`: the 10 slowest files, with `seconds`.
 - `open_prs_older_than_2d`: `number`, `title`, `age_days`.
+- `built_not_live`: `open_prs` (open PRs that are not drafts), `over_24h`
+  (each such PR older than 24 hours: `number`, `title`, `age_days`, oldest
+  first) and `oldest_days`.
 - `delta`: this week minus last week, for every number. It exists only with
   `--compare`.
 - `truncated`: a note for each list that the run cap cut short.

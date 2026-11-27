@@ -78,7 +78,8 @@ MIN_FREE_MB = 5000
 #: The most sessions that this watcher keeps alive at once.
 MAX_LIVE = 2
 #: The default session command. The Metorite tools only. The repo settings
-#: grant the rest. ``WATCHER_CLAUDE_CMD`` overrides it.
+#: grant the rest. ``WATCHER_CLAUDE_CMD`` overrides it. It must hold ``-p``,
+#: and ``session_argv`` puts the prompt right after it (task 4050).
 DEFAULT_CLAUDE_CMD = "claude -p --allowedTools mcp__metorite__*"
 #: The longest wait for the MCP (seconds).
 HTTP_TIMEOUT_S = 20
@@ -440,16 +441,35 @@ def tick(
     return started
 
 
+def session_argv(cmd: list[str], prompt: str) -> list[str]:
+    """The session command with the prompt right after ``-p`` (or ``--print``).
+
+    A list flag such as ``--allowedTools`` takes each word after it. So a prompt
+    at the end is read as a tool name, and ``claude -p`` gets no prompt (task
+    4050). ``auto_revert.reopen_command`` puts its prompt after ``-p`` too. A
+    command with no ``-p`` is not headless and would wait for a person, so it
+    raises ``ValueError``.
+    """
+    for i, word in enumerate(cmd):
+        if word in ("-p", "--print"):
+            return [*cmd[: i + 1], prompt, *cmd[i + 1 :]]
+    raise ValueError("the session command has no -p")
+
+
 def start_session(run: dict[str, Any]) -> bool:
     """Start one session in its own transient systemd unit, in a new worktree."""
     key = wake_key(run)
     slug = f"answer-{run['id'][:8]}-{key.rsplit('.', 1)[1][:6]}"
+    worktree = REPO.parent / f"wt-{slug}"
+    # Build the argv first: a bad WATCHER_CLAUDE_CMD fails before any worktree.
+    argv = session_argv(
+        os.environ.get("WATCHER_CLAUDE_CMD", DEFAULT_CLAUDE_CMD).split(),
+        prompt_for(run, str(worktree)),
+    )
     subprocess.run(
         ["bash", "scripts/worktree.sh", "new", slug], cwd=REPO, check=True,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120,
     )
-    worktree = REPO.parent / f"wt-{slug}"
-    cmd = os.environ.get("WATCHER_CLAUDE_CMD", DEFAULT_CLAUDE_CMD).split()
     logs = STATE_DIR / "logs"
     logs.mkdir(parents=True, exist_ok=True)
     logfile = logs / f"{slug}.log"
@@ -458,7 +478,7 @@ def start_session(run: dict[str, Any]) -> bool:
     subprocess.run(
         ["systemd-run", "--user", "--collect", f"--unit=answer-{slug}",
          f"--working-directory={worktree}", f"--property=StandardOutput=append:{logfile}",
-         f"--property=StandardError=append:{logfile}", "--", *cmd, prompt_for(run, str(worktree))],
+         f"--property=StandardError=append:{logfile}", "--", *argv],
         check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30,
         env={k: v for k, v in os.environ.items() if k != "METORITE_WATCHER_TOKEN"},
     )

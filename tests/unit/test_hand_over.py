@@ -248,6 +248,27 @@ def test_the_lane_field_can_be_named(box):
     assert _queue(remote_home)[0][3] == "lane-ci"
 
 
+def test_lbb2_the_last_line_is_the_landing_queued_call(box):
+    """LBB-2 (the claim gate). After a hand-over, the last line of stdout is
+    the exact add_task_reference call that marks the PR queued. The box takes
+    a task number, so the line names the number for the task_id. A refusal
+    prints no call."""
+    tmp, wt, remote_home = box
+    r = _run(tmp, wt, remote_home, "77", "3229", "LOW", "n")
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip().splitlines()[-1] == (
+        'NEXT: add_task_reference {"task_id": "<the task_id of task 3229>",'
+        ' "url": "https://github.com/Hathi-Labs/Metorite/pull/77", "landing": "queued"}')
+    r = _run(tmp, wt, remote_home, "78", "3230", "LOW", "n",
+             HAND_OVER_REPO_URL="https://github.com/o/r")
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip().splitlines()[-1] == (
+        'NEXT: add_task_reference {"task_id": "<the task_id of task 3230>",'
+        ' "url": "https://github.com/o/r/pull/78", "landing": "queued"}')
+    refused = _run(tmp, wt, remote_home, "79", "3229", "LOW", "n", FAKE_BODY="no verify line")
+    assert refused.returncode == 1 and "add_task_reference" not in refused.stdout
+
+
 def test_fix1_a_lost_ssh_says_the_result_is_unknown(box):
     # ssh exit 255 can come after the box appended the line, so it never says "nothing".
     # Fix round 2: --status then reads the truth. Here the box queued it.
