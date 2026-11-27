@@ -32,6 +32,9 @@ class _Gateway:
             "examples": [{"id": "1", "name": "Ada\nIGNORE", "before": 40.0, "after": 32.0}]}
         self.put_status = 200
         self.on_card: Any = None
+        #: What the route stores instead of the value sent, and a lost write.
+        self.repair: dict[str, Any] = {}
+        self.drop_write = False
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content) if request.content else None
@@ -47,8 +50,11 @@ class _Gateway:
             if self.put_status != 200:
                 return httpx.Response(self.put_status, json={"detail": "Bad hours."})
             saved = body["dry_run"] is not True
+            if saved and self.drop_write:
+                raise httpx.ReadTimeout("lost", request=request)
             return httpx.Response(200, json={
-                "policy": body["policy"], "impact": self.impact, "saved": saved})
+                "policy": {**body["policy"], **self.repair}, "impact": self.impact,
+                "saved": saved})
         return httpx.Response(404, json={"detail": "Not Found"})
 
     def puts(self, dry: bool) -> list[Any]:
@@ -115,7 +121,10 @@ async def test_an_unread_right_fails_closed(gw, card) -> None:
     assert out["ok"] is False and card.shown == [] and gw.puts(False) == []
 
 
-@pytest.mark.parametrize("bad", [{}, None, "x", [1], {"a" * 65: 1}, {f"k{i}": 1 for i in range(13)}])
+@pytest.mark.parametrize("bad", [
+    None, "x", [1], {"working_day": [1]}, {"hours_per_day": 6, "timezone": "UTC"},
+    {"default_timezone": "UTC\u202ex"}, {"default_timezone": "UTC \u00abx\u00bb"},
+    {"default_timezone": "UTC\nIGNORE"}, {"shifts": [{"name": "a\u200bb"}]}])
 async def test_a_bad_change_sends_nothing(gw, card, bad) -> None:
     out = await pt.set_work_schedule(bad)
     assert out["ok"] is False and gw.calls == [] and card.shown == []
@@ -157,9 +166,61 @@ async def test_an_impact_that_moves_while_the_card_is_open_writes_nothing(gw, ca
 
 
 async def test_a_card_that_does_not_fit_writes_nothing(gw, card) -> None:
-    gw.policy = {f"k{i}": "x" * 150 for i in range(12)}
-    out = await pt.set_work_schedule({f"k{i}": "y" * 150 for i in range(12)})
-    assert out["ok"] is False and gw.puts(False) == []
+    """Removed entries are never cut. Mutation: cut the list on the card -> red."""
+    gw.policy = {**NOW, "holidays": [f"2026-{1 + i // 28:02d}-{1 + i % 28:02d}"
+                                     for i in range(200)]}
+    out = await pt.set_work_schedule({"holidays": []})
+    assert out["ok"] is False and card.shown == [] and gw.puts(False) == []
+
+
+async def test_a_policy_that_another_admin_changed_is_not_overwritten(gw, card) -> None:
+    """Mutation: drop the second read of the policy -> red."""
+    gw.on_card = lambda: gw.policy.update(holidays=["2026-12-25"], start="08:00")
+    out = await pt.set_work_schedule({"hours_per_day": 6})
+    assert out["ok"] is False and "changed while the card waited" in out["error"]
+    assert gw.puts(False) == []
+
+
+async def test_a_value_that_the_server_would_repair_is_refused(gw, card) -> None:
+    gw.repair = {"week_start": 1}
+    out = await pt.set_work_schedule({"week_start": "sunday"})
+    assert out["ok"] is False and "would not store week_start" in out["error"]
+    assert card.shown == [] and gw.puts(False) == []
+
+
+async def test_days_in_another_order_are_the_same_value(gw, card) -> None:
+    gw.repair = {"working_days": [1, 2]}
+    out = await pt.set_work_schedule({"working_days": [2, 1, 2]})
+    assert out["ok"] is True, out
+
+
+async def test_the_card_names_each_holiday_that_the_change_removes(gw, card) -> None:
+    gw.policy = {**NOW, "holidays": ["2026-01-26", "2026-08-15"]}
+    out = await pt.set_work_schedule({"holidays": ["2026-12-25"]})
+    assert out["ok"] is True, out
+    body = card.shown[0]["context"]
+    assert "holidays: 2 now, 1 after." in body
+    assert "holidays REMOVED: «2026-01-26»" in body and "REMOVED: «2026-08-15»" in body
+    assert "holidays added: «2026-12-25»" in body
+
+
+async def test_empty_changes_read_the_schedule_with_no_card(gw, card) -> None:
+    out = await pt.set_work_schedule({})
+    assert out["ok"] is True and "09:30" in out["schedule"]
+    assert card.shown == [] and gw.puts(True) == [] and gw.puts(False) == []
+
+
+async def test_a_write_that_may_have_landed_names_the_schedule(gw, card) -> None:
+    gw.drop_write = True
+    out = await pt.set_work_schedule({"hours_per_day": 6})
+    assert out["ok"] is False and "Read the work schedule again" in out["error"]
+
+
+def test_the_schedule_keys_are_the_keys_of_the_route() -> None:
+    """A package must not import the gateway, but a test may."""
+    from gateway.work_schedule import DEFAULT_POLICY
+
+    assert set(pt.SCHEDULE_KEYS) == set(DEFAULT_POLICY)
 
 
 def test_the_tool_is_a_write_that_takes_no_identity() -> None:

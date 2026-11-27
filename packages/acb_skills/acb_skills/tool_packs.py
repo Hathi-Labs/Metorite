@@ -1408,8 +1408,9 @@ to hand a task to.
   one of the member's own absences by its id.
 - Each write shows one card first, and saves only when the member approves.
 - set_work_schedule changes the work schedule of the whole company, for an admin
-  only. Send only the fields to change. Its card holds the impact that the
-  server computed. Do not guess the impact.
+  only. Its description names the fields. Send only the fields to change. A list
+  field replaces the whole list, so send empty changes first to read the
+  schedule. Its card holds the impact that the server computed. Do not guess it.
 - No write changes the record of another person.
   Never change an email address. Tell the member that an admin changes it.
 - Each tool acts as the member, and shows only what the People app shows to

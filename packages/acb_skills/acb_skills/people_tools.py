@@ -141,8 +141,15 @@ MAX_DEPTH = 4
 MAX_FILTER_CHARS = 200
 #: The longest reason of a route that a result passes on.
 MAX_DETAIL_CHARS = 300
-#: The most keys of one schedule change, and the longest JSON of one.
-MAX_CHANGE_KEYS = 12
+#: The fields of the company work schedule (``gateway.work_schedule``
+#: ``DEFAULT_POLICY``). The route drops each other key with no word, so the tool
+#: refuses it. Fence: ``test_the_schedule_keys_are_the_keys_of_the_route``.
+SCHEDULE_KEYS = ("working_days", "hours_per_day", "start", "end", "week_start",
+                 "default_timezone", "shifts", "holidays")
+#: The fields that a change replaces as a whole list, and the card names each
+#: entry that the change adds or removes.
+SCHEDULE_LISTS = ("shifts", "holidays")
+#: The longest JSON of one change.
 MAX_CHANGE_CHARS = 3000
 #: The most people that the card names as an example. The route gives ten.
 MAX_CARD_EXAMPLES = 10
@@ -281,9 +288,16 @@ _W_PRIVATE = ("Phone, emergency contact and birthday are private. Only you and a
 # ── The gateway, as the member (the idiom of ``org_admin_tools``) ───────────
 
 
-_BAD_CHANGES = ("changes is an object with the fields of the work schedule to change, such as "
-                "working_days, hours_per_day, start and end. At most {n} fields. "
-                "Nothing was saved.")
+_BAD_CHANGES = ("changes is an object with the fields of the work schedule to change. "
+                "The fields are: {keys}. Nothing was saved.")
+_BAD_CHANGE_TEXT = ("A text in changes holds « or », a new line or a run of spaces, and the "
+                    "card cannot show it as it is sent. Nothing was saved.")
+_NOT_AS_SENT = ("The server would not store {key} as you sent it. It would store {stored}. "
+                "Nothing was saved. Send the value in the form that the server stores.")
+_SCHEDULE_MOVED = ("The work schedule changed while the card waited. Nothing was saved. "
+                   "Ask again.")
+_SCHEDULE_MAYBE = ("The change of the work schedule may have been saved. Read the work "
+                   "schedule again before you try again.")
 _NO_MANAGE = ("You do not hold the right to change the work schedule of your organization "
               "(admin:members:manage), so no card shows and nothing was saved. Ask an admin "
               "who holds that right.")
@@ -1328,17 +1342,37 @@ async def remove_my_absence(absence_id: str) -> dict[str, Any]:
 # ── The work schedule of the company (P-5b-4, task 3945) ────────────────────
 
 
+def _texts(value: Any) -> list[str]:
+    """Each string of *value*, keys too, at any depth."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [t for k, v in value.items() for t in (*_texts(k), *_texts(v))]
+    if isinstance(value, list):
+        return [t for v in value for t in _texts(v)]
+    return []
+
+
+def _change_text_problem(wanted: dict[str, Any]) -> str | None:
+    """The refusal of a text that the card cannot show as it is sent."""
+    problem = body_hidden_problem(wanted)
+    if problem is not None:
+        return f"{problem} Nothing was saved."
+    if any("«" in t or "»" in t or one_line(t) != t for t in _texts(wanted)):
+        return _BAD_CHANGE_TEXT
+    return None
+
+
 def _changes_arg(raw: Any) -> dict[str, Any] | None:
-    """The change as an object of at most :data:`MAX_CHANGE_KEYS` fields, or
-    None. A JSON text of an object is read too."""
+    """The change as an object of known fields (:data:`SCHEDULE_KEYS`), or
+    None. An empty object asks for the schedule of now. A JSON text of an
+    object is read too."""
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)
         except ValueError:
             return None
-    if not isinstance(raw, dict) or not raw or len(raw) > MAX_CHANGE_KEYS:
-        return None
-    if not all(isinstance(k, str) and 0 < len(k) <= 64 for k in raw):
+    if not isinstance(raw, dict) or any(k not in SCHEDULE_KEYS for k in raw):
         return None
     if len(json.dumps(raw, ensure_ascii=False, default=str)) > MAX_CHANGE_CHARS:
         return None
@@ -1358,6 +1392,48 @@ async def _dry_run(policy: dict[str, Any]) -> tuple[dict[str, Any], dict[str, An
     return read, impact
 
 
+def _not_as_sent(wanted: dict[str, Any], read: dict[str, Any]) -> str | None:
+    """The refusal when the route reads a field of the change as another value:
+    it drops or repairs a value with no word (``normalise_policy``). The days
+    of the week come back sorted, each once, and that is the same value."""
+    for key, value in wanted.items():
+        sent = value
+        if key == "working_days" and isinstance(value, list) \
+                and all(type(d) is int for d in value):
+            sent = sorted(set(value))
+        if read.get(key) != sent:
+            return _NOT_AS_SENT.format(key=key, stored=_old(read.get(key)))
+    return None
+
+
+def _field_rows(key: str, old: Any, new: Any) -> list[tuple[str, str]]:
+    """The card rows of one field that moves. A list shows each entry that the
+    change removes or adds, never cut: a card that cannot hold them all does
+    not show, and nothing is sent."""
+    if key in SCHEDULE_LISTS and isinstance(old, list) and isinstance(new, list):
+        gone = [v for v in old if v not in new]
+        added = [v for v in new if v not in old]
+        rows = [(f"{key}-count", f"{key}: {len(old)} now, {len(new)} after.")]
+        rows += [(f"{key}-gone{i}", f"{key} REMOVED: {_shown(v)}") for i, v in enumerate(gone)]
+        rows += [(f"{key}-added{i}", f"{key} added: {_shown(v)}") for i, v in enumerate(added)]
+        return rows
+    return [(key, f"{_line(key, 48)}: {_old(old)} to {_shown(new)}")]
+
+
+async def _schedule_moved(now: dict[str, Any], asked: dict[str, Any],
+                          policy: dict[str, Any], impact: dict[str, Any]) -> str | None:
+    """The refusal when the schedule, or the impact of the change, moved while
+    the card waited, else None. The route replaces the whole policy, so a write
+    over a change of another admin would undo it."""
+    latest = await _send("GET", SCHEDULE_PATH)
+    if not latest.ok or not isinstance(latest.data, dict) or latest.data.get("policy") != now:
+        return _SCHEDULE_MOVED
+    again, again_impact = await _dry_run(asked)
+    if _impact_snap(again, again_impact) != _impact_snap(policy, impact):
+        return _SCHEDULE_CHANGED
+    return None
+
+
 def _hours(value: Any) -> str:
     return f"{value:g}" if type(value) in (int, float) else "unknown"
 
@@ -1371,8 +1447,8 @@ def _schedule_rows(now: dict[str, Any], policy: dict[str, Any],
                    impact: dict[str, Any]) -> list[tuple[str, str]]:
     """The rows of the card: each field that moves, then the impact."""
     rows: list[tuple[str, str]] = [
-        (key, f"{_line(key, 48)}: {_old(now.get(key))} to {_shown(policy.get(key))}")
-        for key in sorted(set(now) | set(policy)) if now.get(key) != policy.get(key)]
+        row for key in sorted(set(now) | set(policy)) if now.get(key) != policy.get(key)
+        for row in _field_rows(key, now.get(key), policy.get(key))]
     rows.append(("week", f"Company week: {_hours(impact.get('hours_before'))} hours "
                          f"to {_hours(impact.get('hours_after'))} hours."))
     rows.append(("moves", f"People whose hours change: {impact.get('changed')}. People with "
@@ -1390,10 +1466,13 @@ def _schedule_rows(now: dict[str, Any], policy: dict[str, Any],
 
 @annotate(read_only=False, idempotent=False, open_world=False)
 async def set_work_schedule(changes: dict[str, Any]) -> dict[str, Any]:
-    """Change the work schedule of your company (working days, hours, clock), after one card that shows who it moves. It needs the admin right to manage members."""
+    """Change the work schedule of your company, after one card that shows who it moves. It needs the admin right to manage members. The fields are working_days (1 Monday to 7 Sunday), hours_per_day, start and end (HH:MM), week_start (1 to 7), default_timezone, shifts and holidays (YYYY-MM-DD). Send only the fields to change. working_days, shifts and holidays REPLACE the whole list: send changes={} first to read the schedule of now, then send the full list."""
     wanted = _changes_arg(changes)
     if wanted is None:
-        return _refusal(_BAD_CHANGES.format(n=MAX_CHANGE_KEYS))
+        return _refusal(_BAD_CHANGES.format(keys=", ".join(SCHEDULE_KEYS)))
+    problem = _change_text_problem(wanted)
+    if problem is not None:
+        return _refusal(problem)
     try:
         me = await _send("GET", AUTH_ME_PATH)
         caps = me.data.get("capabilities") if isinstance(me.data, dict) else None
@@ -1407,10 +1486,18 @@ async def set_work_schedule(changes: dict[str, Any]) -> dict[str, Any]:
         now = current.data.get("policy") if isinstance(current.data, dict) else None
         if not isinstance(now, dict):
             return _refusal(_SCHEDULE_UNREAD)
+        if not wanted:
+            block, frame = _block("WORK SCHEDULE", now)
+            return {"ok": True, "schedule": block,
+                    "note": frame.note("The block holds the work schedule of now.")
+                    + " Nothing changed."}
         # The route replaces the whole policy, so the change goes onto the
         # policy of now. A field that the member leaves out stays as it is.
         asked = {**now, **wanted}
         policy, impact = await _dry_run(asked)
+        problem = _not_as_sent(wanted, policy)
+        if problem is not None:
+            return _refusal(problem)
         if policy == now:
             return {"ok": True, "note": _SAME_SCHEDULE}
         decision = await _decide(
@@ -1418,11 +1505,14 @@ async def set_work_schedule(changes: dict[str, Any]) -> dict[str, Any]:
             _schedule_rows(now, policy, impact))
         if decision != "approved":
             return _not_saved(decision)
-        again, again_impact = await _dry_run(asked)
-        if _impact_snap(again, again_impact) != _impact_snap(policy, impact):
-            return _refusal(_SCHEDULE_CHANGED, decision=decision)
-        sent = await _send("PUT", SCHEDULE_PATH, {"policy": policy, "dry_run": False},
-                           act="change of the work schedule")
+        moved = await _schedule_moved(now, asked, policy, impact)
+        if moved is not None:
+            return _refusal(moved, decision=decision)
+        try:
+            sent = await _send("PUT", SCHEDULE_PATH, {"policy": policy, "dry_run": False},
+                               act="change of the work schedule")
+        except _Refused:
+            return _refusal(_SCHEDULE_MAYBE, decision=decision)
     except _Refused as exc:
         return _answer(exc)
     if not sent.ok:
