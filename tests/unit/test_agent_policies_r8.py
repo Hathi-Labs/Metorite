@@ -169,7 +169,8 @@ def test_the_member_kind_takes_an_email_or_null() -> None:
     case, or null (a lead decides). Anything else gets 422."""
     spec = agent_policies.REGISTRY["review_reviewer"]
     assert (spec.form, spec.kind, spec.default) == ("task", "member_or_null", None)
-    assert spec.tiers is agent_policies.REGISTRY["review_required"].tiers is True
+    # No tiers until SW-91 adds pm_tasks.risk_tier (a tier row would never be read).
+    assert spec.tiers is agent_policies.REGISTRY["review_required"].tiers is False
     assert not spec.auth_path and not spec.admin_only
     check = agent_policies.check_value
     assert check(spec, "  Rev@Policies.TEST ") == "rev@policies.test"
@@ -549,25 +550,27 @@ async def test_no_row_gives_the_shipped_default(world, flags) -> None:
 
 @_DB_GATE
 async def test_a_tier_row_wins_over_any(world, flags) -> None:
+    """``overnight_allowed`` is a tiered bool with no gate. (SW-18a took the
+    tiers off ``review_required`` until SW-91 adds ``pm_tasks.risk_tier``.)"""
     w = world
     _reset(w)
     async with _session(w.p) as call:
         for body in (
-            _body("review_required", "project", w.p1, False),
-            _body("review_required", "project", w.p1, True, tier="HIGH"),
+            _body("overnight_allowed", "project", w.p1, True),
+            _body("overnight_allowed", "project", w.p1, False, tier="HIGH"),
             _body("stages_required", "organization", None, ["build"]),
             _body("stages_required", "organization", None, ["build", "verify"], tier="HIGH"),
         ):
             assert (await call(w.admin_u, body)).status_code == 201, body
-        high = await call.task(w.a, w.task_p2, "review_required", tier="HIGH")
-        low = await call.task(w.a, w.task_p2, "review_required", tier="LOW")
-        none = await call.task(w.a, w.task_p2, "review_required")
+        high = await call.task(w.a, w.task_p2, "overnight_allowed", tier="HIGH")
+        low = await call.task(w.a, w.task_p2, "overnight_allowed", tier="LOW")
+        none = await call.task(w.a, w.task_p2, "overnight_allowed")
         stages_high = await call.task(w.a, w.task_p2, "stages_required", tier="HIGH")
         stages_none = await call.task(w.a, w.task_p2, "stages_required")
-    assert high.value is True and high.source["tier"] == "HIGH"
-    assert low.value is False and low.source["tier"] == "any"
+    assert high.value is False and high.source["tier"] == "HIGH"
+    assert low.value is True and low.source["tier"] == "any"
     # A NULL tier is not LOW: it reads the `any` row only.
-    assert none.value is False and none.source["tier"] == "any"
+    assert none.value is True and none.source["tier"] == "any"
     assert stages_high.value == ["build", "verify"]
     assert stages_none.value == ["build"]
 
@@ -577,10 +580,31 @@ async def test_a_nearer_any_row_wins_over_a_farther_tier_row(world, flags) -> No
     w = world
     _reset(w)
     async with _session(w.p) as call:
-        await call(w.admin_u, _body("review_required", "organization", None, True, tier="HIGH"))
-        await call(w.admin_u, _body("review_required", "project", w.p1, False))
-        got = await call.task(w.a, w.task_p2, "review_required", tier="HIGH")
-    assert got.value is False and got.source["project_id"] == w.p1
+        await call(w.admin_u, _body("overnight_allowed", "organization", None, False,
+                                    tier="HIGH"))
+        await call(w.admin_u, _body("overnight_allowed", "project", w.p1, True))
+        got = await call.task(w.a, w.task_p2, "overnight_allowed", tier="HIGH")
+    assert got.value is True and got.source["project_id"] == w.p1
+
+
+@_DB_GATE
+async def test_the_review_keys_take_no_tier(world, flags) -> None:
+    """SW-18a. ``pm_tasks`` has no ``risk_tier`` yet, so ``policy_for`` reads
+    only ``any`` rows of a task. A tier row of a review key would be saved and
+    never read, so the store refuses it (422) and writes nothing. SW-91 turns
+    the tiers on when it adds the column."""
+    w = world
+    _reset(w)
+    async with _session(w.p) as call:
+        required = await call(w.admin_u, _body("review_required", "project", w.p1, True,
+                                               tier="HIGH"))
+        reviewer = await call(w.admin_u, _body("review_reviewer", "organization", None,
+                                               w.lead_s, tier="LOW"))
+        any_row = await call(w.admin_u, _body("review_required", "project", w.p1, True))
+    assert required.status_code == 422 and "takes no risk tier" in required.text
+    assert reviewer.status_code == 422 and "takes no risk tier" in reviewer.text
+    assert any_row.status_code == 201
+    assert len(_rows(w.p, "SELECT 1 FROM pm_agent_policies")) == 1
 
 
 @_DB_GATE

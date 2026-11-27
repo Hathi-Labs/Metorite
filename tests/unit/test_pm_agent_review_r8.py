@@ -178,7 +178,7 @@ class TestTheRecords:
 
         spec = ap.REGISTRY["review_reviewer"]
         assert (spec.form, spec.kind, spec.default, spec.tiers) == (
-            "task", "member_or_null", None, True)
+            "task", "member_or_null", None, False)
         assert set(spec.scopes) == {"organization", "project"}
         # A lead writes it for the lead's own project, as the PUT of the first
         # build let a lead do. So it is not on the auth path.
@@ -197,6 +197,9 @@ class TestTheRecords:
         assert checks.WAITING_REVIEW in tools.CHECK_NOT_CLOSED
         assert agent_review.OUTCOME_REVIEW_REQUESTED == "review_requested"
         assert agent_review.OUTCOME_NO_REVIEW_LANE == "no_review_lane"
+        # The edge maps each code to its own text (``tools.review_note``).
+        assert set(tools.REVIEW_OUTCOME_TEXTS) == {
+            agent_review.OUTCOME_REVIEW_REQUESTED, agent_review.OUTCOME_NO_REVIEW_LANE}
 
     def test_the_migration_is_expand_only(self):
         body = _migration()
@@ -419,6 +422,9 @@ class TestTheRedirectOnARealDatabase:
         got = await _agent_done(live, task, live.s.done)
         assert got["status"]["id"] == live.s.review
         assert got["status"]["name"] == {"untrusted_text": "In Review"}
+        # The tool says why the done landed in review (SW-18a fix round 1).
+        assert got["review"] == {"outcome": "review_requested",
+                                 "note": tools.REVIEW_OUTCOME_TEXTS["review_requested"]}
         row = _row(live, task)
         assert str(row.status_id) == live.s.review and row.completed_at is None
         assert row.agent_reviewer == REVIEWER and row.agent_review_requested_at is not None
@@ -457,7 +463,7 @@ class TestTheRedirectOnARealDatabase:
     async def test_an_agent_done_is_unchanged_with_the_setting_off(self, live):
         task = live.task(live.off, live.s.o_doing, "sw18a setting off")
         got = await _agent_done(live, task, live.s.o_done)
-        assert got["status"]["id"] == live.s.o_done
+        assert got["status"]["id"] == live.s.o_done and "review" not in got
         row = _row(live, task)
         assert str(row.status_id) == live.s.o_done and row.completed_at is not None
         assert row.agent_review_requested_at is None
@@ -494,6 +500,11 @@ class TestTheRedirectOnARealDatabase:
         assert saved.status_code == 404, saved.text
 
     async def test_with_no_review_lane_the_done_stays_with_a_note(self, live):
+        through_mcp = live.task(live.plain, live.s.p_doing, "sw18a no lane mcp")
+        got = await _agent_done(live, through_mcp, live.s.p_done)
+        assert got["status"]["id"] == live.s.p_done
+        assert got["review"]["outcome"] == "no_review_lane"
+        assert "So the task moved to done" in got["review"]["note"]
         task = live.task(live.plain, live.s.p_doing, "sw18a no lane")
         sent = await _send(live, "PATCH", f"/projects/tasks/{task}",
                            body={"status_id": live.s.p_done},
@@ -838,6 +849,20 @@ class TestTheSettingOnARealDatabase:
         assert _row(live, again).agent_reviewer == REVIEWER
         approved = await _approve(live, REVIEWER, again)
         assert approved.status_code == 200, approved.text
+
+    async def test_a_tier_on_a_review_key_gets_422(self, live):
+        """No tier row of a review key: ``pm_tasks`` has no ``risk_tier``, so
+        such a row would never be read, and an agent's done would skip the
+        review. SW-91 turns the tiers on."""
+        p = _fresh(live, "sw18a tier")
+        for key, value in (("review_required", True), ("review_reviewer", REVIEWER)):
+            for who, scope_kind, scope_id in ((LEAD, "project", p.id),
+                                              (ADMIN, "organization", None)):
+                body = {**_policy(key, scope_kind, scope_id, value), "tier": "HIGH"}
+                refused = await _save(live, who, body, expect=422)
+                assert "takes no risk tier" in refused.text
+        task = live.task(p.id, p.doing, "sw18a tier refused")
+        assert (await _agent_done(live, task, p.done))["status"]["id"] == p.done
 
     async def test_an_archived_project_refuses_the_approve(self, live):
         """ARC-2b: the approve moves the task to done, so an archived project

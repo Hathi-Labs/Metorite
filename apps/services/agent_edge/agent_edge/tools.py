@@ -1214,7 +1214,8 @@ REVIEW_TEXTS: Mapping[str, tuple[str, str]] = {
         " lands in its in progress status whose name says review, and the result"
         " shows that status. The reviewer or a project lead then approves it in"
         " Metorite. Do not move the task again. When the project has no such"
-        " status, the move goes to done.",
+        " status, the move goes to done. In both cases the result holds review,"
+        " with the outcome and a note.",
         ""),
     "[[REVIEW_CHECK]]": (
         ", or waiting_review when the project needs a person to accept agent"
@@ -6323,9 +6324,46 @@ _SET_STATUS_INPUT: dict[str, Any] = {
     "additionalProperties": False,
 }
 
-_SET_STATUS_OUTPUT: dict[str, Any] = _object({
+#: WS-MCP SW-18a. The key of the review note on the result of
+#: ``set_task_status``. The gateway puts ``agent_review`` on the PATCH answer
+#: only when the review rule ran (the flag is on, the caller is an agent, the
+#: move is to done and the policy ``review_required`` holds). The key is
+#: absent otherwise.
+REVIEW_KEY = "review"
+
+#: The outcome codes of ``agent_review.py`` and the fixed text of each. The
+#: edge sends its own text, never the gateway's, and drops a code it does not
+#: know. The codes are pinned to the gateway by ``test_pm_agent_review_r8.py``.
+REVIEW_OUTCOME_TEXTS: Mapping[str, str] = {
+    "review_requested": (
+        "A person must accept agent work in this project, so the task moved to"
+        " its review status and not to done. The reviewer or a project lead"
+        " approves it in Metorite. Do not move the task again."),
+    "no_review_lane": (
+        "A person must accept agent work in this project, but its statuses have"
+        " no in progress status whose name says review. So the task moved to"
+        " done. Tell the member, so that a lead adds a review status."),
+}
+
+_SET_STATUS_OUTPUT: dict[str, Any] = _optional(_object({
     "id": {"type": "string"}, "status": _STATUS_SCHEMA, "version": _NULLABLE_STRING,
-})
+}), REVIEW_KEY, _object({
+    "outcome": {"type": "string", "enum": list(REVIEW_OUTCOME_TEXTS)},
+    "note": {"type": "string"},
+}))
+
+
+def review_note(after: Any) -> dict[str, str] | None:
+    """The ``review`` key of the result of ``set_task_status``, from the
+    ``agent_review`` key of the PATCH answer, or ``None`` (SW-18a).
+
+    Only the outcome code crosses from the gateway. The note is a fixed text
+    of the edge, so no text of the gateway reaches the agent."""
+    raw = after.get("agent_review") if isinstance(after, dict) else None
+    outcome = raw.get("outcome") if isinstance(raw, dict) else None
+    if not isinstance(outcome, str) or outcome not in REVIEW_OUTCOME_TEXTS:
+        return None
+    return {"outcome": outcome, "note": REVIEW_OUTCOME_TEXTS[outcome]}
 
 
 async def _set_task_status(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
@@ -6362,7 +6400,7 @@ async def _set_task_status(ctx: Context, args: dict[str, Any]) -> dict[str, Any]
     status_id = after.get("status_id")
     named = statuses.get(str(status_id).lower()) if status_id is not None else None
     name = named.get("name") if named is not None else None
-    return {
+    result: dict[str, Any] = {
         "id": str(after.get("id")),
         "status": {
             "id": str(status_id) if status_id is not None else "",
@@ -6370,6 +6408,11 @@ async def _set_task_status(ctx: Context, args: dict[str, Any]) -> dict[str, Any]
         },
         "version": _str_or_none(after.get("updated_at")),
     }
+    # SW-18a: say why a done landed in review, or why review did nothing.
+    note = review_note(after)
+    if note is not None:
+        result[REVIEW_KEY] = note
+    return result
 
 
 SET_TASK_STATUS = Tool(

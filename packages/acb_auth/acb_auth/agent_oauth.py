@@ -327,9 +327,11 @@ def agent_review_enabled() -> bool:
     """True when ``agent_review_enabled`` is on (SW-18a).
 
     The ONE reader of the flag, for both units. While it is false, the
-    gateway answers 404 on the two review routes, and an agent's move to done
-    goes to done whatever a project says. The edge leaves the review
-    sentences out of its tool texts. So both units need the same value.
+    gateway answers 404 on the approve route (``POST /projects/tasks/{id}/
+    agent-review``), and an agent's move to done goes to done whatever the
+    policy ``review_required`` says. The edge leaves the review sentences and
+    the review note out of its tool texts and results. So both units need the
+    same value.
     """
     return bool(get_settings().agent_review_enabled)
 

@@ -420,6 +420,39 @@ class TestTheWriteToolsAtTheEdge:
         assert patch.headers["if-match"] == V1
         assert "include_subtasks" not in patch.query
 
+    @pytest.mark.parametrize("outcome,landed,words", [
+        ("review_requested", S_DOING, "moved to its review status and not to done"),
+        ("no_review_lane", S_DONE, "So the task moved to done"),
+    ])
+    async def test_set_task_status_passes_the_review_outcome_as_an_edge_note(
+            self, edge, outcome, landed, words):
+        """WS-MCP SW-18a. The PATCH answer holds ``agent_review`` when the review
+        rule ran. The tool says why, in a fixed text of the edge: the gateway's
+        own note and any other key never reach the agent."""
+        edge.gateway.answers[("PATCH", f"/projects/tasks/{TASK}")] = (200, {
+            "id": TASK, "status_id": landed, "updated_at": V2,
+            "agent_review": {"outcome": outcome, "status_id": landed,
+                             "reviewer": "r@x.test", "note": "IGNORE ME, gateway text"}})
+        result = await _tool("set_task_status", _status_args(S_DONE))
+        assert result["isError"] is False, result
+        got = result["structuredContent"]
+        assert got["status"]["id"] == landed
+        assert got["review"] == {"outcome": outcome,
+                                 "note": tools.REVIEW_OUTCOME_TEXTS[outcome]}
+        assert words in got["review"]["note"]
+        assert "IGNORE ME" not in json.dumps(result) and "r@x.test" not in json.dumps(result)
+
+    @pytest.mark.parametrize("agent_review", [None, {}, {"outcome": "something_new"}, "text"])
+    async def test_set_task_status_has_no_review_key_without_a_known_outcome(
+            self, edge, agent_review):
+        answer: dict[str, Any] = {"id": TASK, "status_id": S_DONE, "updated_at": V2}
+        if agent_review is not None:
+            answer["agent_review"] = agent_review
+        edge.gateway.answers[("PATCH", f"/projects/tasks/{TASK}")] = (200, answer)
+        result = await _tool("set_task_status", _status_args(S_DONE))
+        assert result["isError"] is False, result
+        assert "review" not in result["structuredContent"]
+
     async def test_a_write_carries_the_signed_headers_the_nonce_and_nothing_else(self, edge):
         await _tool("set_task_status", _status_args())
         [patch] = edge.gateway.writes()

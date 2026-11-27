@@ -189,10 +189,14 @@ REGISTRY: dict[str, PolicyKey] = {k.name: k for k in (
               tiers=True, note="An open pull request moves the task to review."),
     PolicyKey("release_cutoff", "task", TASK_SCOPES, "time_or_null", None,
               note="The release cut-off, HH:MM UTC. None by default."),
-    PolicyKey("review_required", "task", TASK_SCOPES, "bool", False, tiers=True,
-              note="Agent work needs review (SW-18)."),
-    PolicyKey("review_reviewer", "task", TASK_SCOPES, "member_or_null", None, tiers=True,
-              note="Who reviews agent work. Null means a project lead (SW-18a)."),
+    # SW-18a: no tiers yet. `pm_tasks` has no `risk_tier`, so `policy_for`
+    # reads only `any` rows of a task, and a tier row would be saved and never
+    # read. SW-91 sets tiers=True on both keys when it adds the column.
+    PolicyKey("review_required", "task", TASK_SCOPES, "bool", False,
+              note="Agent work needs review (SW-18). Tiers come with SW-91."),
+    PolicyKey("review_reviewer", "task", TASK_SCOPES, "member_or_null", None,
+              note="Who reviews agent work. Null means a project lead (SW-18a). "
+                   "Tiers come with SW-91."),
     PolicyKey("required_checks", "task", TASK_SCOPES, "text_list", [], auth_path=True,
               tiers=True, admin_only=True, note="The required check names (SW-54)."),
     PolicyKey("budget_mode", "actor", _LANE_SCOPES, "mode", "off", auth_path=True,
