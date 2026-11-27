@@ -38,11 +38,16 @@ from datetime import UTC, datetime
 from typing import Any
 
 from acb_auth import (
+    EffectiveAccess,
     UserContext,
+    build_access,
     get_current_user,
     invalidate_access,
     permission_matches,
 )
+from acb_auth.access import IntegrationRules
+from acb_auth.integration_access import Narrowed
+from acb_auth.integration_access import narrow as narrow_by_rules
 
 # WS-29 H6 (DARK): the identity-shadow mirror lives in `acb_auth.access` (NOT
 # `console_resolve`, whose importer set is capped by a farmable-seat fence). It is
@@ -857,8 +862,9 @@ async def org_integration_rules(db: Any, org_id: str, *, lock: str | None = None
 def integration_access_allowed(organization_id: str | None) -> bool:
     """True when ``INTEGRATION_ACCESS_ORGS`` holds the org, or holds ``*``.
 
-    The one reader of the flag. It gates the two routes of
-    ``integration_access.py`` only: the resolver applies a rule that exists,
+    The one reader of the flag. It gates three routes only: the two routes of
+    ``integration_access.py`` and ``GET /auth/me/integrations``
+    (``my_integrations.py``, ACC-3). The resolver applies a rule that exists,
     whatever the flag says, so a flag change never widens access. The org
     comes from the session. A fault reads as off. Default empty, so OFF.
     """
@@ -873,6 +879,77 @@ def integration_access_allowed(organization_id: str | None) -> bool:
         return False
     listed = {p.strip().lower() for p in raw.split(",") if p.strip()}
     return "*" in listed or org in listed
+
+
+# ── The access of one member, with the integration rules (ACC-3) ────────────
+
+
+async def _load_overrides(db: Any, user_id: str) -> list[dict[str, Any]]:
+    """The per-member overrides of one ``app_user`` row, by permission."""
+    rows = (
+        await db.execute(
+            text(
+                "SELECT permission, effect, reason, set_by, set_at "
+                "  FROM user_permission_override "
+                " WHERE user_id = CAST(:uid AS uuid) ORDER BY permission"
+            ),
+            {"uid": user_id},
+        )
+    ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+async def _role_permission_map(db: Any, user_id: str) -> dict[str, list[str]]:
+    """``{role_slug: [permission, ...]}`` for the member's assigned roles."""
+    rows = (
+        await db.execute(
+            text(
+                "SELECT r.slug AS slug, rp.permission AS permission "
+                "  FROM user_role ur "
+                "  JOIN org_role r            ON r.id = ur.role_id "
+                "  JOIN org_role_permission rp ON rp.role_id = r.id "
+                " WHERE ur.user_id = CAST(:uid AS uuid)"
+            ),
+            {"uid": user_id},
+        )
+    ).mappings().all()
+    out: dict[str, list[str]] = {}
+    for r in rows:
+        out.setdefault(r["slug"], []).append(r["permission"])
+    return out
+
+
+def member_rule_access(
+    role_perms: dict[str, list[str]],
+    overrides: list[dict[str, Any]],
+    *,
+    roles: Any,
+    is_active: bool,
+    email: str,
+    rules: IntegrationRules,
+) -> tuple[EffectiveAccess, Narrowed]:
+    """``(base, narrowed)``: the access of one member before and after the rules.
+
+    The ONE base-and-narrow step (ACC-3). Two routes call it: the admin
+    preview ``GET /admin/members/{email}/access`` and the self view
+    ``GET /auth/me/integrations``. So the two never give two reasons for one
+    answer. *base* is ``build_access`` of the roles and the overrides.
+    *narrowed* is ``acb_auth.integration_access.narrow`` of *base*, the same
+    function that the resolver calls. *rules* is the
+    ``acb_auth.access.IntegrationRules`` of ``read_integration_rules``.
+    Pure: no database read. Fences: ``test_auth_me_integrations.py``,
+    ``test_integration_access_rules.py``.
+    """
+    base = build_access(
+        [p for perms in role_perms.values() for p in perms],
+        [(o["permission"], o["effect"]) for o in overrides],
+        roles=roles,
+        is_active=is_active,
+    )
+    narrowed = narrow_by_rules(
+        base, rules.raw, email=email, groups=rules.groups, read_failed=rules.failed,
+    )
+    return base, narrowed
 
 
 async def assert_group_rule_gate(
