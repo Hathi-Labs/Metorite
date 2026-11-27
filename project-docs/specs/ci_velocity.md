@@ -853,16 +853,22 @@ and sign-outs, and each one waited for a person. Now the keeper reads why the
 last turn of a lane ended. `stop_cause()` reads the transcript tail. The
 causes are `network`, `usage`, `signout`, `memory` and `normal`.
 
-- `network`: a wake after 2, 5, 15 and 30 minutes, for each lane. A good turn
-  resets the wait.
+- `network`: a wake at the first keeper pass after 2, 5, 15 and 30 minutes,
+  for each lane. The timer runs every 10 minutes. A good turn resets the wait.
 - `usage`: no wake before the reset time plus 2 minutes, or 60 minutes with no
   reset time.
-- `signout`: no wake, and one NOTE line in `~/lanes/merge-queue.log`.
+- `signout`: no wake, and one NOTE line in `~/lanes/merge-queue.log`. The
+  NOTE names §5.1 of `docs/home_box.md` for a Claude account, and §5.2 and
+  §5.3 for the Metorite MCP. Only an error result of a `mcp__metorite__*`
+  tool counts.
 - `memory` and `normal`: the CIV-19 rules.
 
+- `lane-orch` keeps its event wake, but not on a sign-out or before a usage
+  reset.
+
 The keeper writes `~/lanes/lane-stops.tsv`, one row for each stop of a fault
-cause. The weekly review (CIV-10) adds a table of the hours lost by lane and
-cause. `docs/home_box.md` §3.7 holds the operator view.
+cause. It removes a closed row after 30 days. The weekly review (CIV-10) puts
+a table of the hours lost by lane and cause into the prompt of its session. `docs/home_box.md` §3.7 holds the operator view.
 
 **Files:** `scripts/home_server/lane_keeper.py`,
 `scripts/home_server/delivery_review.sh`, `.claude/commands/delivery-review.md`.

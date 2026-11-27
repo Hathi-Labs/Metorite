@@ -464,6 +464,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # CIV-ORCH (task 4058): the lane keeper's cursor of orch-events.log, for
     # tests. A tenant must never save it.
     "KEEPER_ORCH_CURSOR",
+    # CIV-LIVE (task 4060): the stop log that the weekly review reads, and a
+    # fixed time for its test (delivery_review.sh). A tenant must never save these.
+    "LANE_STOPS", "LANE_STOPS_NOW",
     # SBX-13: the sandbox door client reads the run capability from this name
     # (sandbox/metorite_door.py). The broker sets it in the tool container. A
     # tenant must never save it.

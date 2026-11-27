@@ -789,7 +789,8 @@ def test_civ_live_a_signout_never_wakes_and_writes_one_note(keeper, monkeypatch)
     assert notes == [
         "NOTE\tlane-keeper\t"
         + mod._hhmm(NOW)
-        + " UTC: lane-s stopped on a sign-out. See the sign-in alarm (docs/home_box.md §5.3)."
+        + " UTC: lane-s stopped on a sign-out of its Claude account. "
+        "See docs/home_box.md §5.1: run hub-add-accounts, then start fresh lanes."
     ]
     assert "skip lane-s cause=signout: no wake on a sign-out" in _log(home)
     # A sign-out of the Metorite MCP is the same cause, so still no second NOTE.
@@ -851,3 +852,116 @@ def test_civ_live_the_time_lost_table_sums_hours_by_cause(keeper):
     assert "| lane-b | 0.0 | 0.0 | 1.5 | 0.0 | 1.5 |" in table
     assert "| Total | 1.0 | 2.0 | 1.5 | 0.0 | 4.5 |" in table
     assert "No lane stopped" in mod.time_lost("", NOW)
+
+
+def test_civ_live_a_metorite_signout_note_names_the_sign_in_alarm(keeper, monkeypatch):
+    mod, home = keeper
+    _lanes(home, "lane-s")
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run([]))
+    mcp = _tool_result('MCP server "metorite" needs authentication', True)
+    _write(home, "s-s", [_prompt(), _tool_use(), mcp, _said(), *END], 99999)
+    assert mod.run_pass(json.dumps([_agent("lane-s", "s-s", "done")]), now=NOW) == []
+    note = (home / "lanes" / "merge-queue.log").read_text(encoding="utf-8")
+    assert "lane-s stopped on a sign-out of the Metorite MCP" in note
+    assert "(docs/home_box.md §5.2 and §5.3)" in note
+
+
+def test_civ_live_a_bash_error_that_quotes_the_sign_in_text_is_not_a_signout(keeper):
+    mod, _ = keeper
+    quoted = _tool_result(
+        'grep: MCP server "metorite" needs you to sign in again (run /mcp to re-authenticate)', True
+    )
+    tail = _tail(_prompt(), _tool_use("Bash"), quoted, _said(), *END)
+    assert mod.stop_cause(tail).cause == "normal"
+    # The same text from a Metorite tool is a sign-out.
+    real = _tail(_prompt(), _tool_use("mcp__metorite__my_work"), quoted, _said(), *END)
+    assert mod.stop_cause(real) == mod.Stop("signout", kind="metorite")
+
+
+def test_civ_live_a_plain_text_reset_date_in_the_past_is_next_year_and_dropped(keeper):
+    mod, _ = keeper
+    import datetime as dt
+
+    at = dt.datetime(2026, 11, 25, 10, tzinfo=dt.UTC).timestamp()
+    old = _api_error("You've hit your weekly limit · resets Nov 23, 11pm (UTC)", "rate_limit", at=at)
+    # Nov 23 of 2027 is more than 8 days ahead: no reset, so the 60-minute wait serves.
+    assert mod.stop_cause(_tail(old)) == mod.Stop("usage", None)
+    near = _api_error("You've hit your weekly limit · resets Nov 27, 11pm (UTC)", "rate_limit", at=at)
+    assert mod.stop_cause(_tail(near)).reset_at == dt.datetime(2026, 11, 27, 23, tzinfo=dt.UTC).timestamp()
+    far = _api_error("limit", "rate_limit", at=at, quotaLimits={"resetsAt": at + 9 * 86400})
+    assert mod.stop_cause(_tail(far)).reset_at is None
+
+
+def test_civ_live_an_open_row_of_a_lane_that_left_the_list_closes(keeper, monkeypatch):
+    mod, home = keeper
+    _lanes(home, "lane-n", "lane-x")
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run([]))
+    _write(home, "s-n", [_prompt(), NETWORK_LOST], 60)
+    _write(home, "s-x", [_prompt(), NETWORK_LOST], 60)
+    agents = json.dumps([_agent("lane-n", "s-n", "blocked"), _agent("lane-x", "s-x", "blocked")])
+    mod.run_pass(agents, now=NOW)
+    _lanes(home, "lane-x")  # lane-n leaves the list
+    mod.run_pass(agents, now=NOW + 600)
+    iso = mod._iso
+    assert _stops(home) == [
+        [iso(NOW), iso(NOW + 600), "lane-n", "network"],
+        [iso(NOW), "-", "lane-x", "network"],
+    ]
+    state = json.loads((home / "lanes" / "keeper-state.json").read_text(encoding="utf-8"))
+    assert list(state["_stops"]) == ["lane-x"]
+    # The pure rule: a lane missing from seen closes, with its cause kept.
+    open_stops = {"lane-q": {"cause": "usage", "start": iso(NOW)}}
+    assert mod.update_stops(open_stops, {}, NOW + 60) == [("close", "lane-q", "usage", iso(NOW))]
+    assert open_stops == {}
+
+
+def test_civ_live_the_stop_log_drops_closed_rows_older_than_30_days(keeper, tmp_path):
+    mod, _ = keeper
+    iso = mod._iso
+    path = tmp_path / "lane-stops.tsv"
+    path.write_text(
+        f"{iso(NOW - 40 * 86400)}\t{iso(NOW - 31 * 86400)}\tlane-a\tusage\n"
+        f"{iso(NOW - 40 * 86400)}\t-\tlane-b\tmemory\n"
+        f"{iso(NOW - 20 * 86400)}\t{iso(NOW - 19 * 86400)}\tlane-c\tnetwork\n",
+        encoding="utf-8",
+    )
+    mod.write_stops(path, [("open", "lane-d", "network", iso(NOW))], NOW)
+    lanes = [ln.split("\t")[2] for ln in path.read_text(encoding="utf-8").splitlines()]
+    assert lanes == ["lane-b", "lane-c", "lane-d"]
+
+
+def test_civ_live_lane_orch_does_not_wake_on_a_signout_and_waits_for_a_usage_reset(keeper, monkeypatch):
+    mod, home = keeper
+    _lanes(home, "lane-orch")
+    calls: list = []
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run(calls))
+    agents = json.dumps([_agent("lane-orch", "s-o", "done")])
+    _orch(home, 2, cursor=0)
+    _write(home, "s-o", [_prompt(), SIGNOUT_CLAUDE], 60)
+    assert mod.run_pass(agents, now=NOW) == []
+    assert "skip lane-orch cause=signout" in _log(home)
+    _write(home, "s-o", [_prompt(), USAGE_WEEKLY], 60)
+    assert mod.run_pass(agents, now=WEEKLY_RESET + 60) == []
+    assert "skip lane-orch cause=usage" in _log(home)
+    assert _orch_calls(calls) == []
+    assert [w[2] for w in mod.run_pass(agents, now=WEEKLY_RESET + 121)] == ["orch-events"]
+
+
+def test_civ_live_one_bad_tail_does_not_stop_the_pass(keeper, monkeypatch):
+    mod, home = keeper
+    _lanes(home, "lane-a", "lane-b")
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run([]))
+    _write(home, "s-a", [_prompt(), _said(), *END], 5000)
+    _write(home, "s-b", [_prompt(), _said(), *END], 5000)
+    real = mod.stop_cause
+
+    def flaky(tail, **kw):
+        if "BAD" in tail:
+            raise RuntimeError("bad record")
+        return real(tail, **kw)
+
+    monkeypatch.setattr(mod, "stop_cause", flaky)
+    _write(home, "s-a", [_prompt("BAD"), _said(), *END], 5000)
+    agents = json.dumps([_agent("lane-a", "s-a", "done"), _agent("lane-b", "s-b", "done")])
+    assert [w[0] for w in mod.run_pass(agents, now=NOW)] == ["lane-a", "lane-b"]
+    assert "cause lane-a: read failed (RuntimeError), so cause=normal" in _log(home)

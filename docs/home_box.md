@@ -212,18 +212,23 @@ line.
 
 | Cause | What the keeper sees | What the keeper does |
 |---|---|---|
-| `network` | An API error record of a lost connection or a 5xx status | Wakes it after 2, 5, 15, then 30 minutes. A good turn sets the wait back to 2 minutes. |
+| `network` | An API error record of a lost connection or a 5xx status | Wakes it at the first keeper pass after 2, 5, 15, then 30 minutes. The timer runs every 10 minutes. A good turn sets the wait back to 2 minutes. |
 | `usage` | An API error record of a usage limit | No wake until the reset time plus 2 minutes. With no reset time, it waits 60 minutes. |
-| `signout` | A `/login` error of Claude, or a sign-in error of the Metorite MCP in the last turn | No wake. One NOTE line goes to `~/lanes/merge-queue.log`. A person signs in (§5.2). |
+| `signout` | A `/login` error of Claude, or a sign-in error of a Metorite tool in the last turn | No wake. One NOTE line goes to `~/lanes/merge-queue.log`, and it names the kind. For a Claude account, see §5.1: run `hub-add-accounts`, then start fresh lanes. For the Metorite MCP, see §5.2 and §5.3. |
 | `memory` | No end record, and the session has no process | The normal rules |
 | `normal` | Any other end | The normal rules |
 
 - The network wait takes the place of the 10-minute age and the 30-minute cap.
 - An account change wakes a `usage` lane. It never wakes a `signout` lane.
+- `lane-orch` keeps its event wake (§3.10). It gets no wake on a sign-out,
+  and no wake before a usage reset.
+- If the keeper cannot read the tail of a lane, it logs the error and uses
+  `normal` for that lane.
 - `~/lanes/lane-stops.tsv` has one row for each stop of a fault cause:
   `<start>`, `<end or ->`, `<lane>` and `<cause>`, split by tabs. The times are
   ISO UTC. A row opens when the keeper first sees the stop. It closes when the
-  lane runs again.
+  lane runs again, or when the lane leaves the list. The keeper removes a
+  closed row after 30 days.
 - The weekly review (CIV-10) shows the hours by cause for each lane. To see
   the table now, run
   `python3 ~/.local/lib/metorite/lane_keeper.py --time-lost --days 7`.

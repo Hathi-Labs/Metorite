@@ -49,22 +49,25 @@ no PC and no person. One pass:
 
     - ``network``: an API error record of a lost connection or a 5xx status
       (ENOTFOUND, ECONNRESET, ETIMEDOUT, socket hang up, fetch failed). The
-      keeper wakes it after a backoff of 2, 5, 15 and 30 minutes since the
-      last transcript write, one step for each network wake. The backoff takes
+      keeper wakes it at the first pass after a backoff of 2, 5, 15 and 30
+      minutes since the last transcript write, one step for each network wake. The backoff takes
       the place of the 10-minute age and the 30-minute cap. A turn that ends
       for another cause sets the step back to the first.
     - ``usage``: an API error record of a usage or rate limit. No wake before
       its reset time plus 2 minutes. With no reset time, no wake for 60
       minutes after the last transcript write. An account change ignores it.
-    - ``signout``: a sign-in error of Claude, or of the Metorite MCP in the last
-      turn. No wake at all. When the stop row opens, one NOTE line goes to
-      ``~/lanes/merge-queue.log``. Nothing repeats while the cause stays.
+    - ``signout``: a sign-in error of Claude, or an error result of a
+      ``mcp__metorite__*`` tool in the last turn that says the sign-in is gone.
+      No wake at all. When the stop row opens, one NOTE line goes to
+      ``~/lanes/merge-queue.log``. It names the kind. Nothing repeats while the
+      cause stays.
     - ``memory``: no end record, and the session has no live process.
     - ``normal``: any other end. ``memory`` and ``normal`` keep points 3 to 6.
 
     ``~/lanes/lane-stops.tsv`` holds one row for each stop of a fault cause:
     ``<iso start>\t<iso end or ->\t<lane>\t<cause>``. A row opens when the
-    keeper first sees the stop, and it closes when the lane runs again. The
+    keeper first sees the stop, and it closes when the lane runs again, or
+    when the lane leaves the list. A closed row older than 30 days goes. The
     weekly review reads it (``delivery_review.sh``, ``--time-lost``).
 
 Every wake and every skip with a reason goes to ``~/lanes/keeper.log``, with
@@ -151,17 +154,29 @@ RESET_RE = re.compile(
     r"(?P<h>\d{1,2})(?::(?P<m>\d{2}))?\s*(?P<ap>am|pm)\s*\(UTC\)",
     re.I,
 )
-SIGNOUT_NOTE = (
-    "NOTE\tlane-keeper\t{hhmm} UTC: {lane} stopped on a sign-out. "
-    "See the sign-in alarm (docs/home_box.md §5.3).\n"
-)
+SIGNOUT_NOTE = {
+    "claude": (
+        "NOTE\tlane-keeper\t{hhmm} UTC: {lane} stopped on a sign-out of its Claude account. "
+        "See docs/home_box.md §5.1: run hub-add-accounts, then start fresh lanes.\n"
+    ),
+    "metorite": (
+        "NOTE\tlane-keeper\t{hhmm} UTC: {lane} stopped on a sign-out of the Metorite MCP. "
+        "See the sign-in alarm (docs/home_box.md §5.2 and §5.3).\n"
+    ),
+}
+# A reset further ahead than this is a wrong parse: the 60-minute wait serves.
+RESET_MAX_S = 8 * 86400
+# lane-stops.tsv keeps a closed row for this long.
+STOPS_KEEP_S = 30 * 86400
 
 
 class Stop(NamedTuple):
-    """Why the last turn of a lane ended. ``reset_at`` is a usage reset (epoch s)."""
+    """Why the last turn of a lane ended. ``reset_at`` is a usage reset (epoch s).
+    ``kind`` names the sign-in of a ``signout``: ``claude`` or ``metorite``."""
 
     cause: str
     reset_at: float | None = None
+    kind: str = ""
 
 
 def _epoch(ts: object) -> float | None:
@@ -185,6 +200,14 @@ def _text(rec: dict) -> str:
 
 def _reset_at(rec: dict, text: str) -> float | None:
     """The reset time of a usage limit. The record field first, then the message."""
+    base = _epoch(rec.get("timestamp"))
+    t = _reset_raw(rec, text, base)
+    if t is None or (base is not None and not base - 60 <= t <= base + RESET_MAX_S):
+        return None
+    return t
+
+
+def _reset_raw(rec: dict, text: str, base: float | None) -> float | None:
     params = rec.get("apiErrorParams")
     for d in (
         rec.get("quotaLimits"),
@@ -194,20 +217,21 @@ def _reset_at(rec: dict, text: str) -> float | None:
         if isinstance(v, (int, float)) and v > 0:
             return v / 1000 if v > 1e12 else float(v)
     m = RESET_RE.search(text)
-    base = _epoch(rec.get("timestamp"))
     if not m or base is None:
         return None
     b = dt.datetime.fromtimestamp(base, dt.UTC)
     hour = int(m["h"]) % 12 + (12 if m["ap"].lower() == "pm" else 0)
     minute = int(m["m"] or 0)
     if m["mon"]:
+        # The nearest date at or after the record. "Nov 23" on a Nov 25 record
+        # is Nov 23 of next year, and the 8-day cap then drops it.
         try:
             month = list(calendar.month_abbr).index(m["mon"].title())
             t = b.replace(month=month, day=int(m["day"]), hour=hour, minute=minute, second=0, microsecond=0)
+            if t < b:
+                t = t.replace(year=t.year + 1)
         except ValueError:
             return None
-        if t < b - dt.timedelta(days=1):
-            t = t.replace(year=t.year + 1)
     else:
         t = b.replace(hour=hour, minute=minute, second=0, microsecond=0)
         if t <= b:
@@ -222,7 +246,7 @@ def _api_cause(rec: dict) -> Stop:
     status = status if isinstance(status, int) else 0
     text = _text(rec)
     if err == "authentication_failed" or status == 401 or SIGNOUT_RE.search(text):
-        return Stop("signout")
+        return Stop("signout", kind="claude")
     if err == "rate_limit" or api == "usage_limit_reached" or status == 429 or USAGE_RE.search(text):
         return Stop("usage", _reset_at(rec, text))
     if err == "server_error" or api == "connection_failed" or status >= 500 or NETWORK_RE.search(text):
@@ -230,15 +254,32 @@ def _api_cause(rec: dict) -> Stop:
     return Stop("normal")
 
 
-def _tool_errors(rec: dict) -> list[str]:
+def _parts(rec: dict) -> list[dict]:
     msg = rec.get("message")
     content = msg.get("content") if isinstance(msg, dict) else None
-    out = []
-    for x in content if isinstance(content, list) else ():
-        if isinstance(x, dict) and x.get("type") == "tool_result" and x.get("is_error"):
+    return [x for x in content if isinstance(x, dict)] if isinstance(content, list) else []
+
+
+def _metorite_signout(turn: list[dict]) -> bool:
+    """True when an error result of a ``mcp__metorite__*`` tool in ``turn`` says
+    the sign-in is gone. The result of any other tool never counts: a Bash
+    result can quote the text."""
+    ids = {
+        x.get("id")
+        for rec in turn
+        for x in _parts(rec)
+        if x.get("type") == "tool_use" and str(x.get("name", "")).startswith("mcp__metorite__")
+    }
+    for rec in turn:
+        for x in _parts(rec):
+            if x.get("type") != "tool_result" or not x.get("is_error"):
+                continue
+            if x.get("tool_use_id") not in ids:
+                continue
             c = x.get("content")
-            out.append(c if isinstance(c, str) else json.dumps(c))
-    return out
+            if MCP_SIGNOUT_RE.search(c if isinstance(c, str) else json.dumps(c)):
+                return True
+    return False
 
 
 def _is_prompt(rec: dict) -> bool:
@@ -265,6 +306,7 @@ def stop_cause(tail: str, *, alive: bool | None = None) -> Stop:
     ``alive`` None means the process state is not known."""
     ended = False
     last: dict | None = None
+    turn: list[dict] = []
     for ln in reversed(tail.splitlines()):
         try:
             rec = json.loads(ln)
@@ -280,10 +322,11 @@ def stop_cause(tail: str, *, alive: bool | None = None) -> Stop:
             last = rec
             if rec.get("type") == "assistant" and rec.get("isApiErrorMessage"):
                 return _api_cause(rec)
-        if any(MCP_SIGNOUT_RE.search(e) for e in _tool_errors(rec)):
-            return Stop("signout")
+        turn.append(rec)
         if _is_prompt(rec):
             break
+    if _metorite_signout(turn):
+        return Stop("signout", kind="metorite")
     if last is not None and not ended and alive is False:
         return Stop("memory")
     return Stop("normal")
@@ -435,11 +478,7 @@ def plan(
             wakes.append((name, a["sessionId"], reason))
             continue
         if stop.cause == "usage" and not force_all:
-            until = (
-                stop.reset_at + USAGE_GRACE_S
-                if stop.reset_at
-                else now - age + USAGE_DEFAULT_S
-            )
+            until = usage_until(stop, now, age)
             if now < until:
                 skips.append((name, f"usage limit, no wake before {_hhmm(until)} UTC"))
                 continue
@@ -451,6 +490,14 @@ def plan(
             continue
         wakes.append((name, a["sessionId"], reason))
     return wakes
+
+
+def usage_until(stop: Stop, now: float, age: float) -> float:
+    """No wake of a usage stop before this time: the reset plus 2 minutes, or
+    60 minutes after the last transcript write."""
+    if stop.reset_at:
+        return stop.reset_at + USAGE_GRACE_S
+    return now - age + USAGE_DEFAULT_S
 
 
 def _hhmm(t: float) -> str:
@@ -471,6 +518,11 @@ def update_stops(
     fault cause opens when the keeper first sees the stop. It closes when the
     lane runs, or when its last turn ended for another cause."""
     out: list[tuple[str, str, str, str]] = []
+    # A lane that left the list, or lost its session or transcript: its open
+    # row closes now and keeps its cause.
+    for lane in sorted(set(open_stops) - set(seen)):
+        row = open_stops.pop(lane)
+        out.append(("close", lane, str(row.get("cause")), str(row.get("start"))))
     for lane, (running, cause) in sorted(seen.items()):
         row = open_stops.get(lane)
         if row and (running or row.get("cause") != cause):
@@ -493,6 +545,7 @@ def write_stops(path: Path, changes: list[tuple[str, str, str, str]], now: float
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
         lines = []
+    lines = [ln for ln in lines if not _expired(ln, now)]
     end = _iso(now)
     for action, lane, cause, start in changes:
         if action == "open":
@@ -507,6 +560,15 @@ def write_stops(path: Path, changes: list[tuple[str, str, str, str]], now: float
     tmp = path.with_suffix(".tmp")
     tmp.write_text("".join(ln + "\n" for ln in lines), encoding="utf-8")
     tmp.replace(path)
+
+
+def _expired(line: str, now: float) -> bool:
+    """A closed row that ended more than 30 days ago. An open row stays."""
+    f = line.split("\t")
+    if len(f) != 4 or f[1] == "-":
+        return False
+    end = _epoch(f[1])
+    return end is not None and end < now - STOPS_KEEP_S
 
 
 def time_lost(text: str, now: float, days: int = 7) -> str:
@@ -689,8 +751,12 @@ def _orch_wake(
     skip_lanes: set[str],
     busy: set[str],
     notes: dict[str, str],
+    causes: dict[str, Stop] | None = None,
 ) -> None:
-    """CIV-ORCH: wake lane-orch once for each new batch of events."""
+    """CIV-ORCH: wake lane-orch once for each new batch of events.
+
+    CIV-LIVE: no wake while its last turn ended on a sign-out, and none before
+    the reset of a usage limit. A network stop wakes it, because events are new work."""
     total = _count_lines(LANES_DIR / "orch-events.log")
     cursor = _cursor(ORCH_CURSOR)
     batch = state.get("_orch_batch", 0)
@@ -706,6 +772,16 @@ def _orch_wake(
         age = transcript_age(a["sessionId"], now, HOME / ".claude" / "projects")
         if not (a.get("status") == "idle" and age is not None and age >= STALE_S):
             log(f"skip {ORCH_LANE}: its session is inside a turn ({why_new})")
+            return
+    stop = (causes or {}).get(ORCH_LANE, Stop("normal"))
+    if a and stop.cause == "signout":
+        log(f"skip {ORCH_LANE} cause=signout: no wake on a sign-out ({why_new})")
+        return
+    if a and stop.cause == "usage":
+        age = transcript_age(a["sessionId"], now, HOME / ".claude" / "projects") or 0.0
+        until = usage_until(stop, now, age)
+        if now < until:
+            log(f"skip {ORCH_LANE} cause=usage: no wake before {_hhmm(until)} UTC ({why_new})")
             return
     if a:
         sid = a["sessionId"]
@@ -744,7 +820,11 @@ def _causes(
         age = ages.get(sid)
         stale = a.get("status") == "idle" and age is not None and age >= STALE_S
         running = name in busy or (a.get("state") not in ENDED and not stale)
-        stop = stop_cause(read_tail(path), alive=pid_alive(a.get("pid")))
+        try:
+            stop = stop_cause(read_tail(path), alive=pid_alive(a.get("pid")))
+        except Exception as exc:  # one bad tail must not stop the pass for all lanes
+            log(f"cause {name}: read failed ({type(exc).__name__}), so cause=normal")
+            stop = Stop("normal")
         causes[name] = stop
         seen[name] = (running, stop.cause)
     return causes, seen
@@ -774,7 +854,9 @@ def _wake_all(
     return failed_forced
 
 
-def _stop_log(state: dict, seen: dict[str, tuple[bool, str]], now: float) -> None:
+def _stop_log(
+    state: dict, seen: dict[str, tuple[bool, str]], now: float, causes: dict[str, Stop]
+) -> None:
     """Open and close rows of ``lane-stops.tsv``, and write one NOTE for a sign-out."""
     open_stops = state.get("_stops") if isinstance(state.get("_stops"), dict) else {}
     changes = update_stops(open_stops, seen, now)
@@ -784,7 +866,8 @@ def _stop_log(state: dict, seen: dict[str, tuple[bool, str]], now: float) -> Non
         log(f"stop-log {action} {lane} cause={cause}")
         if action == "open" and cause == "signout":
             with open(LANES_DIR / "merge-queue.log", "a", encoding="utf-8") as f:
-                f.write(SIGNOUT_NOTE.format(hhmm=_hhmm(now), lane=lane))
+                kind = causes.get(lane, Stop("signout")).kind or "metorite"
+                f.write(SIGNOUT_NOTE[kind].format(hhmm=_hhmm(now), lane=lane))
 
 
 def run_pass(
@@ -855,7 +938,7 @@ def run_pass(
     for name, why in skips:
         log(f"skip {name} cause={causes.get(name, Stop('normal')).cause}: {why}")
     failed_forced = _wake_all(agents, wakes, causes, state, net, now)
-    _stop_log(state, seen, now)
+    _stop_log(state, seen, now, causes)
     skip_lanes = _csv("KEEPER_SKIP_LANES", DEFAULT_SKIP_LANES)
     notes = start_notes(lanes)
     for name in sorted(lanes - set(newest_per_lane(agents)) - skip_lanes - busy):
@@ -870,7 +953,8 @@ def run_pass(
             state[name] = now
             wakes.append((name, "", "fresh start"))
     _orch_wake(
-        agents, state, now, wakes, lanes=lanes, skip_lanes=skip_lanes, busy=busy, notes=notes
+        agents, state, now, wakes, lanes=lanes, skip_lanes=skip_lanes, busy=busy, notes=notes,
+        causes=causes,
     )
     if not failed_forced:
         state["_account"] = email

@@ -1,12 +1,15 @@
-"""CIV-LIVE (task 4060): the weekly review prints the time lost by lane.
+"""CIV-LIVE (task 4060): the weekly review gets the time lost by lane.
 
-``delivery_review.sh`` with ``DELIVERY_REVIEW_TABLE_ONLY=1`` prints the table
-from a fixture ``lane-stops.tsv`` and stops before git and claude.
+The whole ``delivery_review.sh`` runs with a fake ``git`` and a fake
+``claude`` on PATH. The fake claude writes its argv to a file, so the test
+reads the prompt text that the review session gets.
 """
 
 import datetime as dt
+import json
 import os
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
@@ -17,32 +20,59 @@ SCRIPT = ROOT / "scripts" / "home_server" / "delivery_review.sh"
 COMMAND = ROOT / ".claude" / "commands" / "delivery-review.md"
 NOW = 1_800_000_000
 
+pytestmark = pytest.mark.skipif(
+    not shutil.which("bash") or not shutil.which("python3"), reason="needs bash and python3"
+)
+
+FAKE_GIT = """#!/usr/bin/env bash
+# git -C <repo> worktree add --quiet --detach <dir> origin/main: link the
+# scripts of the real checkout into the throwaway dir.
+if [ "$3" = worktree ] && [ "$4" = add ] && [ -n "$FAKE_SCRIPTS" ]; then
+  ln -s "$FAKE_SCRIPTS" "$7/scripts"
+fi
+exit 0
+"""
+FAKE_CLAUDE = """#!/usr/bin/env python3
+import json, os, sys
+open(os.environ["FAKE_ARGV"], "w").write(json.dumps(sys.argv[1:]))
+"""
+
 
 def _iso(t):
     return dt.datetime.fromtimestamp(t, dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _table(tmp_path, rows):
+def _run(tmp_path, rows, *, scripts=True):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name, body in (("git", FAKE_GIT), ("claude", FAKE_CLAUDE)):
+        f = bin_dir / name
+        f.write_text(body, encoding="utf-8")
+        f.chmod(f.stat().st_mode | stat.S_IEXEC)
     stops = tmp_path / "lane-stops.tsv"
     stops.write_text("".join("\t".join(r) + "\n" for r in rows), encoding="utf-8")
+    argv = tmp_path / "argv.json"
     env = {
-        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "PATH": f"{bin_dir}:{os.environ.get('PATH', '/usr/bin:/bin')}",
         "HOME": str(tmp_path),
-        "METORITE_REPO": str(ROOT),
+        "TMPDIR": str(tmp_path),
+        "METORITE_REPO": str(tmp_path / "repo"),
         "LANE_STOPS": str(stops),
         "LANE_STOPS_NOW": str(NOW),
-        "DELIVERY_REVIEW_TABLE_ONLY": "1",
+        "FAKE_ARGV": str(argv),
+        "FAKE_SCRIPTS": str(ROOT / "scripts") if scripts else "",
     }
     r = subprocess.run(
         ["bash", str(SCRIPT)], capture_output=True, text=True, timeout=60, env=env, encoding="utf-8"
     )
     assert r.returncode == 0, r.stderr
-    return r.stdout
+    args = json.loads(argv.read_text(encoding="utf-8"))
+    assert args[:2] == ["-p", "/delivery-review"]
+    return args[args.index("--append-system-prompt") + 1], args
 
 
-@pytest.mark.skipif(not shutil.which("bash") or not shutil.which("python3"), reason="needs bash")
-def test_the_review_prints_hours_by_cause_for_each_lane_from_the_stop_log(tmp_path):
-    out = _table(
+def test_the_review_prompt_holds_hours_by_cause_for_each_lane(tmp_path):
+    prompt, _ = _run(
         tmp_path,
         [
             (_iso(NOW - 10 * 86400), _iso(NOW - 9 * 86400), "lane-old", "usage"),
@@ -52,23 +82,28 @@ def test_the_review_prints_hours_by_cause_for_each_lane_from_the_stop_log(tmp_pa
             (_iso(NOW - 7200), "-", "lane-pro", "signout"),
         ],
     )
-    assert "Time lost by lane (last 7 days, hours)" in out
-    assert "| Lane | network | usage | signout | memory | Total |" in out
-    assert "| lane-ci | 0.5 | 4.0 | 0.0 | 0.0 | 4.5 |" in out
-    assert "| lane-pro | 0.0 | 0.0 | 2.0 | 1.0 | 3.0 |" in out
-    assert "| Total | 0.5 | 4.0 | 2.0 | 1.0 | 7.5 |" in out
-    assert "lane-old" not in out
+    assert "Time lost by lane (last 7 days, hours)" in prompt
+    assert "| Lane | network | usage | signout | memory | Total |" in prompt
+    assert "| lane-ci | 0.5 | 4.0 | 0.0 | 0.0 | 4.5 |" in prompt
+    assert "| lane-pro | 0.0 | 0.0 | 2.0 | 1.0 | 3.0 |" in prompt
+    assert "| Total | 0.5 | 4.0 | 2.0 | 1.0 | 7.5 |" in prompt
+    assert "lane-old" not in prompt
 
 
-@pytest.mark.skipif(not shutil.which("bash") or not shutil.which("python3"), reason="needs bash")
 def test_no_stop_log_gives_a_plain_line(tmp_path):
-    out = _table(tmp_path, [])
-    assert "No lane stopped on a fault" in out
+    prompt, _ = _run(tmp_path, [])
+    assert "No lane stopped on a fault" in prompt
 
 
-def test_the_session_may_read_the_table_and_the_command_puts_it_in_the_report():
+def test_a_table_step_that_fails_still_runs_the_review(tmp_path):
+    # No lane_keeper.py in the throwaway checkout: the table step fails.
+    prompt, args = _run(tmp_path, [], scripts=False)
+    assert "the table step failed" in prompt
+    assert "--allowedTools" in args
+
+
+def test_no_file_in_tmp_carries_the_table():
     sh = SCRIPT.read_text(encoding="utf-8")
-    assert '"Read(//tmp/lane_time_lost.md)"' in sh
-    assert 'time_lost "$WORK" > "$LOST_TABLE"' in sh
+    assert "lane_time_lost" not in sh and "--append-system-prompt" in sh
     cmd = COMMAND.read_text(encoding="utf-8")
-    assert "/tmp/lane_time_lost.md" in cmd and "Time lost by lane" in cmd
+    assert "Time lost by lane" in cmd and "lane_time_lost" not in cmd
