@@ -1087,7 +1087,7 @@ TLY-2a builds the program's side first, against a fake link (`tests/unit/test_ta
 
 > ✅ **ACC-2 MERGED** (task 3988, #2900, and the follow-on #2909), the console control of §3.9.5, dark behind the same flag.
 
-> 🔨 **ACC-3 BUILT** (2026-11-27, task 3989, branch `mt-fbef9dab-my-integrations`), the backend only: `GET /auth/me/integrations` (§3.9.4), dark behind the same flag. Another member builds the People tab.
+> 🔨 **ACC-3 BUILT** (2026-11-27, task 3989, branch `mt-fbef9dab-my-integrations`), the backend only: `GET /auth/me/integrations` (§3.9.4), dark behind the same flag. Another member builds the People tab. Review fix 1 (2026-11-27): an API row follows the grant of the call route (§3.9.4).
 
 > ACC-4 is a 📝 PLAN. The owner approved teams on 2026-11-26 (ACC-Q2), and ACC-Q4 in §10 is open.
 
@@ -1218,15 +1218,17 @@ Each site below reads the resolved access, so the rule reaches it with no change
 1. An organization off `INTEGRATION_ACCESS_ORGS` gets 404 before any session opens.
 2. A caller with no address, or with access that is not active, gets 403.
 3. `get_org_id` gives the organization. The member row is the caller's own `app_user` row, from `find_member` with the session's address. The route does not use `user.user_id`, because it is an identity id under `IDENTITY_CUTOVER`. No row gets 403.
-4. A failed read of the closed list, or a failed read of the rules, gets 503. The route never sends a list with no reasons.
+4. A failed read of the closed list, of an API connection or of the rules gets 503. The route never sends a list with no reasons.
 
 The answer is `{"services": [...], "source": "integration-rule"}`. Each row is exactly `{"service", "kind", "name", "allowed", "reason"}`, and the rows are in the order of `service`. `kind` is `mcp` or `api`, and `name` is the service without its prefix.
 
-- The list is `closed_list` of `integration_access.py`, with no change. A stored rule of a service off the list does not show.
-- `allowed` is `user.access.has(integrations:use:<service>)`. It is the same resolver and the same cache that the chat's `_integration_authorizer` reads.
+- The list starts as `closed_list` of `integration_access.py`, with no change. A stored rule of a service off the list does not show.
+- An MCP row shows for each MCP server of the list. Its `allowed` is `user.access.has(integrations:use:<service>)`. It is the same resolver and the same cache that the chat's `_integration_authorizer` reads.
+- An API row shows only when the call route can serve it. `API_CONNECTIONS_ORGS` must hold the organization, because each `/connections/api` route answers 404 when it does not. The organization must also hold the org-scope row of the template, with the status `connected` or `needs_reconnect`. The view reads the row with `api_connections.read_row` and `served`, the reads of the call route. So a template that the organization did not connect does not show.
+- The `allowed` of an API row is `api_connections.granted` over the access of the session. It is the one grant of the call route: the use right, and then the grant mark of the row. The mark `grant = admin` asks for `integrations:manage` (D-API-3). So a plain member reads No on a connected API row today.
 - The reason comes from `_common.member_rule_access`. It is the one step of roles, overrides and `narrow`, and the admin preview calls it too.
-- When that step and `allowed` do not agree (the cache window of 60 seconds), `allowed` stays and the reason is `updating`.
-- A caller whose roles and allow overrides match no listed service (a guest) gets `{"services": [], "source": ..., "blocked": "no-role"}`. So a guest does not see the names of the MCP servers.
+- When that step and `allowed` do not agree (the cache window of 60 seconds), `allowed` stays and the reason is `updating`. An API row compares `granted` over both accesses.
+- A caller whose roles and allow overrides match no service of the closed list (a guest) gets `{"services": [], "source": ..., "blocked": "no-role"}`. The test reads the list before the API filter, so a guest is blocked also when no row is left. So a guest does not see the names of the MCP servers. A member with no row left gets `{"services": [], "source": ...}`.
 - The answer never holds a mode, a team, a person, `set_by`, `set_at` or an address. That includes the caller's own team slugs.
 
 | Allowed | Case | Reason |
@@ -1240,9 +1242,14 @@ The answer is `{"services": [...], "source": "integration-rule"}`. Each row is e
 | No | The code cannot read the rules, and the roles and overrides allow it | `rules-unreadable` |
 | No | A deny override | `denied-for-you` |
 | No | No role gives it | `no-role` |
+| No | An API row: the use right holds, and the grant mark of the row asks for `integrations:manage`, which the member does not hold | `admin-only` |
 | Either | The cache and a fresh read do not agree yet | `updating` |
 
 A No row follows the order of `members._explain_ruled`. When the code cannot read the rules at all, a holder of `integrations:manage` sees `admin` on each row.
+
+`admin-only` comes after each other No. The call route reads the use right first and the grant mark second. So an inactive row, a rule, an unreadable rule, a deny override or a missing role keeps its own reason. A member who is on the list of a rule, and who holds no `integrations:manage`, reads `admin-only`.
+
+**Limits of a row, stated.** An MCP row says the access of the member, and not the state of the server. A disabled MCP server (`disconnected`) still shows, and a `needs_reconnect` API row shows too. The chat does not attach a disabled server, and the call of a `needs_reconnect` row answers 409. The scope of an agent, `MAF_MCP_ORGS` and a changed API template are also outside the answer.
 
 #### 3.9.5 The screens and the chat
 
@@ -1260,6 +1267,7 @@ A No row follows the order of `members._explain_ruled`. When the code cannot rea
   - Fences: `app/integrations/lib/whoCanUse.test.ts`, `app/integrations/lib/accessSave.test.ts`, `app/integrations/components/WhoCanUse.test.tsx` and `app/integrations/components/accessWiring.test.ts`.
 - **My access (slice c).** The People app tab "My access" lists the integrations of the organization for the member, each with "Yes" or "No" and the reason. It never shows another member's name or list.
   - **Backend built (ACC-3).** The tab reads `GET /auth/me/integrations` (§3.9.4). Another member builds the tab, and that work adds its own chat parity row.
+  - The tab lists an API connection only when the organization connected it, and only with `API_CONNECTIONS_ORGS` on. A plain member reads "No" on it with the reason `admin-only`, because each API connection holds `grant = admin` today.
   - The answer is the member's solo access, and never the access of a room or a session. A shared room can still refuse a "Yes". A room of more than 200 members, or a failed read of a room, does not narrow. A delegated run acts as its parent, and a run with no member gets no filter. No field of the answer says these.
 - **Chat (slice d).** An admin asks the assistant to change a rule, and a card confirms it. This waits for the owner decision of PAR-6b (task 3932).
 
@@ -1402,7 +1410,7 @@ ACC-1 comes first. ACC-2 and ACC-3 need it.
 |---|---|---|---|---|
 | **ACC-1** (task 3987) 🔨 BUILT 2026-11-26, dark | 1 | Backend: the storage, the resolver step, the two routes, the audit line and the flag (§3.9.2 to §3.9.4). Modes: everyone, chosen people, chosen teams and admins only, with the two group-write rules | 🟢 AGENT-SAFE to build dark. HIGH risk. The flag flip waits for the owner preview | Rows ACC-a to ACC-g below |
 | **ACC-2** (task 3988) 🔨 BUILT 2026-11-26, dark | 1 | The "Who can use" control on each connection (§3.9.5) | 🟢 AGENT-SAFE to build. STANDARD: UI, with an owner preview | Visual review passes in four contexts |
-| **ACC-3** (task 3989) 🔨 backend BUILT 2026-11-27, dark | 1 | The integrations list in My access, and `GET /auth/me/integrations`. This slice builds the route only. Another member builds the tab | 🟢 AGENT-SAFE to build. HIGH: it shows access | A member sees their own result only. Each reason of §3.9.4 maps to its case, and `allowed` equals the resolver and the chat authorizer. No body names another member, a team or `set_by`. A guest sees no service name. Org B changes nothing in org A (`test_auth_me_integrations.py`, `test_auth_me_integrations_r8.py`) |
+| **ACC-3** (task 3989) 🔨 backend BUILT 2026-11-27, dark | 1 | The integrations list in My access, and `GET /auth/me/integrations`. This slice builds the route only. Another member builds the tab | 🟢 AGENT-SAFE to build. HIGH: it shows access | A member sees their own result only. Each reason of §3.9.4 maps to its case. The `allowed` of an MCP row equals the resolver and the chat authorizer. The `allowed` of an API row equals the `_resolve` of the call route, and only a connection of the organization shows, with `API_CONNECTIONS_ORGS` on. A member of the seeded role reads `admin-only` on a connected API row. No body names another member, a team or `set_by`. A guest sees no service name. Org B changes nothing in org A (`test_auth_me_integrations.py`, `test_auth_me_integrations_r8.py`, which is on `r8.must_run`) |
 | **ACC-4** (task 3990) | 2 | The chat tool for admins, behind a card | 🔴 Waits for the owner decision of PAR-6b | Chat parity row |
 
 **ACC-1 acceptance, R8** (`test_integration_access_r8.py`, two organizations, a real database):
@@ -1466,8 +1474,10 @@ uv run ruff check packages/acb_auth apps/services/gateway/gateway/routes/admin
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 timeout 900 uv run pytest tests/unit/test_auth_me_integrations.py tests/unit/test_auth_me_integrations_r8.py \
   tests/unit/test_integration_access_rules.py tests/unit/test_integration_access_r8.py \
-  tests/unit/test_org_access_enforcement.py tests/unit/test_auth_me_features.py -v -rs
-uv run ruff check packages/acb_auth apps/services/gateway/gateway/routes/admin
+  tests/unit/test_org_access_enforcement.py tests/unit/test_auth_me_features.py \
+  tests/unit/test_api_call_egress.py tests/unit/test_api_call_limits.py tests/unit/test_api_connections_r8.py -v -rs
+uv run ruff check packages/acb_auth apps/services/gateway/gateway/routes/admin \
+  apps/services/gateway/gateway/routes/api_connections.py
 ```
 
 **Verify ACC-2 (§3.9.5).**

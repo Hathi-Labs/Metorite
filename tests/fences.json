@@ -276,6 +276,7 @@
       "tests/unit/test_audit_writers_org_r8.py",
       "tests/unit/test_auth_me_appearance_r8.py",
       "tests/unit/test_auth_me_install_features_r8.py",
+      "tests/unit/test_auth_me_integrations_r8.py",
       "tests/unit/test_auth_me_shell_install_r8.py",
       "tests/unit/test_auth_me_shell_r8.py",
       "tests/unit/test_auto_park.py",

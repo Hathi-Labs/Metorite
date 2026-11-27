@@ -17,22 +17,36 @@ The route takes no parameter, so no request input names a member or an org
    ``app_user`` row in that org (``find_member`` by the session's address).
    ``user.user_id`` is not used, because under ``IDENTITY_CUTOVER`` it is an
    identity id. No row gets 403.
-4. A failed read of the closed list or of the rules gets 503. The route never
-   sends a list with no reasons.
+4. A failed read of the closed list, of an API connection or of the rules
+   gets 503. The route never sends a list with no reasons.
 
 **The answer.** ``{"services": [...], "source": "integration-rule"}``. Each
 row is exactly ``{"service", "kind", "name", "allowed", "reason"}``, sorted by
-service. The list is ``integration_access.closed_list``, unchanged, so a
-stored rule of a service that left the list does not show. ``allowed`` is
-``user.access.has(integrations:use:<service>)``: the same resolver and the same
-cache that the chat's ``_integration_authorizer`` reads. The reason comes from
-``_common.member_rule_access``, the step of the admin preview. When that step
-does not agree with ``allowed`` (the 60 second cache), ``allowed`` stays and
-the reason is ``updating``.
+service. The list starts as ``integration_access.closed_list``, unchanged,
+so a stored rule of a service that left the list does not show.
 
-A caller with no grant pattern for any listed service (a guest) gets
-``{"services": [], "source": ..., "blocked": "no-role"}``. So a guest does not
-learn the names of the MCP servers of the org.
+* An MCP row is each MCP server of the list. ``allowed`` is
+  ``user.access.has(integrations:use:<service>)``: the same resolver and the
+  same cache that the chat's ``_integration_authorizer`` reads.
+* An API row shows only when ``API_CONNECTIONS_ORGS`` holds the org, and the
+  org holds the org-scope row of that template with a status that
+  ``routes/api_connections`` serves (``read_row`` and ``served``). Else the
+  call route answers 404 for each caller, so the view lists no row.
+  ``allowed`` is ``api_connections.granted`` over ``user.has_permission``:
+  the use right AND the grant mark of the row. ``grant = admin`` asks for
+  ``integrations:manage`` (D-API-3). No other code repeats the grant.
+
+The reason comes from ``_common.member_rule_access``, the step of the admin
+preview. When that step does not agree with ``allowed`` (the 60 second
+cache), ``allowed`` stays and the reason is ``updating``. An API row that the
+use right allows and the grant mark refuses is ``admin-only``. Each refusal of
+the use right comes first, because ``granted`` reads it first.
+
+A caller with no grant pattern for any service of the closed list (a guest)
+gets ``{"services": [], "source": ..., "blocked": "no-role"}``. The test reads
+the closed list before the API filter, so a guest is blocked also when no API
+row is left. So a guest does not learn the names of the MCP servers of the
+org.
 
 The answer never holds a mode, a team, a person, ``set_by``, ``set_at``, a
 subject or an address, not even the caller's own team slugs.
@@ -61,7 +75,9 @@ from acb_auth import UserContext, get_current_user, integration_use_permission
 from acb_auth.access import read_integration_rules
 from acb_auth.integration_access import MANAGE, RULE_SOURCE, parse_rules
 from acb_auth.permissions import matched_by
+from acb_common.api_connections_flag import api_connections_allowed
 from fastapi import Depends, HTTPException
+from gateway.routes import api_connections as _api
 from gateway.routes.admin import integration_access as _rules_routes
 from gateway.routes.admin._common import (
     _load_overrides,
@@ -80,7 +96,7 @@ from gateway.routes.admin.me import me_router
 REASONS: tuple[str, ...] = (
     "admin", "on-rule", "role", "allowed-for-you",
     "inactive", "rule", "rules-unreadable", "denied-for-you", "no-role",
-    "updating",
+    "admin-only", "updating",
 )
 
 #: The keys of each row, and no other key.
@@ -125,6 +141,45 @@ def _reason(service: str, allowed: bool, base: Any, narrowed: Any, *,
     return "no-role"
 
 
+def _api_reason(service: str, row: Any, user: UserContext, base: Any, narrowed: Any, *,
+                readable: bool) -> tuple[bool, str]:
+    """``(allowed, reason)`` of an API row, from the one grant of the call route.
+
+    ``allowed`` is ``api_connections.granted`` over the session's access. The
+    same function over the fresh narrowed access decides ``updating``. When
+    both agree on a No and the use right holds, the grant mark refuses:
+    ``admin-only``. Each other No is a refusal of the use right, so it keeps
+    the reason of :func:`_reason`.
+    """
+    name = _name(service, "api")
+    allowed = _api.granted(user.has_permission, name, row)
+    if _api.granted(narrowed.access.has, name, row) != allowed:
+        return allowed, "updating"
+    if not allowed and narrowed.access.has(integration_use_permission(service)):
+        return False, "admin-only"
+    return allowed, _reason(service, allowed, base, narrowed, readable=readable)
+
+
+async def _api_rows(db: Any, org_id: str, services: dict[str, str]) -> dict[str, Any]:
+    """``{service: row}`` for each API service that the call route can serve.
+
+    None while ``API_CONNECTIONS_ORGS`` does not hold the org, because each
+    ``/connections/api`` route then answers 404. Else the org-scope row of
+    each listed template, read as ``routes/api_connections`` reads it, and kept
+    only when its status is one that the route serves.
+    """
+    if not api_connections_allowed(org_id):
+        return {}
+    out: dict[str, Any] = {}
+    for service, kind in services.items():
+        if kind != "api":
+            continue
+        row = await _api.read_row(db, org_id, _name(service, kind))
+        if _api.served(row):
+            out[service] = row
+    return out
+
+
 @me_router.get("/me/integrations",
                summary="May I use each integration of the org, and why (ACC-3)")
 async def get_my_integrations(
@@ -151,6 +206,7 @@ async def get_my_integrations(
             raise HTTPException(status_code=403, detail="Sign in to read your integrations")
         try:
             services = await _rules_routes.closed_list(db, org_id)
+            api_rows = await _api_rows(db, org_id, services)
         except Exception as exc:
             _log.warning("my_integrations_list_failed", error=type(exc).__name__)
             raise HTTPException(
@@ -168,22 +224,26 @@ async def get_my_integrations(
         role_perms, overrides, roles=sorted(role_perms),
         is_active=member["status"] == "active", email=member["email"], rules=rules,
     )
-    names = sorted(services)
-    # A guest: no grant pattern reaches any listed service. Name no server.
-    if names and all(
+    # A guest: no grant pattern reaches any service of the closed list. The
+    # test reads the list before the API filter. Name no server.
+    if services and all(
         matched_by(base.role_granted | base.allowed, integration_use_permission(s)) is None
-        for s in names
+        for s in services
     ):
         return {"services": [], "source": RULE_SOURCE, "blocked": "no-role"}
 
     _, readable = parse_rules(rules.raw)
     rows = []
-    for service in names:
+    for service in sorted(services):
         kind = services[service]
-        allowed = user.access.has(integration_use_permission(service))
-        rows.append({
-            "service": service, "kind": kind, "name": _name(service, kind),
-            "allowed": allowed,
-            "reason": _reason(service, allowed, base, narrowed, readable=readable),
-        })
+        if kind == "api":
+            if service not in api_rows:
+                continue
+            allowed, reason = _api_reason(service, api_rows[service], user, base, narrowed,
+                                          readable=readable)
+        else:
+            allowed = user.access.has(integration_use_permission(service))
+            reason = _reason(service, allowed, base, narrowed, readable=readable)
+        rows.append({"service": service, "kind": kind, "name": _name(service, kind),
+                     "allowed": allowed, "reason": reason})
     return {"services": rows, "source": RULE_SOURCE}
