@@ -266,12 +266,16 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
       agent_member_email: run?.member_email ?? null,
       // SW-7b: the card line names the session too.
       agent_label: run?.agent_label ?? null,
+      // Task 1045c: the card drops or gains the strand with the panel. The row
+      // keeps its own copy while both have one.
+      agent_stranded: run?.stranded ? (task.agent_stranded ?? run.stranded) : null,
     };
     if (
       (task.agent_state ?? null) === next.agent_state &&
       (task.agent_client_via ?? null) === next.agent_client_via &&
       (task.agent_member_email ?? null) === next.agent_member_email &&
-      (task.agent_label ?? null) === next.agent_label
+      (task.agent_label ?? null) === next.agent_label &&
+      Boolean(task.agent_stranded) === Boolean(next.agent_stranded)
     ) {
       return;
     }
@@ -279,7 +283,7 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
     // Only a change of the run's facts reports. The task object changes on
     // every merge, and listing it would report again for each one.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, state, run?.client_via, run?.member_email, run?.agent_label]);
+  }, [enabled, state, run?.stranded, run?.client_via, run?.member_email, run?.agent_label]);
 
   // M1 (ORC-3): the panel sits above the task card's tabs, so its first read
   // must not move the Add row and the tab bar. Until the read answers, keep

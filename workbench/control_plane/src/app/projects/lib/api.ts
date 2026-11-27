@@ -1955,8 +1955,8 @@ export interface TaskRow {
   agent_waiting?: Pick<AgentWaiting, "on" | "until"> | null;
   /**
    * Task 1045c — the open strand of the run (`stranded` of the runs wire).
-   * ASSUMED on the task row: the task list does not send it yet, so the card
-   * stays as it was until the gateway does.
+   * The gateway fills it from the open run of the task (task 1045d,
+   * `filters.stranded_of`). Null when the run has no open strand.
    */
   agent_stranded?: Pick<AgentStranded, "nudged_at" | "idle_s"> | null;
   /**

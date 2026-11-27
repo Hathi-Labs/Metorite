@@ -112,6 +112,12 @@ describe("agentCardLook", () => {
       agentCardLook("working", { stranded: { nudged_at: nudged.toISOString() } }).line,
     ).toBe("No word since 14:31");
     expect(agentCardLook("working", { stranded: {} }).line).toBe("No word for a while");
+    // SW-32: a plan never hides the strand, and it puts no count on the line.
+    const plan = { done: 3, total: 7, step: "Run the tests" };
+    expect(agentCardLook("working", { clientVia: via, stranded, plan, nowMs: now })).toEqual({
+      edge: "warning",
+      line: `No word since ${hhmm}`,
+    });
     // A failed or stopping run keeps its own look; no strand means no change.
     expect(agentCardLook("failed", { stranded }).edge).toBe("destructive");
     expect(agentCardLook("stopping", { stranded }).edge).toBeNull();
@@ -126,6 +132,18 @@ describe("agentCardLook", () => {
       css.match(new RegExp(`(?:^|\\n)${selector}\\s*\\{([\\s\\S]*?)\\n\\}`))?.[1] ?? "";
     expect(block(":root"), "dark").toMatch(/--warning:/);
     expect(block("\\.light"), "light").toMatch(/--warning:/);
+  });
+});
+
+describe("the run panel and the strand", () => {
+  it("AgentRunPanel merges a change of the strand into the task row", () => {
+    const src = readFileSync(
+      fileURLToPath(new URL("../components/AgentRunPanel.tsx", import.meta.url)),
+      "utf8",
+    );
+    expect(src).toContain("agent_stranded: run?.stranded ?");
+    expect(src).toContain("Boolean(task.agent_stranded) === Boolean(next.agent_stranded)");
+    expect(src).toContain("[enabled, state, run?.stranded,");
   });
 });
 
