@@ -1664,10 +1664,12 @@ In `auto`:
 
    Both sides FULL is not a trigger of its own: step 4 runs for it only when
    M or R is true.
-6. When neither is true, step 4 does not run. One line prints: "auto: no
-   migration and no R8 suite in the merge. The trial merge, the fences, the
-   type check and the green pr-check decide." The exit is 0 when the rest
-   passes.
+6. When neither is true, step 4 does not run, and the exit is 0 when the rest
+   passes. One line prints: "auto: no migration and no R8 suite in the merge.
+   The trial merge, the fences, the type check and the green pr-check
+   decide." But when the picker's list is empty, or one side or both sides
+   are FULL, the line is the UNPROVEN line of the default mode ("auto ran no
+   test") in place of the skip line.
 7. When M or R is true, step 4 runs as in the default mode, under the same
    time budget. The line names the reason: `auto: migration <file>` or
    `auto: R8 suite <file>`, the first of each.
