@@ -756,7 +756,7 @@ cannot drift.
 LBB-2, the claim gate, dark (task 4041, both flags empty, no flip); LBB-4
 (task 4042); LBB-3a (task 4043); LBB-1a (task 4044); LBB-6a (task 4045). LBB-2b (task 4056)
 merged as 021ea5cd55, live at the next release. LBB-5a (task 4046)
-merged as 07960d5b5d; the premerge default is unchanged. LBB-2c (task 4064) is built
+merged as 07960d5b5d, and the premerge default is unchanged. LBB-2c (task 4064) is built
 (§7b.10). Not built: LBB-1b, LBB-3b, LBB-6b.** Each slice ships dark when it is built. Epic: WS-CIV task 1628.
 Spec task: 4040 (LBB-0). Part A, the backlog itself, is task 4019 (lane-land)
 and task 4039 (pc-land-core). `ci_velocity.md` points here.
@@ -1779,11 +1779,9 @@ independent verifier and an Opus diff-review.
 
 ### 7b.10 LBB-2c: the claim gate before `CLAIM_GATE_ORGS` (task 4064)
 
-**Status.** LBB-2c built, 2026-11-27 (task 4064). The branch
-`lbb2c-assignees-label-mt-fb54c570` holds it, and it waits for the verifier
-and the merge. Four items that must be on main before anyone
-sets `CLAIM_GATE_ORGS` (the flip list of §7b.2). The §7b header names what is
-built. PR 2921 brings it up to date. None needs an owner
+**Status.** LBB-2c built, 2026-11-27 (task 4064, PR 2931). Four items that
+must be on main before anyone sets `CLAIM_GATE_ORGS` (the flip list of §7b.2).
+None needs an owner
 decision: each keeps the three doors that the owner approved. Tier HIGH: the
 claim path.
 
@@ -1827,7 +1825,9 @@ claim path.
   bucket, as today.
 - The label is display data. Only `claim_gate.py` reads it for a decision
   (`agent_coordination.md` §3.7, amended for LBB-2).
-- **The seams it meets.** These all exist, and the build updates each one:
+- **The seams it meets.** These all exist. The build updates each one, except
+  `test_mcp_edge_coverage.py`, which reads the model fields and needs no
+  change:
   - the edge input schema of `set_assignees` and its description;
   - `_TAKES_LABEL` in `tests/unit/test_agent_label_fence.py`;
   - the field-parity row of `PUT /projects/tasks/{task_id}/assignees` in
