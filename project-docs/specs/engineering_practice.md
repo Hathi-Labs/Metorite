@@ -982,7 +982,16 @@ one reader each in `claim_gate.py`, with entries in `docs/flag_reload.md`.
 **Who it binds.** Every member, every lane, and the lanes of each person. The
 PR body of the build tells Ishaan, because his lanes are bound too.
 
-**The flip.** Not by the builder. After the merge and a release, metorite-78
+**The flip.** Not by the builder. Before the shadow flip, metorite-78 checks
+three things (added 2026-11-27, §7b.8, advisory: no test fences a flip):
+- LBB-2b (§7b.8) is on main and in a release.
+- `agent_runs_enabled` is on for Hathi Labs in production. With it off, no run
+  exists, and the gate counts nothing.
+- A production count of runs in a terminal status with `ended_at` NULL is
+  zero, or each one is named. The owner rule reads `ended_at`.
+
+Before `CLAIM_GATE_ORGS`, LBB-2c (task 4064) is on main. After the merge and a
+release, metorite-78
 sets `CLAIM_GATE_SHADOW_ORGS` for Hathi Labs (`02cf1f16`) and reads one day of
 `claim.gate` lines. Then it sets `CLAIM_GATE_ORGS` for Hathi Labs, and after
 one more day, `*`. Each step is gate `enforcement-flip`. The grant of
@@ -1040,7 +1049,8 @@ each slice. Each flip or `on` mode is OWNER-GATE.
 | Order | Rung | Slice | Task | Tier | Flag or mode | Anchors | Gate |
 |---|---|---|---|---|---|---|---|
 | 1 | 1 | LBB-2 the claim gate and the `land_your_pr` row | 4041 | HIGH | `CLAIM_GATE_SHADOW_ORGS`, `CLAIM_GATE_ORGS` | §7b.2 | build AGENT-SAFE, flip `enforcement-flip` |
-| 1b | 1 | LBB-2b the owner run of a PR (§7b.8) | 4056 | HIGH | none: it acts under the LBB-2 flags | `claim_gate.py` `_counted_sql`, `scripts/hand_over.sh` | build AGENT-SAFE after LBB-2 is on main. It merges before the shadow flip |
+| 1b | 1 | LBB-2b the owner run of a PR (§7b.8) | 4056 | HIGH | none: it acts under the LBB-2 flags | `claim_gate.py` `_counted_sql`, `scripts/hand_over.sh` | build AGENT-SAFE after LBB-2 is on main. On main before the shadow flip |
+| 1c | 1 | LBB-2c the `set_assignees` door sends the label | 4064 | HIGH | none: it acts under the LBB-2 flags | the edge tool `set_assignees`, `tasks.py` | spec first. On main before `CLAIM_GATE_ORGS` |
 | 2 | 1 | LBB-4 zero orphans at a stop | 4042 | STANDARD | `STOP_DISPOSITION_PRS` | `.claude/hooks/stop-disposition.mjs`, `~/lanes/winddown.sh` | build AGENT-SAFE, `block` by the owner |
 | 3 | 1 | LBB-3a the landing sweeper, a dry report (§7b.5) | 4043 | STANDARD | `LANDING_SWEEPER_MODE=dry` | `scripts/home_server/merge_bot.sh`, `scripts/hand_over.sh`, `scripts/release_freeze.sh` | build AGENT-SAFE, the timer and `dry` are `deploy` |
 | 3b | 1 | LBB-3b the sweeper's actions | (to make) | HIGH (merge path) | `LANDING_SWEEPER_MODE=on` | §7b.5 rules | NO-GO until metorite-78 takes the two decisions of §7b.5 |
@@ -1394,19 +1404,48 @@ uv run ruff check scripts/home_server/live_check.py tests/unit/test_live_check.p
 `LIVE_CHECK_MODE=dry` with the production gateway URL: gate `deploy`. After
 one day, metorite-78 changes lane-merge.md step f (LBB-1b).
 
+### 7b.7 LBB-6: visibility (task 4045)
+
+**Status: LBB-6a built (the review metric). LBB-6b not built: the My Day row,
+dark behind `BUILT_NOT_LIVE_ORGS`, with a D145 owner preview before the flip.**
+
+**Done when** (LBB-6a):
+1. `scripts/delivery_metrics.py` gives the key `built_not_live`: `open_prs`
+   (open PRs that are not drafts), `over_24h` (each open PR older than 24
+   hours: `number`, `title`, `age_days`, oldest first) and `oldest_days`. It
+   reuses the paging of `_old_prs`. A failing `gh` call gives `null` and an
+   `errors` entry.
+2. `.claude/commands/delivery-review.md` lists `built_not_live` in its metric
+   list. It adds two threshold rows: `built_not_live.open_prs` over 30, and
+   `built_not_live.oldest_days` over 5. Each breach opens one fix task.
+3. Tests in `tests/unit/test_delivery_metrics.py` cover the key (a draft is
+   not counted, a PR of 23 hours is not in `over_24h`, the order), the failing
+   call, and the command file that names the key.
+4. This section holds the status above.
+
+**Fence.** `tests/unit/test_delivery_metrics.py`.
+
+**Verify with.**
+
+```
+PYTEST_ADDOPTS="-o timeout_method=thread" uv run pytest -p no:cacheprovider   tests/unit/test_delivery_metrics.py
+```
+
 ### 7b.8 LBB-2b: the owner run of a PR (task 4056)
 
-**Status.** Spec. The code waits until PR 2898 (LBB-2) is on main. **It must
-merge before anyone sets `CLAIM_GATE_SHADOW_ORGS`.** The shadow day cannot
-show this defect, because the gate logs nothing for a PR that it does not
-count.
+**Status.** Spec, 2026-11-27. The facts below were checked against the code of
+PR 2898 at 145d99c98a. Every anchor of this section is in that PR, and none is
+on main yet. The code waits until PR 2898 is on main. **It must merge before
+anyone sets `CLAIM_GATE_SHADOW_ORGS`** (the flip list of §7b.2). The shadow
+day cannot show this defect, because the gate logs nothing for a PR that it
+does not count.
 
 **The defect (review P2 of PR 2898).** The first rule bound a PR to the newest
 run on its task, in any status. Lane L hands over PR N and releases the task.
 The merger claims the task, comments and releases it. Its run is now the
 newest. When the `queued` mark expires, PR N counts for the merger and not
-for L. L claims new work freely, and the merger's `my_work` tells it to merge
-main into PR N, which `lane-merge.md` step d forbids.
+for L. L claims new work freely. The merger's `my_work` then tells it to merge
+main into PR N, and `lane-merge.md` step d forbids that.
 
 **The rule.** The owner run of a PR reference `f` is the `pm_agent_runs` row
 `n` with each of these:
@@ -1415,83 +1454,106 @@ main into PR N, which `lane-merge.md` step d forbids.
 - `n.ended_at IS NULL`, or `n.ended_at >= f.created_at`.
 
 When two rows qualify, the row with the highest `created_at` wins, then the
-highest `id`. The PR belongs to the member and the agent label of that row. A
-run that starts after the reference is added is never the owner. The rule
-reads two timestamps that each row already holds, so it needs no migration
-and no backfill.
+highest `id`. The PR belongs to the member and the agent label that the owner
+run holds when the gate runs. A run that starts after the reference is added
+is never the owner. The rule reads two timestamps that each row already
+holds, so it needs no migration and no backfill.
 
 **The facts that the rule stands on.**
 - `insert_ref` (`gateway/routes/projects/refs.py`) is the one insert of
   `pm_task_refs`. Both of its statements keep `created_at`: `ON CONFLICT DO
   NOTHING`, or an update of the three `landing` columns only. So a repeat of
   the same URL never moves the owner.
-- The GitHub App never inserts a reference. `github_sync.py` and
-  `github_reconcile_loop.py` only update rows.
-- A release and a finish set `ended_at` (migration 289). A run that waits or
-  is in progress has `ended_at` NULL.
+- The GitHub App inserts references too. The webhook calls
+  `link_pull_request` (`gateway/routes/projects/github_autolink.py`) when a PR
+  opens on an `mt-` branch, and that calls `insert_ref` with `via =
+  'github'`. So the reference often exists before the lane adds it, and its
+  `created_at` is the time the PR opened. A lane opens its PR inside its run,
+  so the owner is that run. The lane's later add changes nothing.
+- A release and a finish set `ended_at`. A run that waits or is in progress
+  has `ended_at` NULL.
 
 **Who is bound, case by case.** Each case is one R8 test.
-1. **A merger after a hand-over.** L adds PR N in run A and releases. The
-   merger claims (run B) and releases. The owner is A, so PR N counts for L
-   and never for the merger.
+1. **A merger after a hand-over.** L opens PR N in run A (the webhook or L
+   adds the reference) and releases. The merger claims (run B) and releases.
+   The owner is A, so PR N counts for L and never for the merger.
 2. **The owning lane after a BACK.** L claims again (run C) to fix PR N. The
    owner stays A, with the same label, so nothing changes for L.
 3. **A landing lane that adopts the PR.** Lane D claims the task and adds the
    same URL again, with or without `landing`. The reference keeps its
    `created_at`, so the owner stays A, and the PR stays bound to L. D's
-   `queued` mark exempts it for 24 hours. **Accepted:** an adopted PR stays
-   with the lane that added it. If L has stopped, the PR counts for a label
-   that claims nothing, and the gate cannot see it.
-4. **A reference with no owner run.** A person adds it by hand outside a run,
-   a text link (`via = 'text'`) adds it outside a run, or the task had no run
-   then. No row qualifies, and the PR counts for nobody.
+   `queued` mark exempts it for 24 hours.
+4. **A reference with no owner run.** A person adds it outside a run, a text
+   link (`via = 'text'`) or the webhook (`via = 'github'`) adds it while no
+   run holds the task, or the task had no run then. No row qualifies, and the
+   PR counts for nobody.
 5. **The references that exist on the flip day.** They bind by the same rule.
-   A reference that a lane added inside its run binds to that lane. The rest
-   fall under case 4.
+   A reference that was added inside a run binds to that run. The rest fall
+   under case 4.
+6. **A new reference inside a merger's own run.** A merger that opens its own
+   PR, or adds a new URL, in its run B owns that PR. That is correct: it is
+   the merger's work.
 
-**A PR that the gate cannot see.** Cases 3 and 4 can leave an open PR that
-no live lane is bound to. The gate does not report it. Two reports read every
-open PR, whatever its owner: the landing sweeper report (LBB-3a, §7b.5,
-`~/lanes/landing-sweeper.tsv`) and the weekly `built_not_live` metric
-(LBB-6a, §7b.7). On the shadow day, metorite-78 compares the `claim.gate
-would_refuse` lines with the sweeper report. An old PR that the sweeper
-lists and the gate does not is a case 3 or case 4 PR.
+**Accepted, in writing.** Each item is a property of the runs, not of this
+rule.
+- **The label is read when the gate runs.** A claim that adopts an open run
+  with no session key gives that run the claimer's label (`_set_run_label`,
+  `agent_runs.py`). The PR then moves with the run to the adopter, as the run
+  does. A resume or a reopen clears the label, and a reopen sets `ended_at`
+  NULL again. Then the PR binds to the no-label bucket until a claim labels
+  the run again.
+- **An adopted PR stays with the lane that opened it** (case 3). If that lane
+  has stopped, the PR counts for a label that claims nothing.
+- **A dead lane's run keeps `ended_at` NULL.** The sweeps end runs only on
+  closed tasks. So that run owns each later reference on its task until a
+  takeover ends it.
+- **A tie in one transaction goes to the run.** Both columns default to
+  `now()`, and the rule uses `<=`.
+
+**What the gate cannot see.** Cases 3 and 4, and a dead lane, can leave an
+open PR that no live lane is bound to. The gate does not report it. It is a
+known blind spot. Two reports list open PRs whatever their owner, and neither
+says why a PR is unbound:
+- the landing sweeper report (LBB-3a, §7b.5, `~/lanes/landing-sweeper.tsv`),
+  after its units are installed (gate `deploy`);
+- the weekly `built_not_live` metric (LBB-6a, §7b.7), which leaves drafts out.
 
 **The `hand_over.sh` line (review P3).** LBB-2 adds a last line to
-`hand_over.sh`, and that line holds the placeholder `"<the task_id of task N>"`. A lane that
-copies it makes a call that fails, so the PR stays unmarked. The line changes
-to say what to fill in: "Fill in the task id: call search_tasks with N, then
-call add_task_reference with that id, the PR URL and landing queued." The
-script calls no MCP.
+`hand_over.sh`, and that line holds the placeholder `"<the task_id of task
+N>"`. A lane that copies it makes a call that fails, so the PR stays
+unmarked. The line changes to say what to fill in: "Fill in the task id:
+call search_tasks with N, then call add_task_reference with that id, the PR
+URL and landing queued." It prints the real PR URL. The script calls no MCP.
 
-**Out of scope, to its own task.**
+**Out of scope, to LBB-2c (task 4064, row 1c of §7b.3).**
 - The `set_assignees` door checks the no-label bucket, because the `PUT` sends
-  no label (review P3). The two fixes are a new edge parameter or a skip for a
-  labelled session. The first meets the manifest fences, and the second
-  changes the three doors that the owner approved. So it is its own slice,
-  LBB-2c.
+  no label (review P3). The fix is a new edge parameter, or a skip for a
+  labelled session. The second changes the three doors that the owner
+  approved.
 - The `add_task_reference` description says that an unmarked PR "can block
   your next claim" in every org. That is false while the flags are off.
-  LBB-2c corrects the text.
 
-**The flip list grows by one line.** Before the shadow flip, metorite-78
-confirms that `agent_runs_enabled` is on for Hathi Labs in production. With it
-off, no run exists, so the gate counts nothing.
-
-**Fences.** `tests/unit/test_claim_gate_r8.py` on a real database: one test for
-each of cases 1 to 4, and the old "newest run" case turned around (a run that
-starts after the reference never owns it). `tests/unit/test_hand_over.py`, or
-the test that pins the last line of `hand_over.sh`: the line holds no `<` and
-`>` placeholder, and it names `search_tasks`.
+**Fences.** Two test files fence this slice. The flip order has no test.
+- `tests/unit/test_claim_gate_r8.py`, on a real database:
+  - one test for each of cases 1 to 4 and case 6, with a reference of `via =
+    'github'` in case 1 and in case 4;
+  - the old "newest run" case turned around: a run that starts after the
+    reference never owns it;
+  - each fixture run in a terminal status has `ended_at` set, as production
+    has.
+- `tests/unit/test_hand_over.py`: the last line holds no `<` and `>`
+  placeholder, it names `search_tasks`, and it holds the real PR URL.
+- The flip order ("LBB-2b before the shadow flip") is advisory. No test can
+  fence a flag flip. The flip list of §7b.2 carries it.
 
 **Done when.**
 1. A PR that a merger claimed and released after the hand-over counts for the
-   lane that added it, and not for the merger.
-2. Cases 2, 3 and 4 give the owners above.
-3. Every LBB-2 test passes unchanged, except the tests that state the old
-   "newest run" rule. Those change to the owner run, and the PR names each
-   one.
-4. `hand_over.sh` prints a line with no placeholder.
+   lane that opened it, and not for the merger.
+2. Cases 2, 3, 4 and 6 give the owners above.
+3. Every LBB-2 test passes. A fixture that makes a run after its PR
+   reference, or a terminal run with `ended_at` NULL, changes to the
+   production shape. The PR names each fixture that changed, and the reason.
+4. `hand_over.sh` prints a line with no placeholder and with the real PR URL.
 
 **Verify with.**
 
@@ -1499,7 +1561,12 @@ the test that pins the last line of `hand_over.sh`: the line holds no `<` and
 eval "$(bash scripts/dev_db.sh --export)"
 PYTEST_ADDOPTS="-o timeout_method=thread" uv run pytest -p no:cacheprovider \
   tests/unit/test_claim_gate_r8.py tests/unit/test_claim_gate_edge.py \
+  tests/unit/test_agent_label_fence.py tests/unit/test_mcp_edge_claim.py \
+  tests/unit/test_agent_claim_scope_r8.py tests/unit/test_task_refs_route.py \
+  tests/unit/test_flag_reload.py tests/unit/test_mcp_edge_coverage.py \
   tests/unit/test_hand_over.py
+uv run ruff check apps/services/gateway/gateway/routes/projects/claim_gate.py \
+  tests/unit/test_claim_gate_r8.py tests/unit/test_hand_over.py
 ```
 
 **Tier.** HIGH (the claim path): the spec-auditor, a builder, an independent
