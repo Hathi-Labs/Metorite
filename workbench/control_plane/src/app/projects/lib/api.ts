@@ -255,6 +255,11 @@ export interface ProjectRow {
   close_after_months?: number | null;
   timezone?: string | null;
   /**
+   * WS-39 SP-3a (migration 505) — how the team of this node works. One key of
+   * `lib/workStyle.ts`. Absent from an older gateway, and read as `flow`.
+   */
+  work_style?: string | null;
+  /**
    * WS-27bg — the ARCHIVE axis, which is not a run state (D-PM-25). Set means
    * filed out of the default surfaces; `archived_root_id` names which project's
    * archive filed it, so a subproject archived on its own survives its parent's
@@ -263,6 +268,42 @@ export interface ProjectRow {
   archived_at?: string | null;
   archived_root_id?: string | null;
   children?: ProjectRow[];
+}
+
+/**
+ * WS-39 SP-1 — one cycle (a sprint) of a node, as `GET /nodes/{id}/cycles`
+ * gives it. `tasks` counts the member tasks the reader sees, and `hidden` the
+ * rest (§13.7).
+ */
+export interface CycleRow {
+  id: string;
+  project_id: string;
+  name: string;
+  goal: string | null;
+  starts_on: string | null;
+  ends_on: string | null;
+  state: "planned" | "active" | "closed";
+  updated_at: string | null;
+  tasks?: number;
+  hidden?: number;
+}
+
+/** One member task of a cycle, as `GET /cycles/{id}` gives it. */
+export interface CycleTask {
+  id: string;
+  task_number: number | null;
+  title: string;
+  status_id: string | null;
+  status_name: string | null;
+  status_category: string | null;
+  estimate_mins: number | null;
+  archived: boolean;
+}
+
+export interface CycleDetail {
+  cycle: CycleRow;
+  tasks: CycleTask[];
+  hidden: number;
 }
 
 /** One direct child in a node's roll-up. */
@@ -338,6 +379,30 @@ export interface NodeSummary {
   >;
   today?: string;
   time_zone?: string;
+  /**
+   * WS-MDC CC-2: present only with `TODAY_RULE_ORGS` on. `today_ids` is the
+   * set of the one Today predicate, so the Today chip lists what it counts.
+   */
+  today_rule?: boolean;
+  today_ids?: string[];
+}
+
+/** WS-MDC CC-2: one row of the Today set. `why` names the arms that hold. */
+export interface MyTodayRow {
+  task: TaskRow;
+  block: { start: string; end: string | null } | null;
+  why: Array<"one_thing" | "focus" | "scheduled" | "due">;
+}
+
+/** WS-MDC CC-2: `GET /projects/my/today?with_tasks=true`. */
+export interface MyTodaySet {
+  today: string;
+  timezone: string;
+  rows: MyTodayRow[];
+  total: number;
+  to_fit: string[];
+  focus_cap: number;
+  focus_count: number;
 }
 
 /**
@@ -2417,6 +2482,13 @@ export const projectsApi = {
    * no parameter: the member is the session's.
    */
   mySummary: () => call<NodeSummary>("my/summary"),
+  /**
+   * WS-MDC CC-2: the Today set of the one predicate,
+   * `GET /projects/my/today?with_tasks=true`. Each task has the shape of a
+   * row of the mine list. With `TODAY_RULE_ORGS` on, the Today chip of My
+   * work reads it for each task of the set that the mine list does not hold.
+   */
+  myTodaySet: () => call<MyTodaySet>("my/today?with_tasks=true"),
   outlook: (nodeId?: string) =>
     call<OutlookReport>(`analytics/outlook${scopeQuery(nodeId)}`),
   /** WS-27bm S7a. The server's default horizon (14 days) unless one is named. */
@@ -2505,6 +2577,43 @@ export const projectsApi = {
 
   grants: (projectId: string) =>
     call<{ rows: GrantRow[]; total: number }>(`nodes/${projectId}/grants`),
+
+  /**
+   * WS-39 SP-3a — the cycles of one node, newest first (`cycles.py`, SP-1).
+   * Each carries `tasks` (the ones the reader sees) and `hidden`. A 404 means
+   * `PROJECTS_SPRINTS_ORGS` does not hold the org: the page hides the Backlog
+   * tab (`lib/backlogCanvas.ts::sprintsProbe`).
+   */
+  cycles: (projectId: string) =>
+    call<{ project_id: string; cycles: CycleRow[] }>(`nodes/${projectId}/cycles`),
+
+  /** One cycle with the member tasks the reader sees. */
+  cycle: (cycleId: string) =>
+    call<CycleDetail>(`cycles/${cycleId}`),
+
+  /** Plan a cycle: a name and two dates. It starts `planned`. */
+  createCycle: (
+    projectId: string,
+    body: { name: string; starts_on: string; ends_on: string },
+  ) =>
+    call<{ cycle: CycleRow }>(`nodes/${projectId}/cycles`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  /** Add one task to a planned or an active cycle. A task in another open cycle is 409. */
+  addCycleTask: (cycleId: string, taskId: string) =>
+    call<{ cycle_id: string; task_id: string; added: boolean }>(`cycles/${cycleId}/tasks`, {
+      method: "POST",
+      body: JSON.stringify({ task_id: taskId }),
+    }),
+
+  /** Take one task out of a planned or an active cycle. It goes back to the backlog. */
+  removeCycleTask: (cycleId: string, taskId: string) =>
+    call<{ cycle_id: string; task_id: string; removed: boolean }>(
+      `cycles/${cycleId}/tasks/${taskId}`,
+      { method: "DELETE" },
+    ),
 
   /**
    * The lanes this node USES, plus how many tasks sit in each.
@@ -3498,10 +3607,22 @@ export const agentsOverviewApi = {
   },
 };
 
+/** The options of one map read. */
+export interface AgentMapQuery {
+  showQuiet?: boolean;
+  projectId?: string;
+  /** AMR-4: one lead run for each session and a count of its sub-agents. */
+  summary?: boolean;
+  /** AMR-4: the runs and the sub-agents of one session node. */
+  session?: string;
+}
+
 /** The query string of one map read. `project_id` is present only for a project. */
-export function agentMapQuery(opts: { showQuiet?: boolean; projectId?: string } = {}): string {
+export function agentMapQuery(opts: AgentMapQuery = {}): string {
   let query = "shape=map";
   if (opts.projectId) query += `&project_id=${encodeURIComponent(opts.projectId)}`;
+  if (opts.session) return `${query}&session=${encodeURIComponent(opts.session)}`;
+  if (opts.summary) return `${query}&detail=summary`;
   if (opts.showQuiet) query += "&show_quiet=true";
   return query;
 }
@@ -3511,7 +3632,7 @@ export function agentMapQuery(opts: { showQuiet?: boolean; projectId?: string } 
  * `null` means the map is dark for this member (404, 401 or 403).
  */
 export const agentMapApi = {
-  read: async (opts: { showQuiet?: boolean; projectId?: string } = {}): Promise<AgentMap | null> => {
+  read: async (opts: AgentMapQuery = {}): Promise<AgentMap | null> => {
     try {
       // SW-112: a project id scopes the map to that project's subtree. Without it the map is the fleet.
       const query = agentMapQuery(opts);

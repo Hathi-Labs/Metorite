@@ -36,6 +36,8 @@ OA-9b and the OA-9a worker half are BUILT, dark behind `SPAWN_SUBAGENTS_ORGS` (2
 
 OA-9b hardening is BUILT (2026-10-28, "As built, OA-9b hardening" in §4.5). It closes the seven faults of the Opus review. The flag flip stays OWNER-GATE.
 
+Task 2492 NARROWS the pack mark (2026-11-09, "Each call" in "As built, OA-7b"). Only a pack call whose answer can bring outside text marks the chat. A new `send_email` leaves the chat clear. `send_draft`, `schedule_send` and `manage_inbox` mark, because their answer can quote a draft or a mail. The map is `tool_packs.PACK_OUTSIDE_TEXT`, and the fence is `tests/unit/test_pack_outside_text.py`.
+
 OA-9c is BUILT, dark behind `SPAWN_SUBAGENTS_ORGS` (2026-10-29, "As built, OA-9c" in §4.5). A child can hold the read tools of a pack that the main assistant holds. No email tool says `read_only=True`, so an email pack gives a child no tool yet. The flag flip stays OWNER-GATE.
 
 OA-9f is BUILT, dark behind `SPAWN_SUBAGENTS_ORGS` (2026-10-30, "As built, OA-9f" in §4.5). It changes the rule of §6.3 from a count to a kind of job. A child reads long material or runs a chain of steps. The main assistant makes light reads itself, in parallel. The flag flip stays OWNER-GATE.
@@ -748,7 +750,9 @@ dropped names and the skipped names. A slug that is no pack gives None.
   forward or a new mail goes to the held card.
 - **Each call.** `_pack_call` puts `tool_packs.owner_scope` outside the
   permission gate. It marks the chat before the tool body, through the
-  executor's `_mark_untrusted_session`. It closes the profile writes after
+  executor's `_mark_untrusted_session`. Task 2492: it marks only for a call
+  that `tool_packs.marks_chat` names, which reads `PACK_OUTSIDE_TEXT`. A read,
+  a search and a thread mark. A send that reads nothing does not. It closes the profile writes after
   the call, also after a raise. It writes the email working set through
   `_email_working_set_for` and `_record_email_working_set`.
 - **The held set.** A held pack drops each tool that `_is_egress` or
@@ -1614,6 +1618,7 @@ It does not settle each case where layer (a′), the persona, the loader plan an
 6. **The add.** It calls `context.add_tools(subset)` (`agent_framework/_middleware.py:469-504`). The next request of the same run carries the full schemas.
 7. **The answer.** It gives one line for each found tool: its name and the first line of its description. Then it gives the rules block of each owning pack, once in a run (below). With no match, it says so and names `load_skill_tools`.
    - (D225, 2026-11-15) SBX-1 extends the no-match answer. `find_tools` then also checks the library and the catalog actions, and writes a `tool_gaps` row (`agent_sandbox.md` §6.1). D187 planned that as a second tool, `find_tool`, and SBX-1 does not build it.
+   - (SBX-1a, 2026-11-26) The extension is the hook `on_gap` of `FindTools`, made by `orchestrator.tool_gap_path.make_gap_hook` behind `user_tool_find_enabled`. With no hook, the no-match answer stays `FIND_NONE` (`agent_sandbox.md` §12.1 decision 2).
 
 **The rules block and the hold note go with the tools.** D117 item 2 makes a pack of its tools and a rules block, so a found tool needs both.
 - Today the rules block reaches the model on three paths. `persona_for` adds it for each pack in `loaded` (`tool_packs.py:2543`, `:2609`). The `LOADED` answer of `load_skill_tools` carries it (`:2936`, `:3670`). Layer (c) puts it in the instructions of the turn (`load_early`, `:3596-3598`, the text at `:3630`).

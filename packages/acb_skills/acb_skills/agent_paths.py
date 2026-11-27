@@ -67,6 +67,7 @@ from pathlib import Path
 
 __all__ = [
     "AGENT_NAME_RE",
+    "BROKER_AGENT_NAMES",
     "RUN_DATA_DIR",
     "SKILLS_REL",
     "SKILL_AUTHOR_MARKER",
@@ -129,6 +130,16 @@ _INSTANCE_MARKER = ".cc-instance"
 #: inside ``repos/``. Every filesystem use of an agent name goes through
 #: :func:`require_agent_name` or :func:`is_valid_agent_name`.
 AGENT_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+#: The agent names that the sandbox broker uses for its own steps (SBX-4b1,
+#: ``agent_sandbox.md`` §12.4 decision 11). The broker keys a container by
+#: (org, agent, thread), so a registered agent with one of these names would
+#: share the container key of a broker step (§6.2). Both names pass
+#: :data:`AGENT_NAME_RE`, so ``register_agent`` refuses them by this set.
+#: ``user-tool`` is ``USER_TOOL_AGENT`` and ``compute`` is ``COMPUTE_AGENT`` of
+#: ``orchestrator/sandbox_broker.py``. Fence:
+#: ``tests/unit/test_user_tool_build.py``.
+BROKER_AGENT_NAMES: frozenset[str] = frozenset({"user-tool", "compute"})
 
 
 class InvalidAgentName(ValueError):

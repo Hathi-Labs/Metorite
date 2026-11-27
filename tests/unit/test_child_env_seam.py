@@ -60,6 +60,12 @@ EXEMPT_FILES: dict[str, str] = {
 #: ``acb_common`` (a BH-D1 exception). Each spawn there must still pass
 #: ``env=``, and only from the named local function. file -> (function, reason).
 LOCAL_ALLOWLISTS: dict[str, tuple[str, str]] = {
+    "apps/connectors/tally_bridge/tally_bridge/windows/system.py": (
+        "child_env",
+        "the Tally bridge is a standalone program on the customer's Windows "
+        "machine. It imports nothing of the monorepo "
+        "(test_tally_bridge_fences.py), so it keeps its own short allowlist",
+    ),
     "apps/services/orchestrator/mutation_runner.py": (
         "child_env",
         "runs in the mutation container, whose image holds only "

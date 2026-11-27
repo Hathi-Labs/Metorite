@@ -437,6 +437,20 @@ class Settings(BaseSettings):
     # waits for the rung 1 demo, and it is gate `enforcement-flip`. Fence:
     # tests/unit/test_api_templates.py.
     api_connections_orgs: str = ""
+    # `integration_access_orgs` (WS-54 ACC-1, task 3987, 2026-11-26) lists
+    # the organization ids whose admins may read and set who can use each
+    # integration (`integrations_console.md` §3.9.4), in the grammar of
+    # `crm_orgs`, or `*`. Default empty means NO organization: both routes
+    # of `routes/admin/integration_access.py` answer 404. It gates the two
+    # routes only. The resolver applies a stored rule whatever the flag
+    # says, so a flag change never widens access. The one reader is
+    # `gateway.routes.admin._common.integration_access_allowed`, and it takes
+    # the org of the session. A `*_ORGS` key, so a SIGHUP reload applies it
+    # (`docs/flag_reload.md`). The flip waits for the owner preview, and it
+    # is gate `enforcement-flip`. Fences:
+    # tests/unit/test_integration_access_rules.py,
+    # tests/unit/test_flag_reload.py.
+    integration_access_orgs: str = ""
     # `connection_model_orgs` (WS-SEM SEM-12, task 3742, 2026-11-19) lists
     # the organization ids that may write and read the semantic model of a
     # connection (`semantic_model.md` §10.4), in the grammar of `crm_orgs`,
@@ -663,6 +677,16 @@ class Settings(BaseSettings):
     # calls it through `gateway.routes.knowledge.flags`. AGENT-SAFE: it spends
     # nothing. Fences: tests/unit/test_kb_flags.py, test_company_search_tool.py.
     knowledge_proposals: bool = False
+    # PAR-3 (task 3105, chat_parity.md §5 wave P-5). The assistant's own
+    # Knowledge writes, default OFF. ON gives the orchestrator `create_page`,
+    # `edit_page`, `create_space`, `edit_space` and their persona line (with
+    # COMPANY_SEARCH_ENABLED on too). Each one shows the full text on one card
+    # before it saves. A new page is always a draft. No tool publishes. OFF
+    # keeps the four tools out. The routes do not change, because the web
+    # already uses them. The one reader is
+    # `acb_skills.knowledge_tools.knowledge_chat_writes_enabled`. AGENT-SAFE:
+    # it spends nothing. Fence: tests/unit/test_kb_chat_writes.py.
+    knowledge_chat_writes: bool = False
     # WS-61 KB-9a (knowledge_base.md §8.4 door 3 and §13). The organization
     # ids whose `search_company` reads with no Knowledge hit write a
     # `kb_gaps` row, in the grammar of `knowledge_orgs`. `*` is each org.
@@ -1344,6 +1368,34 @@ class Settings(BaseSettings):
     # The one reader is `acb_auth.agent_oauth.plan_order_allowed`. Fence:
     # tests/unit/test_my_work_plan_order_r8.py.
     my_work_plan_order_orgs: str = ""
+    # SW-45 (agent_coordination.md §3.10.1): the scope of an agent claim, for
+    # each organization. `org=mode` pairs with a comma between them, for
+    # example `<org id>=warn`. `*` names each organization, and an exact id
+    # wins over `*`. A mode is `off`, `warn` or `refuse`. Empty, an unknown
+    # mode and an unknown organization read as `off`, the default. Off, an
+    # agent claims any task that it sees, and `my_work` has no `own_app_free`
+    # rows. A SIGHUP reload applies a change (`docs/flag_reload.md`). The one
+    # reader is `acb_auth.agent_oauth.claim_scope_mode`. The policy store does
+    # not read it (`agent_policies.FLAGS_NOT_YET`) until SW-46 wires the key
+    # `claim_scope_mode`. 🔴 A change on a box is gate `enforcement-flip`.
+    # Fences: tests/unit/test_agent_claim_scope_r8.py and
+    # test_agent_policies_r8.py::test_the_claim_scope_flag_is_not_read_by_the_store.
+    agent_claim_scope_modes: str = ""
+    # LBB-2 (engineering_practice.md §7b.2): the claim gate of "land before
+    # build". Two comma lists of organization ids, or `*` for each one. Empty
+    # means off, the default. `claim_gate_shadow_orgs` logs
+    # `claim.gate would_refuse` and refuses nothing. `claim_gate_orgs` refuses
+    # an agent's claim of a new task with 422 `land_your_pr` while the agent's
+    # member and label hold an open PR older than 48 hours that no merger has
+    # queued. Either list shows the `land_your_pr` rows of `my_work`. With both
+    # empty, no claim, assignee or run start reads the gate's query. The one
+    # reader of each is in `gateway.routes.projects.claim_gate`
+    # (`claim_gate_on` and `claim_gate_shadow_on`). The names end in `_orgs`,
+    # so a SIGHUP reload applies a change (`docs/flag_reload.md`).
+    # 🔴 A change on a box is gate `enforcement-flip`. Fences:
+    # tests/unit/test_claim_gate_r8.py and tests/unit/test_flag_reload.py.
+    claim_gate_shadow_orgs: str = ""
+    claim_gate_orgs: str = ""
     # SW-56 (agent_coordination.md SW-56): the organizations where the results
     # of `claim_task` and `my_work` carry the `protocol` block, up to six short
     # lines of fixed server text. The same shape as `agent_access_orgs`: ids
@@ -1415,6 +1467,19 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_waiting_seam_r8.py.
     waiting_orgs: str = ""
 
+    # ── The app roots of the app-owner map (WS-MCP SW-44) ───────────────────
+    #
+    # `org_id=root_project_id` pairs with a comma between pairs. A root is the
+    # project whose direct children are the apps of the org, for example
+    # "Metorite Application". An org may name more than one root. Empty means
+    # off, the default: the Needs attention kind `no_lead` ("App project with
+    # no lead") lists nothing. A pair with no `=`, or a root that is not a
+    # UUID, names nothing. The one reader is
+    # `gateway.routes.projects.needs_attention.app_roots_of`. A SIGHUP reload
+    # applies a change (`gateway/flag_reload.py`). Only the owner writes the
+    # value. Fence: tests/unit/test_needs_attention_r8.py.
+    app_owner_root_orgs: str = ""
+
     # ── Agents: the member view in Projects (WS-AGA AGA-6) ──────────────────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
@@ -1435,6 +1500,20 @@ class Settings(BaseSettings):
     # reload applies a change. A flip is OWNER-GATE (`enforcement-flip`).
     # Fence: tests/unit/test_agent_map_r8.py.
     agent_map_orgs: str = ""
+
+    # ── Agents: the lenses of the Agents view (WS-MCP AMR-1, §5.12) ──
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. On, the Agents canvas of Projects draws the Board, Graph and
+    # List lenses, and its phone view. Off, it draws the map of SW-103. It opens
+    # no data: the map read still needs AGENTS_VIEW_ORGS and AGENT_MAP_ORGS.
+    # AMR-4: on, the map read also answers `detail=summary` and `session=`,
+    # through the same reach rule as the map.
+    # The one reader is `gateway.agent_lenses_flag.agent_lenses_allowed`, and
+    # `GET /auth/me/shell` serves the answer as `agent_lenses`. A SIGHUP reload
+    # applies a change. A flip is OWNER-GATE (`enforcement-flip`).
+    # Fence: tests/unit/test_auth_me_shell_r8.py.
+    agent_lenses_orgs: str = ""
 
     # ── The status-set guard in chat (WS-42 PST-4, projects_settings.md §7.1) ──
     #
@@ -1592,6 +1671,20 @@ class Settings(BaseSettings):
     # what the chat can do and spends model tokens.
     # Fence: tests/unit/test_tool_search_off.py.
     tool_search_orgs: str = ""
+
+    # ── The tool gap record (agent_sandbox.md §6.1, SBX-1a) ─────────────────
+    #
+    # ON gives `find_tools` its no-match hook
+    # (`orchestrator.tool_gap_path.make_gap_hook`). When the rank finds no
+    # tool, the hook checks the Studio library and the action catalog, asks
+    # one typed decide question and writes one `tool_gaps` row. OFF (the
+    # default) passes no hook, so the no-match answer stays `FIND_NONE` byte
+    # for byte. It acts only where `TOOL_SEARCH_ORGS` and `STUDIO_ORGS` name
+    # the org. A change needs a restart. The flip on a box is the gate
+    # `enforcement-flip` of rung 6a (agent_sandbox.md §0c).
+    # Fences: tests/unit/test_tool_gap_detection.py,
+    # tests/unit/test_user_tool_injection.py.
+    user_tool_find_enabled: bool = False
 
     # ── The read packs of a WhatsApp turn (chat_reach.md G2, task 3494) ─────
     #
@@ -1816,6 +1909,22 @@ class Settings(BaseSettings):
     # its usage row must be proven first (§31.5 VOX-1, Done when 4).
     # Fence: tests/unit/test_chat_transcribe.py.
     chat_voice_orgs: str = ""
+    # ── One Today rule (my_day_command_centre.md §9.2, WS-MDC CC-2) ─────────
+    #
+    # `today_rule_orgs` lists the organization ids where the Today chip of My
+    # work and its count read the one Today predicate, or `*` for each one.
+    # Empty means off, and the chip and its count keep the old rule. The read
+    # (`GET /projects/my/today?with_tasks=true`) answers with the flag off. A
+    # mark or a clear of today's focus answers 403 `today_focus_off`
+    # (`personal.check_focus_on`) until the flag holds the org. The one reader is
+    # `gateway.routes.projects.today_rule.today_rule_allowed`, and it fails
+    # closed. The name ends in `_orgs`, so a SIGHUP applies a change with no
+    # restart (`docs/flag_reload.md`).
+    #
+    # 🔴 OWNER-ONLY on a box: any value other than empty is gate
+    # `enforcement-flip` (`work_plan.md` §6 D4).
+    # Fence: tests/unit/test_today_rule_r8.py.
+    today_rule_orgs: str = ""
 
     # ── The topics of the chat list (chat_organization.md §6, WS-CO CO-2a) ─
     #
@@ -2556,6 +2665,13 @@ class Settings(BaseSettings):
     # Production also needs a remote gVisor backend. Fence SBX-F26:
     # tests/unit/test_sandbox_broker_compute.py.
     compute_run_orgs: str = ""
+    # SBX-2 (agent_sandbox.md 12.2 decision 4): the hot kill switch of the
+    # sandbox door. A `*_orgs` list ("" off, "*" all, else org ids), so SIGHUP
+    # reloads it (docs/flag_reload.md). Empty, each request with a capability
+    # gets 401 before any read. `*` counts as empty while
+    # SELF_SERVE_SIGNUP_ENABLED is on. Its one reader is
+    # `acb_auth.sandbox_capabilities.door_orgs`. A flip is `enforcement-flip`.
+    sandbox_door_orgs: str = ""
     compute_max_per_org: int = 1
     compute_max_total: int = 1
     # Disk checks of §7.1 rule 10. The floor is the free space of the file
@@ -2734,6 +2850,18 @@ class Settings(BaseSettings):
     # change (`gateway/flag_reload.py`). A production flip is gate
     # `enforcement-flip`. Fence: tests/unit/test_card_revise.py.
     chat_card_revise_orgs: str = ""
+
+    # ── The chat asks which draft (tasks 3977 and 3978) ──
+    #
+    # CHAT_DRAFT_CHOICE_ORGS: a comma list of organization ids, or `*`. Empty
+    # is off, the default, and then each card and each trash is as before. On,
+    # `manage_inbox(action="trash")` on a draft reads Drafts, shows each
+    # matching draft as an unticked row, and the answer counts what left Drafts
+    # and names what stays. The one reader is
+    # `acb_skills.draft_choice.draft_choice_on`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). A production flip is gate
+    # `enforcement-flip`. Fence: tests/unit/test_email_draft_choice.py.
+    chat_draft_choice_orgs: str = ""
 
     # ── A paste is framed as data (HRD-14b, chat_failure_modes.md §4.7b) ──
     #
@@ -3063,6 +3191,14 @@ class Settings(BaseSettings):
     # (`docs/flag_reload.md`). `acb_auth.agent_oauth.image_upload_allowed` is
     # the one reader. 🔴 A change on a box is gate `enforcement-flip`.
     mcp_image_upload_orgs: str = ""
+    # SW-27c1 (agent_coordination.md SW-27, task 3938): the organizations where
+    # an outside agent may mark a number of a project sequence `used` or
+    # `released` (`mark_number`). The same shape as `agent_access_orgs`: ids
+    # with a comma between them, or `*`. Empty, the default, keeps it dark:
+    # the edge hides the tool, and the mark route answers 404 for a signed
+    # agent. `acb_auth.agent_oauth.sequence_marks_allowed` is the one reader.
+    # 🔴 A change on a box is gate `enforcement-flip`.
+    sequence_marks_orgs: str = ""
     # PB-2 (D186, `orchestration_playbook.md` §5, §7): the organizations where
     # the edge lists the playbook prompts (`set_up_agent_team`, `plan_slices`,
     # `write_brief`, `review_my_fleet`, `run_retro`). The same shape as
@@ -3160,6 +3296,21 @@ class Settings(BaseSettings):
     agent_write_window_s: int = 600
     agent_access_token_ttl_s: int = 3600
     agent_refresh_token_ttl_s: int = 30 * 24 * 3600
+    # MCP-G17f (external_agent_access.md §5.5, task 4032, owner directive
+    # 2026-11-26): the grace window of a refresh token, in seconds. A refresh
+    # token that its own client spent less than this many seconds ago gets a
+    # new pair of the same connection, and it does not revoke the connection.
+    # Two sessions that share one login and refresh at once then both keep
+    # the board. 0, the default, turns the window off: rule 5 of
+    # `acb_auth.agent_tokens` holds as before, and each reuse revokes.
+    # `acb_auth.agent_oauth.refresh_reuse_grace_s` is the one reader. It
+    # reads a value below 0 as 0, and a value above
+    # `agent_oauth.REFRESH_REUSE_GRACE_MAX_S` (60) as 60. The env key is
+    # `AGENT_REFRESH_REUSE_GRACE_S`. It is not a `*_ORGS` or `*_MODES` key,
+    # so a SIGHUP reload does not apply it: restart `acb-agent-edge`, which
+    # runs the token endpoint (`docs/flag_reload.md`). 🔴 A change on a box
+    # is gate `enforcement-flip`.
+    agent_refresh_reuse_grace_s: int = 0
     agent_code_ttl_s: int = 60
     agent_connection_idle_ttl_s: int = 90 * 24 * 3600
     agent_client_unused_ttl_s: int = 24 * 3600

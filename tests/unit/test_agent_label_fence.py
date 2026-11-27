@@ -102,6 +102,35 @@ no module outside ``agent_runs.py`` reads them. The R8 half of SW-39 is
   ``test_only_two_indexes_name_the_child_columns``.
 * L21. ``E`` ``tools.py``: read ``parent_run_id``.
   ``test_only_agent_runs_names_the_child_columns``.
+
+**SW-107b makes one exemption** (owner, 2026-11-23). The key of SW-107 sets
+``dispatched_by_run_id`` to NULL on each run delete. The partial index
+``pm_agent_runs_dispatched_by`` serves that lookup, so a delete scans no
+table. The index fence takes this one index, word for word
+(:data:`_DISPATCH_INDEX`), and refuses each other index that names a label
+column. The R8 half is ``test_agent_run_dispatch_index_r8.py``.
+
+* L22. A migration: a second index ``ON pm_agent_runs (dispatched_by_run_id)``
+  with another name. ``test_no_index_of_the_runs_table_names_the_label``.
+* L23. The migration: drop ``WHERE dispatched_by_run_id IS NOT NULL``.
+  ``test_no_index_of_the_runs_table_names_the_label`` and
+  ``test_it_sets_the_lock_timeout_and_builds_one_plain_index``.
+* L24. The migration: add ``CONCURRENTLY``.
+  ``test_it_sets_the_lock_timeout_and_builds_one_plain_index``.
+
+**LBB-2 makes one decision reader** (``agent_coordination.md`` §3.7, the
+amendment of 2026-11-26, and ``engineering_practice.md`` §7b.2). The claim
+gate, ``gateway/routes/projects/claim_gate.py``, may read ``agent_label`` to
+refuse an agent's own new claim. It opens, grants and shows nothing. No other
+SQL text of ``apps/`` or ``packages/`` names ``agent_label`` after a
+``WHERE``. The two writes of the label itself (:data:`_LABEL_WRITES`) guard
+their own UPDATE with it, and they choose no run. ``my_work`` takes the label
+too (:data:`_TAKES_LABEL`), and sends it to the read of the gate only.
+
+* L25. ``G`` ``_HOLDER_SQL``: add ``AND r.agent_label IS NOT DISTINCT FROM
+  :label``. ``test_the_claim_gate_is_the_one_decision_reader_of_the_label``.
+* L26. ``claim_gate.py`` ``_counted_sql``: drop the label test.
+  ``test_the_claim_gate_is_the_one_decision_reader_of_the_label``.
 """
 
 from __future__ import annotations
@@ -164,13 +193,61 @@ _LABEL = re.compile(
     r"\b(?:agent_label|agent_host|agent_host_kind|agent_model|dispatched_by_run_id)\b")
 
 
+#: Each ``CREATE INDEX`` of ``pm_agent_runs`` in a migration.
+_RUNS_INDEX = re.compile(r"CREATE\s+(?:UNIQUE\s+)?INDEX[^;]*?\bON\s+pm_agent_runs\b[^;]*;",
+                         re.IGNORECASE | re.DOTALL)
+
+#: SW-107b, the ONE exemption of the index fence (owner, 2026-11-23). The key
+#: of 472 sets the column to NULL with ON DELETE SET NULL, and without this
+#: index each run delete scans the whole table. The index serves only that
+#: lookup, so it grants nothing. The fence takes it only with this exact text:
+#: this name, this one column and this predicate.
+_DISPATCH_INDEX = ("CREATE INDEX IF NOT EXISTS pm_agent_runs_dispatched_by ON pm_agent_runs"
+                   " (dispatched_by_run_id) WHERE dispatched_by_run_id IS NOT NULL;")
+
+
+def _squash(sql: str) -> str:
+    """*sql* with each run of white space as one space, and no outer space."""
+    return " ".join(sql.split())
+
+
 #: SW-39. The two columns of a child run, as code reads them: the parent
 #: column by name, and the kind as a test on its value.
 _CHILD = re.compile(r"\bparent_run_id\b|\bkind\s*(?:=|<>|!=)\s*'(?:run|child)'")
 
 
+#: The statements of ``agent_summary.py`` that read a child run, sorted. Each
+#: reaches a child only through a run of the one ``seen`` text.
+_CHILD_READS = ["_MAP_CHILDREN_SQL", "_MAP_CHILD_COUNTS_SQL", "_MAP_NODE_CHILDREN_SQL"]
+
+
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def _child_namers(source: str) -> list[str]:
+    """Every top-level statement of *source* whose CODE names the child
+    columns in a string constant, sorted. SQL lives in strings. A comment is
+    not in the AST, so it never counts. An attribute read of a result row,
+    such as ``c.parent_run_id`` in ``_agent_map``, is no query and never
+    counts. A statement with no name reads as ``<line N>``."""
+    found = []
+    for node in ast.parse(source).body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            name = node.name
+        elif isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+            name = node.targets[0].id
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            name = node.target.id
+        else:
+            name = f"<line {node.lineno}>"
+        text = []
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                text.append(sub.value)
+        if _CHILD.search("\n".join(text)):
+            found.append(name)
+    return sorted(found)
 
 
 def _named_sources(path: Path, names: tuple[str, ...]) -> dict[str, str]:
@@ -193,6 +270,79 @@ def _named_sources(path: Path, names: tuple[str, ...]) -> dict[str, str]:
         f"{path.relative_to(_REPO).as_posix()} no longer defines {missing}. Update the"
         " SW-7b fence in tests/unit/test_agent_label_fence.py to name the new seam.")
     return found
+
+
+#: LBB-2. The keyword that starts a ``WHERE`` clause, and the tokens that
+#: :func:`_where_clauses` reads after it. The match is case-sensitive,
+#: because SQL here is in capitals and a docstring that says "where" is no
+#: query.
+_WHERE = re.compile(r"\bWHERE\b")
+_CLAUSE_TOKEN = re.compile(
+    r"\(|\)|\b(?:SELECT|GROUP\s+BY|ORDER\s+BY|LIMIT|RETURNING|HAVING|UNION)\b"
+    r"|(?<!DISTINCT )\bFROM\b")
+_LABEL_WORD = re.compile(r"\bagent_label\b")
+
+
+def _where_clauses(sql: str) -> list[str]:
+    """Each ``WHERE`` clause of *sql*: from the keyword to the next clause
+    keyword at its own depth, or to the ``)`` that closes its subquery. So a
+    label in a select list after the ``WHERE`` of a subquery is not in it,
+    and ``IS [NOT] DISTINCT FROM`` stays inside the clause."""
+    clauses = []
+    for start in _WHERE.finditer(sql):
+        depth, end = 0, len(sql)
+        for token in _CLAUSE_TOKEN.finditer(sql, start.end()):
+            word = token.group(0)
+            if word == "(":
+                depth += 1
+                continue
+            if word == ")":
+                depth -= 1
+                if depth < 0:
+                    end = token.start()
+                    break
+                continue
+            if depth == 0:
+                end = token.start()
+                break
+        clauses.append(sql[start.end():end])
+    return clauses
+#: LBB-2. The ONE module that may read the label for a decision.
+_DECISION_READER = "apps/services/gateway/gateway/routes/projects/claim_gate.py"
+#: The two writes of the label itself. Each guards its own UPDATE with the
+#: label (write only on a change), and neither chooses a run, a holder or a
+#: session.
+_LABEL_WRITES = frozenset({
+    ("apps/services/gateway/gateway/routes/projects/agent_runs.py", "_SET_LABEL_SQL"),
+    ("apps/services/gateway/gateway/routes/projects/agent_runs.py", "_CLEAR_LABEL_SQL"),
+})
+
+#: A display read, named word for word: the map of SW-113/AMR-4 lists the labels
+#: of the child runs of a node (``FILTER (WHERE c.agent_label IS NOT NULL)`` inside
+#: an ``array_agg``). It shows names, and it chooses no run, holder or session.
+_LABEL_DISPLAY = frozenset({
+    ("apps/services/gateway/gateway/routes/projects/agent_summary.py", "_MAP_CHILD_COUNTS_SQL"),
+})
+
+
+def _label_where_readers(source: str) -> list[str]:
+    """Each top-level statement of *source* whose string constants, joined,
+    name ``agent_label`` after a ``WHERE``, sorted."""
+    found = []
+    for node in ast.parse(source).body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            name = node.name
+        elif isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+            name = node.targets[0].id
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            name = node.target.id
+        else:
+            name = f"<line {node.lineno}>"
+        joined = " ".join(sub.value for sub in ast.walk(node)
+                          if isinstance(sub, ast.Constant) and isinstance(sub.value, str))
+        if any(_LABEL_WORD.search(clause) for clause in _where_clauses(joined)):
+            found.append(name)
+    return sorted(found)
 
 
 def _offenders(path: Path, names: tuple[str, ...]) -> list[str]:
@@ -301,19 +451,99 @@ class TestTheLabelGrantsNothing:
                               re.IGNORECASE)]
         assert not heads, f"agent_label must not travel as a header: {heads}"
 
+    def test_the_claim_gate_is_the_one_decision_reader_of_the_label(self) -> None:
+        """LBB-2 (§3.7 amendment of 2026-11-26). Only ``claim_gate.py`` names
+        ``agent_label`` after a ``WHERE``. The two writes of the label itself
+        are named, word for word. The gate's own read holds the label test, so
+        the fence cannot pass on a gate that no longer reads it."""
+        bad, writes, displays, gate = [], set(), set(), []
+        for base in ("apps", "packages"):
+            for path in sorted((_REPO / base).rglob("*.py")):
+                if ".venv" in path.parts or "node_modules" in path.parts:
+                    continue
+                source = _read(path)
+                if "agent_label" not in source:
+                    continue
+                rel = path.relative_to(_REPO).as_posix()
+                for owner in _label_where_readers(source):
+                    if rel == _DECISION_READER:
+                        gate.append(owner)
+                    elif (rel, owner) in _LABEL_WRITES:
+                        writes.add((rel, owner))
+                    elif (rel, owner) in _LABEL_DISPLAY:
+                        displays.add((rel, owner))
+                    else:
+                        bad.append(f"{rel}::{owner}")
+        assert not bad, (
+            "LBB-2 (agent_coordination.md §3.7): only claim_gate.py may read agent_label"
+            f" for a decision. Remove it from: {bad}")
+        assert writes == set(_LABEL_WRITES), sorted(set(_LABEL_WRITES) - writes)
+        assert displays == set(_LABEL_DISPLAY), sorted(set(_LABEL_DISPLAY) - displays)
+        assert gate == ["_counted_sql"], gate
+        assert "nr.agent_label IS NOT DISTINCT FROM CAST(:label AS text)" in _read(
+            _REPO / _DECISION_READER)
+
+    def test_the_label_reader_fence_sees_a_read(self) -> None:
+        """The control of the fence above: a read after a ``WHERE`` is found,
+        across the parts of one f-string, and a docstring that says where
+        is not. A label in the select list after the ``WHERE`` of a subquery
+        is not a read, and ``IS DISTINCT FROM`` does not end the clause."""
+        source = (
+            '"""Read where the agent_label is."""\n'
+            'GOOD = "SELECT agent_label FROM pm_agent_runs WHERE id = :rid"\n'
+            'SUB = ("SELECT EXISTS (SELECT 1 FROM c WHERE c.id = r.cid), r.agent_label"\n'
+            '       " FROM pm_agent_runs r WHERE r.task_id IS NOT NULL")\n'
+            'BAD = (f"SELECT 1 FROM pm_agent_runs r WHERE r.task_id IS NOT NULL"\n'
+            '       " AND r.agent_label = :label")\n'
+            'ALSO = ("SELECT 1 FROM pm_agent_runs r WHERE r.a IS DISTINCT FROM r.b"\n'
+            '        " AND r.agent_label = :label")\n'
+        )
+        assert _label_where_readers(source) == ["ALSO", "BAD"]
+
     def test_no_index_of_the_runs_table_names_the_label(self) -> None:
         """The run slot is ``pm_agent_runs_one_open_per_task`` and
-        ``pm_agent_runs_one_open``. No index of the table names the label."""
-        statement = re.compile(r"CREATE\s+(?:UNIQUE\s+)?INDEX[^;]*?\bON\s+pm_agent_runs\b[^;]*;",
-                               re.IGNORECASE | re.DOTALL)
-        seen, bad = 0, []
+        ``pm_agent_runs_one_open``. No index of the table names the label.
+        One exemption: :data:`_DISPATCH_INDEX`, word for word, in one file."""
+        seen, bad, exempt = 0, [], []
         for path in sorted(_MIGRATIONS.glob("[0-9]*_*.sql")):
-            for found in statement.finditer(_read(path)):
+            for found in _RUNS_INDEX.finditer(_read(path)):
                 seen += 1
                 if _LABEL.search(found.group(0)):
-                    bad.append(f"{path.name}: {found.group(0)[:80]}")
+                    if _squash(found.group(0)) == _DISPATCH_INDEX:
+                        exempt.append(path.name)
+                    else:
+                        bad.append(f"{path.name}: {found.group(0)[:80]}")
         assert seen >= 2, "the fence no longer finds the run-slot indexes"
         assert not bad, f"SW-7b: no index of pm_agent_runs may name agent_label: {bad}"
+        assert len(exempt) <= 1, f"SW-107b: the dispatcher index exists once: {exempt}"
+
+    def test_the_dispatcher_exemption_takes_only_its_exact_text(self) -> None:
+        """SW-107b. The exemption is one statement, word for word. A change of
+        the name, the column, the predicate or the kind of index is a new
+        statement, and the fence above refuses it."""
+        assert _squash(" CREATE  INDEX IF NOT EXISTS pm_agent_runs_dispatched_by\n"
+                       "    ON pm_agent_runs (dispatched_by_run_id)\n"
+                       "    WHERE dispatched_by_run_id IS NOT NULL;") == _DISPATCH_INDEX
+        for other in (
+            "CREATE INDEX IF NOT EXISTS pm_agent_runs_dispatcher ON pm_agent_runs"
+            " (dispatched_by_run_id) WHERE dispatched_by_run_id IS NOT NULL;",
+            "CREATE INDEX IF NOT EXISTS pm_agent_runs_dispatched_by ON pm_agent_runs"
+            " (dispatched_by_run_id);",
+            "CREATE INDEX IF NOT EXISTS pm_agent_runs_dispatched_by ON pm_agent_runs"
+            " (dispatched_by_run_id) WHERE status = 'in_progress';",
+            "CREATE UNIQUE INDEX IF NOT EXISTS pm_agent_runs_dispatched_by ON pm_agent_runs"
+            " (dispatched_by_run_id) WHERE dispatched_by_run_id IS NOT NULL;",
+            "CREATE INDEX IF NOT EXISTS pm_agent_runs_dispatched_by ON pm_agent_runs"
+            " (dispatched_by_run_id, member_email) WHERE dispatched_by_run_id IS NOT NULL;",
+            "CREATE INDEX IF NOT EXISTS pm_agent_runs_dispatched_by ON pm_agent_runs"
+            " (dispatched_by_run_id) INCLUDE (agent_label)"
+            " WHERE dispatched_by_run_id IS NOT NULL;",
+            "CREATE INDEX IF NOT EXISTS pm_agent_runs_dispatched_by ON pm_agent_runs"
+            " (agent_label) WHERE dispatched_by_run_id IS NOT NULL;",
+        ):
+            [found] = _RUNS_INDEX.finditer(other)
+            assert _LABEL.search(found.group(0)), other
+            assert _squash(found.group(0)) != _DISPATCH_INDEX, other
 
 
 class TestTheMigration:
@@ -420,6 +650,28 @@ class TestTheDispatchMigration:
                 pattern], model
 
 
+class TestTheDispatchIndexMigration:
+    """SW-107b. Found by CONTENT, never by number (R1)."""
+
+    def _file(self) -> Path:
+        found = [p for p in _MIGRATIONS.glob("[0-9]*_*.sql")
+                 if "INDEX IF NOT EXISTS pm_agent_runs_dispatched_by" in _read(p)]
+        assert len(found) == 1, found
+        return found[0]
+
+    def test_it_sets_the_lock_timeout_and_builds_one_plain_index(self) -> None:
+        sql = self._file().read_text(encoding="utf-8")
+        body = "\n".join(line for line in sql.splitlines() if not line.startswith("--"))
+        statements = [_squash(s) + ";" for s in body.split(";") if s.strip()]
+        assert statements == ["SET lock_timeout = '5s';", _DISPATCH_INDEX], statements
+        # The owner's decision: a plain build, never CONCURRENTLY.
+        assert "CONCURRENTLY" not in body
+
+    def test_the_number_is_unique(self) -> None:
+        number = self._file().name.split("_", 1)[0]
+        assert [p.name for p in _MIGRATIONS.glob(f"{number}_*.sql")] == [self._file().name]
+
+
 class TestTheChildGrantsNothing:
     """SW-39 (``agent_coordination.md`` §3.11.9). A child run holds no lease,
     no claim and no session key, so no seam that decides one reads its two
@@ -495,7 +747,9 @@ class TestTheChildGrantsNothing:
 
     def test_only_agent_runs_names_the_child_columns(self) -> None:
         """One writer and one reader of a child: ``agent_runs.py``. The edge
-        tool is SW-114's."""
+        tool is SW-114's. SW-110 adds the second reader: the map read of
+        ``agent_summary.py``, which names them in ``_MAP_CHILDREN_SQL`` only
+        (:meth:`test_the_map_reads_the_child_columns_in_one_statement`)."""
         found = []
         for top in ("apps", "packages"):
             for path in sorted((_REPO / top).rglob("*.py")):
@@ -503,7 +757,45 @@ class TestTheChildGrantsNothing:
                     continue
                 if _CHILD.search(_read(path)):
                     found.append(path.relative_to(_REPO).as_posix())
-        assert found == ["apps/services/gateway/gateway/routes/projects/agent_runs.py"], found
+        assert found == ["apps/services/gateway/gateway/routes/projects/agent_runs.py",
+                         "apps/services/gateway/gateway/routes/projects/agent_summary.py"], found
+
+    def test_the_map_reads_the_child_columns_in_one_statement(self) -> None:
+        """SW-110 (§3.12.4 rules 1 and 2). In ``agent_summary.py``, only the
+        child reads of :data:`_CHILD_READS` name the two child columns:
+        ``_MAP_CHILDREN_SQL``, and the count and the one-node read of AMR-4.
+        The reach rule, the ``seen`` text and the other map reads never do. The name, the machine
+        and the model of a child are display data: no ``WHERE`` or ``JOIN``
+        arm of the child read names them. Mutation: add ``AND
+        c.agent_model IS NOT NULL`` to the read."""
+        path = _GATEWAY / "agent_summary.py"
+        readers = _child_namers(_read(path))
+        assert readers == _CHILD_READS, readers
+        for admin in (True, False):
+            assert not _CHILD.search(agent_summary._reach_sql(admin)), admin
+        # The label guard reads the tail of the child read after its first
+        # ``FROM live``. That cut is sound only when the shared head has none.
+        assert "FROM live" not in agent_summary._MAP_CTE
+        guarded = agent_summary._MAP_CHILDREN_SQL.split("FROM live", 1)[1]
+        assert not _LABEL.search(guarded), guarded
+        # AMR-4: the two reads over ``cur`` hold the same rule after ``FROM cur``.
+        assert "FROM cur" not in agent_summary._MAP_CUR_CTE
+        for sql in (agent_summary._MAP_CHILD_COUNTS_SQL, agent_summary._MAP_NODE_CHILDREN_SQL):
+            tail = sql.split("FROM cur", 1)[1]
+            assert not _LABEL.search(tail), tail
+
+    def test_the_whole_file_check_rejects_a_second_reader(self) -> None:
+        """Mutation, on a copy of the text and never on the file: a second
+        constant that names ``kind = 'child'`` must fail the check, and a
+        comment that names it must not."""
+        source = _read(_GATEWAY / "agent_summary.py")
+        assert _child_namers(source) == _CHILD_READS
+        mutated = source + "\n_LATER_SQL = \"SELECT 1 WHERE kind = 'child'\"\n"
+        assert _child_namers(mutated) == ["_LATER_SQL", *_CHILD_READS]
+        in_code = source + "\ndef later(db):\n    return db.execute('SELECT parent_run_id FROM t')\n"
+        assert _child_namers(in_code) == [*_CHILD_READS, "later"]
+        commented = source + "\n# kind = 'child' and parent_run_id: a comment only\n"
+        assert _child_namers(commented) == _CHILD_READS
 
     def test_the_session_key_never_meets_the_child_columns(self) -> None:
         files = [_EDGE / "mcp.py", _EDGE / "bearer.py", _EDGE / "gateway_client.py"]
@@ -671,14 +963,16 @@ class TestTheClean:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-_TAKES_LABEL = ("claim_task", "start_agent_run")
+_TAKES_LABEL = ("claim_task", "start_agent_run", "my_work")
+#: SW-104. The two tools that take the machine, its kind and the model.
+_TAKES_PLACE = ("claim_task", "start_agent_run")
 #: SW-114. The one tool that takes a model and no host: a sub-agent's model.
 _TAKES_MODEL_ONLY = ("report_subagent",)
 
 
 class TestTheEdgeArgument:
 
-    def test_the_two_tools_take_the_optional_argument(self) -> None:
+    def test_the_three_tools_take_the_optional_argument(self) -> None:
         for name in _TAKES_LABEL:
             tool = tools.TOOLS[name]
             assert tool.input_schema["properties"]["agent_label"] is tools._LABEL_INPUT, name
@@ -726,7 +1020,7 @@ class TestTheEdgeArgument:
     def test_the_two_tools_take_the_place_and_no_other_tool_does(self) -> None:
         rules = {"host": tools._HOST_INPUT, "model": tools._MODEL_INPUT,
                  "host_kind": tools._HOST_KIND_INPUT}
-        for name in _TAKES_LABEL:
+        for name in _TAKES_PLACE:
             tool = tools.TOOLS[name]
             for key, rule in rules.items():
                 assert tool.input_schema["properties"][key] is rule, (name, key)
@@ -735,7 +1029,7 @@ class TestTheEdgeArgument:
         others = sorted(name for name, tool in tools.TOOLS.items()
                         if {"host", "model", "host_kind"} & set(
                             (tool.input_schema or {}).get("properties", {}))
-                        and name not in _TAKES_LABEL and name not in _TAKES_MODEL_ONLY)
+                        and name not in _TAKES_PLACE and name not in _TAKES_MODEL_ONLY)
         assert not others, others
 
     def test_report_subagent_takes_the_type_and_the_model_in_the_same_shape(self) -> None:
@@ -824,14 +1118,14 @@ class TestTheEdgeArgument:
         assert started["structuredContent"]["run"]["agent_host_kind"] == "computer"
 
     def test_the_two_tools_take_dispatched_by_and_no_other_tool_does(self) -> None:
-        for name in _TAKES_LABEL:
+        for name in _TAKES_PLACE:
             tool = tools.TOOLS[name]
             assert tool.input_schema["properties"]["dispatched_by"] is tools._DISPATCHED_BY_INPUT
             assert "dispatched_by" not in tool.input_schema["required"], name
             assert tool.params["dispatched_by"] == "dispatched_by", name
         others = sorted(name for name, tool in tools.TOOLS.items()
                         if "dispatched_by" in (tool.input_schema or {}).get("properties", {})
-                        and name not in _TAKES_LABEL)
+                        and name not in _TAKES_PLACE)
         assert not others, others
         rule = tools._DISPATCHED_BY_INPUT
         tools._check_value("dispatched_by", rule, str(uuid.uuid4()))

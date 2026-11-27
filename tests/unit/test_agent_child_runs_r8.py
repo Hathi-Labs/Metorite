@@ -504,7 +504,9 @@ class TestTheChildRunOnARealDatabase:
         """The fifth "Done when". The parent's task is granted to Alice
         only. Lane cannot see it, so the children read is 404, and no list,
         run read or map read names the child. Alice sees the child under
-        its parent only: a child id is no run of its own."""
+        its parent only: a child id is no run of its own. SW-110: the map of
+        Alice now lists the child under its parent, and the map of Lane still
+        names nothing of it."""
         monkeypatch.setattr(get_settings(), "agents_view_orgs", "*")
         monkeypatch.setattr(get_settings(), "agent_map_orgs", "*")
         task = _fresh(w, grant=ALICE)
@@ -532,8 +534,13 @@ class TestTheChildRunOnARealDatabase:
         assert lane["parent"].status_code == 404 and lane["child"].status_code == 404
         assert lane["list"].status_code == 200 and lane["list"].json()["rows"] == []
         assert lane["map"].status_code == 200, lane["map"].text
-        for answer in (lane["list"], lane["map"], alice["map"]):
+        for answer in (lane["list"], lane["map"]):
             assert child not in answer.text and "secret-lane" not in answer.text
+        assert lane["map"].json()["children"] == []
+        # SW-110: the parent's viewer sees the child under its parent, never as a run.
+        alice_map = alice["map"].json()
+        assert [(c["child_id"], c["run_id"]) for c in alice_map["children"]] == [(child, parent)]
+        assert child not in {r["run_id"] for r in alice_map["runs"]}
         assert alice["children"].status_code == 200, alice["children"].text
         assert [r["id"] for r in alice["children"].json()["rows"]] == [child]
         assert alice["children"].json()["rows"][0]["parent_run_id"] == parent

@@ -1,5 +1,9 @@
 # Email App — Master Plan (single source of truth)
 
+> **Dated 2026-11-26, the chat asks which draft (task 3977, §18.13).** Merged in #2878, dark behind `CHAT_DRAFT_CHOICE_ORGS`, and task 4026 closes the gaps before the flip (§18.13.2). A trash of a draft reads Drafts, and the answer names each draft that stays.
+>
+> **Dated 2026-11-26, Discard asks about the earlier draft (task 3978, §18.13.1).** Merged in #2893, dark behind the same flag. The card of `edit_draft` and the new-mail card ask "Keep the earlier draft, or delete it?".
+
 > **Dated 2026-11-17, a chat mail is Markdown (task 3605, §18.12).** Built, not merged. The send of a chat mail carries a text part and an HTML part. A draft keeps the text only.
 
 > **Dated 2026-11-11, `email_knowledge` (D105, WS-KS).** KS-12 (task 2726) moves email reading to the one read seam. It stops new writes to `email_knowledge`.
@@ -21699,6 +21703,259 @@ text part and the HTML part of the mail.
 **Fence:** `tests/unit/test_email_markdown_mail.py`.
 
 **Verify with.** `uv run pytest tests/unit/test_email_markdown_mail.py -q`
+
+### 18.13 The chat asks which draft (2026-11-26, task 3977)
+
+**Status:** MERGED in #2878 (task 3977). Task 4026 closes the gaps before the flag flip
+(§18.13.2), built on branch `cd4026`, not merged. No migration.
+
+**Dark.** `CHAT_DRAFT_CHOICE_ORGS` lists the organization ids, or `*`. Empty is off, the
+default. Off, the card and the answer of a trash are the ones of before. The one reader is
+`acb_skills.draft_choice.draft_choice_on`. A value on a box is an `enforcement-flip`.
+
+**The defect (rung 0).** Production, 2026-11-26. A thread held two drafts. The chat saved one,
+and the member made a second one with two files. The member asked to delete the draft in
+Drafts. The chat trashed its own draft only, and answered "The draft is deleted".
+
+**The rules.** They apply to `manage_inbox(action="trash")` with 20 ids or fewer.
+
+1. The tool reads the named ids in ONE call of `POST /email/messages/summaries`. That read
+   fetches no body. It drops an id that is no UUID or no message of the member. So a bad id
+   never stops a good one. A repeated id, in any form of the same UUID, is one message.
+2. An anchor is a named draft, or a named message in Trash that its own mailbox sent. A mail
+   from another sender is never an anchor. With no anchor, the trash of before runs.
+3. The tool reads the Drafts folder of each mailbox of the anchors. A draft matches when it
+   shares the thread, the To set or the subject of an anchor (`draft_choice.matching`). A
+   "Re:" head and the case do not count. The named drafts come first, before the cut of
+   20 rows.
+4. One matching draft that the call names keeps one Approve card, with the words of a draft.
+5. Any other case draws one row for each matching draft. Each draft row starts **unticked**,
+   and the member picks. A named message that is no draft stays ticked.
+6. A run with no rows card (WhatsApp, or no channel) keeps one card. It acts on the named
+   drafts and the other named mail, and it names the other matching drafts.
+7. Each card names each other message by its sender and subject. It names the mailbox of
+   each message, and each id that names no message. No two rows or lines read the same, also
+   after a cut. A named message already in Trash is listed, and nothing happens to it. The
+   plain card with no staying draft, or with a full Drafts page, ends with a line that says
+   so (§18.13.2). So the chat never draws it as a grid of rows.
+8. Each message moves through `DELETE /email/messages/{id}?report=true`, one call each. That
+   route discards a Gmail draft and keeps the new id of an Outlook draft. The card says which
+   of the two happens.
+9. The tool reads Drafts again after the act, with the first anchors only. The answer counts
+   a message only when the provider confirmed the trash. A draft counts only when it also
+   left Drafts. The answer names each message that it counts, and each matching draft that
+   stays. It says "none left" only for a whole page.
+10. The answer names each message that the provider did not confirm, that did not move, or
+    whose answer did not come back. A failed read after the act keeps the report of the act.
+11. The chat receipt takes its count from the head of the answer, and not from the call. A
+    head of "Trashed 0 message(s)" draws no trash receipt.
+
+**The report of the trash route.** `DELETE /email/messages/{id}` answers 204, as before.
+With `?report=true` it answers 200 and `{id, provider, reason, discarded}`. `provider` is
+`confirmed` only when the provider accepted the trash. It is `not_confirmed` when no provider
+loads, when it does not authenticate, or when its trash raises. `reason` is one fixed word.
+
+A failure after the provider accepted (the new id, or the saved tokens) keeps `confirmed`.
+The IMAP trash raises for an id that is no UID, such as `draft-Drafts`, and for a STORE that
+is not OK. So an IMAP draft reads `not_confirmed`.
+
+**Known limits.**
+
+- The check reads the Metorite mirror. A draft that the sync did not bring yet does not show.
+- A trash that the provider did not confirm still reads as Trash in the mirror until the next
+  sync. The answer says so, and it does not count it.
+- A call with more than 20 ids is a clean-up of mail, and it keeps the card of before.
+- `bulk_manage_inbox` does not run this check.
+- The IMAP trash copies to Trash with the Trash folder open, so the copy can take the wrong
+  message. That is a defect of before, outside this slice.
+
+**Fences.** `tests/unit/test_email_draft_choice.py` and
+`src/components/email/draftTrashReceipt.test.ts`.
+
+**Verify with.** `uv run pytest tests/unit/test_email_draft_choice.py -q`
+
+#### 18.13.1 Discard asks about the earlier draft (2026-11-26, task 3978)
+
+**Status:** MERGED in #2893 (task 3978). Task 3977 (§18.13) merged in #2878 before it. No
+migration. Dark behind
+`CHAT_DRAFT_CHOICE_ORGS`, the flag of §18.13.
+
+**The defect (rung 0).** Production, 2026-11-26. `draft_reply` saved a draft in Drafts. The
+member then declined the card "Save these changes to the draft?" of `edit_draft`. The member
+believed that the draft was rejected, and it stayed in Drafts.
+
+**The choice.** The task offered option (b): "when the member declines an edit card for a
+draft the chat made, ask in the same card 'Keep the earlier draft, or delete it?'. In both
+cases the answer must say plainly where the draft is." This build takes that option. No rule
+of §18.9, §18.10 or §18.11 forbids it. The act of the card still writes nothing. §18.9 item 7
+says that only the member's click trashes a draft, and that rule still applies.
+
+**The rules.**
+
+1. Two cards ask the ONE question, with one answer text and one component:
+   - the plain card of `edit_draft` ("Save these changes to the draft?") asks at Reject. It
+     needs `CHAT_DRAFT_CHOICE_ORGS` and `CHAT_CARD_REVISE_ORGS`.
+   - the new-mail form card asks at Discard. It also needs `EMAIL_EDIT_CARD_ORGS`, because only
+     that flag draws the form card.
+2. Only the one-draft record of task 3814 knows which draft the chat saved. `draft_reply` now
+   writes its reply draft into that record (`_note_reply_draft`), with the digest of the stored
+   draft and the mark `reply`. A reply draft is never the target of a save of a new mail
+   (`card_revise.plan_save`, `_known` and the redraft marker skip it). An approved edit keeps
+   the mark.
+3. The card of `edit_draft` asks only about a draft that the record holds and that is still
+   the chat's own text, with no file (`card_revise.target_state` is `ok`). The new-mail card
+   asks only about the draft that the one-draft rule names (`plan.replaces`). A draft that the
+   member made or changed is never asked about, and neither is a draft with a send in the
+   queue, or a draft whose queue the chat could not read. A failed read asks nothing.
+4. The tool puts two keys on the card: `earlier`, one line that names the draft, and
+   `earlier_effect`, what "Delete it" does at the provider of the mailbox
+   (`draft_choice.delete_effect`). Gmail: "Delete removes it from Gmail for good." Outlook:
+   "Delete moves it to Deleted Items in Outlook." Each other provider, and a mailbox list that
+   could not be read, has no effect, and the card then promises nothing about the delete.
+   `ask_tools.clean_earlier` is the one cleaner, and it drops any other effect text. The
+   effect is a field of its own, so no clip of the line or of the card body can cut it.
+5. Discard or Reject shows the question on the same card, in place of its buttons and of its
+   hint line, with "Keep it", "Delete it" and "Back". The focus moves to "Keep it". Keep sends
+   `REJECT`, the decline of before. Back sends nothing.
+6. Delete sends `REJECT {"earlier":"delete"}` (`ask_tools.DELETE_EARLIER_ANSWER`). The card
+   reads it as a decline, so the card sends and saves nothing. It holds the same Undo of five
+   seconds as a Reject.
+7. `ask_tools.earlier_draft_choice` says "delete" only for that exact answer, on a card that
+   carries `earlier`, from the run's own member. The member is the gateway's session member.
+8. Before the trash, the tool reads the state of the draft again (`card_revise.target_state`).
+   A draft that changed stays, and the answer says so, with its id. A state that the chat could
+   not check claims no folder: the record or the draft could not be read, the state read
+   failed, the draft left Drafts, or the flag went off while the card waited. The answer then
+   says that the chat deleted nothing, and asks the member to look in Drafts.
+9. The trash goes through `DELETE /email/chat-drafts/{id}`, a route of the gateway. The member
+   comes from the session, and the SQL of the route takes the draft only from a mailbox of
+   that member. The route reads the live draft at the provider first, with the full read of
+   the sync (`get_message`). It holds no database session across that read: one short session
+   reads the row and loads the provider, and a later one saves a rotated token. The live
+   draft must match the stored copy: the text (the fold of the reply card's Discard check), the
+   subject, the To, Cc and Bcc, and no file on either side. A mismatch, a failed read, a slow
+   read or a refused sign-in answers 409, and the route trashes nothing. The answer then says
+   that the draft was not deleted. A passed check runs the trash of
+   `DELETE /email/messages/{id}?report=true`. An older gateway has no such route, so the chat
+   never trashes with no check.
+9a. The answer comes from `draft_choice.report` (§18.13 rules 9 and 10). It counts a trash only
+    when the provider confirmed it and, in a second read of Drafts, the draft left Drafts. It
+    names each matching draft that stays, such as a draft that the member made. When that
+    second read fails, `settle` counts a draft on the provider's confirmation alone. The answer
+    then says that Metorite could not read Drafts after the act, and it does not say that no
+    draft is left.
+9b. After "Delete it", the answer starts with `ask_tools.card_declined_draft_text`. The lead
+    stays "Declined", so each chat card reads the act of the card as declined. What happened
+    says "nothing was sent or saved", and never "did not change". One act sentence then says
+    what became of the draft: "deleted from Gmail for good", "moved to Deleted Items in
+    Outlook", "left Drafts" for any other provider, "not deleted" with the reason, or "could
+    not confirm". The chat draws the member line "You said no, so nothing was sent or saved."
+    with that sentence (`memberLineOf`, `DECLINED_DRAFT`). The receipt adds "You asked to
+    delete the draft. The reply says what became of it." It claims no delete.
+10. Each other end of a card that carries the question keeps the draft. The answer says plainly
+    that it is still in Drafts, with its draft_id: Keep, a timeout, an answer of another member,
+    a WhatsApp park and a run with no card. The answer gives no reason, because the card binds
+    no responder, and a decline can be another member's. Each decline of the `edit_draft` card says where the draft is, also a
+    close by a chat message, and also for a draft that the chat did not make. That card never
+    offers to delete a draft that the chat did not make.
+10a. The record keeps the reply drafts of `draft_reply` under a cap of their own
+     (`card_revise.MAX_REPLY_DRAFTS`), apart from the 20 drafts of a new mail. So replies never
+     push the draft of a new mail out of the record.
+11. A late "Delete it" deletes nothing. When no run takes the answer (a restart, or a parked
+    card), the chat sends it as a new message. No tool waits for it, so nothing is trashed. The
+    chat draws it as "Rejected" (`cardAnswer.ts` `isRejectAnswer`), and the gateway agrees
+    (`chat_recovery.card_answer_agrees`). The drawn text never says that a draft was deleted.
+
+**Each surface.**
+
+- The web chat draws the question on both cards. A web client of before sends `REJECT`, so the
+  draft stays.
+- A held chat draws the held form card (`_held_card`, then `_held_form_card`), and it asks the
+  same question. The plain card of `edit_draft` asks there too.
+- A WhatsApp run and a run with no card channel draw no question. The draft stays, and the
+  answer says where it is.
+- A chat message that closes the card is a redraft (§18.11), not a decline. The draft stays,
+  and the answer of `edit_draft` says where it is.
+- Back, and Escape on the question, show the buttons again. The focus goes back to Reject or
+  Discard.
+
+**Flag off.** The card and its answer are the ones of before, byte for byte. `draft_reply`
+writes nothing into the record.
+
+**Known limits.**
+
+- The state check and the trash are two steps. An edit in the seconds between them is not
+  seen.
+- The `_new_draft` card ("Save this new email in Drafts?") and the reply card do not ask. The
+  reply card trashes its own draft at Discard already (§18.9 item 7).
+- A reply draft that `draft_reply` saved before the flag went on is not in the record, so its
+  card does not ask. The answer still says where the draft is.
+- The question before the card reads the stored copy only. A draft that the member edited at
+  the mailbox can still get the question. "Delete it" then reads the live draft, trashes
+  nothing, and says so (rule 9).
+- The live check compares the fields that the provider's full read gives. A provider that
+  does not return the Bcc of a draft makes the check refuse a draft with a Bcc, so that draft
+  is never deleted from the chat. The check and the trash are two calls, so an edit at the
+  mailbox in the moment between them is not seen.
+- An Outlook reply-all draft of `draft_reply` can hold fewer recipients at the mailbox than
+  the stored copy until the next sync. In that time "Delete it" deletes nothing and says so.
+- The new-mail card and the held form card say nothing about the earlier draft in these
+  cases: a close by a chat message (the answer is the redraft text of §18.11), and a card that
+  asks no question (a draft with a queued send, a queue that could not be read, or a draft
+  that the member changed). The card itself names those drafts (`_replace_lines`).
+
+**Fences.** `tests/unit/test_email_draft_decline.py` and
+`src/components/newMailCardEarlier.test.ts`.
+
+**Verify with.** `uv run pytest tests/unit/test_email_draft_decline.py -q`
+
+#### 18.13.2 The gaps before the flag flip (2026-11-27, task 4026)
+
+**Status:** BUILT on branch `cd4026`, not merged. No migration. Each item stays dark behind
+`CHAT_DRAFT_CHOICE_ORGS`, except item 7, which is on the card of before.
+
+1. **The plain card of one draft is a list.** The line "To people: subject" is a `key: value`
+   line. So the chat drew a card of one draft as a grid (`parseCardBody` in
+   `ConfirmationCard.tsx`). The plain card now ends with one line that holds no ": ". The line
+   says that no other matching draft is in Drafts, or that the Drafts page was full
+   (`_plain_card_end`). When matching drafts stay and the page was not full, the card adds no
+   line. The header of the staying drafts then keeps the card a list.
+2. **A trash that counts 0 says "Not confirmed".** A head of "Trashed 0 message(s):" drew
+   "Inbox updated" with a check mark. The tool writes that head only for a trash that the
+   mailbox did not confirm, or for a lost answer. So the chat draws "Not confirmed", with no
+   check mark, and asks the member to check the mailbox (`noActionOf`, `UNCONFIRMED_NOTE`).
+   It never says that nothing changed.
+3. **Fences for the summaries fields and for the rule of Drafts.** A test reads
+   `POST /email/messages/summaries` through a session that answers only the columns that the
+   SQL names. So a column that leaves the SELECT fails it. A second test holds each case of
+   `draft_choice.settle`: a draft that is still in Drafts never counts.
+4. **No two lines read the same after a cut.** The tool cuts each line of a message in Trash,
+   and each row of the rows card. Then `draft_choice.unique` runs on the cut text.
+5. **The visual review.** A rig drew the plain card, the rows card, both receipts, the question
+   card and the held card, in dark, light, compact, comfortable, a changed accent and at
+   390 px. A later run drew the "Not confirmed" receipt in dark, light, compact, a changed
+   accent and at 390 px. Two findings stay open. At 390 px, a long line of the plain card wraps
+   under its "-" mark. At 390 px, the status line of the held card cuts "Waiting for your answer".
+6. **A sender name that holds ": " keeps the subject.** `draft_choice.draft_parts` and
+   `message_parts` give the sender and the subject apart. `_short_label` cuts each part by
+   itself, before it joins them.
+7. **The bulk card counts each message that it cuts.** `request_confirmation` clips the
+   context of a card at 4000 characters, with no count. `_inbox_card_parts` now lists fewer
+   messages and counts the rest, so each message has a line or a count. A card that fits is
+   the card of before, byte for byte. This item has no flag.
+8. **No session across the provider.** `trash_chat_draft_live` reads the stored copy in one
+   short session. It reads the live draft with no session open, and it saves a rotated token
+   in a later session. No work was needed.
+9. **A real Gmail and Outlook mailbox.** This item is outside task 4026.
+10. **The R8 suite.** `tests/unit/test_email_draft_decline_r8.py` ran against the scratch
+    database of `scripts/dev_db.sh` on 2026-11-27, and 3 tests passed. The build of its template
+    database took 703 seconds on a shared box. So run it with `--timeout 2400`, because the
+    default limit of 600 seconds stops the build.
+
+**Fences.** `tests/unit/test_email_draft_choice.py` (the tests under "Task 4026") and
+`src/components/email/draftTrashReceipt.test.ts`.
+
+**Verify with.** `uv run pytest tests/unit/test_email_draft_choice.py -q`
 
 ## 19. Send later (2026-10-21)
 

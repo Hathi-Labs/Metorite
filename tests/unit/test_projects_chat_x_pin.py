@@ -89,9 +89,11 @@ STAYS_X: dict[str, str] = {
     # `report_subagent` over the POST, and the chat still never reaches it.
     "GET /projects/agent-runs/{run_id}/children": "mcp-door",
     "POST /projects/agent-runs/{run_id}/children": "mcp-door",
-    # SW-27a (task 861): an agent reserves a number. SW-27b gives it the MCP
-    # tool. The chat has no need to reserve a number.
+    # SW-27a (task 861): an agent reserves a number through the MCP tool
+    # reserve_number (SW-27b, task 3893). The chat has no need to.
     "POST /projects/nodes/{project_id}/sequences/{name}/reserve": "mcp-door",
+    # SW-27c1 (task 3938): the agent of the run marks its number.
+    "POST /projects/reservations/{reservation_id}/mark": "mcp-door",
     # WS-64 OP-6e, D-OP-13 and EA3-40: only the run's member answers, on the card
     "POST /projects/agent-runs/{run_id}/archive-approval": "card-answer",
 }
@@ -107,6 +109,9 @@ PENDING_OP6: dict[str, str] = {}
 PENDING_TOOL: dict[str, str] = {
     # Empty since SP-12 (task 2295): the plan route of PJP-6a got its chat
     # tool, get_plan, and is class A.
+    # PKG-14a (task 1252) built the dark door of the extension values.
+    "GET /projects/tasks/{task_id}/package-fields": "PKG-14b",
+    "PUT /projects/tasks/{task_id}/package-fields/{install_id}/{field_key}": "PKG-14b",
 }
 
 #: The slices that may own a pending route. OP-6e (agent runs) owns no route.
@@ -146,11 +151,13 @@ def test_the_counts_the_spec_states() -> None:
     the Overview of My tasks, a second door to a read the chat has: 29. Task
     3865 moved the task lanes read to class A, for the chat's status lookup: 28.
     SW-39 added the two child-run routes of an agent: 30. SW-27a (task 861)
-    added the sequence reserve door, for an agent: 31."""
-    assert len(STAYS_X) == 31
+    added the sequence reserve door, for an agent: 31. SW-27c1 (task 3938)
+    added the mark door, for an agent: 32. The two PKG-14a routes wait for a
+    chat tool (PKG-14b): 32 + 2 = 34."""
+    assert len(STAYS_X) == 32
     assert len(PENDING_OP6) == 0
-    assert len(PENDING_TOOL) == 0
-    assert len(_class_x()) == len(STAYS_X) + len(PENDING_TOOL) == 31
+    assert len(PENDING_TOOL) == 2
+    assert len(_class_x()) == len(STAYS_X) + len(PENDING_TOOL) == 34
 
 
 def test_the_area_routes_left_class_x_for_their_tools() -> None:

@@ -118,7 +118,6 @@ import {
   fetchPeople,
   fetchUntriaged,
   fetchOrgPeople,
-  createPerson,
   updatePerson,
   uploadResume,
   fetchProjects,
@@ -1423,9 +1422,9 @@ interface TaskState {
   confirmStagePrompt: (statusId: string) => void;
   /** Escape or a click outside: the card goes back, and nothing is written. */
   cancelStagePrompt: () => void;
-  /** People view: lazy roster load + create/edit + résumé ingestion. */
+  /** People view: lazy roster load + edit + résumé ingestion. A person enters only through Organisation (owner directive 2026-09-21), so there is no create. */
   loadPeople: (opts?: { q?: string; includeInactive?: boolean }) => Promise<void>;
-  savePerson: (id: string | null, body: OrgPersonWrite) => Promise<OrgPerson>;
+  savePerson: (id: string, body: OrgPersonWrite) => Promise<OrgPerson>;
   uploadPersonResume: (
     id: string,
     file: File
@@ -3217,7 +3216,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   savePerson: async (id, body) => {
-    const saved = id ? await updatePerson(id, body) : await createPerson(body);
+    const saved = await updatePerson(id, body);
     set((s) => {
       const exists = s.orgPeople.some((p) => p.id === saved.id);
       return {
