@@ -9198,7 +9198,7 @@ Fence: the R8 test of SP-9 (`tests/unit/test_epic_rollup_r8.py`, new) and the Ep
 
 ### 13.4 One critical-path engine (SP-11, task 2294)
 
-`project_planning.md` §3.4 (PJP-6, task 1483) owns the critical-path maths. SW-90 (task 1936) and WM-3 (task 982) read the engine. They keep no maths of their own. The model never computes a path. Code computes, and the model judges. Fence: the module tests of PJP-6 (`tests/unit/test_planning_module.py`, new). The reads of SW-90 and WM-3 add a test that they call the module and not a function of their own.
+`project_planning.md` §3.4 (PJP-6, task 1483) owns the critical-path maths. SW-90 (task 1936) and WM-3 (task 982) read the engine. They keep no maths of their own. The model never computes a path. Code computes, and the model judges. Fence: the module tests of PJP-6 (`tests/unit/test_planning_module.py`, new). The reads of SW-90 and WM-3 add a test that they call the module and not a function of their own. **2026-11-27:** the Order view (§13.9, ORD-1) reads the engine too, for a project.
 
 ### 13.5 The cycle loop, the close and the retro
 
@@ -9226,7 +9226,7 @@ Each row has one Metorite task. The rows SP-1 to SP-5 keep the scope of the boar
 | **SP-7** | 2290 | A script moves each top-level task tagged "Epic" that has no epic type to the Epic type of its project. The tag stays. A task with a parent is skipped and listed. Each change goes in the task timeline. A dry run comes first, with a count for each organization | The dry-run counts are on the task. After the run, no top-level task tagged "Epic" lacks an epic type. Run it on HathiLabs first. A customer organization needs the owner's OK on the count | HIGH (a data write in live organizations) | SP-6 |
 | **SP-8** | 2291 | The seven fields of the epic contract (§13.3). The chat drafts the outcome and the checks. The MCP reads and writes them. A field on a task that is not an epic is refused. The builder chose a migration, so the row is HIGH (§13.3, "How SP-8a stores the contract"). **SP-8a is built (2026-11-08, migration 399, not merged): the table `pm_epic_contracts`, `GET` and `PUT /projects/tasks/{id}/epic-contract`, `epic_contract` in `get_task` and `get_task_context`, the `epic_contract` block of the MCP tools `update_task` and `create_task`, and the chat tool `set_epic_contract`. SP-8b is open: the form in the app, with the D145 owner preview** | A member fills the contract in the app and in chat. An agent reads it in `get_task_context`. SP-8a: R8 proves the 422 on a task that is not an epic, the count of 3 to 7 checks, the tier CHECK, the read over the real edge, the pin, and no read or write across tenants | HIGH (a migration) | SP-0, SP-6 |
 | **SP-9** | 2292 | One read that computes, for an epic, progress, spend and waits over every descendant that the reader can see. It leaves room for forecast, health and hill position. A hidden descendant is left out and counted in `hidden` (**built 2026-11-08: `rollup.py` adds `rollup` to `GET /projects/tasks/{id}` for an epic, the MCP `get_task` passes it, and the task panel shows one line. `spend`, `forecast`, `health` and `hill` are null until SP-8 and PJP-6. Fence: `tests/unit/test_epic_rollup_r8.py`.**) | R8: an epic with slices at depth 1, 2 and 3 counts all of them. A hidden descendant is counted in `hidden`. The direct-child count of today stays correct | STANDARD (read only) | SP-0. Spend needs SP-8 |
-| **SP-10** | 2293 | The epic page (§13.3). The graph shows the links and no path until the engine ships. On the phone the graph becomes an ordered list. The one look applies (`DESIGN_SYSTEM.md`, `statusAccent.ts`). D145 owner preview | The page renders for an epic with 3 levels of slices, in light and dark, at compact density and at phone width. The captures are on the task | STANDARD | SP-8, SP-9. The graph needs SW-16 (task 347) |
+| **SP-10** | 2293 | The epic page (§13.3). The graph shows the links and no path until the engine ships. **Amended 2026-11-27 (§13.9 rule 13):** the graph is `OrderMap`, with the epic as its root. On the phone the graph becomes an ordered list. The one look applies (`DESIGN_SYSTEM.md`, `statusAccent.ts`). D145 owner preview | The page renders for an epic with 3 levels of slices, in light and dark, at compact density and at phone width. The captures are on the task | STANDARD | SP-8, SP-9. The graph needs SW-16 (task 347) |
 | **SP-11** | 2294 | The spec merge of §13.4. This change closes it | Three rows name one owner. The two doc tests pass | LOW | SP-0 |
 | **SP-12** | 2295 | MCP tool `get_plan(root_task_id)`, class A (read). It returns the ready set, the waves, the critical path with slack, one finish date (no 50% or 85% forecast: PJP-10 adds it), the next slice, `held`, `outside_blockers`, `hidden`, and later the slices that wait on a person (SP-9 gives the waits query). **Built 2026-11-08, not merged: `finish` only, no waits yet.** The same read is a chat tool. Text from other people leaves as `untrusted_text`. A hidden slice is counted and not named. Rows in `skill_projects/manifest.py` | R8: an epic with 6 slices and 5 `blocks` links returns the right waves and path. A hidden slice is counted and not named | STANDARD | PJP-6 (task 1483), SW-16 |
 
@@ -9420,6 +9420,213 @@ The web searches ran on 2026-10-29. Each item names its source type.
 #### Agents (research notes, 2026-11-08, design file)
 
 The research for cycles of agent teams is in §2 and §12 of `project-docs/research/agent_era_planning_2026-11.md`. That file lists its sources and its "Not verified" line.
+
+### 13.9 The Order view: the dependency map of a project (WS-ORD, epic task 4068, 2026-11-27)
+
+**Status: PLANNED, nothing built. ORD-0 (task 4069) wrote this section.** The owner asked for it on 2026-11-27, with a capture of the Timeline. The owner then added that agents must use the same order through the MCP (rule 17).
+
+#### 13.9.1 The owner's ask
+
+```text
+Could we have something like a task dependency map of sorts, which is like a
+derivative of the Gantt chart? It's like the Gantt chart without dates, but we
+can have a decent understanding of what tasks are related to what other tasks,
+what can go in parallel, what comes after what, etc. This could become a view
+within the timeline view itself [...] with the purpose of me understanding how
+the entire map of the project looks: what can be done in parallel and what can
+be done in sequence. Basically, just mapping the critical path.
+```
+
+#### 13.9.2 What already exists, and what is missing
+
+| Piece | Where | State on 2026-11-27 |
+|---|---|---|
+| The one engine: the ready set, the waves, the critical path, slack per slice, the finish | `packages/acb_common/acb_common/planning.py` (`analyze_plan`) | Built (PJP-6a) |
+| The read of one tree | `GET /projects/plan/analysis?root_task_id=` (`routes/projects/plan_analysis.py`, `compute_plan`) | Built. The root is a task, so a project has no root |
+| The plan in chat and the MCP | `get_plan` (SP-12, task 2295) | Built, with the same root |
+| `blocks` links, drawn on the Timeline, with a refusal of a loop | `TimelineView.tsx`, `assert_no_block_cycle` in `routes/projects/relations.py` | Built (WS-27t) |
+| A graph of the slices of one epic | SP-10, the epic page (task 2293) | Planned, not built |
+| The critical path on the dated Timeline | SW-90 (task 1936, parked) and WM-3 (task 982) | Planned, not built |
+| A map with no dates for a whole project | Nothing | Missing |
+
+**Four gaps stop a project map today.**
+
+1. `compute_plan` walks the tree under one task. A project is a set of trees, so it has no root.
+2. `_TREE_SQL` reads the done tasks too, and `MAX_PLAN_TASKS` is 2,000. Metorite Application had 2,513 tasks on 2026-11-27, with 1,029 done. Its read answers 422 today.
+3. The answer holds no links. It names tasks only in `labels`, and `MAX_LABELS` is 100.
+4. No canvas draws the waves.
+
+**What other products do.** A survey of 2026-11-27 read 11 products and 4 layout libraries. No product shows one map with no dates, the steps that run in parallel, the critical path, slack and grouping. Microsoft Project (Network Diagram) and OmniPlan (Network View) come nearest. They draw the critical tasks in red, and OmniPlan keeps a chain on one straight line.
+
+Jira rolls links up to the epic, as one dotted line with a count. Nx and Dagster dim all but the chain of a chosen node. GitHub Actions puts the jobs that run in parallel in one column. Wrike shows the float as a number, not only as a colour. Section 13.9.7 holds the table and the pages read.
+
+#### 13.9.3 The design
+
+**Rule 1. A switch in the Timeline, not a new tab.** The Timeline toolbar gets a switch: **Dates** or **Order**. Dates is the Timeline of today, and Order draws the same tasks and `blocks` links with no dates. The tab row of D-OP-17 does not change. The URL holds `layout=order`, so a link opens it.
+
+**Rule 2. A column is a step.** Order draws the open tasks in columns, from **Now** at the left to **Finish** at the right. Now holds the tasks that can start now, and each later column is the next wave of the engine. Tasks in one column do not wait on each other, so they can run in parallel. Finish holds the finish of the engine.
+
+**Rule 3. The critical path is one straight row on top.** The layout puts each task of the critical path in the first row of its column. So the path reads as one line from left to right, as in OmniPlan and "Critical first" in Microsoft Project. Its cards and links take the accent colour and a 2 px line. On this canvas, the accent means critical and nothing else.
+
+**Rule 4. Spare time shows as a number.** A card off the path shows its slack in words, such as "2 days spare", and a card on the path reads "Critical". The legend says that a critical task has no spare time, so a delay there moves the finish.
+
+**Rule 5. Say how long a task is.** The engine adds one hour of review (`REVIEW_WAIT_MINS`) to each estimate. A task with no estimate counts the hour only. So with no estimates, the critical path is the longest chain. The legend says this, and the summary strip counts the tasks with no estimate.
+
+**Rule 6. The summary strip answers the question first.** A line of short facts sits above the canvas, and each fact is a filter:
+
+- "12 can start now" selects the Now column.
+- "Critical path: 9 tasks, about 14 working days" dims the rest.
+- "3 wait on work outside this project" selects them.
+- "840 open tasks have no link" opens the List with that filter.
+- "6 tasks have no estimate" opens the List with that filter.
+
+**Rule 7. Focus on one chain.** A hover or a selection keeps the chain of that task: what it waits on, and what it unblocks. The rest dims. A line beside the card reads "Waits on 3 · Unblocks 7". Esc clears it.
+
+**Rule 8. A card says the few things that matter.** The status dot from `statusAccent.ts`, the number, the title on two lines, the owner, the estimate and the spare time. The engine's `next_slice` carries a "Start here" mark. A click opens the task panel of the List.
+
+**Rule 9. The states with no column.**
+
+- A **loop** stops the engine. A danger bar names it, such as "#12 blocks #15, and #15 blocks #12". The canvas draws only the loop, with "Remove one link to see an order".
+- A task **held** by open work outside the project sits in a column **Waits outside**, at the left. Its blocker shows as a faint card. A blocker that the viewer cannot see reads "1 task you cannot see".
+- **Too few links** (under 2): the empty state reads "No task here blocks another, so every open task can start now." It shows how to draw a link in Dates, and offers the chat.
+- A **hidden** task is counted and never named, by the rule of PJP-6a.
+
+**Rule 10. Order shows the work left.** Done tasks are not on the map, because a done task blocks nothing (PJP-6a). The summary strip counts them.
+
+**Rule 11. The layout is a pure function.** `layoutOrderMap` places each card from the answer alone, as `layoutAgentMap` does, and the column is the wave. Inside a column, the cards sort by the mean row of their blockers, in two sweeps, then by task number. The same answer gives the same places, and the map stores no place. A card that keeps its step keeps its place after a change.
+
+**Rule 12. No layout library now.** The engine gives the column, so a pure function only orders the cards inside a column. The elkjs library gives routed lines and groups, but it adds about 1,400 KB. Its claim of one layer for each partition is not confirmed. Add it only by a decision of its own, when a capture of 500 cards reads badly.
+
+**Rule 13. One graph, two scopes.** `OrderMap` draws a project here. The epic page of SP-10 mounts the same component with the epic as its root. No second graph is built.
+
+**Rule 14. The phone gets a list.** On a phone, Order is a list grouped by step: "Now (12)", "Step 2 (8)", and on. A critical row has its mark. A tap opens the task card. SP-10 already gives its graph the same rule.
+
+**Rule 15. The same order in chat and the MCP.** `get_plan` takes `project_id`. The chat can answer "what can run in parallel in this project", and `lib/chatView.ts` can open Order.
+
+**Rule 16. Order computes nothing.** The read calls the one engine of PJP-6 (§13.4). The canvas only counts and draws. A chain for focus (rule 7) follows the links of the answer, and it is not an order of work.
+
+**Rule 17. Agents plan and work in the same order.** The owner added this ask on 2026-11-27:
+
+```text
+Agents can probably use, or orchestrators can probably use, this dependency
+graph via the MCP to understand what the sequence of tasks to be worked on is.
+```
+
+So an orchestrator reads the same answer as Order, and follows this plan loop:
+
+1. Call `get_plan` with the `project_id` of the work. For the whole application, use Metorite Application. Its subtree holds each app project, so a link between two apps is inside the scope.
+2. When `not_enough`, `missing` or `gaps` shows, propose the missing `blocks` links and estimates to the member on one card. After the approval, write them with `add_task_link` and `update_tasks`.
+3. Call `get_plan` again. A loop or a `held` slice stops the loop until a person decides.
+4. Call `get_agent_map` with the same project, and drop each slice that a session already holds.
+5. Start one lane on each free slice of the Now column, critical first, then by the least slack. Stop at the lane cap.
+6. After each merge, call `get_plan` again. The next step then opens.
+
+The Order card of a held slice shows the agent pill of its session (`AgentPill.tsx`), from the read of SW-112. So the owner sees which agent works on the critical path.
+
+**What stays with its owner.**
+
+- The order of `my_work` stays with SW-68a, LAD-4 (task 2891) and PJP-6c (task 2508). ORD-5 gives an orchestrator the read and the steps. It does not change the queue.
+- The critical path on the **dated** Timeline stays SW-90 (task 1936) and WM-3 (task 982). When either is built, it reads the answer of ORD-1.
+- The rungs of a goal on the map stay LAD-3 (task 2890).
+- The chain by person and its buffer stay PJP-7. A 50% and an 85% finish stay PJP-10.
+
+#### 13.9.4 The slices
+
+| Slice | Task | Scope | Done when | Risk | Depends on |
+|---|---|---|---|---|---|
+| **ORD-0** | 4069 | This section, §9e of `one_projects_app.md`, the INDEX rows, and a task for each slice and demo. Docs only | The doc tests pass, and each row names its task | LOW | None |
+| **ORD-1** | 4075 | See "ORD-1 in detail" below | See below | HIGH | PJP-6a (built) |
+| **ORD-2** | 4076 | The Dates and Order switch, `OrderMap`, `layoutOrderMap`, rules 2 to 11 and 13 to 15. Dark behind `ORDER_VIEW_ORGS` | The SP-12 fixture (6 slices, 5 links) draws 3 columns with the path in row one. The same answer twice gives the same places. A loop shows its bar. The phone shows the list. `visual-review` passes at four widths, in light mode, at compact density, under a changed accent, and beside Dates | STANDARD UI | ORD-1 |
+| **ORD-3** | 4077 | The whole project. A Display setting **Level** with Tasks and Epics. An epic is one card with its open slices and its steps, such as "Steps 2 to 5". A link between two epics is one line with a count. A click opens an epic in place. Epics is the default above 150 cards. A Display setting **Group by** with None, Epic, Person and Sub-project, as lanes. In Person lanes, two cards of one person in one column get a mark. "Critical path only" can dim or hide. The search box marks a match and moves to it | Metorite Application opens by epic, and one epic opens in place. A lane by person marks one person twice in a step. A seeded project of 1,500 open tasks draws in under one second after the read | STANDARD UI | ORD-2 |
+| **ORD-5** | 4082 | Rule 17. A playbook prompt `work_in_order` in `playbook_prompts.py`, with the six steps and a `project` argument. `plan_slices` gets a last step: after the member approves, write the `blocks` links and call `get_plan` to check the order. The description of `get_plan` names `project_id`. The Order cards show the agent pill. The edge offers the prompt only where `order_view_allowed` (ORD-1) is true. A tip for a dark read reads as lost access, which is why `MAP_RULE` in `prompts.py` is held back. No new route | An orchestrator on the box runs `work_in_order` on Projects/Tasks App. It names the Now slices, critical first, and drops the held ones. An org with the flag off does not list the prompt. A held card shows its pill | STANDARD | ORD-1, SW-112 (built) |
+| **ORD-4** | 4078 | Change the order on the map. A drag from the handle of a card onto another card writes a `blocks` link through the existing link route. A selected link has Remove, and Delete removes it. `assert_no_block_cycle` refuses a loop, and the map says so at the drop. Undo restores the change. A moved card glides to its new column | A link drawn in Order shows in Dates. A loop is refused in words. Undo restores the link. A card that keeps its step does not move | STANDARD UI | ORD-2 |
+
+**ORD-1 in detail (task 4075).**
+
+- **The scope.** `GET /projects/plan/analysis` takes `project_id` as a second kind of root. A call sends exactly one of `root_task_id` and `project_id`, or it gets 422. A project that the caller cannot see answers 404 (`load_visible_project`).
+- **One fetch.** `compute_plan` takes the scope, and no second fetch function is written. For a project, its SQL reads the open tasks of the project and its sub-projects. It also reads each task above an open task. It takes the subtree text of `_SUMMARY_SQL` in `agent_summary.py`.
+- **The cap.** `MAX_PLAN_TASKS` counts the tasks read. Metorite Application had 1,484 open tasks on 2026-11-27, so it fits. A bigger scope answers 422 with "Open a sub-project to see its order."
+- **Done tasks.** A link to a done task reads as an outside blocker that is done, and the engine ignores it (PJP-6a). An open parent whose children are all done reads as a slice, because closing it is the work left.
+- **A forest.** Each task with no parent in the scope is a root. If `_build` needs a change for this, `test_planning_module.py` gets a fixture with two roots.
+- **`shape=map`.** It adds four keys to the answer:
+  - `nodes`: each visible open slice that a visible link touches, and each visible parent of one. A node holds the id, number, title, status id, category, owner, estimate, parent, wave, slack and a critical mark.
+  - `links`: the visible `blocks` links inside the scope, as blocker and blocked, without the `ignored_links` of the engine. These are the links that people drew, so a link between two epics stays one link.
+  - `counts`: open, done, unlinked and no estimate.
+  - `truncated`: true past 500 nodes. The critical path comes first, then the lowest wave.
+- **Visibility.** A hidden task is counted and never named, and so is each link that touches it (PJP-6a). Each title leaves the MCP as `untrusted_text`.
+- **The flag.** `ORDER_VIEW_ORGS`, default none. Off, a call with `project_id` or `shape=map` answers 404. The read of an epic does not change. The one reader is `order_view_allowed` in `acb_auth/agent_oauth.py`, as `plan_order_allowed` is, so the gateway and the edge ask the same function.
+- **Chat and the MCP.** `get_plan` takes `project_id`. Its row in `skill_projects/manifest.py` stays class A.
+- **Done when.** R8: a project with linked tasks in two sub-projects gives the waves and the path over both. The read of one sub-project gives only its own. A hidden slice and its links are counted and not named. A scope of 2,001 open tasks gives 422 with the words. With the flag off, `project_id` gives 404.
+- **Fence.** `tests/unit/test_plan_analysis_r8.py` (extended), `tests/unit/test_planning_module.py` (only if the engine changes), `tests/unit/test_chat_parity.py`, `tests/unit/test_mcp_edge_coverage.py`, `tests/unit/test_flag_doc_sorted.py` and `tests/unit/test_flag_reload.py`.
+
+**The fences of ORD-2 to ORD-4.**
+
+| Slice | Command |
+|---|---|
+| ORD-2 | `npx vitest run src/app/projects/lib/orderMap.test.ts src/app/projects/components/TimelineView.test.ts src/app/projects/lib/chatView.test.ts src/lib/theme/conformance.test.ts` in `workbench/control_plane`, then `visual-review`. `orderMap.test.ts` is new |
+| ORD-3 | The ORD-2 command, and `uv run pytest -q -p no:cacheprovider tests/unit/test_plan_analysis_r8.py`. A rolled-up count never holds a hidden slice |
+| ORD-4 | The ORD-2 command, and `uv run pytest -q -p no:cacheprovider tests/unit/test_projects_relations.py tests/unit/test_chat_parity.py` |
+| ORD-5 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_prompts.py tests/unit/test_playbook_content.py tests/unit/test_playbook_org_neutral.py tests/unit/test_mcp_edge_coverage.py`, and the ORD-2 vitest command for the pill |
+
+Each fence is advisory until its slice builds (R7).
+
+**SP-10 amended (task 2293).** The graph of the epic page is `OrderMap` with the epic as its root (rule 13). The engine is built, so that graph shows the path.
+
+#### 13.9.5 The ladder (D211)
+
+| Rung | The demo on production | Slices |
+|---|---|---|
+| **1. A clean header** (demo task 4074) | Open Metorite Application. Its title reads in full, with one plain line under it | HDR-1 (`one_projects_app.md` §9e) |
+| **2. See the order** (demo task 4079) | Open Projects/Tasks App, then Timeline, then Order. Read what can start now, the critical path in one row, and the finish | ORD-1, ORD-2 |
+| **3. Agents work in order** (demo task 4083) | An orchestrator reads the plan of Projects/Tasks App through the MCP. It starts lanes on the free Now slices, critical first, and Order shows their pills | ORD-5 |
+| **4. The whole project** (demo task 4080) | Open Metorite Application in Order. It opens by epic, and one epic opens in place | ORD-3 |
+| **5. Change the order** (demo task 4081) | Draw a link on the map, and the task moves one step. A loop is refused in words | ORD-4 |
+
+Rung 1 is the nearest demo, so it goes first. Rung 2 needs the owner's preview before the flag flips (D218). Rung 3 needs only ORD-1 and the prompt, so it can start while ORD-2 waits on its preview.
+
+#### 13.9.6 Later, not slices
+
+- **"What holds this task?"** A button on the task card opens Order with the chain that decides when the task can start (the "driving path" of Smartsheet).
+- **The size of a card.** A switch can make each card as wide as its estimate.
+- **elkjs.** It comes back only by rule 12.
+
+#### 13.9.7 Dependency map products and layout libraries (survey, 2026-11-27)
+
+A survey for task 4069 read the vendor pages below. A claim that no page confirmed reads "Not confirmed". Several vendor pages refused the fetch. Their facts come from search summaries, and the survey marked them so.
+
+| Product | What it shows with no dates | Critical path | What we take |
+|---|---|---|---|
+| Microsoft Project, Network Diagram | One box for each task, joined by arrows | Red boxes and lines. "Top Down, Critical First" puts the path at the top left | The path in the first row (rule 3) |
+| OmniPlan, Network View | A finish-to-start chain on one straight line. A group collapses | Shown in the view | A chain on one line. A group that opens in place (ORD-3) |
+| Jira, the Dependencies report | Tiles and arrows, read only | None. Red means a date warning | One line between two epics with a count (ORD-3) |
+| Linear | Lines on the timeline only | None | Filters for blocked, blocking and broken links |
+| Asana, ClickUp, monday.com, Smartsheet, Wrike | Only the dated Gantt | Red or yellow bars. Wrike shows the float as a number | Spare time as a number (rule 4) |
+| TeamGantt | Only the dated Gantt | Dim the rest, or hide it | Dim or hide (ORD-3) |
+| Nx project graph | A graph of projects | None | Focus on one node and its chain (rule 7) |
+| Dagster asset graph | A graph of assets | None | Select up and down a chain |
+| GitHub Actions | Jobs in columns | None | The jobs that run in parallel share a column (rule 2) |
+
+**Layout libraries.** The elkjs library gives layers, groups and routed lines, and it adds about 1,400 KB. The dagre library gives no routed lines, and its groups break with outside links. The d3-dag library gives no groups. React Flow documents dagre and elkjs. The control plane already uses `@xyflow/react`, and rule 12 records the choice.
+
+**Three traps.**
+
+- **A tangle at scale.** So Order shows only linked tasks, and ORD-3 opens a big project by epic.
+- **A layout that jumps after each change.** So the column is the wave, and a card keeps its place (rule 11).
+- **A colour with two meanings.** So the accent means critical, and the status keeps its own colours (rule 3).
+
+**Pages read.**
+
+- https://support.microsoft.com/en-us/project/create-a-network-diagram-in-project-desktop
+- https://support.omnigroup.com/documentation/omniplan/mac/3.7/en/working-in-network-view/
+- https://confluence.atlassian.com/jirasoftwareserver101/the-dependencies-report-in-advanced-roadmaps-1455426747.html
+- https://linear.app/docs/project-dependencies
+- https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/creating-issue-dependencies
+- https://nx.dev/docs/features/explore-graph
+- https://docs.github.com/en/actions/how-tos/monitor-workflows/use-the-visualization-graph
+- https://airflow.apache.org/docs/apache-airflow/stable/ui.html
+- https://eclipse.dev/elk/reference/algorithms/org-eclipse-elk-layered.html
+- https://github.com/erikbrinkman/d3-dag
+- https://reactflow.dev/learn/layouting/layouting
 
 ## 14. The Linear and Plane items (LP-0, task 987, 2026-11-08)
 
