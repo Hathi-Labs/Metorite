@@ -683,7 +683,7 @@ describe("approval cards that wait together are ONE card with tabs (owner, 2026-
   it("the queue holds the keys in state, and not in a ref written during render", () => {
     const src = read("components/ConfirmationQueue.tsx");
     expect(src).not.toMatch(/useRef|\.current =/);
-    expect(src).toContain("reconcileShown(prevKeys, items, shown, questions ? new Set(questions.map((q) => q.key)) : NO_KEYS, !!questions)");
+    expect(src).toContain("reconcileShown(prevKeys, cards, shown)");
   });
 
   it("after an answer the next tab to the right opens, else the one to the left", () => {

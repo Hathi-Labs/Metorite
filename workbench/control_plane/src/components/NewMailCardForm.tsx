@@ -39,8 +39,6 @@ import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
 import { Input, Textarea } from "@/components/ui/Input";
-import { personName } from "@/lib/cardTabs";
-import { FRESH_KEY_PROPS, peopleLine, previewLines, sendLabel, type DockMode } from "@/lib/waitingDock";
 import { CHANGED_LEAD, REOPENED_CHECK_LINE, REOPENED_LINE, cardDraftOf, changedText, changesOf, changedLinkLine, draftLabel, keptOutOf, keptOutText, linePieces, type CardDraft, type CardText, type Changes, type PeopleBefore } from "@/lib/redraftCard";
 import {
   leftOutText,
@@ -112,15 +110,6 @@ export interface NewMailCardFormProps {
   savedEdits?: NewMailEdits;
   /** Report the member's edits, for `savedEdits`. */
   onEdits?: (edits: NewMailEdits) => void;
-  /**
-   * The waiting dock (projects_ai_chat.md 24.11, D2): the Compact or the
-   * Expanded view of this same card. With none, the card is as before.
-   */
-  dockMode?: DockMode;
-  /** The dock's Expand: Review in the Compact view calls it. */
-  onExpand?: () => void;
-  /** The dock: the earlier-draft question opened or closed, so the card arms again. */
-  onAsking?: (asking: boolean) => void;
 }
 
 /**
@@ -236,9 +225,6 @@ export default function NewMailCardForm({
   carriesEdits = false,
   savedEdits,
   onEdits,
-  dockMode,
-  onExpand,
-  onAsking,
 }: NewMailCardFormProps) {
   // A change of tab unmounts this form. Each state starts from the member's
   // edits, or an untick comes back ticked, and Send goes to that person.
@@ -287,7 +273,7 @@ export default function NewMailCardForm({
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${el.scrollHeight + 2}px`;
-  }, [body, dockMode]);
+  }, [body]);
   const shown = recipientsFor(form, true);
   const picked = tickedFor(form, true, ticks);
   const ticked = new Set(ticks.reply_all);
@@ -307,101 +293,13 @@ export default function NewMailCardForm({
   const [asking, setAsking] = useState(false);
   // After Back, the Discard button takes the focus again.
   const [cameBack, setCameBack] = useState(false);
-  // Round 7: Collapse, a fold or another tab closes the question, so a later
-  // Review never shows Keep it under the member's press.
-  if (asking && dockMode === "compact") setAsking(false);
-  const tellAsking = useRef(onAsking);
-  useEffect(() => { tellAsking.current = onAsking; }, [onAsking]);
-  // Before the paint, so the card's arm drops before any press can land.
-  useLayoutEffect(() => { tellAsking.current?.(asking); }, [asking]);
   const discard = () => {
     const step = declineStep(armed, form.earlier, onDiscardEarlier);
     if (step === "ask") setAsking(true);
     else if (step === "decline") onDiscard();
   };
-  // The one action row of this card. In the dock (projects_ai_chat.md 24.11,
-  // the consent rule of 2026-11-27) the Compact view holds NO commit: only
-  // Review, which opens the Expanded view, and a plain Discard. Send, Save
-  // draft and the earlier-draft question exist only in the Expanded view.
-  const compact = dockMode === "compact";
-  const fresh = dockMode ? FRESH_KEY_PROPS : {};
-  const actionRow = (review: boolean, sendText: string) =>
-      asking && onDiscardEarlier && !review ? (
-        // Task 3978 (§18.13.1): Discard asks about the draft of this email
-        // that the chat saved earlier, on this same card. Keep is the plain
-        // Discard of before. A card that closes with no answer keeps it too.
-        <EarlierDraftQuestion
-          line={form.earlier ?? ""}
-          effect={form.earlierEffect}
-          onKeep={onDiscard}
-          onDelete={onDiscardEarlier}
-          onBack={() => {
-            setAsking(false);
-            setCameBack(true);
-          }}
-          disabled={disabled}
-          {...(dockMode ? { freshKeys: true } : {})}
-        />
-      ) : (
-      <div className="flex flex-wrap items-center gap-2">
-        {review ? (
-          <Button key="review" size="sm" icon="Maximize2" onClick={onExpand} data-dock-review="">
-            Review
-          </Button>
-        ) : (
-        <>
-        <Button
-          size="sm"
-          icon="Send"
-          onClick={() => answer("send")}
-          disabled={disabled || !ok}
-          aria-disabled={!armed || undefined}
-          data-reply-send=""
-          {...fresh}
-        >
-          {sendText}
-        </Button>
-        <Button
-          variant="secondary"
-          size="sm"
-          icon="Save"
-          onClick={() => answer("save")}
-          disabled={disabled || !ok}
-          aria-disabled={!armed || undefined}
-          data-reply-save=""
-          {...fresh}
-        >
-          Save draft
-        </Button>
-        </>
-        )}
-        {/* A Discard that asks about an earlier draft is a choice on the
-            mail, so the Compact view leaves it to the Expanded view. */}
-        {!(review && form.earlier && onDiscardEarlier) && (
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={discard}
-          disabled={disabled}
-          aria-disabled={!armed || undefined}
-          autoFocus={cameBack}
-          data-reply-discard=""
-        >
-          Discard
-        </Button>
-        )}
-      </div>
-      );
-  // The people that the email goes to, for "Send to 5" (D3).
-  const goesTo = picked.to.length + picked.cc.length + (picked.bcc ?? []).length;
-  // The Compact view of the dock (D2): one line of the people and the
-  // subject, and the first lines of the text. The full form stays MOUNTED
-  // under it, hidden and inert, so no edit or untick is lost on a change of
-  // view, and the posted answer is the one that the Expanded view shows.
-  const preview = previewLines(body);
-  const line = [peopleLine(shown, ticked, personName), subject.trim()].filter(Boolean).join(" · ");
-  const fullBody = (
-    <>
+  return (
+    <div className="space-y-2.5" data-reply-card="" data-new-mail-card="">
       <div className="min-w-0">
         <div className="flex min-w-0 items-start gap-2">
           <p className="min-w-0 flex-1 break-words text-xs font-medium leading-relaxed text-foreground glass:text-label" data-reply-summary="">
@@ -530,42 +428,60 @@ export default function NewMailCardForm({
         carriesEdits={carriesEdits}
       />
 
-    </>
-  );
-  return (
-    <div className="space-y-2.5" data-reply-card="" data-new-mail-card="">
-      {dockMode ? (
-        <>
-          {compact && (
-            <div className="space-y-2" data-dock-compact="">
-              <div className="flex min-w-0 items-center gap-2">
-                <p className="min-w-0 flex-1 truncate text-xs font-medium text-foreground" title={line} data-mail-line="">
-                  {line}
-                </p>
-                {label && (
-                  <span className="shrink-0" data-redraft-label="">
-                    <Badge size="xs">{label}</Badge>
-                  </span>
-                )}
-              </div>
-              <p className="whitespace-pre-wrap break-words text-xs text-muted-foreground" data-mail-preview="">
-                {preview.lines.join("\n")}
-                {preview.more ? "…" : ""}
-              </p>
-            </div>
-          )}
-          <div hidden={compact} inert={compact} className="space-y-2.5" data-dock-full="">
-            {fullBody}
-          </div>
-        </>
+      {asking && onDiscardEarlier ? (
+        // Task 3978 (§18.13.1): Discard asks about the draft of this email
+        // that the chat saved earlier, on this same card. Keep is the plain
+        // Discard of before. A card that closes with no answer keeps it too.
+        <EarlierDraftQuestion
+          line={form.earlier ?? ""}
+          effect={form.earlierEffect}
+          onKeep={onDiscard}
+          onDelete={onDiscardEarlier}
+          onBack={() => {
+            setAsking(false);
+            setCameBack(true);
+          }}
+          disabled={disabled}
+        />
       ) : (
-        fullBody
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          size="sm"
+          icon="Send"
+          onClick={() => answer("send")}
+          disabled={disabled || !ok}
+          aria-disabled={!armed || undefined}
+          data-reply-send=""
+        >
+          Send
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          icon="Save"
+          onClick={() => answer("save")}
+          disabled={disabled || !ok}
+          aria-disabled={!armed || undefined}
+          data-reply-save=""
+        >
+          Save draft
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={discard}
+          disabled={disabled}
+          aria-disabled={!armed || undefined}
+          autoFocus={cameBack}
+          data-reply-discard=""
+        >
+          Discard
+        </Button>
+      </div>
       )}
-
-      {actionRow(compact, dockMode === "expanded" ? sendLabel(goesTo) : "Send")}
       {/* Task 3978: the question holds its own hint, so the line of the
           buttons that it hides ("Discard drops it.") goes too. */}
-      {!asking && !compact && <p className="text-[10px] text-muted-foreground">{newMailHint(form)}</p>}
+      {!asking && <p className="text-[10px] text-muted-foreground">{newMailHint(form)}</p>}
     </div>
   );
 }

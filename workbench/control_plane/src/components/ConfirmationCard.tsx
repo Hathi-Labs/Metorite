@@ -40,7 +40,7 @@
  * `src/lib/chatCardConformance.test.ts` (the header and the icon).
  */
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import CardFieldValue from "@/components/CardFieldValue";
 import EarlierDraftQuestion, { declineStep } from "@/components/EarlierDraftQuestion";
@@ -52,8 +52,6 @@ import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import TaskCardForm, { useTaskCardEdits } from "@/components/TaskCardForm";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
-import { FRESH_KEY_PROPS, type DockMode } from "@/lib/waitingDock";
-import { ARM_MS, useArmed } from "@/lib/freshPress";
 import { CARD_FRAME_CLASS } from "@/components/ui/Collapsible";
 import { Checkbox } from "@/components/ui/Checkbox";
 import Icon from "@/components/Icon";
@@ -74,9 +72,8 @@ import { TASK_EDITED_HINT, isUnchanged, pendingLine, problemOf, taskApproval, wi
  * of a double-click would sign a card the member never saw. The buttons do
  * not grey out, so the card does not flash. They only ignore the click.
  * Fence: `src/lib/confirmationQueue.test.ts` ("a new card is not armed").
- * The one value is `lib/waitingDock.ts` `ARM_MS`.
  */
-export { ARM_MS };
+export const ARM_MS = 400;
 
 /** The title row of a confirmation card. The summary is in the body. */
 export const CONFIRM_TITLE = "Approval";
@@ -302,21 +299,6 @@ interface ConfirmationCardProps {
   tabs?: ReactNode;
   /** The tab panel: the card is the panel the tabs control. */
   tabPanel?: { id: string; labelledBy: string };
-  /** The waiting dock's Expand and Fold controls, on the title row when no
-   *  tab row is drawn (projects_ai_chat.md 24.11). */
-  headerAside?: ReactNode;
-  /**
-   * The waiting dock (projects_ai_chat.md 24.11, D2): the Compact or the
-   * Expanded view of this same card. With none, the card is as before.
-   */
-  dockMode?: DockMode;
-  /** The dock's Expand: Review in the Compact view calls it. */
-  onExpand?: () => void;
-  /**
-   * The waiting dock: the card is on the screen, its tab open and the dock
-   * not folded. Off the screen it never arms (24.11 rule 7, round 7).
-   */
-  dockShown?: boolean;
   /**
    * §18.11: the slot of a new-mail card that a chat message closed. The card
    * draws one status line and no buttons: "Updating the draft…", or "The
@@ -373,10 +355,6 @@ export default function ConfirmationCard({
   error,
   tabs,
   tabPanel,
-  headerAside,
-  dockMode,
-  onExpand,
-  dockShown,
   slot,
   onDraftChange,
   before,
@@ -388,15 +366,10 @@ export default function ConfirmationCard({
   onTaskEdits,
   onEditAnswer,
 }: ConfirmationCardProps) {
+  const [armed, setArmed] = useState(false);
   // Task 3978: Reject of a plain card that names a draft of the chat asks
   // "Keep the earlier draft, or delete it?" in place of its buttons.
   const [asking, setAsking] = useState(false);
-  // The same question of a new-mail form, which the form holds.
-  const [formAsking, setFormAsking] = useState(false);
-  // Round 7: the question goes when the card leaves the view (Collapse, a
-  // fold, another tab), so a later Review never shows Keep it under a press.
-  const offView = !!dockMode && (dockMode === "compact" || dockShown === false);
-  if (asking && offView) setAsking(false);
   // Task 3978: after Back, the Reject button takes the focus again.
   const [cameBack, setCameBack] = useState(false);
   const asksEarlier = !!(earlier && onDiscardEarlier);
@@ -410,14 +383,10 @@ export default function ConfirmationCard({
   // EAC-2: a form that the card cannot answer for is no form (the card of before).
   const taskForm = edit && onEditAnswer ? edit : undefined;
   const task = useTaskCardEdits(taskForm, savedTaskEdits, onTaskEdits);
-  // The card arms ARM_MS after it mounts. In the dock the arm is keyed on
-  // what the member sees (24.11 rule 7, round 7): the view, whether the card
-  // is on the screen, and the earlier-draft question. Each change arms it
-  // again, and the guard drops a press that began before the arm. Outside
-  // the dock the key never changes, so the card is the card of before.
-  // A slot that opens again in place shows its buttons: that arms it too.
-  const arm = useArmed(dockMode ? `${dockMode}:${dockShown !== false}:${asking || formAsking}:${slot ?? ""}` : "", dockShown !== false);
-  const armed = arm.armed;
+  useEffect(() => {
+    const t = setTimeout(() => setArmed(true), ARM_MS);
+    return () => clearTimeout(t);
+  }, []);
   // The rows come ticked as the member left them (`rowsView` in the queue).
   // The card holds no tick state and no tick logic (PR #691 review): a tick
   // goes up through `onToggle`, and Approve sends what the queue computed.
@@ -456,19 +425,6 @@ export default function ConfirmationCard({
     else onApprove();
   };
   const taskEdited = !!(taskForm && task.edits && !isUnchanged(taskForm.values, task.edits));
-  // The consent rule of the dock (24.11, 2026-11-27): the Compact view shows
-  // the title and one meta line, and holds NO commit, only Review. The rest of
-  // the card stays MOUNTED, hidden and inert, so no edit or tick is lost.
-  const compactView = dockMode === "compact";
-  const dockHide = (node: ReactNode) =>
-    dockMode ? (
-      <div hidden={compactView} inert={compactView} data-dock-full="">
-        {node}
-      </div>
-    ) : (
-      node
-    );
-  const fresh = dockMode ? FRESH_KEY_PROPS : {};
   const isReply = reply !== undefined;
   const newMail = isNewMail(reply);
   return (
@@ -483,8 +439,6 @@ export default function ConfirmationCard({
       aria-label={fenced ? unfenced(summary) : summary}
       {...(tabPanel ? { id: tabPanel.id, role: "tabpanel", "aria-labelledby": tabPanel.labelledBy } : {})}
       data-confirmation-card=""
-      // The dock's guard: a commit only on a fresh press of an armed card.
-      onClickCapture={dockMode ? arm.guard : undefined}
       // Glass only (GL-4): it wants an answer, so it is the raised card with a
       // hairline in the tint, and an orange tile.
       className={`${CARD_FRAME_CLASS} glass:glass-card-tile glass:[--tile:var(--system-orange)] glass:rounded-[16px] glass:border-primary/35 glass:glass-raised glass:p-4`}
@@ -517,7 +471,6 @@ export default function ConfirmationCard({
             />
           </div>
         )}
-        {headerAside}
       </div>
 
       <RollupBody className="space-y-2 pt-1.5">
@@ -566,7 +519,6 @@ export default function ConfirmationCard({
           carriesEdits={carriesEdits}
           savedEdits={savedEdits}
           onEdits={onEdits}
-          {...(dockMode ? { dockMode, onExpand, onAsking: setFormAsking } : {})}
         />
       )}
       {!slot && isReply && !newMail && (
@@ -577,10 +529,9 @@ export default function ConfirmationCard({
           disabled={disabled}
           onAnswer={(answer) => onReply?.(answer)}
           onDiscard={rejectCard}
-          {...(dockMode ? { dockMode, onExpand } : {})}
         />
       )}
-      {!slot && !isReply && hasBody && dockHide(
+      {!slot && !isReply && hasBody && (
         <div className="space-y-2">
           {strangerWarning && (
             <p className="flex items-start gap-1 break-words text-xs text-warning" role="status" data-assignee-warning="">
@@ -739,8 +690,7 @@ export default function ConfirmationCard({
         </div>
       )}
 
-      {/* The Compact view of the dock hides the form, and keeps it mounted. */}
-      {!slot && taskForm && task.edits && (dockHide(
+      {!slot && taskForm && task.edits && (
         <TaskCardForm
           form={taskForm}
           edits={task.edits}
@@ -749,9 +699,9 @@ export default function ConfirmationCard({
           onTyped={task.setTyped}
           disabled={disabled}
         />
-      ))}
+      )}
 
-      {!slot && !isReply && asking && earlier && onDiscardEarlier && !compactView && (
+      {!slot && !isReply && asking && earlier && onDiscardEarlier && (
         <EarlierDraftQuestion
           line={earlier.line}
           effect={earlier.effect}
@@ -762,34 +712,20 @@ export default function ConfirmationCard({
             setCameBack(true);
           }}
           disabled={disabled}
-          {...(dockMode ? { freshKeys: true } : {})}
         />
       )}
-      {!slot && !isReply && !(asking && asksEarlier && !compactView) && (
+      {!slot && !isReply && !(asking && asksEarlier) && (
       <div className="flex flex-wrap items-center gap-2">
-        {compactView ? (
-          // The consent rule: the Compact view holds no Approve. Review opens
-          // the Expanded view, and its own key keeps it a separate element.
-          <Button key="review" size="sm" icon="Maximize2" onClick={onExpand} data-dock-review="">
-            Review
-          </Button>
-        ) : (
         <Button
-          key="approve"
           size="sm"
           icon="Check"
           onClick={approve}
           disabled={disabled || !approvable}
           aria-disabled={!armed || undefined}
           data-confirmation-approve=""
-          {...fresh}
         >
           {error ? "Retry" : "Approve"}
         </Button>
-        )}
-        {/* A Reject that asks about an earlier draft is a choice on the
-            draft, so the Compact view leaves it to the Expanded view. */}
-        {!(compactView && asksEarlier) && (
         <Button
           variant="secondary"
           size="sm"
@@ -799,12 +735,9 @@ export default function ConfirmationCard({
           disabled={disabled}
           aria-disabled={!armed || undefined}
           autoFocus={cameBack}
-          data-confirmation-reject=""
-          {...fresh}
         >
           Reject
         </Button>
-        )}
         {error ? (
           <span role="alert" className="text-[10px] text-destructive" data-confirmation-error="">
             {error}

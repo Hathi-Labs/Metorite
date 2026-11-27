@@ -7,9 +7,10 @@
  * The invariant: a commit is pressed only on a card that the member has seen,
  * whole and still, for `ARM_MS`, with a press that began after that. Each
  * event that makes a commit control show again arms the card again: a fold
- * and an unfold, a change of tab, Expanded, the earlier-draft question,
- * Collapse and Review. The card names that view in its arm key. A change of
- * the key drops the arm in the same render, and a new timer starts.
+ * and an unfold, and a change of tab. The card names that view in its arm
+ * key. A change of the key drops the arm in the same render, and a new timer
+ * starts. Only a question card uses it: an approval never draws in the dock
+ * (D9), and it keeps the arm of `ConfirmationCard.tsx` in the thread.
  *
  * The dock reads each click on a commit control in the capture phase
  * (`useArmed().guard`). It drops a click while the card is not armed, and a
@@ -28,19 +29,11 @@ import { ARM_MS, pressIsFresh, type PressLog } from "@/lib/waitingDock";
 export { ARM_MS };
 
 /**
- * Every commit control of a card in the dock: a press that answers. The
- * dock's guard reads only these, so a tab, a tick, Review and Fold work at
- * once.
+ * Every commit control of a question card in the dock: a press that
+ * answers. The dock's guard reads only these, so a tab, a pick and Fold work
+ * at once. An approval never draws in the dock (D9), so it has none here.
  */
 export const COMMIT_CONTROLS = [
-  "[data-confirmation-approve]",
-  "[data-confirmation-reject]",
-  "[data-reply-send]",
-  "[data-reply-save]",
-  "[data-reply-discard]",
-  "[data-reply-close]",
-  "[data-earlier-keep]",
-  "[data-earlier-delete]",
   "[data-elicitation-submit]",
   "[data-not-now]",
 ].join(", ");

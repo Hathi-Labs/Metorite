@@ -3282,18 +3282,15 @@ html[data-look="glass"] main .h-full.bg-background:not(aside):not([class*="glass
   }
 }
 
-/* WD-1 (projects_ai_chat.md 24.11 rule 9, owner 2026-11-27): in the waiting
-   dock, the action row of the open card never scrolls. It is the card's OWN
-   row (one consent, one state), held at the foot of the dock's body with
-   `position: sticky`. The body scrolls above it. Outside the dock nothing
-   matches, so the thread draws each card as before. The selector list is
-   `PINNED_ACTIONS` in lib/waitingDock.ts. Fence: src/lib/waitingDock.test.ts. */
+/* WD-1 (projects_ai_chat.md 24.11 rule 10, owner 2026-11-27): in the waiting
+   dock, the Submit row of the open question never scrolls. It is the card's
+   OWN row, held at the foot of the dock's body with `position: sticky`. The
+   body scrolls above it. An approval never draws in the dock (D9). Outside
+   the dock nothing matches, so the thread draws each card as before. The
+   selector is `PINNED_ACTIONS` in lib/waitingDock.ts.
+   Fence: src/lib/waitingDock.test.ts. */
 [data-dock-body] :is(
-  div:has(> [data-confirmation-approve]),
-  div:has(> [data-reply-send]),
-  div:has(> [data-dock-review]),
-  div:has(> [data-elicitation-submit]),
-  [data-earlier-question]
+  div:has(> [data-elicitation-submit])
 ) {
   position: sticky;
   bottom: 0;
@@ -3302,8 +3299,8 @@ html[data-look="glass"] main .h-full.bg-background:not(aside):not([class*="glass
   padding-block: 0.375rem;
 }
 
-/* D1 (owner delegation, 2026-11-27): the dock's header, the count, the tabs,
-   Expand and Fold, never scrolls either. Only the content between them does. */
+/* The tab row of the two question cards in the dock never scrolls either.
+   Only the content under it does. */
 [data-dock-body] [data-card-tabs] {
   position: sticky;
   /* -1px: the transparent top edge of the row sits above the dock's top

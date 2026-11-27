@@ -16,7 +16,7 @@
  * edges and no swap animation. The rules are `lib/cardTabs.ts`.
  */
 
-import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import { prefersReducedMotion } from "@/lib/panelMotion";
@@ -54,12 +54,9 @@ export interface CardTabsProps {
   tabs: readonly CardTab[];
   /** The row's noun, plural: "approvals" by default. */
   noun?: string;
-  /** The count words: "N to approve" (the default) or "N waiting" (§24.11). */
+  /** The count words: "N to approve" (the default) or "N waiting", for the
+   *  two question cards of the waiting dock (§24.11). */
   words?: CountWords;
-  /** The waiting dock's fold row puts its one button after the tabs (§24.11). */
-  trailing?: ReactNode;
-  /** The dock draws the row for one card too, as its header (D1). */
-  always?: boolean;
 }
 
 const COUNT_CLASS = "flex shrink-0 items-center pr-3 text-xs font-medium tabular-nums text-muted-foreground glass:text-footnote";
@@ -92,7 +89,7 @@ function TabFace({ tab, active, level }: { tab: CardTab; active: boolean; level:
 
 const LEVELS = [0, 1, 2] as const;
 
-export default function CardTabs({ uid, index, onGo, tabs, noun, words: countWords = "approve", trailing, always = false }: CardTabsProps) {
+export default function CardTabs({ uid, index, onGo, tabs, noun, words: countWords = "approve" }: CardTabsProps) {
   const total = tabs.length;
   // The count says how many cards wait on the member. A slot that waits on a
   // new draft is a tab, and it is not one of them. A row of slots only says
@@ -102,7 +99,6 @@ export default function CardTabs({ uid, index, onGo, tabs, noun, words: countWor
   const outerRef = useRef<HTMLDivElement>(null);
   const probeRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  const trailRef = useRef<HTMLSpanElement>(null);
   // A row wider than its room fades at the edge where more tabs wait, so a
   // cut tab reads as "scroll", not as a broken one (the narrow Ask panel).
   const [fade, setFade] = useState<{ left: boolean; right: boolean }>({ left: false, right: false });
@@ -124,9 +120,7 @@ export default function CardTabs({ uid, index, onGo, tabs, noun, words: countWor
     const list = listRef.current;
     if (outer && probe) {
       const cs = getComputedStyle(outer);
-      // The trailing controls take their own width out of the room.
-      const trail = trailRef.current?.offsetWidth ?? 0;
-      const r = Math.floor(outer.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - trail);
+      const r = Math.floor(outer.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight));
       setRoom((x) => (x === r ? x : r));
       const n = LEVELS.map((l) => Math.ceil(probe.querySelector<HTMLElement>(`[data-probe="${l}"]`)?.offsetWidth ?? 0));
       setNeeds((x) => (x.length === n.length && x.every((v, i) => v === n[i]) ? x : n));
@@ -163,7 +157,7 @@ export default function CardTabs({ uid, index, onGo, tabs, noun, words: countWor
     ro.observe(outer);
     return () => ro.disconnect();
   });
-  if (total < (always ? 1 : 2)) return null;
+  if (total < 2) return null;
 
   const onKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const to = tabKeyTarget(e.key, index, total);
@@ -231,11 +225,6 @@ export default function CardTabs({ uid, index, onGo, tabs, noun, words: countWor
           );
         })}
       </div>
-      {trailing && (
-        <span ref={trailRef} data-card-tabs-trailing="" className="flex shrink-0 items-center gap-0.5 pl-1">
-          {trailing}
-        </span>
-      )}
       {/* The probe: a hidden copy of the row at each level, only to read the
           width each needs. It is out of the flow, out of the accessibility
           tree and out of the tab order, and the level never changes it. */}

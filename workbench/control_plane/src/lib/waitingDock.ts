@@ -358,33 +358,3 @@ export function dockCap(st: CapInput): number {
   return Math.max(MIN_DOCK_PX, Math.min(base, room(st.chat)));
 }
 
-// LEGACY-DOCK-APPROVALS: removed by the deletion commit of D9.
-export type DockMode = "compact" | "expanded";
-export const PREVIEW_LINES = 3;
-export function previewLines(text: string): { lines: string[]; more: boolean } {
-  const all = text.replace(/\s+$/, "").split(/\r?\n/);
-  return { lines: all.slice(0, PREVIEW_LINES), more: all.length > PREVIEW_LINES };
-}
-export function sendLabel(people: number): string {
-  return `Send to ${people}`;
-}
-export function unfoldLabel(kind: "approval" | "question"): string {
-  return kind === "approval" ? "Review" : "Answer";
-}
-export function peopleLine(
-  rows: { to: readonly string[]; cc: readonly string[]; bcc?: readonly string[] },
-  ticked: ReadonlySet<string>,
-  name: (addr: string) => string,
-): string {
-  const on = (a: string) => ticked.has(a) || ticked.has(a.toLowerCase());
-  const to = rows.to.filter(on).map(name);
-  const cc = rows.cc.filter(on).length;
-  const bcc = (rows.bcc ?? []).filter(on).length;
-  const all = rows.to.length + rows.cc.length + (rows.bcc ?? []).length;
-  const goes = rows.to.filter(on).length + cc + bcc;
-  const parts = [to.length > 0 ? `To ${to.join(", ")}` : "To nobody"];
-  if (cc > 0) parts.push(`Cc ${cc}`);
-  if (bcc > 0) parts.push(`Bcc ${bcc}`);
-  if (all > goes) parts.push(`${all - goes} left out`);
-  return parts.join(" · ");
-}

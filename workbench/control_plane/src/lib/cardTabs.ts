@@ -17,7 +17,8 @@ import type { PendingConfirmation } from "./confirmationQueue";
 /** `new` is the one email card of a NEW mail (§18.10): a reply form with
  *  `kind: "new"`. Its tab reads "Email to …", never "Reply to …". */
 /** `question` is a question card in the waiting dock (§24.11 WD-D3): the
- *  `ask_questions` or `ask_user` card, one tab for each card. */
+ *  `ask_questions` or `ask_user` card, one tab for each card. No approval
+ *  is ever this kind (D9). */
 export type CardKind = "send" | "reply" | "new" | "task" | "reminder" | "other" | "question";
 
 /** The icon of each kind: Lucide names, drawn by `<Icon name>`. */
@@ -98,15 +99,10 @@ export function tabsCount(total: number, updating = 0, words: CountWords = "appr
 
 /**
  * The words of the count. `approve` is today's "N to approve". `waiting` is
- * for a row that holds a question card too (§24.11 WD-D3): a question is not
- * approved, so the row says "N waiting".
+ * for the row of the two question cards of the waiting dock (§24.11 WD-D3):
+ * a question is not approved, so the row says "N waiting".
  */
 export type CountWords = "approve" | "waiting";
-
-/** The count words of a row: "approve" while every tab is an approval. */
-export function countWordsFor(kinds: readonly CardKind[]): CountWords {
-  return kinds.some((k) => k === "question") ? "waiting" : "approve";
-}
 
 /** The accessible name of the tab row. */
 export function tabsLabel(total: number, noun = "approvals", updating = 0, words: CountWords = "approve"): string {

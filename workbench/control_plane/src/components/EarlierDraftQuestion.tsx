@@ -28,7 +28,6 @@
 
 import Button from "@/components/ui/Button";
 import { EARLIER_QUESTION, earlierHint } from "@/lib/replyCard";
-import { FRESH_KEY_PROPS } from "@/lib/waitingDock";
 
 /**
  * What a Discard or a Reject does: `ask` opens the question, `decline` is the
@@ -46,7 +45,6 @@ export default function EarlierDraftQuestion({
   onDelete,
   onBack,
   disabled = false,
-  freshKeys = false,
 }: {
   line: string;
   effect?: string;
@@ -54,10 +52,7 @@ export default function EarlierDraftQuestion({
   onDelete: () => void;
   onBack: () => void;
   disabled?: boolean;
-  /** The waiting dock (24.11): a held key (`repeat`) answers nothing. */
-  freshKeys?: boolean;
 }) {
-  const fresh = freshKeys ? FRESH_KEY_PROPS : {};
   return (
     <div
       role="group"
@@ -78,10 +73,10 @@ export default function EarlierDraftQuestion({
       </p>
       <div className="flex flex-wrap items-center gap-2">
         {/* The pressed button is gone, so the focus moves here (task 3978). */}
-        <Button variant="secondary" size="sm" onClick={onKeep} disabled={disabled} autoFocus data-earlier-keep="" {...fresh}>
+        <Button variant="secondary" size="sm" onClick={onKeep} disabled={disabled} autoFocus data-earlier-keep="">
           Keep it
         </Button>
-        <Button variant="destructive" size="sm" icon="Trash2" onClick={onDelete} disabled={disabled} data-earlier-delete="" {...fresh}>
+        <Button variant="destructive" size="sm" icon="Trash2" onClick={onDelete} disabled={disabled} data-earlier-delete="">
           Delete it
         </Button>
         <Button variant="ghost" size="sm" onClick={onBack} disabled={disabled} data-earlier-back="">
