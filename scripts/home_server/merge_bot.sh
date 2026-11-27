@@ -3,9 +3,11 @@
 # that is green on GitHub and whose trial merge with today's main is clean.
 # A timer calls it every 2 minutes (systemd/metorite-merge-bot.timer).
 #
-# It uses no model and no Metorite credential. It pushes only one thing: the
-# merge commit of a resolved conflict (CIV-34a), with no force, to the head
-# branch of a PR of this repo whose base is main. It never touches main, never
+# It uses no model and no Metorite credential. It pushes only two things: the
+# merge commit of a resolved conflict (CIV-34a), and the commit of a migration
+# renumber (CIV-RN, the --renumber sub-command that lane-merge runs). Both go
+# through push_head, with no force, to the head branch of a PR of this repo
+# whose base is main. It never touches main, never
 # passes --admin or --auto, and never dispatches or reruns deploy.yml. It does
 # not test a PR again after main moves (D218, D176): the gate is the trial
 # merge plus scripts/premerge.sh.
@@ -84,6 +86,10 @@
 #   AUTO_REVERT_STATE [~/.cache/metorite-auto-revert]  read only: open/<pr>.json,
 #     the last tip of main that the auto-revert pass tested for a revert PR.
 #   PREMERGE_NOW, PREMERGE_RUNS_CMD, PREMERGE_FREEZE_OK  read by scripts/release_freeze.sh
+#   MERGE_BOT_RESERVE [~/lanes/reserve_migration.sh]  the ledger script that --renumber
+#     books each new number with. RENUMBER_BOOK_CMD replaces the whole command (a test).
+#   MERGE_BOT_RENUMBER_WAIT [600]  seconds that --renumber waits for a pass to end,
+#     with either lock. Then it exits 75.
 # It reads gh JSON with python3, not with gh --jq.
 # Fence: tests/unit/test_merge_bot.py.
 set -uo pipefail
@@ -171,20 +177,55 @@ gh_() { $GH_CMD "$@"; }
 one_line() { tr '\t\r\n' '   ' | sed 's/  */ /g; s/^ //; s/ $//'; }
 json_() { python3 -c "$1"; }  # json_ <program>: the program reads JSON on stdin
 
+# CIV-RN: the one sub-command. lane-merge runs it right before premerge (lane-merge.md
+# step d). With no argument, the script runs one pass of the queue, as before.
+#   merge_bot.sh --renumber <pr> <sha> [--lane <lane>] [--task <task>]
+# Exit 0: nothing to renumber, or the new head was pushed (its SHA is the last line).
+# Exit 1: refused, and the PR is as it was. Exit 75: a pass holds the lock, run it again.
+RN_PR=""; RN_SHA=""; RN_LANE="lane-merge"; RN_TASK=""
+if [ "$#" -gt 0 ]; then
+  [ "$1" = --renumber ] || { say "unknown argument $1. The one sub-command is --renumber <pr> <sha>"; exit 1; }
+  RN_PR="${2:-}"; RN_SHA="${3:-}"; shift 3 2>/dev/null || shift "$#"
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --lane) RN_LANE="${2:-}"; shift 2 2>/dev/null || shift ;;
+      --task) RN_TASK="${2:-}"; shift 2 2>/dev/null || shift ;;
+      *) say "unknown argument $1 for --renumber"; exit 1 ;;
+    esac
+  done
+  if [[ ! "$RN_PR" =~ ^[0-9]+$ ]] || [[ ! "$RN_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+    say "usage: merge_bot.sh --renumber <pr> <40-character head sha> [--lane <lane>] [--task <task>]"; exit 1
+  fi
+fi
+
 mkdir -p "$STATE" "$(dirname "$LOG")"
-# One pass at a time. flock where it exists, else an atomic mkdir.
+# One pass at a time. flock where it exists, else an atomic mkdir. A renumber waits
+# for a pass to end (MERGE_BOT_RENUMBER_WAIT seconds), because both use the workdir.
 if [ "$LOCK_KIND" != mkdir ] && command -v flock >/dev/null 2>&1; then
   exec 9>"$STATE/lock"
-  flock -n 9 || { say "another pass runs"; exit 0; }
+  if [ -n "$RN_PR" ]; then
+    flock -w "${MERGE_BOT_RENUMBER_WAIT:-600}" 9 || { say "a pass of the bot holds the lock: run --renumber again"; exit 75; }
+  else
+    flock -n 9 || { say "another pass runs"; exit 0; }
+  fi
 else
   if [ -d "$STATE/lock.d" ] && [ -n "$(find "$STATE/lock.d" -maxdepth 0 -mmin +"$STALE_LOCK_MIN" 2>/dev/null)" ]; then
     say "cleared a stale lock: $STATE/lock.d is older than 3 hours"
     rmdir "$STATE/lock.d" 2>/dev/null || rm -rf "$STATE/lock.d"
   fi
-  mkdir "$STATE/lock.d" 2>/dev/null || { say "another pass runs"; exit 0; }
+  if ! mkdir "$STATE/lock.d" 2>/dev/null; then
+    [ -n "$RN_PR" ] || { say "another pass runs"; exit 0; }
+    waited=0
+    until mkdir "$STATE/lock.d" 2>/dev/null; do
+      if [ "$waited" -ge "${MERGE_BOT_RENUMBER_WAIT:-600}" ]; then
+        say "a pass of the bot holds the lock: run --renumber again"; exit 75
+      fi
+      sleep 1; waited=$((waited + 1))
+    done
+  fi
   trap 'rmdir "$STATE/lock.d" 2>/dev/null' EXIT
 fi
-[ -f "$QUEUE" ] || { say "no queue at $QUEUE"; exit 0; }
+[ -n "$RN_PR" ] || [ -f "$QUEUE" ] || { say "no queue at $QUEUE"; exit 0; }
 
 record() {  # record <line>: one result line in the log. A dry run only prints it.
   if [ "$DRY" = 1 ]; then say "DRY RUN would log: $*"; else printf '%s\n' "$*" >> "$LOG"; fi
@@ -422,23 +463,38 @@ yaml.safe_load(open(sys.argv[1], encoding="utf-8"))' "$f" >/dev/null 2>&1 || bad
   git -c user.name="${MERGE_BOT_GIT_NAME:-metorite-merge-bot}" -c user.email="${MERGE_BOT_GIT_EMAIL:-merge-bot@metorite.invalid}" \
     -c rerere.enabled=false commit -q -m "Merge main into the branch of PR $pr (merge bot conflict rules)" -m "$trailers" >/dev/null 2>&1 \
     || { reset_to "$sha"; echo "conflict: the merge commit failed after the rules ($rules)"; return 1; }
+  out="$(push_head "$sha" resolution)"; rc=$?
+  [ "$rc" = 0 ] || { echo "conflict: resolved by $rules but $out"; return "$rc"; }
+  printf '%s %s\n' "${QUEUED:-$sha}" "$(git rev-parse HEAD)" > "$STATE/resolved-$pr"
+  echo "$rules"; return 0
+}
+
+# push_head <sha> <what>: the ONE push of the bot (CIV-34a). The commit on HEAD goes
+# to the head branch HEADREF of the PR, only when that branch on GitHub is still <sha>.
+# A conflict resolution and a migration renumber (CIV-RN) both push through here.
+# Returns 0 when the push worked. Else it resets to <sha>, prints the reason, and
+# returns 1, or 2 for a transient error. It never force-pushes.
+push_head() {
+  local sha="$1" what="$2" remote out
+  if [ -z "$HEADREF" ] || grep -qE "$PROTECTED_HEAD_RE" <<< "$HEADREF"; then
+    reset_to "$sha"; echo "the head branch '$HEADREF' is protected or unknown"; return 1
+  fi
   # A plain push is a fast-forward only. It still overwrites a branch that the author
   # moved BACK (a reset), so the branch on GitHub must still be <sha>.
   if ! remote="$(git ls-remote origin "refs/heads/$HEADREF" 9>&- 2>/dev/null)"; then
-    reset_to "$sha"; echo "conflict: resolved by $rules but git ls-remote failed"; return 2
+    reset_to "$sha"; echo "git ls-remote failed"; return 2
   fi
   # ls-remote matches a pattern by its tail, so take only the line of the exact ref.
   remote="$(awk -F'\t' -v r="refs/heads/$HEADREF" '$2 == r {print $1; exit}' <<< "$remote")"
   if [ "$remote" != "$sha" ]; then
     reset_to "$sha"
-    echo "conflict: resolved by $rules but the head branch moved during the resolution (${remote:0:9}, not ${sha:0:9}): hand over again"; return 1
+    echo "the head branch moved during the $what (${remote:0:9}, not ${sha:0:9}): hand over again"; return 1
   fi
   # A plain push, never --force. A rejected push means the head moved or the bot has no write reach.
   if ! out="$(git push -q origin "HEAD:refs/heads/$HEADREF" 9>&- 2>&1)"; then
-    reset_to "$sha"; echo "conflict: resolved by $rules but the push failed: $(tail -n 2 <<< "$out" | one_line)"; return 1
+    reset_to "$sha"; echo "the push failed: $(tail -n 2 <<< "$out" | one_line)"; return 1
   fi
-  printf '%s %s\n' "${QUEUED:-$sha}" "$(git rev-parse HEAD)" > "$STATE/resolved-$pr"
-  echo "$rules"; return 0
+  return 0
 }
 
 # gate <pr> <sha>: trial merge of exactly <sha>, then premerge on a bot branch.
@@ -689,6 +745,125 @@ handle() {
   elif transient "$out" || grep -qi 'base branch was modified' <<< "$out"; then say "PR $pr: the merge call failed ($(one_line <<< "$out")), next pass"
   else record "BACK $pr merge failed: $(one_line <<< "$out")"; fi
 }
+
+# renumber <pr> <sha>: CIV-RN, the merge gate sets the migration number (R1). It checks
+# out <sha> on the bot branch. It reads the migrations that the PR adds at the top level
+# of infra/postgres/, the same files that make main's highest number. A subfolder
+# (infra/postgres/generated/) never counts. When one of them is at or below main's
+# highest, every added migration at or above the lowest such number moves, so the PR
+# keeps its own order (R6: an ALTER never lands before its CREATE). Each moves first to
+# a free work number (900000 and up), and then, lowest first, to a number that the box
+# ledger books: reserve_migration.sh (lane RN_LANE, task RN_TASK, this PR). The tool is
+# MAIN's scripts/renumber_migration.py, never the copy of the PR branch, so a PR cannot
+# change what runs with the push reach of the bot. One commit holds all the moves, and
+# push_head pushes it (CIV-34a, no force). Then one log line goes out:
+#   RENUMBERED <pr> <old>-><new>[, ...][ check by hand: <file>:<line>[, ...]]
+# The check-by-hand list names the prose lines that still say "migration <old>".
+# It prints the new head SHA, or "nothing to renumber". Any failure resets to <sha> and
+# pushes nothing. A number that the ledger booked before a failure stays booked: only
+# reserve_migration.sh writes the ledger.
+RESERVE_CMD="${MERGE_BOT_RESERVE:-$HOME/lanes/reserve_migration.sh}"
+RN_WORK_BASE=900000
+renumber() {
+  local pr="$1" sha="$2" branch="merge-bot/pr-$1" v now added main_top n f i out new moved="" pairs="" top own
+  local py tmpf min_low="" review="" book
+  local -a nums=() files=() temps=()
+  v="$(view "$pr")"
+  [ -n "$v" ] || { echo "gh cannot read PR $pr"; return 1; }
+  [ "$(field 1 "$v")" = OPEN ] || { echo "PR $pr is $(field 1 "$v"), not open"; return 1; }
+  [ "$(field 7 "$v")" = false ] || { echo "the head branch of PR $pr is in a fork: the bot pushes only to a branch of this repo"; return 1; }
+  [ "$(field 8 "$v")" = main ] || { echo "the base of PR $pr is '$(field 8 "$v")', not main"; return 1; }
+  HEADREF="$(field 6 "$v")"
+  if [ -z "$HEADREF" ] || grep -qE "$PROTECTED_HEAD_RE" <<< "$HEADREF"; then
+    echo "the head branch '$HEADREF' is protected or empty"; return 1
+  fi
+  now="$(field 4 "$v")"
+  [ "$now" = "$sha" ] || { echo "the head of PR $pr is ${now:0:9}, not ${sha:0:9}: use the head now"; return 1; }
+  [[ "$RN_LANE" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo "--lane may hold letters, digits, dot, dash and underscore only"; return 1; }
+  [ -n "$RN_TASK" ] || RN_TASK="pr$pr"
+  [[ "$RN_TASK" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo "--task may hold letters, digits, dot, dash and underscore only"; return 1; }
+  ensure_workdir || { echo "no workdir at $WORKDIR"; return 1; }
+  cd "$WORKDIR" || { echo "cannot enter $WORKDIR"; return 1; }
+  top="$(git rev-parse --show-toplevel 2>/dev/null)"
+  own="$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null)"
+  if [ -z "$top" ] || [ "$top" = "$own" ]; then
+    echo "the workdir is the bot's own checkout (${top:-not a repo}). Set MERGE_BOT_WORKDIR to a checkout of its own"; return 1
+  fi
+  git -c rerere.enabled=false merge --abort 2>/dev/null; git reset --hard -q 2>/dev/null; git clean -fdq 2>/dev/null
+  git fetch -q origin "+refs/heads/main:refs/remotes/origin/main" "+refs/pull/$pr/head:refs/merge-bot-pull/$pr" 2>/dev/null \
+    || { echo "git fetch failed"; return 1; }
+  git cat-file -e "$sha^{commit}" 2>/dev/null || { echo "the head ${sha:0:9} is not on GitHub"; return 1; }
+  # Top level only, as main_top reads it. Each line: <number><TAB><path>, lowest first.
+  added="$(git diff --name-only --diff-filter=A origin/main..."$sha" -- infra/postgres/ 2>/dev/null \
+    | sed -nE 's#^infra/postgres/0*([0-9]+)_[^/]*\.sql$#\1\t&#p' | sort -n)" || { echo "git diff failed"; return 1; }
+  main_top="$(git ls-tree --name-only origin/main infra/postgres/ \
+    | sed -nE 's#^infra/postgres/0*([0-9]+)_[^/]*\.sql$#\1#p' | sort -n | tail -1)"
+  main_top="${main_top:-0}"
+  while IFS=$'\t' read -r n f; do
+    [ -n "$n" ] && [ -z "$min_low" ] && [ "$n" -le "$main_top" ] && min_low="$n"
+  done <<< "$added"
+  if [ -z "$min_low" ]; then echo "nothing to renumber"; return 0; fi
+  while IFS=$'\t' read -r n f; do
+    [ -n "$n" ] && [ "$n" -ge "$min_low" ] && { nums+=("$n"); files+=("$f"); }
+  done <<< "$added"
+  if [ "$DRY" = 1 ]; then
+    echo "dry run: would renumber ${nums[*]} above main's $main_top on PR $pr"; return 0
+  fi
+  book="${RENUMBER_BOOK_CMD:-}"
+  if [ -z "$book" ]; then
+    [ -x "$RESERVE_CMD" ] || { echo "no ledger script at $RESERVE_CMD: run this on the home box"; return 1; }
+    book="$(printf '%q ' "$RESERVE_CMD" "$RN_LANE" "$RN_TASK" "$pr")"
+  fi
+  # Main's copy of the tool, outside the workdir.
+  tmpf="$(mktemp "$STATE/renumber_migration.XXXXXX")" || { echo "mktemp failed"; return 1; }
+  py="$tmpf.py"; mv "$tmpf" "$py"
+  if ! git show origin/main:scripts/renumber_migration.py > "$py" 2>/dev/null; then
+    rm -f "$py"; echo "cannot read origin/main:scripts/renumber_migration.py"; return 1
+  fi
+  git checkout -q -B "$branch" "$sha" 2>/dev/null || { rm -f "$py"; echo "checkout of ${sha:0:9} failed"; return 1; }
+  # Step 1: each file to a work number, so no booked number meets a file of the PR.
+  for i in "${!nums[@]}"; do
+    n="${nums[$i]}"; f="${files[$i]}"
+    if ! out="$(python3 "$py" "$n" "$((RN_WORK_BASE + i))" --file "$f" --repo "$WORKDIR" --no-test 9>&- 2>&1)"; then
+      rm -f "$py"; reset_to "$sha"; echo "the renumber of $n failed: $(tail -n 2 <<< "$out" | one_line)"; return 1
+    fi
+    review="$review$(sed -nE '/^CHECK BY HAND/,$ s#^  ([^ ]+:[0-9]+):.*#\1#p' <<< "$out" | tr '\n' ' ')"
+    temps+=("$(sed -nE 's#^moved .* -> (.*)$#\1#p' <<< "$out" | head -n 1)")
+  done
+  # Step 2: lowest first, each to the next number of the ledger.
+  for i in "${!nums[@]}"; do
+    n="${nums[$i]}"; f="$(basename "${files[$i]}")"; f="${f%%_*}"
+    if ! out="$(RENUMBER_BOOK_CMD="$book" python3 "$py" "$((RN_WORK_BASE + i))" --file "${temps[$i]}" --width "${#f}" \
+      --repo "$WORKDIR" --no-test 9>&- 2>&1)"; then
+      rm -f "$py"; reset_to "$sha"; echo "the renumber of $n failed: $(tail -n 2 <<< "$out" | one_line)"; return 1
+    fi
+    new="$(sed -nE 's#^moved .* -> (.*/)?0*([0-9]+)_[^/]*$#\2#p' <<< "$out" | head -n 1)"
+    [[ "$new" =~ ^[0-9]+$ ]] || { rm -f "$py"; reset_to "$sha"; echo "the renumber of $n printed no new number"; return 1; }
+    moved="$moved${moved:+, }$n to $new"; pairs="$pairs${pairs:+, }$n->$new"
+  done
+  rm -f "$py"
+  git add -u 2>/dev/null
+  if [ -n "$(git status --porcelain --untracked-files=all | grep -v '^[MRADC] ' || true)" ]; then
+    reset_to "$sha"; git clean -fdq 2>/dev/null; echo "the tree is dirty after the renumber: nothing pushed"; return 1
+  fi
+  git -c user.name="${MERGE_BOT_GIT_NAME:-metorite-merge-bot}" -c user.email="${MERGE_BOT_GIT_EMAIL:-merge-bot@metorite.invalid}" \
+    commit -q -m "merge gate: renumber migration $moved above main's $main_top (R1)" >/dev/null 2>&1 \
+    || { reset_to "$sha"; echo "the renumber commit failed"; return 1; }
+  out="$(push_head "$sha" renumber)" || { echo "renumbered $pairs but $out"; return 1; }
+  review="$(sort -u <<< "$(tr ' ' '\n' <<< "$review")" | sed '/^$/d' | paste -sd, - | sed 's/,/, /g')"
+  [ -z "$review" ] || say "PR $pr: these lines still say the old number. Check them by hand: $review"
+  record "RENUMBERED $pr $pairs${review:+ check by hand: $review}"
+  git rev-parse HEAD
+  return 0
+}
+
+if [ -n "$RN_PR" ]; then
+  CUR_SHA="$RN_SHA"; CUR_TASK="$RN_TASK"
+  out="$(renumber "$RN_PR" "$RN_SHA")"; rc=$?
+  if [ "$rc" != 0 ]; then say "renumber of PR $RN_PR refused: $(one_line <<< "$out")"; exit 1; fi
+  printf '%s\n' "$out"
+  exit 0
+fi
 
 # The nth hand-over of a PR waits for the nth result line, so a lane can hand a
 # PR over again after a BACK. A DONE ends the PR for good: a stray later

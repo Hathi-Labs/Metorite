@@ -127,6 +127,7 @@ reference tied to code. Do not put product specs in `docs/`.
    Three collisions in two weeks. `bash scripts/premerge.sh` does the re-check,
    right before `gh pr merge`. It runs the collision fences, and it runs the tests
    that both sides can affect when the branch is behind main. Add `--no-tests` to skip them (D176).
+   A builder keeps the number it booked. lane-merge renumbers at merge (CIV-RN).
 8. **Verify delivery by evidence, never by a green job.** Migration ledger
    lines, the deployed SHA, the log line. Four deploys once reported success
    while shipping nothing.

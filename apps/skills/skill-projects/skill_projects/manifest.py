@@ -1461,6 +1461,11 @@ _AUDIT_FILTER_REASON = (
     "An audit filter of the agent door (MCP-G19a). The chat gets it with "
     "the board count tool, Metorite task 2223."
 )
+#: MCP-G19c (task 2315). The type filters of the agent door.
+_AGENT_DOOR_TYPE_REASON = (
+    "A type filter of the agent door (MCP-G19c). The chat tool for it is "
+    "part of Metorite task 2223."
+)
 _STATS_ROUTE_REASON = (
     "A field of the board count route of the agent door (MCP-G19a). Its "
     "chat tool is Metorite task 2223."
@@ -1607,6 +1612,12 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "updated_after": _AUDIT_FILTER_REASON,
         "updated_before": _AUDIT_FILTER_REASON,
         "compact": "A row shape of the agent door (MCP-G19a), not a filter. The chat prints its own rows.",
+        "type_id": _AGENT_DOOR_TYPE_REASON,
+        "type_name": _AGENT_DOOR_TYPE_REASON,
+        "task_number": (
+            "A task number of the agent door (MCP-G19c). The chat finds a task by "
+            "its number through search."
+        ),
         "agent_focus": _AGENT_FILTER_REASON,
         "agent_worked": _AGENT_FILTER_REASON,
         "with_status_counts": (
