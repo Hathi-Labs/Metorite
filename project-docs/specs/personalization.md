@@ -47,9 +47,9 @@ other private chats, and at most 3 of their due tasks. The block shows only
 with `ASSISTANT_BRIEFING_ORGS` on for the org. See §15.4 "As built, PZ-34",
 §15.9 and D-PZ-38 in §15.11.
 
-**§19 MM-1 BUILT 2026-11-27, dark, not merged** (task 2878, PR 2498). The
-act record of §19.4 is in: the table `member_action`, the one writer, the
-purge, the prune and the email seams. It writes no row until
+**§19 MM-1, MM-1b and MM-2 BUILT, dark** (2026-11-27). MM-1 (task 2878, PR
+2498) and MM-2 (task 2879, PR 2508) are merged. MM-1b (task 3614, PR 2513)
+records the chat card answer. The act record of §19.4 writes no row until
 `MEMBER_ACTIONS_ORGS` holds the org. No other slice of §19 is built.
 
 **§18 ACCEPTED 2026-11-08 (D196). No slice is built.** It adds the epic "Setup health" (Metorite task 940, slice SH-0 task 945). Each live app lists its setup items. The chat raises one missing item at a time, on the seam of the interview, inside the limits of D-PZ-13.
