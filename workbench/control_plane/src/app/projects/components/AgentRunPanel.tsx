@@ -388,6 +388,20 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
     assignees: task.assignees,
   });
   const canReply = REPLYABLE.has(run.status) && (!cardOpen || archiveStale);
+  // One control for both holder layouts. It ends the row that holds it.
+  const releaseControl = canRelease ? (
+    <Button
+      className="ml-auto shrink-0"
+      variant="ghost"
+      size="sm"
+      icon="LogOut"
+      data-agent-release=""
+      disabled={busy}
+      onClick={() => setConfirmRelease(true)}
+    >
+      {RELEASE_COPY.button}
+    </Button>
+  ) : null;
 
   /** One member write: `send` posts it. The panel guesses the state first. */
   async function write(
@@ -599,42 +613,37 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
         ) : null}
       </div>
 
-      {/* EA-14a: who holds the task, and the Release control. */}
+      {/* EA-14a: who holds the task, and the Release control. The holder
+          wraps and never truncates. A strand takes a second row, and Release
+          sits at its end, so the narrow panel clips nothing (task 1045c). */}
       {holding ? (
-        <div className="flex min-w-0 items-center gap-2 text-xs" data-agent-held-by="">
-          <p className="min-w-0 flex-1 truncate text-muted-foreground" title={heldByLine(run, personLabels)}>
-            {heldByLine(run, personLabels)}
+        <div className="flex min-w-0 flex-col gap-1 text-xs" data-agent-held-by="">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <p className="min-w-0 break-words text-muted-foreground" data-agent-holder="">
+              {heldByLine(run, personLabels)}
+            </p>
             {runHolderFree(run) ? (
               <span
-                className="ml-1.5 rounded border border-border px-1 text-[10px] uppercase tracking-wide"
+                className="shrink-0 rounded border border-border px-1 text-[10px] uppercase tracking-wide text-muted-foreground"
                 data-agent-held-stale=""
                 title="No activity for a long time. The next claim can take this task."
               >
                 {STALE_HOLD_TEXT}
               </span>
             ) : null}
-          </p>
+            {run.stranded ? null : releaseControl}
+          </div>
           {run.stranded ? (
-            <span
-              className="shrink-0 text-warning"
-              data-agent-stranded=""
-              title="The run went quiet. Release it to give the task back."
-            >
-              {strandedLine(run.stranded)}
-            </span>
-          ) : null}
-          {canRelease ? (
-            <Button
-              className="shrink-0"
-              variant="ghost"
-              size="sm"
-              icon="LogOut"
-              data-agent-release=""
-              disabled={busy}
-              onClick={() => setConfirmRelease(true)}
-            >
-              {RELEASE_COPY.button}
-            </Button>
+            <div className="flex min-w-0 items-center gap-2">
+              <p
+                className="min-w-0 break-words text-warning"
+                data-agent-stranded=""
+                title="The run went quiet. Release it to give the task back."
+              >
+                {strandedLine(run.stranded)}
+              </p>
+              {releaseControl}
+            </div>
           ) : null}
         </div>
       ) : null}
