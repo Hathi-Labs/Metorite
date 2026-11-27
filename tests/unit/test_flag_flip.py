@@ -616,3 +616,23 @@ def test_the_owner_only_names_are_one_string_so_no_reader_fence_counts_them():
 
     consts = {n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
     assert not consts & set(fr.OWNER_ONLY_FLAGS)
+
+
+def test_a_closed_value_with_a_quote_in_its_comment_is_not_multi_line(tmp_path):
+    p = tmp_path / ".env"
+    p.write_text("A='x' # don't\nTOOL_PACKS_ORGS=a\nB=\"y\" # say \"hi\n")
+    assert ff.rewrite(p, "TOOL_PACKS_ORGS", "b").decode() == "A='x' # don't\nTOOL_PACKS_ORGS=b\nB=\"y\" # say \"hi\n"
+
+
+def test_a_failed_audit_write_only_warns(box, monkeypatch, capsys):
+    monkeypatch.setenv("FLAG_FLIP_AUDIT_LOG", str(box.app.parent / "missing-dir" / "audit.log"))
+    box.reload_line("flags.reloaded applied=['TOOL_PACKS_ORGS']")
+    assert flip("TOOL_PACKS_ORGS", "--add", ORG2, "--task", "1", "--no-smoke") == 0
+    assert "the audit line was not written" in capsys.readouterr().err
+
+
+def test_a_deploy_lock_that_cannot_open_is_refused(box, monkeypatch):
+    monkeypatch.setenv("FLAG_FLIP_DEPLOY_LOCK", str(box.app.parent / "missing-dir" / "lock"))
+    before = box.root.read_bytes()
+    assert flip("TOOL_PACKS_ORGS", "--add", ORG2, "--task", "1") == 2
+    assert box.root.read_bytes() == before

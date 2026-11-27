@@ -234,7 +234,10 @@ def rewrite(path: Path, key: str, value: str) -> bytes:
                 inside = ""  # this line closes the value
             continue
         opener = re.match(r'^[ \t]*(?:export[ \t]+)?[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*(["\'])', line)
-        if opener and len(re.findall(rf"(?<!\\){opener.group(1)}", line)) % 2 == 1:
+        # Multi-line only when no closing quote follows the opening one on
+        # this line. A comment after a closed value (`A='x' # don't`) may hold
+        # a quote of its own, so the count of quotes on the line misleads.
+        if opener and not re.search(rf"(?<!\\){opener.group(1)}", line[opener.end():]):
             out.append(line)
             inside = opener.group(1)
             continue
