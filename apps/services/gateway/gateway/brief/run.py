@@ -26,7 +26,9 @@ The order, for the run of *member* on *local_date*:
    that is past ``planned`` ends the job with no second gather.
 6. ``loop.snapshot``. An incomplete read raises, so the queue retries, and
    no claim comes from a read that lost a source.
-7. One claim for each shown card (``gather.claims``), then ``gathered``, the
+7. One claim for each shown card (``gather.claims``), then at most 3 counts
+   of the ``numbers`` section (``gather.number_claims``, BR-4c), only when a
+   line exists. Then ``gathered``, the
    template lead (``plan.brief_lead``), and ``ready``. With the in-app
    surface on (``flags.in_app``), the run then moves ``ready`` to
    ``delivered`` (guarded) and stamps ``delivered_at``. Off, it stays
@@ -68,7 +70,7 @@ never opens the app still has ``delivered_at``. BR-2d compares
 
 **The phrase step** (BR-2a-2, ``core_brief.md`` §4.4). It runs only when
 ``flags.compose(org)`` is on, the run has ``phrase.MIN_CLAIMS`` claims or
-more, and ``acb_llm.routed.routing_is_on()``. Else step 7 is as above, byte
+more (a count of ``numbers`` does not count), and ``acb_llm.routed.routing_is_on()``. Else step 7 is as above, byte
 for byte, and no call runs. On:
 
 7a. ONE session commits the claims, ``gathered``, the template lead, and
@@ -287,11 +289,14 @@ async def _gather(org: str, member: str, user: Any, run: store.Run, claim: queue
         claims, lead = await _closeout_reads(org, member, user, run, snap, now, slot_at)
     else:
         claims = gather.claims(snap.cards, now)
-        start = max((c.position for c in claims), default=-1) + 1
-        claims += gather.number_claims(snap.cards, start)
         parts = plan.brief_parts(snap.cards, run.local_date, now=now)
         lead = plan.brief_lead(parts) if parts is not None else None
-    if claims and lead is not None and _composes(org, _lines(claims), run.kind):
+        if claims and lead is not None:
+            # BR-4c: the counts go after the lines, and only with a line. So a
+            # run with no line stays ``empty``.
+            claims += gather.number_claims(snap.cards, claims[-1].position + 1, snap.capped)
+    if claims and lead is not None and _composes(
+            org, len(gather.line_claims(claims)), run.kind):
         return await _gather_and_phrase(org, member, run, claim, claims, lead, now)
     async with tenant_session(org) as db:
         if not await queue.hold(db, claim):
@@ -322,12 +327,6 @@ async def _deliver(db: Any, org: str, member: str, run_id: str) -> str:
             db, member, run_id, "delivered", now=_now(), from_state="ready"):
         return "delivered"
     return "ready"
-
-
-def _lines(claims: list[store.ClaimIn]) -> int:
-    """The claims that count toward the phrase threshold: the lines, and not
-    the counts of the ``numbers`` section (BR-4c). A count adds no line."""
-    return sum(1 for c in claims if c.section != gather.NUMBERS)
 
 
 def _composes(org: str, count: int, kind: str = planner.KIND) -> bool:
@@ -412,8 +411,9 @@ async def _ready(db: Any, org: str, member: str, run_id: str, now: datetime,
 def _stored_lead(run: store.Run, claims: list[store.Claim]) -> str | None:
     """The template lead of a run from its stored claims, as
     ``chat_brief.stored_parts`` reads a stored run: the date title, one
-    line for each claim, and no "more" count. None with no claim."""
-    lines = [c.text for c in sorted(claims, key=lambda c: c.position)]
+    line for each claim, and no "more" count. A count of the ``numbers``
+    section is not a line. None with no line."""
+    lines = [c.text for c in sorted(gather.line_claims(claims), key=lambda c: c.position)]
     if not lines:
         return None
     title = f"Your day, {plan._date_words(run.local_date)}"

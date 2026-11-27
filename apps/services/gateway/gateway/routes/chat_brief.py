@@ -81,6 +81,7 @@ from acb_auth import UserContext, get_current_user, require_feature_router
 from acb_common import get_logger
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from gateway.brief import flags as brief_flags
+from gateway.brief import gather as brief_gather
 from gateway.brief import store as brief_store
 from gateway.reach import loop, plan
 from gateway.rooms import resolve_room_access
@@ -150,12 +151,14 @@ def stored_parts(run: brief_store.Run,
     """The lead and the parts of a stored run, or None when the run has
     no lead or no claim. Pure.
 
-    The lines are the claims' text in position order. The title and the
-    count come from the template lead, so ``rest`` counts the brief items
+    The lines are the claims' text in position order. A count of the
+    ``numbers`` section (BR-4c) is not a line, so it makes no pill. The title
+    and the count come from the template lead, so ``rest`` counts the brief items
     that the claims do not show, as ``plan.brief_parts`` counts them.
     """
     lead = (run.lead or "").strip()
-    lines = [c.text for c in sorted(claims, key=lambda c: c.position)]
+    lines = [c.text for c in sorted(brief_gather.line_claims(claims),
+                                    key=lambda c: c.position)]
     if not lead or not lines:
         return None
     match = _TEMPLATE_LEAD.match(lead)

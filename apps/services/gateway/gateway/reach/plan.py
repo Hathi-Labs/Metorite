@@ -355,6 +355,13 @@ def brief_items(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return feed_rank.order(top, len(top)) if top else []
 
 
+def first_card(cards: list[dict[str, Any]]) -> dict[str, Any]:
+    """The card of *cards* that the feed's order shows first. *cards* must
+    not be empty. ⚠️ ``feed_rank.order`` also cuts (``PER_APP`` for each
+    app), so a caller never counts its answer."""
+    return feed_rank.order(cards, len(cards))[0]
+
+
 @dataclass(frozen=True)
 class BriefParts:
     """The one brief, before any channel lays it out (WS-62 CF-5, D-CF-6).

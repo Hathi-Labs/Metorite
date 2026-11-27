@@ -20,6 +20,10 @@ Without the database every test here SKIPS. A skip is not a pass.
   ``test_r8_three_waiting_threads_give_one_count_claim`` goes red.
 * M2. ``gather.count_claim``: drop the ``in_app_href`` test of a card.
   ``test_r8_a_count_with_no_source_is_skipped`` goes red.
+* M3. ``run._gather``: add the counts with no ``claims and lead`` guard.
+  ``test_r8_a_run_with_counts_and_no_line_is_empty`` goes red.
+* M4. ``store``: drop the member filter of the claims read, and
+  ``brief_today``: read the run of another member. The route test goes red.
 """
 
 # ruff: noqa: F811
@@ -82,6 +86,22 @@ def test_r8_three_waiting_threads_give_one_count_claim(world) -> None:
     assert positions == sorted(set(positions)) and c.position == max(positions)
 
 
+def test_r8_the_three_counts_pass_the_checks_of_the_table(world) -> None:
+    """No migration: the section CHECK holds ``numbers``, and ``source_kind``
+    takes ``count``. The lead counts the brief items and no count line."""
+    world.cards[ANA] = [card("email:acc:t1"), card("tasks:7", "due_today"),
+                        card("tasks:8", "overdue", folded=["promise_due"])]
+    world.cards[BEN] = []
+    _seed_and_run(world)
+    got = _numbers(world, ANA)
+    assert [(c.text, int(c.value), list(c.source_ids), c.source_kind) for c in got] == [
+        ("1 thread waits for your reply", 1, ["email:acc:t1"], "count"),
+        ("1 task is due today", 1, ["tasks:7"], "count"),
+        ("1 promise you made falls due", 1, ["tasks:8"], "count")]
+    run = next(r for r in _runs(world) if r.member_email == ANA)
+    assert run.lead.endswith("3 things need you.")
+
+
 def test_r8_a_count_with_no_source_is_skipped(world) -> None:
     world.cards[ANA] = [card("email:acc:t1", href="//evil.example"),
                         card("nobody:1"), card("tasks:42", "overdue")]
@@ -90,6 +110,18 @@ def test_r8_a_count_with_no_source_is_skipped(world) -> None:
     assert _numbers(world, ANA) == []
     run = next(r for r in _runs(world) if r.member_email == ANA)
     assert run.state == "ready"  # the line of the overdue task still stands
+
+
+def test_r8_a_run_with_counts_and_no_line_is_empty(world) -> None:
+    """The 7 cards that the brief shows can make no claim, and a card after
+    them can be counted. That run is ``empty``, as before BR-4c."""
+    world.cards[ANA] = [card(f"nobody:{i}", "overdue", score=90) for i in range(7)]
+    world.cards[ANA].append(card("email:acc:t1", score=1))
+    world.cards[BEN] = []
+    _seed_and_run(world)
+    run = next(r for r in _runs(world) if r.member_email == ANA)
+    assert run.state == "empty" and run.lead is None
+    assert _claims(world, str(run.id), numbers=True) == []
 
 
 def _get(world: Any, email: str, org: str) -> Any:
@@ -115,20 +147,26 @@ def test_r8_get_today_serves_the_count_to_its_member_only(world, monkeypatch) ->
         brief_enabled=True, brief_orgs=world.p.org_a, brief_in_app=True))
     monkeypatch.setattr(brief_today, "_now", lambda: T1 + timedelta(minutes=30))
     _three(world)
+    world.cards[BEN] = [card("tasks:42", "overdue")]  # Ben has a run of his own
     _seed_and_run(world)
     body = _get(world, ANA, world.p.org_a)
     counts = [c for c in body["claims"] if c["section"] == "numbers"]
     assert len(counts) == 1 and counts[0]["source_kind"] == "count"
     assert counts[0]["text"] == "3 threads wait for your reply"
     assert counts[0]["href"].startswith("/email")
-    # Ben has no card, so no run to serve. The same address in org B has none.
-    assert _get(world, BEN, world.p.org_a) == 404
+    # Ben reads his own run, with no count of Ana. The same address in org B
+    # has no run.
+    other = _get(world, BEN, world.p.org_a)
+    assert [c["section"] for c in other["claims"]] == ["needs_you"]
     assert _get(world, ANA, world.p.org_b) == 404
 
 
-def test_r8_flag_off_gives_no_run_and_no_numbers(world, monkeypatch) -> None:
-    monkeypatch.setattr(flags, "get_settings",
-                        lambda: SimpleNamespace(brief_enabled=False, brief_orgs=world.p.org_a))
+@pytest.mark.parametrize("enabled,holds_org", [(False, True), (True, False)])
+def test_r8_flags_off_give_no_run_and_no_claim(world, monkeypatch, enabled, holds_org) -> None:
+    """``BRIEF_ENABLED`` off, or an org that ``BRIEF_ORGS`` does not hold: no
+    run, so no claim and no read of the feed."""
+    monkeypatch.setattr(flags, "get_settings", lambda: SimpleNamespace(
+        brief_enabled=enabled, brief_orgs=world.p.org_a if holds_org else world.p.org_b))
     _three(world)
     _seed_and_run(world)
-    assert _runs(world) == []
+    assert _runs(world) == [] and world.reads["snapshot"] == 0

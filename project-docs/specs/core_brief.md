@@ -2,19 +2,15 @@
 
 **Status: ACTIVE. Built: BR-2a-1, BR-2c-1, BR-2c-2, BR-4b, BR-2d, BR-7a,
 BR-5 slices 1, 2a, 2b-1 and 2b-2, BR-2a-2 slice 1, BR-2b-1, BR-7b-1 and
-BR-7b-2 and BR-4c (dark), 2026-10-29 to 2026-11-23.** Verified against code on
+BR-7b-2 and BR-4c (dark), 2026-10-29 to 2026-11-27.** Verified against code on
 2026-11-07, on a branch from `495c2f29c`.
 
-**BR-4c BUILT 2026-11-23, dark** behind `BRIEF_ENABLED` and `BRIEF_ORGS`
-(Metorite #588): the section `numbers` of the brief (§4.3).
-`gather.number_claims` counts the open `needs_reply` cards and the open
-`promise_due` cards of the snapshot. Each count is one claim with
-`source_kind` `count`, a `value`, and the `value_path` `count`. The claim
-holds the counted ids in `source_ids`, at most 50. Its `source_id` and `href`
-are those of the first counted card, so a count opens a record and no list
-page. A count with no usable card makes no claim. No migration, no new flag.
-`GET /brief/today` returns the claims as before. The count of tasks due today
-is not built.
+**BR-4c BUILT 2026-11-27, dark** behind `BRIEF_ENABLED`, `BRIEF_ORGS` and
+(for the card) `NEXT_PUBLIC_BRIEF_CARD` (Metorite #588): the section
+`numbers` of the brief, with its three counts (§4.3). `gather.number_claims`
+counts the cards of the snapshot, with no SQL against the table of an app.
+No migration: the CHECK of `brief_claims` already holds the section, and
+`source_kind` takes `count`. No new flag.
 
 **BR-5 slices 2b-1 and 2b-2 BUILT 2026-11-06, dark** behind
 `BRIEF_EXCEPTIONS` (OFF). Migration 350 adds `rule_id`, `feedback` and
@@ -304,8 +300,31 @@ BR-1b builds.
   `plan.line`. Every card makes one claim, with its `signal_id`, `href` and
   fingerprint. At most 7 lines, as `BRIEF_LINES`.
 - **The numbers section** adds at most 3 counts: threads that wait for a
-  reply, tasks due today and promises due (`needs_reply_count`,
-  `promise_tasks`). Each count stores its ids.
+  reply, tasks due today and promises due. Each count stores its ids. BR-4c
+  builds it, with these rules:
+  - **The source is the snapshot.** The counts read the open cards that the
+    lines read, so the brief makes no second read of an app. The kinds are
+    `needs_reply`, `due_today` and `promise_due`, in that order. A card
+    counts when the kind is its main kind or a folded kind, because a
+    promise folds into the card of its task.
+  - **The claim.** `source_kind` is `count`, `value` is the count and
+    `value_path` is `count`. `source_ids` holds the counted ids, at most 50.
+  - **The one link of a count.** A count above 1 opens ONE record: the
+    first counted card in the feed's order (`plan.first_card`). Its id is
+    `source_id` and the first of `source_ids`, and its link is `href`. No
+    list page of exactly these records exists, and code invents no link.
+  - **A floor.** The feed cuts each source. When it cut the source of a
+    kind (`Snapshot.capped`), the line says "At least", and the value is
+    the number of cards.
+  - **No source, no claim.** A card with no known prefix or no in-app link
+    is not counted. A count of no card makes no claim.
+  - **A count is not a line.** The counts follow the lines, and only when
+    the run has a line. So a run with counts only is `empty`, as before.
+    A count adds nothing to the lead's number, to the 4 claims of the
+    phrase step, or to the chat's pills and its "more" note. `GET
+    /brief/today` returns each count, so the My Day card draws it as a link
+    row, and the chat tool `home_read` lists it. The phrase step reads it
+    as a claim with a value (§4.4).
 - **The close-out** reads `handled_run` for `done`, the open cards of today
   for `moved`, and BR-7b's executed acts for `acted`. BR-2b-1 builds `done`
   and `moved` only. The rules of BR-2b-1:
@@ -340,8 +359,9 @@ BR-1b builds.
 
 ### 4.4 Phrase: one model call, bound to sources
 
-- **When.** `BRIEF_COMPOSE` is on, and the run has 4 claims or more. Else the
-  lead is `plan.brief_lead`, from the counts.
+- **When.** `BRIEF_COMPOSE` is on, and the run has 4 claims or more. A count
+  of the `numbers` section is not one of the 4. Else the lead is
+  `plan.brief_lead`, from the counts.
 - **The input.** The claims as a numbered list `[c1] … [cN]`, with their
   values. The member's block from `render_block`. The house voice from
   `voice_prompt("summary", json=True)`.
@@ -382,7 +402,8 @@ words.
 1. **My Day.** A standalone card of the brief reads today's run through
    `GET /brief/today`. It is a component of its own, not a kind of the MD-7
    feed. BR-2c-2 built it (`BriefCard.tsx`, flag `NEXT_PUBLIC_BRIEF_CARD`). This spec owns its data.
-2. **The chat's first turn.** BUILT in BR-2c-1. With `BRIEF_IN_APP` on,
+2. **The chat's first turn.** BUILT in BR-2c-1. It draws the lines as
+   pills, and no count of the `numbers` section (§4.3). With `BRIEF_IN_APP` on,
    `POST /chat/sessions/{id}/brief` reads the stored run through the read
    of item 3. When the run is `ready` or `delivered`, the chat reads no
    feed. Its stamp and its row id are the run's `local_date`, so one run
@@ -749,6 +770,7 @@ Each item is a "done when". Each fence runs red first, then green.
 | 12 | An interrupt writes a `reach_signal_log` row with the `rule_id`. A rating of `useful` or `not_useful` stores `feedback` and `feedback_at` on that row only. A second rating replaces the first. A rating by member A never changes a row of member B or of another tenant. A rating mutes no rule | `test_reach_exceptions_feedback_r8.py` (a real database, two tenants). **BUILT 2026-11-06**, migration 350 |
 | 13 | With the `notify_me` source of Q8 on, a `block_soon` card carries `notify_me` and rule 3 fires. With it off, rule 3 matches nothing | `test_reach_exceptions.py`. **BUILT 2026-11-06** (Q8 "One setting", `block_notify`). `test_my_day_prefs_r8.py` runs the read on a real database |
 | 14 | The Settings screen lists the four rules in words. A switch mutes or unmutes one rule, and the route of slice 2a stores it | `test_reach_rule_mutes_route.py`, and the D145 preview |
+| 4c | **BUILT 2026-11-27 (BR-4c).** A run with 3 waiting threads writes one claim with `value` 3, `source_kind` `count` and 3 source ids, in the org of the run. A count with no usable card is skipped. `GET /brief/today` returns the count to the member of the run and to no other member. With the flags off, no run exists | `test_brief_numbers.py`, `test_brief_numbers_r8.py` |
 | 15 | **BUILT.** BR-7b-1 done when: a fake day with 3 sent rows and 2 allow-listed audit acts gives 5 acted claims, each with source, policy and href. An act of org B never appears for org A. An audit row that is not an act never appears. R8 uses the `promoted` fixture | `test_audit_acts_read_r8.py`, `test_brief_acted_r8.py` (a real database, two tenants) |
 | 16 | **BUILT.** BR-7b-2 done when: a fake day with 3 sent rows and 2 allow-listed audit acts gives a close-out with 5 acted claims, each with source, policy and href. An act of org B never appears for org A. An audit row that is not an act never appears. A day with no act gives `empty` for the section | `test_brief_acted.py`, `test_brief_acted_r8.py` |
 
