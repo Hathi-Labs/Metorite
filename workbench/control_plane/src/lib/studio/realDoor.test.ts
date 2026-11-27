@@ -36,7 +36,9 @@ import {
   AGGREGATE_KEYS, TREE_KEYS, TREE_LEVEL, TREE_PARENT, treeBody, flattenTree, aggregateBody, APPROVAL_SENTENCE, WAITING_SENTENCE, DoorReadError, STUDIO_OFF, createRealDoor, flattenRecords, getPackage, isReadSource,
   listOrgPackages, listPackages, mapAnswer, ownMessage, createDoorKeeper, verbMap,
   NOT_OPEN_SENTENCE, READ_ONLY_SENTENCE, packageAccess, readActions,
+  GONE_SENTENCE, NOT_DECLARED_SENTENCE, SIGN_IN_SENTENCE, UNPUBLISHED_SENTENCE, busySentence,
 } from "./realDoor";
+import { ACTION_FAILED } from "./TypedActionButton";
 import { canRetryRead, rowsMeta } from "./dataDoor";
 import { readRefusal } from "./formModel";
 
@@ -388,6 +390,19 @@ describe("fix round 1: the body marker, the generic 500, the rule words, the kep
     expect(canRetryRead(mapAnswer(403, { detail: { code: "not_declared" } }).message)).toBe(false);
     expect(canRetryRead(mapAnswer(401, {}).message)).toBe(false);
     expect(canRetryRead(null)).toBe(true);
+  });
+  it("retries a request that did not arrive, in the words of each browser", () => {
+    for (const s of ["Failed to fetch", "Load failed", "NetworkError when attempting to fetch resource.",
+      "The network connection was lost.", "The request timed out.", busySentence(null), ACTION_FAILED]) {
+      expect(canRetryRead(s), s).toBe(true);
+    }
+  });
+  it("offers no Retry on a refusal that would fail the same way", () => {
+    for (const s of [GONE_SENTENCE, NOT_DECLARED_SENTENCE, NOT_OPEN_SENTENCE, SIGN_IN_SENTENCE,
+      UNPUBLISHED_SENTENCE, "The filter field is not known.", "Refused by max_len.",
+      "Rule `r`: The upload failed to fetch a price."]) {
+      expect(canRetryRead(s), s).toBe(false);
+    }
   });
 });
 

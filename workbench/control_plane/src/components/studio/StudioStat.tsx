@@ -52,9 +52,10 @@ export function StudioStat({ data, rows }: { data: unknown; rows: Row[] }) {
         {iconName ? <Icon name={iconName} size={14} className="shrink-0" aria-hidden /> : null}
         <span className="truncate" data-stat-heading="">{heading || tile.label}</span>
       </div>
-      <div className="mt-1 flex items-end justify-between gap-3">
-        <div className="min-w-0">
-          <div data-stat-value="" className="truncate font-semibold tabular-nums text-foreground" style={{ fontSize: TYPE["2xl"] }}>
+      {/* The value always shows in full. In a narrow tile the small line goes under it (STU-LY-7). */}
+      <div className="mt-1 flex flex-wrap items-end justify-between gap-x-3 gap-y-2">
+        <div className="min-w-0 max-w-full">
+          <div data-stat-value="" className="font-semibold [overflow-wrap:anywhere] tabular-nums text-foreground" style={{ fontSize: TYPE["2xl"] }}>
             {tile.value}
           </div>
           {t ? (
@@ -69,7 +70,7 @@ export function StudioStat({ data, rows }: { data: unknown; rows: Row[] }) {
           )}
         </div>
         {tile.spark.length > 1 && (
-          <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} aria-hidden className="shrink-0 text-primary">
+          <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} aria-hidden className="max-w-full shrink-0 text-primary">
             <polyline points={sparkPoints(tile.spark)} fill="none" stroke="currentColor" strokeWidth="2"
               strokeLinecap="round" strokeLinejoin="round" />
           </svg>

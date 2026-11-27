@@ -84,9 +84,11 @@ describe("LayoutBody", () => {
 
 describe("the dashboard", () => {
   const html = draw("dashboard", { kpis: ["k1", "k2"], charts: ["c1"], worklist: ["w1"] });
-  it("draws the stats first in a 2-column grid that gets 4 columns from a tablet", () => {
+  it("draws the stats first in a 2-column grid that gets 4 columns in a wide page only", () => {
     expect(html.indexOf("data-dashboard-kpis")).toBeLessThan(html.indexOf("data-dashboard-charts"));
-    expect(html).toMatch(/data-dashboard-kpis[^>]*grid-cols-2[^>]*sm:grid-cols-4/);
+    expect(html).toMatch(/data-layout="dashboard"[^>]*@container/);
+    expect(html).toMatch(/data-dashboard-kpis[^>]*grid-cols-2[^>]*@3xl:grid-cols-4/);
+    expect(html).not.toMatch(/(?:sm|md):grid-cols-4/);
   });
   it("draws each tile in its own labelled section, charts in one column on a phone, then the worklist", () => {
     for (const id of ["k1", "k2", "c1", "w1"]) expect(html).toContain(`aria-label="Title ${id}"`);
@@ -117,12 +119,16 @@ describe("the frame", () => {
     expect(frame).toMatch(/function LayoutList[\s\S]*<StudioBlockState/);
   });
   it("passes retryable to the shared state and draws no list bar over a dashboard", () => {
-    expect(frame).toContain("retryable={retryableRead(rows.error)}");
+    expect(frame).toContain("retryable={canRetryRead(rows.error)}");
     expect(frame).toContain('if (built.page.layout === "dashboard") return null;');
   });
   it("gives each stat and chart tile of a dashboard its own state", () => {
     expect(frame).toContain('preset === "dashboard"');
     expect(frame).toContain('view?.block === "stat" || view?.block === "chart"');
     expect(frame).toMatch(/<LayoutList[^>]*tile shape="tile"/);
+  });
+  it("gives the worklist of a dashboard the same shared states and Retry", () => {
+    expect(frame).toContain('preset === "dashboard" && src && built.page.regions.worklist?.includes(id)');
+    expect(frame).toMatch(/<LayoutList[^>]*tile shape="rows"/);
   });
 });

@@ -31,7 +31,7 @@ describe("StudioBlockState", () => {
     expect(html.match(/animate-pulse/g)).toHaveLength(1);
   });
   it("tells a screen reader what loads, in every shape", () => {
-    for (const shape of ["rows", "board", "stats"] as const) {
+    for (const shape of ["rows", "board", "stats", "tile"] as const) {
       const html = draw({ loading: true, shape });
       expect(html, shape).toContain('aria-label="Loading visits"');
       expect(html, shape).toContain('aria-busy="true"');

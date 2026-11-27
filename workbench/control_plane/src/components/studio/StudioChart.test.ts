@@ -87,6 +87,12 @@ describe("StudioStat", () => {
     expect(bad).toContain("−33.3%");
   });
 
+  it("never cuts the value, and lets the small line go under it in a narrow tile (STU-LY-7)", () => {
+    const html = renderToStaticMarkup(createElement(StudioStat, { data: {}, rows: [AGG] }));
+    expect(html).toMatch(/data-stat-value="" class="(?![^"]*truncate)[^"]*overflow-wrap:anywhere/);
+    expect(html).toMatch(/class="mt-1 flex flex-wrap /);
+  });
+
   it("says there is no trend without a date group, and No data without a result", () => {
     const flat: Row = { ...AGG, groups: [g("open", 25, 25)] };
     expect(renderToStaticMarkup(createElement(StudioStat, { data: {}, rows: [flat] }))).toContain('data-stat-trend="none"');

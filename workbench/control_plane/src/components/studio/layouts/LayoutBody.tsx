@@ -10,7 +10,7 @@
  * fence of `StudioBlockState.test.ts` refuses a local copy in this folder.
  *
  * Built: `table_workspace` (LY-2) and `board` (LY-4), which draw the one view of their `main` region, and
- * `dashboard` (LY-7): the `kpis` in a grid (2 columns on a phone, 4 from a tablet), the `charts` in a grid
+ * `dashboard` (LY-7): the `kpis` in a grid (2 columns on a phone and a tablet, 4 in a wide page), the `charts` in a grid
  * (one column on a phone, 2 on a wide screen) and the `worklist` table. The other presets name a block or a
  * bar that a later slice builds, and each one says so in a plain sentence until then.
  */
@@ -75,8 +75,9 @@ function Dashboard({ regions, renderView, titleOf }: Pick<LayoutBodyProps, "regi
     return <p className="text-sm text-muted-foreground">This page has no stat to show.</p>;
   }
   return (
-    <div data-layout="dashboard" className="flex min-w-0 flex-col gap-3 sm:gap-4">
-      <div data-dashboard-kpis className="grid grid-cols-2 gap-3 sm:grid-cols-4 sm:gap-4">{kpis}</div>
+    <div data-layout="dashboard" className="@container flex min-w-0 flex-col gap-3 sm:gap-4">
+      {/* The width of the page decides, not of the window: the shell rail and the app rail take room (DESIGN_SYSTEM §6). */}
+      <div data-dashboard-kpis className="grid grid-cols-2 gap-3 sm:gap-4 @3xl:grid-cols-4">{kpis}</div>
       {charts.length > 0 ? <div data-dashboard-charts className="grid grid-cols-1 gap-3 sm:gap-4 lg:grid-cols-2">{charts}</div> : null}
       {work.length > 0 ? <div data-dashboard-worklist>{work}</div> : null}
     </div>

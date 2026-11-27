@@ -41,7 +41,13 @@ export default function StudioBlockState(props: StudioBlockStateProps) {
     const label = blockLoadingLabel(props.noun);
     if (shape === "board") return <SkeletonBoard columns={3} label={label} />;
     // One tile of a dashboard (STU-LY-7): the block is a single card, so the skeleton is one card.
-    if (shape === "tile") return <Skeleton className="h-24 w-full" />;
+    if (shape === "tile") {
+      return (
+        <div role="status" aria-busy="true" aria-label={label}>
+          <Skeleton className="h-24 w-full" />
+        </div>
+      );
+    }
     if (shape === "stats") {
       return (
         <div className="grid grid-cols-2 gap-3 p-3 sm:grid-cols-4" role="status" aria-busy="true" aria-label={label}>

@@ -38,7 +38,7 @@ import Button from "@/components/ui/Button";
 import { useViewMode } from "@/components/ViewModeProvider";
 import SelectButton from "@/components/ui/SelectButton";
 import { StudioDataContext } from "@/lib/studio/dataContext";
-import { type Row, type StudioDataDoor, moreLine, sourceKey } from "@/lib/studio/dataDoor";
+import { type Row, type StudioDataDoor, canRetryRead, moreLine, sourceKey } from "@/lib/studio/dataDoor";
 import { floorPages, floorSubtitle, floorView, isFloor, recordFull } from "@/lib/studio/floorView";
 import { buildHref } from "@/lib/studio/packageDraft";
 import {
@@ -51,7 +51,6 @@ import { buildPage, viewObjectName } from "@/lib/studio/pageModel";
 import { pluralOf } from "@/lib/studio/blockState";
 import { hideNode, parseHidden, showAll, toggleHidden } from "@/lib/studio/columnModel";
 import ColumnsMenu from "@/components/studio/layouts/ColumnsMenu";
-import { retryableRead } from "@/lib/studio/readError";
 import { type PreviewControls, boardGroupKeys, fieldSpecs, recordTitle } from "@/lib/studio/packagePreview";
 import { countSourceFor, pageObject, sourceWithMe } from "@/lib/studio/railCounts";
 import { hasRail, railFor, visibleRail } from "@/lib/studio/railModel";
@@ -115,7 +114,7 @@ function FilteredList({ source, door, active, onClear, children }: {
 }
 
 /**
- * The table or the board of a page with a preset (STU-LY-2, STU-LY-4), or one tile of a dashboard (STU-LY-7). It draws the shared states of `StudioBlockState`
+ * The table or the board of a page with a preset (STU-LY-2, STU-LY-4), or one tile or the worklist of a dashboard (STU-LY-7). It draws the shared states of `StudioBlockState`
  * (loading, error, empty and filtered-empty) and a count line, and the table itself when rows exist.
  * It reads the same cached key as the block's own read, so this adds no second read.
  */
@@ -128,11 +127,11 @@ function LayoutList({ source, door, active, noun, shape = "rows", tile = false, 
   const failed = Boolean(rows.error) && rows.data === undefined;
   const state = (
     <StudioBlockState loading={rows.data === undefined && !rows.error} error={failed ? "read failed" : null}
-      forbidden={false} retryable={retryableRead(rows.error)} rows={n} filtersActive={active > 0} noun={noun} shape={shape}
+      forbidden={false} retryable={canRetryRead(rows.error)} rows={n} filtersActive={active > 0} noun={noun} shape={shape}
       onClearFilters={onClear} onRetry={rows.refresh} />
   );
   if (rows.data === undefined || n === 0) return <div className={PANEL}>{state}</div>;
-  // A tile of a dashboard has no count line: the tile says its own number.
+  // A block of a dashboard has no count line: a tile says its own number.
   if (tile) return <>{children}</>;
   return (
     <div className="space-y-2">
@@ -247,6 +246,13 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
           return (
             <LayoutList source={src} door={door} active={0} tile shape="tile"
               noun={(view.title || view.id).toLowerCase()} onClear={() => update(clearedBar)}>{node}</LayoutList>
+          );
+        }
+        // The worklist of a dashboard has the same states and the same Retry as a tile.
+        if (preset === "dashboard" && src && built.page.regions.worklist?.includes(id)) {
+          return (
+            <LayoutList source={src} door={door} active={0} tile shape="rows"
+              noun={(view!.title || view!.id).toLowerCase()} onClear={() => update(clearedBar)}>{node}</LayoutList>
           );
         }
         if (!bar || id !== bar.lens.view || !src) return node;
