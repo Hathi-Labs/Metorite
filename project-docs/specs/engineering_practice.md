@@ -1494,8 +1494,10 @@ holds, so it needs no migration and no backfill.
   the same URL never moves the owner.
 - The GitHub App inserts references too. The webhook calls
   `link_pull_request` (`gateway/routes/projects/github_autolink.py`) for a PR
-  on an `mt-` branch, at each event of `AUTOLINK_ACTIONS` (`webhook.py`):
-  opened, reopened, edited, synchronize and ready_for_review. That calls
+  on an `mt-` branch, and for each task URL in the PR body
+  (`github_autolink.candidates()`). It does so at each event of
+  `AUTOLINK_ACTIONS` (`webhook.py`): opened, reopened, edited, synchronize
+  and ready_for_review. That calls
   `insert_ref` with `via = 'github'`. The first link sets `created_at`, and
   that is most often the time the PR opened. A lane opens its PR inside its
   run, so the owner is that run, and the lane's later add changes nothing.
@@ -1504,7 +1506,8 @@ holds, so it needs no migration and no backfill.
 - A release and a finish set `ended_at`. A run that waits or is in progress
   has `ended_at` NULL.
 
-**Who is bound, case by case.** Each case is one R8 test.
+**Who is bound, case by case.** Cases 1 to 4 and case 6 are R8 tests. Case
+5 needs no test of its own: it is the same rule on old rows.
 1. **A merger after a hand-over.** L opens PR N in run A (the webhook or L
    adds the reference) and releases. The merger claims (run B) and releases.
    The owner is A, so PR N counts for L and never for the merger.
@@ -1616,7 +1619,9 @@ verifier, an Opus diff-review and R8 tests on a real database.
 
 ### 7b.10 LBB-2c: the claim gate before `CLAIM_GATE_ORGS` (task 4064)
 
-**Status.** Spec, 2026-11-27. Four items that must be on main before anyone
+**Status.** LBB-2c built, 2026-11-27 (task 4064). The branch
+`lbb2c-assignees-label-mt-fb54c570` holds it, and it waits for the verifier
+and the merge. Four items that must be on main before anyone
 sets `CLAIM_GATE_ORGS` (the flip list of §7b.2). The §7b header names what is
 built. PR 2921 brings it up to date. None needs an owner
 decision: each keeps the three doors that the owner approved. Tier HIGH: the
