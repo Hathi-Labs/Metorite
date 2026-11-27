@@ -1494,8 +1494,9 @@ In `auto`:
      file under `infra/postgres/` or `infra/customer_console/`. The lists
      `pr.txt` and `main.txt` give it.
    - **R, an R8 suite.** The picker's list (`sel.txt`) holds a file that
-     `affected_tests.py --r8` lists. `--r8` runs only when M is false, with a
-     cap of 60 seconds inside the budget.
+     `affected_tests.py --r8` lists. In `auto`, `--r8` runs for every merge
+     that is behind main, with a cap of 60 seconds inside the budget. So the
+     database rule below applies whenever R is true, also when M is true.
 
    Both sides FULL is not a trigger of its own: step 4 runs for it only when
    M or R is true.
@@ -1516,6 +1517,8 @@ DONE line. For a merger that runs `--no-tests` today, that is never looser.
   here, and `auto` is stricter.
 - `affected_tests.py --r8` fails, prints no file, or hits its cap: FAIL. The
   text names the command.
+- M and R are both true, and a database variable is unset: FAIL, by the
+  database rule below. A migration on main often puts R8 suites in the list.
 - Step 4 or the type check hits its cap: UNPROVEN, exit 0, as the default.
 - `PREMERGE_AFFECTED_CMD` is set (a test override): `auto` runs that command,
   as the default mode does. R counts as true.
@@ -1564,7 +1567,8 @@ commands. Two harness traps:
    exit is 0.
 6. `auto` with front-end files on both sides: the type check runs.
 7. `auto` with a picker that times out, and with no picker: FAIL.
-8. `auto` with `--r8` that fails: FAIL.
+8. `auto` with `--r8` that fails, that prints no file, and that hits its
+   cap: FAIL, in three cases.
 9. `auto` with a head that holds main: the early exit, as today.
 10. `auto` when both sides are FULL and the PR adds a migration: step 4 runs
     the changed tests, as the default mode does.
