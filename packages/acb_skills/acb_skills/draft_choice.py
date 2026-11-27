@@ -134,10 +134,27 @@ def _recipients(draft: Mapping[str, Any]) -> str:
     return ", ".join(people[:3]) + more
 
 
+def _subject(message: Mapping[str, Any]) -> str:
+    return " ".join(str(message.get("subject") or "").split()) or "(no subject)"
+
+
+def draft_parts(draft: Mapping[str, Any]) -> tuple[str, str]:
+    """``(who, subject)`` of one draft: "To people" and the subject. A card
+    cuts each part by itself, so a ": " in a part never moves the cut."""
+    return f"To {_recipients(draft)}", _subject(draft)
+
+
+def message_parts(message: Mapping[str, Any]) -> tuple[str, str]:
+    """``(who, subject)`` of a named message that is no draft: "From sender"
+    and the subject. A sender name can hold ": ", so the parts stay apart."""
+    sender = " ".join(str(message.get("from") or message.get("from_email") or "").split())
+    return f"From {sender or '(unknown sender)'}", _subject(message)
+
+
 def describe(draft: Mapping[str, Any]) -> tuple[str, str]:
     """``(label, facts)`` of one draft: who and what, then when and how."""
-    subject = " ".join(str(draft.get("subject") or "").split()) or "(no subject)"
-    label = f"To {_recipients(draft)}: {subject}"
+    who, subject = draft_parts(draft)
+    label = f"{who}: {subject}"
     when = str(draft.get("received_at") or "")[:16].replace("T", " ")
     text = " ".join(str(draft.get("snippet") or draft.get("body_text") or "").split())
     facts = [f"saved {when}" if when else "", "has files" if draft.get("has_attachments") else "",
@@ -209,9 +226,8 @@ LOST = "lost"                    # the answer did not come back
 
 def message_label(message: Mapping[str, Any]) -> str:
     """"From sender: subject" of a named message that is no draft."""
-    sender = " ".join(str(message.get("from") or message.get("from_email") or "").split())
-    subject = " ".join(str(message.get("subject") or "").split()) or "(no subject)"
-    return f"From {sender or '(unknown sender)'}: {subject}"
+    who, subject = message_parts(message)
+    return f"{who}: {subject}"
 
 
 def unique(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:

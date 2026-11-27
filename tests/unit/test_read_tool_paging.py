@@ -246,8 +246,6 @@ ALLOWED: dict[str, str] = {
     'packages/acb_skills/acb_skills/web_tools.py::_jina_read::body[:MAX_MARKDOWN_BYTES]':
         "Bytes of one web page, not rows: four bytes for each character of MAX_CHARS, so "
         "the text still fills the ceiling, and frame_page marks the cut (WEB-1 repair 2).",
-    'apps/agents/agent-email-assistant/agents.py::_inbox_card_parts::rows[:_CARD_MESSAGE_LINES]':
-        "A confirm card's message lines (#1019). It ends with '+N more', and the act takes every message.",
     'apps/agents/agent-email-assistant/agents.py::_card_name::\' \'.join(\'\'.join((ch for ch in text if ch not in \'"\\\'`()[]{}\')).split())[:80]':
         'Text: one string with its whitespace collapsed, then cut. A join of words, not of rows.',
     "apps/agents/agent-email-assistant/agents.py::_card_text::' '.join(kept.split())[:limit]":
