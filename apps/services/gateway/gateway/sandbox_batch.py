@@ -49,12 +49,13 @@ from urllib.parse import unquote, urlencode
 import httpx
 from acb_auth import UserContext, agent_oauth, sandbox_capabilities
 from acb_auth.agent_oauth import ACTOR_VIA_PATTERN
-from acb_auth.deps import get_current_user
+from acb_auth.deps import get_current_user, require_internal_auth
 from acb_common import app_manifests, get_logger, get_settings, tenant_redis
 from acb_common.card_body import CardBody, CardWontFit, card_body
 from acb_common.tool_refusals import data
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel, ConfigDict, Field
 
 from gateway.db import current_tenant, tenant_session
 
@@ -91,6 +92,12 @@ POLL_S = 0.5
 HELD_NAMESPACE = "sandbox_held"
 RUN_NAMESPACE = "sandbox_held_run"
 DECISION_NAMESPACE = "sandbox_held_decision"
+#: The results of the rows of one card, for the watcher (SBX-3b decision 8).
+RESULT_NAMESPACE = "sandbox_held_result"
+
+#: A result lives this many seconds past the deadline of its batch, so the
+#: watcher can read it for 30 seconds after the deadline (decision 8).
+RESULT_GRACE_S = 90
 
 #: The values of a decision.
 APPROVED = "approved"
@@ -705,6 +712,7 @@ async def _hold_and_run(request: Request,
         entries[row.index] = await _run_row(request.app, capability, raw_capability, row,
                                             stamp, held_id, end)
 
+    await _write_results(org, cards, entries, record)
     ran_rows = {row.index for row in approved}
     for card in cards:
         ran: dict[int, int] = {}
@@ -716,6 +724,35 @@ async def _hold_and_run(request: Request,
                    held_id=held_id, rows=card.rows, ran=ran)
     return JSONResponse(status_code=200,
                         content={"rows": [entries[row.index] for row in rows]})
+
+
+async def _write_results(org: str, cards: list[_Card], entries: Mapping[int, Mapping[str, Any]],
+                         record: Mapping[str, Any]) -> None:
+    """Write the result of each row of each card, for the watcher (decision 8).
+
+    One key for each card, under :data:`RESULT_NAMESPACE`, with the ``owner``
+    and the ``run`` of the held record. A result holds the row id, the status
+    and the door code of each row, and no body. The TTL is the deadline of
+    the batch plus :data:`RESULT_GRACE_S`. A fault loses the results only: the
+    answer of the batch does not change."""
+    ttl = max(1, int(float(record.get("deadline") or 0) - time.time()) + RESULT_GRACE_S)
+    try:
+        client = tenant_redis.get_tenant_redis()
+        with tenant_redis.organization_scope(org):
+            for card in cards:
+                rows = []
+                for row in card.rows:
+                    entry = entries[row.index]
+                    one: dict[str, Any] = {"id": row.row_id, "i": row.index,
+                                           "status": int(entry["status"])}
+                    if isinstance(entry.get("code"), str):
+                        one["code"] = entry["code"]
+                    rows.append(one)
+                value = {"owner": record.get("owner"), "run": record.get("run"), "rows": rows}
+                await client.set(_key(RESULT_NAMESPACE, card.card_id), json.dumps(value),
+                                 ex=ttl)
+    except Exception as exc:  # the class only: a value never reaches a log
+        _log.warning("sandbox.held_result_write_failed", error=type(exc).__name__)
 
 
 # ── The text of a card (SBX-3b, decision 7) ────────────────────────────────
@@ -932,6 +969,244 @@ def card_text(record: Mapping[str, Any]) -> dict[str, Any]:
     return {"title": title, "detail": detail, "context": context, "rows": card_rows}
 
 
+# ── The three held routes (SBX-3b, decisions 7 and 8) ──────────────────────
+#
+# Internal routes: each needs the internal bearer (``require_internal_auth``)
+# and the member (``get_current_user``), as the skills call the gateway. The
+# door never reaches them, because they are not in ``SANDBOX_ROUTES``. Each
+# answers 404 for an org that is not in ``SANDBOX_DOOR_ORGS``. The org and
+# the member come from the session (R5), never from the body.
+
+#: The shape of a run id in a body.
+_RUN_ID = r"^[A-Za-z0-9._:-]{1,200}$"
+#: The longest answer of a held card: ``ask_tools.MAX_ROWS_ANSWER`` with room.
+_ANSWER_MAX = 8000
+#: How long the act waits for the record of the answer, which respond-input
+#: writes just after the run takes the answer (as ``held_card.ANSWER_WAIT_S``).
+ANSWER_WAIT_S = 3.0
+
+
+class HeldCardAsk(BaseModel):
+    """The ask for the next open card of a run, or for its results."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str = Field(pattern=_RUN_ID)
+
+
+class HeldActRequest(BaseModel):
+    """The member's answer to one held card, as the watcher hands it on.
+
+    ``answer`` is the exact text that the member's browser posted, for an
+    approval. ``refused`` is True for a refusal, a timeout or no answer, and
+    a refusal takes no answer text."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    card_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    card_thread_id: str = Field(min_length=1, max_length=200)
+    answer: str = Field(default="", max_length=_ANSWER_MAX)
+    refused: bool = False
+
+
+def _held_gate(user: UserContext) -> tuple[str, str]:
+    """The org and the member of a held route, or 404.
+
+    A sandbox call, a call with no member and an org that is not in the door
+    flag each get 404. The flag check is the check of the door (``deps.py``
+    step 4)."""
+    if user.sandbox is not None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    org = str(user.organization_id or "").strip()
+    member = str(user.email or "").strip().lower()
+    if not org or not member:
+        raise HTTPException(status_code=404, detail="Not Found")
+    orgs = sandbox_capabilities.door_orgs()
+    if "*" not in orgs and org.lower() not in orgs:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return org, member
+
+
+def _text(raw: object) -> str:
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace")
+    return raw if isinstance(raw, str) else ""
+
+
+def _record_of(raw: object) -> dict[str, Any] | None:
+    try:
+        value = json.loads(_text(raw))
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+async def _open_cards(org: str, member: str, run_id: str) -> list[tuple[str, dict[str, Any]]]:
+    """The open cards of a run of the member, in the order of the run list.
+
+    A card is open when its held record exists, it has no decision key, its
+    ``owner`` is the member and its ``run`` is the run. Reads only."""
+    client = tenant_redis.get_tenant_redis()
+    out: list[tuple[str, dict[str, Any]]] = []
+    seen: set[str] = set()
+    with tenant_redis.organization_scope(org):
+        ids = await client.lrange(_key(RUN_NAMESPACE, run_id), 0, -1)
+        for raw_id in ids or []:
+            card_id = _text(raw_id)
+            if not re.fullmatch(r"[0-9a-f]{32}", card_id) or card_id in seen:
+                continue
+            seen.add(card_id)
+            record = _record_of(await client.get(_key(HELD_NAMESPACE, card_id)))
+            if record is None:
+                continue
+            if record.get("owner") != member or record.get("run") != run_id:
+                continue
+            if await client.get(_key(DECISION_NAMESPACE, card_id)) is not None:
+                continue
+            out.append((card_id, record))
+    return out
+
+
+@router.post("/sandbox/held/card", dependencies=[Depends(require_internal_auth)])
+async def sandbox_held_card(
+    req: HeldCardAsk, user: UserContext = Depends(get_current_user),
+) -> Any:
+    """The next open card of a run of the member, or 204 for none.
+
+    The answer holds ``card_id``, ``title``, ``detail``, ``context``,
+    ``rows`` and ``seconds_left``, the time to the deadline of the batch. It
+    reads only the held record and the decision key, and it writes nothing.
+    A record that cannot make a card shows no card, and its batch times out
+    with nothing run."""
+    org, member = _held_gate(user)
+    try:
+        cards = await _open_cards(org, member, req.run_id)
+    except Exception as exc:
+        _log.warning("sandbox.held_card_read_failed", error=type(exc).__name__)
+        raise HTTPException(status_code=503, detail="The card could not be read.",
+                            headers={"Retry-After": "1"}) from None
+    for card_id, record in cards:
+        seconds_left = int(float(record.get("deadline") or 0) - time.time())
+        if seconds_left <= 0:
+            continue
+        try:
+            text = card_text(record)
+        except (ValueError, CardWontFit) as exc:
+            _log.warning("sandbox.held_card_not_drawn", card=card_id[:12],
+                         error=type(exc).__name__)
+            continue
+        return {"card_id": card_id, **text, "context": str(text["context"]),
+                "seconds_left": seconds_left}
+    return Response(status_code=204)
+
+
+def _audit_act(card_id: str, record: Mapping[str, Any], decision: str,
+               ticked: frozenset[str]) -> None:
+    """The one audit line of an act: the card, its class and the counts. No
+    body, no path, no answer text and no token reach the log."""
+    rows = [r for r in record.get("rows") or [] if isinstance(r, dict)]
+    count = sum(1 for r in rows if r.get("id") in ticked)
+    _log.info("sandbox.held_card_acted", card=card_id[:12], cls=str(record.get("class")),
+              decision=decision, ticked=count, left_out=len(rows) - count)
+
+
+@router.post("/sandbox/held/act", dependencies=[Depends(require_internal_auth)])
+async def sandbox_held_act(
+    req: HeldActRequest, user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Decide one held card with the member's answer (decision 7).
+
+    1. Read the held record (``GET``). A missing record, another ``owner``
+       or another ``thread`` decides nothing (409). This holds for an
+       approval and for a refusal.
+    2. An approval takes the answer once (``reply_card.take_reply_answer``).
+    3. It checks the ticked ids against the RECORDED ids
+       (``ask_tools.ticked_rows``). A forged id decides nothing (409).
+    4. :func:`decide`. A card that has a decision takes no second one (409).
+
+    It returns at once, and does not wait for the rows to run."""
+    from acb_skills.ask_tools import ticked_rows
+    from acb_skills.reply_card import take_reply_answer
+
+    org, member = _held_gate(user)
+    try:
+        client = tenant_redis.get_tenant_redis()
+        with tenant_redis.organization_scope(org):
+            record = _record_of(await client.get(_key(HELD_NAMESPACE, req.card_id)))
+    except Exception as exc:
+        _log.warning("sandbox.held_act_read_failed", error=type(exc).__name__)
+        raise HTTPException(status_code=503, detail="The card could not be read.",
+                            headers={"Retry-After": "1"}) from None
+    if (record is None or record.get("owner") != member
+            or record.get("thread") != req.card_thread_id):
+        _log.warning("sandbox.held_act_refused", reason="no_card")
+        raise HTTPException(status_code=409,
+                            detail="This card is not open for you, so nothing ran.")
+    if req.refused:
+        if not await decide(req.card_id, None):
+            raise HTTPException(status_code=409,
+                                detail="This card has a decision already, so nothing ran.")
+        _audit_act(req.card_id, record, REFUSED, frozenset())
+        return {"decided": REFUSED}
+    if not await take_reply_answer(org, req.card_id, member, req.answer, req.card_thread_id,
+                                   wait_s=ANSWER_WAIT_S):
+        _log.warning("sandbox.held_act_refused", reason="no_record")
+        raise HTTPException(status_code=409,
+                            detail="This answer was not given on its card, so nothing ran.")
+    rows = [r for r in record.get("rows") or [] if isinstance(r, dict)]
+    ticked = ticked_rows(req.answer, frozenset(str(r.get("id")) for r in rows))
+    if ticked is None:
+        _log.warning("sandbox.held_act_refused", reason="bad_ids")
+        raise HTTPException(status_code=409,
+                            detail="The answer names a row that the card did not offer, "
+                                   "so nothing ran.")
+    if not await decide(req.card_id, ticked):
+        raise HTTPException(status_code=409,
+                            detail="This card has a decision already, so nothing ran.")
+    _audit_act(req.card_id, record, APPROVED, ticked)
+    return {"decided": APPROVED, "ticked": sorted(ticked)}
+
+
+@router.post("/sandbox/held/results", dependencies=[Depends(require_internal_auth)])
+async def sandbox_held_results(
+    req: HeldCardAsk, user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """The results of each card of a run of the member, each one once.
+
+    A result goes back only when its ``owner`` is the member and its
+    ``run`` is the run. It is read first, and spent with ``GETDEL`` only
+    after that check, so a call of another member spends nothing."""
+    org, member = _held_gate(user)
+    out: list[dict[str, Any]] = []
+    try:
+        client = tenant_redis.get_tenant_redis()
+        with tenant_redis.organization_scope(org):
+            ids = await client.lrange(_key(RUN_NAMESPACE, req.run_id), 0, -1)
+            seen: set[str] = set()
+            for raw_id in ids or []:
+                card_id = _text(raw_id)
+                if not re.fullmatch(r"[0-9a-f]{32}", card_id) or card_id in seen:
+                    continue
+                seen.add(card_id)
+                key = _key(RESULT_NAMESPACE, card_id)
+                found = _record_of(await client.get(key))
+                if (found is None or found.get("owner") != member
+                        or found.get("run") != req.run_id):
+                    continue
+                taken = _record_of(await client.getdel(key))
+                if (taken is None or taken.get("owner") != member
+                        or taken.get("run") != req.run_id):
+                    continue
+                rows = [{k: r[k] for k in ("id", "status", "code") if k in r}
+                        for r in taken.get("rows") or [] if isinstance(r, dict)]
+                out.append({"card_id": card_id, "rows": rows})
+    except Exception as exc:
+        _log.warning("sandbox.held_results_failed", error=type(exc).__name__)
+        raise HTTPException(status_code=503, detail="The results could not be read.",
+                            headers={"Retry-After": "1"}) from None
+    return {"results": out}
+
+
 __all__ = [
     "APPROVED",
     "CARD_WARNING",
@@ -941,6 +1216,7 @@ __all__ = [
     "EXPIRED",
     "HELD_NAMESPACE",
     "REFUSED",
+    "RESULT_NAMESPACE",
     "RUN_NAMESPACE",
     "batch_wait_s",
     "card_text",

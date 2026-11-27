@@ -812,6 +812,98 @@ async def publish_card_undo(kind: str, row_id: str, version: str | None) -> bool
     return True
 
 
+#: The event that gives the receipt of a held sandbox card the result of each
+#: row (SBX-3b, ``agent_sandbox.md`` §12.5 decision 8). The value names the
+#: card's ``request_id`` and, for each row, its id, its HTTP status and its
+#: door code. It carries no body. ``src/lib/confirmationQueue.ts`` holds the
+#: same name (``CONFIRMATION_ROW_RESULTS``). Fence:
+#: ``tests/unit/test_confirmation_rows.py::test_row_results_carry_no_body``.
+CONFIRMATION_ROW_RESULTS = "confirmation_row_results"
+#: The id of a row of a held sandbox card (``gateway/sandbox_batch.py``).
+_RESULT_ROW_ID = _re.compile(r"row-[0-9]{1,2}")
+#: A door code of a row result.
+_RESULT_CODE = _re.compile(r"sandbox_[a-z_]{1,48}")
+
+
+def row_results_value(request_id: str, rows: Any) -> dict[str, Any] | None:
+    """The value of a :data:`CONFIRMATION_ROW_RESULTS` event, or None.
+
+    *request_id* is the card id (32 lower-case hex digits). *rows* is a list
+    of ``{id, status, code?}``. Only those three keys go on, so no body, no
+    path and no text of a route reach the stream. A bad value gives None."""
+    rid = str(request_id or "")
+    if not _re.fullmatch(r"[0-9a-f]{32}", rid):
+        return None
+    if not isinstance(rows, list) or not rows or len(rows) > MAX_CARD_ROWS:
+        return None
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            return None
+        row_id, status, code = row.get("id"), row.get("status"), row.get("code")
+        if not isinstance(row_id, str) or not _RESULT_ROW_ID.fullmatch(row_id):
+            return None
+        if isinstance(status, bool) or not isinstance(status, int) or not 100 <= status <= 599:
+            return None
+        entry: dict[str, Any] = {"id": row_id, "status": status}
+        if isinstance(code, str) and _RESULT_CODE.fullmatch(code):
+            entry["code"] = code
+        out.append(entry)
+    return {"request_id": rid, "rows": out}
+
+
+async def _live_publisher() -> Any:
+    """The publisher of the chat stream of this run, or None.
+
+    The same two channels as :func:`request_confirmation`: the queue of a
+    native run, or the relay of the run's thread."""
+    try:
+        from orchestrator.executor import _active_run_queue
+
+        queue = _active_run_queue.get(None)
+    except Exception:
+        queue = None
+    if queue is not None:
+        return queue.put
+    try:
+        from orchestrator.executor import (
+            _push_sse_to_stream,
+            resolve_relay_thread_id,
+        )
+        tid = resolve_relay_thread_id()
+    except Exception:
+        return None
+    if not tid:
+        return None
+
+    async def _publish(ev: dict, _t: str = tid) -> None:
+        await _push_sse_to_stream(_t, f"data: {_json.dumps(ev)}\n\n")
+
+    return _publish
+
+
+async def publish_card_rows(request_id: str, rows: Any) -> bool:
+    """Send the result of each row of one held sandbox card to the chat.
+
+    SBX-3b. The watcher of a held batch (``acb_skills.sandbox_held``) calls
+    it when the gateway gives the results of a card. It sends one
+    :data:`CONFIRMATION_ROW_RESULTS` event, keyed by the card's
+    ``request_id``, on the stream of this run. The client draws the results
+    on the receipt of that card (``receiptText``). True when the event went
+    out. A bad value, no stream, or a fault gives False. It never raises."""
+    value = row_results_value(request_id, rows)
+    if value is None:
+        return False
+    publish = await _live_publisher()
+    if publish is None:
+        return False
+    try:
+        await publish({"type": "CUSTOM", "name": CONFIRMATION_ROW_RESULTS, "value": value})
+    except Exception:  # the receipt then shows no result
+        return False
+    return True
+
+
 #: A confirmation card with ROWS (WS-46 P13 one-card). The member ticks the
 #: rows the act covers, and the answer names them:
 #: ``APPROVE {"rows": ["row-1", "row-3"]}``. A card with no rows keeps the

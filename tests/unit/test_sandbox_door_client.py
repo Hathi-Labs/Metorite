@@ -364,7 +364,7 @@ def test_the_client_never_touches_the_proxy_settings() -> None:
     assert proxy_problems(_client_source()) == []
 
 
-def test_the_client_has_one_host_and_sends_get_or_the_batch_post() -> None:
+def test_the_client_has_one_host_and_sends_get_only() -> None:
     """GET, plus the one batch POST (SBX-3b, §12.5 decision 8)."""
     assert url_problems(_client_source()) == []
     assert D.DOOR_URL == _DOOR_URL

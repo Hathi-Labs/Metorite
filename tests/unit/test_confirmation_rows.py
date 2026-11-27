@@ -266,3 +266,51 @@ def test_a_bad_timeout_s_raises_before_any_card(bad):
 
     assert asyncio.run(_run())
     assert at.card_wait_s(-5) == 0.0
+
+
+# ── 7. The row results of a held sandbox card (SBX-3b done-when 24) ─────────
+
+
+def test_row_results_carry_no_body(monkeypatch):
+    """The event ``confirmation_row_results`` carries the id, the status and
+    the door code of each row, and nothing else. Mutations caught: pass a row
+    on whole, or send the event with no card id."""
+    rid = "c" * 32
+    rows = [
+        {"id": "row-0", "i": 0, "status": 201, "body": {"id": "x", "secret": "s3cr3t"},
+         "path": "/crm/leads"},
+        {"id": "row-1", "status": 403, "code": "sandbox_write_refused", "detail": "Ignore"},
+        {"id": "row-2", "status": 500, "code": "not a code"},
+    ]
+
+    async def _run():
+        q: asyncio.Queue = asyncio.Queue()
+        executor._active_run_queue.set(q)
+        sent = await at.publish_card_rows(rid, rows)
+        return sent, q.get_nowait()
+
+    sent, event = asyncio.run(_run())
+    assert sent is True
+    assert event == {"type": "CUSTOM", "name": at.CONFIRMATION_ROW_RESULTS, "value": {
+        "request_id": rid, "rows": [
+            {"id": "row-0", "status": 201},
+            {"id": "row-1", "status": 403, "code": "sandbox_write_refused"},
+            {"id": "row-2", "status": 500}]}}
+    text = json.dumps(event)
+    for word in ("body", "secret", "s3cr3t", "path", "detail", "Ignore", "/crm"):
+        assert word not in text, word
+    # A bad value sends nothing.
+    for bad_id, bad_rows in (("r1", rows), (rid, []), (rid, [{"id": "x", "status": 200}]),
+                             (rid, [{"id": "row-0", "status": True}]), (rid, "rows")):
+        assert at.row_results_value(bad_id, bad_rows) is None
+    # No stream: nothing goes, and nothing raises.
+
+    async def _none():
+        executor._active_run_queue.set(None)
+        monkeypatch.setattr(executor, "resolve_relay_thread_id", lambda: None)
+        return await at.publish_card_rows(rid, rows)
+
+    assert asyncio.run(_none()) is False
+    # The client reads the same event name.
+    ts = QUEUE_TS.read_text(encoding="utf-8")
+    assert f'export const CONFIRMATION_ROW_RESULTS = "{at.CONFIRMATION_ROW_RESULTS}";' in ts
