@@ -77,12 +77,13 @@ describe("C1: the composer form draws no card", () => {
     expect(form).not.toMatch(/<WaitingDock\b/);
     const before = chat.slice(0, chat.indexOf("<form onSubmit={handleSubmit}"));
     const host = before.slice(before.lastIndexOf("<div ref={dockHostRef}"));
-    expect(host).toContain("<WaitingDock count={dockN}");
+    expect(host).toContain("<WaitingDock questions={dockQuestions} pointer={dockPointer}");
     expect(host).toContain("{showDock && (");
-    expect(host).toContain("{renderDockCards}");
     expect(chat).toContain("const showDock = dockShown(dockOn, dockSources);");
-    // Flag off: the thread draws the cards as before.
-    expect(chat).toContain("if (dockOn) return renderDockThreadPart();");
+    // D9: the approvals draw in the thread with the flag on too. Only a
+    // question card that waits leaves the thread for the dock.
+    expect(chat).toContain("const askHere = !!elicitation && (!dockOn || !elicitationWaits);");
+    expect(chat).toContain("const userHere = !!userInput && (!dockOn || !userInputWaits);");
   });
 
   it("the Todos panel opens folded on a phone", () => {
