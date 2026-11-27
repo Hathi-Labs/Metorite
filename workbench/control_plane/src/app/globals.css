@@ -3309,4 +3309,11 @@ html[data-look="glass"] main .h-full.bg-background:not(aside):not([class*="glass
   top: 0;
   z-index: 2;
   background: var(--card);
+  /* The row follows the card's own top corners (its radius token, glass or
+     classic), and its paint stops 1px inside, so the card's hairline shows. */
+  border-top-left-radius: inherit;
+  border-top-right-radius: inherit;
+  border-top: 1px solid transparent;
+  border-inline: 1px solid transparent;
+  background-clip: padding-box;
 }

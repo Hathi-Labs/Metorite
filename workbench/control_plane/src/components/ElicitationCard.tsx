@@ -249,8 +249,12 @@ export default function ElicitationCard({
   const canDecline = !!onDecline && !closed;
   // Glass only (GL-4): a card that wants an answer is tinted, and a settled
   // card is a plain surface. Each has a solid icon tile in a system colour.
+  // A card with the dock's tab row (24.11) takes the padding of the approval
+  // card, p-4, which the row's edges expect, so the row stays inside the frame.
   const glassFrame = !closed
-    ? "glass:glass-card-tile glass:rounded-[16px] glass:border-primary/35 glass:glass-raised glass:p-3"
+    ? tabs
+      ? "glass:glass-card-tile glass:rounded-[16px] glass:border-primary/35 glass:glass-raised glass:p-4"
+      : "glass:glass-card-tile glass:rounded-[16px] glass:border-primary/35 glass:glass-raised glass:p-3"
     : `glass:glass-card-tile glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3 ${
         declined ? "glass:[--tile:var(--system-gray)]" : "glass:[--tile:var(--system-green)]"
       }`;
