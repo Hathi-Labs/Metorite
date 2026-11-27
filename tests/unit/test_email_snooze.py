@@ -19,6 +19,7 @@ from tests.unit._email_fakes import bind_db
 
 class _User:
     email = "u@example.com"
+    organization_id = None
 
 
 # ── folder_scope: the Snoozed view predicate ────────────────────────────────

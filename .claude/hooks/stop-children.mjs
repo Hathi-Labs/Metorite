@@ -233,16 +233,17 @@ export function main(stdin = '', psText = null) {
   } catch {}
   if (input.stop_hook_active) return { code: 0 }
   // SW-61: a background turn with a claim and no disposition stops here once.
-  const blocked = checkDisposition(input)
-  if (blocked) return { code: 2, message: blocked }
+  const { block, warn } = checkDisposition(input)
+  if (block) return { code: 2, message: block }
+  const ok = (r) => (warn ? { ...r, message: r.message ? `${warn}\n${r.message}` : warn } : r) // LBB-4: warn goes to stderr, code stays
   const text = psText ?? execFileSync('ps', ['-eo', 'pid=,ppid=,etimes=,args='], { encoding: 'utf8', timeout: 5000 })
   const rows = parsePs(text)
   const root = findSessionRoot(rows)
-  if (root == null) return { code: 0 }
+  if (root == null) return ok({ code: 0 })
   const age = minAge()
   const list = oldChildren(rows, root, age, process.pid, mcpNeedles(mcpConfigs()))
-  if (!list.length) return { code: 0 }
-  return { code: 2, message: report(list, age) }
+  if (!list.length) return ok({ code: 0 })
+  return ok({ code: 2, message: report(list, age) })
 }
 
 function isEntry() {

@@ -98,9 +98,11 @@ TWO_STEERS = ("[2 new messages came in during this reply. Answer each one. "
 @pytest.fixture(autouse=True)
 def _clean():
     steer._PENDING_GUIDANCE.clear()
+    steer._SEEN_STEER_IDS.clear()
     steer._CLOSED.clear()
     yield
     steer._PENDING_GUIDANCE.clear()
+    steer._SEEN_STEER_IDS.clear()
     steer._CLOSED.clear()
 
 

@@ -470,6 +470,43 @@ def plan_order_allowed(organization_id: object) -> bool:
     return ALL_ORGS in orgs or org in orgs
 
 
+#: SW-45. The modes of ``AGENT_CLAIM_SCOPE_MODES``, from the weakest.
+CLAIM_SCOPE_MODES: tuple[str, ...] = ("off", "warn", "refuse")
+
+
+def _parse_claim_scope(raw: str) -> dict[str, str]:
+    """The ``org=mode`` pairs of *raw*. A pair with an organization that is
+    not ``*`` and not a canonical UUID, or with an unknown mode, is dropped.
+    The last pair of one organization wins."""
+    found: dict[str, str] = {}
+    for part in raw.split(","):
+        key, sep, value = part.partition("=")
+        entry, mode = key.strip().lower(), value.strip().lower()
+        if not sep or mode not in CLAIM_SCOPE_MODES:
+            continue
+        org = ALL_ORGS if entry == ALL_ORGS else _canonical_org(entry)
+        if org is not None:
+            found[org] = mode
+    return found
+
+
+def claim_scope_mode(organization_id: object) -> str:
+    """The claim scope of *organization_id*: ``off``, ``warn`` or ``refuse``.
+
+    SW-45 (``agent_coordination.md`` §3.10.1). The ONE reader of
+    ``agent_claim_scope_modes``. An exact id wins over ``*``. An organization
+    that the value does not name reads as ``off``, and so does a value that is
+    not an id. It reads the settings at each call, so a SIGHUP reload of the
+    gateway applies a change. The caller passes the organization of the
+    session, never request input.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return "off"
+    modes = _parse_claim_scope(str(get_settings().agent_claim_scope_modes or ""))
+    return modes.get(org) or modes.get(ALL_ORGS) or "off"
+
+
 def org_allowed(organization_id: object) -> bool:
     """True when ``agent_access_orgs`` allows *organization_id*.
 
@@ -1184,6 +1221,13 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # `labels`: the number and title of the VISIBLE blockers, for the chat. The
     # edge ignores `labels`, and a hidden blocker is never named.
     ("GET", "/projects/plan/order"),
+    # SW-45: the free tasks of the member's own apps, for `my_work`. A read. It
+    # answers no rows while `AGENT_CLAIM_SCOPE_MODES` is off for the org.
+    ("GET", "/projects/my/own-app-free"),
+    # LBB-2 (engineering_practice.md §7b.2): the open PRs to land of the
+    # caller, for the `land_your_pr` rows of `my_work`. A read. It answers no
+    # rows while both claim gate flags are off for the org.
+    ("GET", "/projects/agent-work/landing"),
     # MCP-G21: the members that `set_assignees` would accept, for `list_members`.
     ("GET", "/projects/assignable-members"),
     # SP-12: the order of work under one goal, epic or project, for `get_plan`.
@@ -1395,6 +1439,27 @@ def write_window_s() -> int:
     ``agent_write_window_s``, or :data:`WRITE_WINDOW_S` for a value below 1.
     """
     return _positive(get_settings().agent_write_window_s, WRITE_WINDOW_S)
+
+
+#: MCP-G17f (spec §5.5, task 4032). The longest grace window of a refresh
+#: token, in seconds. A longer window lets a stolen refresh token live too
+#: long after its own client spent it. The recorded collisions were 2 s
+#: apart, so 60 s covers them with room to spare.
+REFRESH_REUSE_GRACE_MAX_S = 60
+
+
+def refresh_reuse_grace_s() -> int:
+    """The grace window of a spent refresh token, in seconds (MCP-G17f).
+
+    The ONE reader of ``agent_refresh_reuse_grace_s``. A value that is not a
+    whole number, or is below 1, gives 0, and 0 turns the window off. A value
+    above :data:`REFRESH_REUSE_GRACE_MAX_S` gives that cap. The token store
+    reads it at each rotation (``agent_tokens`` rule 5).
+    """
+    value = get_settings().agent_refresh_reuse_grace_s
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return 0
+    return min(value, REFRESH_REUSE_GRACE_MAX_S)
 
 
 #: EA-13a (spec §12.2 item 1, EA3-47). The longest ``<slug>`` of a client

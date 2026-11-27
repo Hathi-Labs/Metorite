@@ -4859,6 +4859,33 @@ async def unarchive_task(task_id: str) -> str:
 # ── Projects ─────────────────────────────────────────────────────────────────
 
 
+async def _same_name_sibling(name: str, parent_id: Any) -> dict[str, Any] | None:
+    """The live node under *parent_id* (None: a space) that has *name*, if any.
+
+    Names compare without case and without outer spaces. An archived node
+    does not count. A folder counts: a folder and a project of one name under
+    one parent confuse the member just the same.
+    """
+    want = str(name or "").strip().casefold()
+    payload = (await get("/projects/tree")) or {}
+    found: list[dict[str, Any]] = []
+
+    def walk(nodes: list[dict[str, Any]]) -> None:
+        for node in nodes or []:
+            if not isinstance(node, dict):
+                continue
+            if (
+                not node.get("archived_at")
+                and (node.get("parent_project_id") or None) == (parent_id or None)
+                and str(node.get("name") or "").strip().casefold() == want
+            ):
+                found.append(node)
+            walk(node.get("children") or [])
+
+    walk(payload.get("rows") or [])
+    return found[0] if found else None
+
+
 @_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def create_project(
     name: str,
@@ -4888,10 +4915,29 @@ async def create_project(
         parent = await get(f"/projects/nodes/{pid}")
         payload["parent_project_id"] = pid
         parent_label = data(parent.get("name"))
+        # Task 3596, the production case (session a8296fc6): the helper made
+        # a project, then made a second one of the SAME name under the first.
+        # A node never takes the name of its own parent: point to the parent.
+        if str(parent.get("name") or "").strip().casefold() == label.casefold():
+            return (
+                f"{parent_label} already exists, and a {which} cannot sit under a parent of "
+                f"the same name, so I made no second one.\n  full_id: {pid}\n"
+                "Use it, or ask for a different name."
+            )
     if description.strip():
         payload["description"] = description.strip()
     if lead.strip():
         payload["lead"] = await _resolve_assignee(lead, dispatch=False)
+    # HRD-16 / task 3596: one turn never makes two nodes of one name under
+    # one parent. The first create is already in the tree, so a repeat finds
+    # it and points to it, before any card.
+    twin = await _same_name_sibling(label, payload.get("parent_project_id"))
+    if twin:
+        return (
+            f"{data(twin.get('name'))} already exists under {parent_label}, so I made no "
+            f"second one.\n  full_id: {twin.get('id')}\n"
+            "Use it, or ask for a different name."
+        )
     if not await _confirm(
         title=f"Create this {which}?",
         detail=f"{data(label)} under {parent_label}",
@@ -7465,7 +7511,7 @@ _OVERLAY_CLEAR = {
 #: object is refused by name for a key the single tool does not take.
 OVERLAY_ARGUMENTS = (
     "disposition", "context", "energy", "next_action", "two_minute",
-    *_OVERLAY_TIMES, *_OVERLAY_FLAGS, "waiting_on", "expected_by", "clear",
+    *_OVERLAY_TIMES, *_OVERLAY_FLAGS, "waiting_on", "expected_by", "todays_focus", "clear",
 )
 _NAIVE_TIME = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?$")
 
@@ -7556,8 +7602,37 @@ async def _overlay_values(args: dict[str, Any], mine: dict[str, Any]) -> dict[st
             )
     if given.get("expected_by"):
         values["expected_by"] = _expected_by(given["expected_by"])
+    # WS-MDC CC-2 (D-MD-3): today's focus is the member's own today, from the
+    # same read as every other day this tool guesses. The route holds the cap.
+    # The same read says if the org has today's focus, so an org without it
+    # gets a refusal here, before any card. The route refuses a clear too.
+    todays_focus = _yes_no(given.get("todays_focus", ""), "todays_focus")
+    if todays_focus is not None:
+        day = await _focus_day()
+        if day is None:
+            return TODAYS_FOCUS_OFF
+        values["focus_on"] = day.isoformat() if todays_focus else None
     refusal = _clear_into(values, given.get("clear", ""), _OVERLAY_CLEAR)
     return refusal or _block_refusal(values, mine) or values
+
+
+#: The answer while ``TODAY_RULE_ORGS`` does not hold the org. The tool makes
+#: no card. The words follow the route's 403 (``today_rule.FOCUS_OFF_MESSAGE``).
+TODAYS_FOCUS_OFF = (
+    "Today's focus is not on for your organization yet. Nothing was changed. Put a "
+    "block for the task on your calendar to plan it for today."
+)
+
+
+async def _focus_day() -> date | None:
+    """The member's today for a focus mark, or ``None`` when the org has no
+    today's focus. The tool never reads the flag. ``GET /projects/my/today``
+    says ``today_rule``, and only an explicit ``True`` counts, so an older
+    gateway means "off". A failed read is raised, and no card shows."""
+    row = await get("/projects/my/today")
+    if not isinstance(row, dict) or row.get("today_rule") is not True:
+        return None
+    return clock_of(row)[0] or _today()
 
 
 def _same_chase(person: dict[str, Any], mine: dict[str, Any]) -> bool:
@@ -7625,6 +7700,7 @@ async def set_my_overlay(
     waiting_on: str = "",
     waiting_since: str = "",
     expected_by: str = "",
+    todays_focus: str = "",
     clear: str = "",
 ) -> str:
     """Set the member's OWN triage of a task: disposition (INBOX, NEXT,
@@ -7644,7 +7720,9 @@ async def set_my_overlay(
     member waits on. waiting_since is when the wait began, and it is now
     when not given. expected_by (YYYY-MM-DD) is the date that person
     promised. clear also takes block, actual, flexible, hard_date, deep_work,
-    waiting_on and expected_by."""
+    waiting_on and expected_by. todays_focus (yes or no) marks the task as one of
+    today's focus tasks, or removes the mark. A day holds a few marks, and a
+    full day refuses a new one until the member removes a mark."""
     tid, task = await _task(task_id)
     unread = ""
     try:
@@ -7668,7 +7746,7 @@ async def set_my_overlay(
         "block_end": block_end, "flexible": flexible, "hard_date": hard_date,
         "actual_start": actual_start, "actual_end": actual_end, "deep_work": deep_work,
         "waiting_on": waiting_on, "waiting_since": waiting_since, "expected_by": expected_by,
-        "clear": clear,
+        "todays_focus": todays_focus, "clear": clear,
     }
     payload = await _overlay_values(given, mine if isinstance(mine, dict) else {})
     if isinstance(payload, str):

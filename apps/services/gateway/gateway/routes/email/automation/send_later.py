@@ -40,7 +40,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from acb_auth.roles import UserRole
-from acb_common import get_settings
+from acb_common import get_settings, member_actions
 from acb_common.db import bind_tenant, release_tenant, tenant_session
 from email_ingestion.providers.base import ProviderDidNotAnswer
 from fastapi import BackgroundTasks, Depends, HTTPException
@@ -386,10 +386,13 @@ async def _send_one(org: str, row: Any) -> tuple[str | None, BackgroundTasks | N
         return member, None
     background = BackgroundTasks()
     try:
-        await send_draft_endpoint(
-            DraftSendRequest(account_id=str(row.account_id), draft_id=str(row.draft_id),
-                             expect=DraftExpect(**exp)),
-            background, member)
+        # WS-PZ MM-1: the job sends, and the member pressed nothing now. So
+        # the act record takes no row for this send (personalization.md §19.4).
+        with member_actions.job_acts():
+            await send_draft_endpoint(
+                DraftSendRequest(account_id=str(row.account_id), draft_id=str(row.draft_id),
+                                 expect=DraftExpect(**exp)),
+                background, member)
     except Exception as exc:  # noqa: BLE001 - each row reports its own failure
         return _why(exc), None
     return None, background

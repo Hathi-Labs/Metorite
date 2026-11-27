@@ -1304,6 +1304,12 @@ apply the tiers of §4.2. `reach_preview` sends the Reach routes (`GET /reach/st
 `GET /reach/preview`), not a People route. OD1 B decides the later self writes: one card for each write, and never
 `email`. `chat_parity.md` §6.4 holds the P-5b slices.
 
+**The self writes are BUILT dark (P-5b-2, task 3943, 2026-11-25).** Five tools in the pack
+`people` change only the member's own record, on one card each. `update_my_profile` sends the
+§4.3 self class, less `avatar` and `skills`. The other four are `set_my_skills`,
+`set_my_credentials`, `add_my_absence` and `remove_my_absence`. The route checks the field
+class, and no tool sends `email`.
+
 ---
 
 ## 7. Data model

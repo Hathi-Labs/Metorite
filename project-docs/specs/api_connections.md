@@ -400,7 +400,7 @@ the writer of each line (CSY rule 2):
   about 1,300 characters after SEM-14. `api_find_operations` gives the rest.
 
 **Dependencies.** API-4 needs CSY-1 (task 3400), because the chat routes on
-the brief. D-CSY-1 must be decided first.
+the brief. D-CSY-1 is decided: yes (2026-11-21, owner in chat).
 
 **Logs.** The chat-side gate writes `mcp.call` (CSY-2) with `kind=api`. The
 gateway writes `api.call` for the outbound request. No third log name.
@@ -769,7 +769,7 @@ until the owner answers D-API-2, D-API-4 and D-API-9.
 | API-1 (task 3787) | The template grammar and its validator. The split of `build_call` into a builder over one `Route`, with query shapes and encoded path values. The Zoho Books template with read operations and the total mark | STANDARD | AGENT-SAFE. Built |
 | API-2 (task 3788) | The connect flow: the Zoho client with Books scopes, the context step, the test read, the status, the admin-only default grant. §2.11 | HIGH (identity, a credential) | AGENT-SAFE to build dark. The first real consent is OWNER-GATE. Built dark |
 | API-3 (task 3789) | The four gateway routes: the org check, the grant, the class at call time, the write switch, the limits, the refresh, the guard, the total, the strips and the log line | HIGH (egress, a credential) | AGENT-SAFE to build dark, with sentinel tokens and a fake `send`. A live call with a real credential is OWNER-GATE. Built dark |
-| API-4 (task 3790) | The shared tools, the attach step, the gate facts and the brief inputs. Needs CSY-1 (task 3400) and D-CSY-1 | HIGH (permission) | AGENT-SAFE to build dark |
+| API-4 (task 3790) | The shared tools, the attach step, the gate facts and the brief inputs. Needs CSY-1 (task 3400, merged). D-CSY-1 is yes (2026-11-21) | HIGH (permission) | AGENT-SAFE to build dark |
 | API-5 (task 3791) | The console: the connector list rows, the result card (IN-9) and the "used by" sheet (IN-10). Built, dark (§2.12) | STANDARD | AGENT-SAFE |
 | API-6 (task 3792) | Bug 3766: a custom row that the chat cannot use says so | LOW | AGENT-SAFE |
 
