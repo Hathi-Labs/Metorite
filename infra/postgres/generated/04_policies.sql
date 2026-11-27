@@ -1825,6 +1825,13 @@ CREATE POLICY user_tool_runs_tenant_isolation ON user_tool_runs
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE member_action ENABLE ROW LEVEL SECURITY;
+ALTER TABLE member_action FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS member_action_tenant_isolation ON member_action;
+CREATE POLICY member_action_tenant_isolation ON member_action
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE kb_documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE kb_documents FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS kb_documents_tenant_isolation ON kb_documents;

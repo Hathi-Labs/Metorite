@@ -16,6 +16,7 @@ from gateway.routes.email.account_ref import resolve_account_filter
 # senders, rules) and the tests address these through the runner seam, and the
 # apply loop below calls them via this module's namespace — so a test patching
 # ``runner.apply_label`` still intercepts every caller.
+from gateway.routes.email.automation import mark_done
 from gateway.routes.email.automation.actions import (  # noqa: F401
     _apply_rule_actions,
     _email_looks_sensitive,
@@ -554,7 +555,14 @@ async def retry_failed_executions(
         repaired = 0
         still_failing = 0
         skipped: set[str] = set()
+        # Task 3995 (D5): a repair replays a rule, and no rule runs in a held
+        # conversation. Its row says why. No read with the flag off.
+        held = await mark_done.held_threads(
+            db, account_id, [r.thread_id for r in rows if r.thread_id])
         for r in rows:
+            if r.thread_id in held:
+                await _skip_held_execution(db, str(r.id))
+                continue
             actions = [a for a in actions_by_rule.get(str(r.rule_id), [])
                        if a.get("type") not in _RETRY_SKIPPED_ACTIONS]
             skipped.update(
@@ -587,6 +595,10 @@ async def retry_failed_executions(
             ), {"eid": str(r.id), "st": status, "acts": json.dumps(taken),
                 "aerr": json.dumps(errors), "reason": gone_reason})
 
+        # The hold may have begun during the provider I/O above.
+        await mark_done.recheck_after_io(
+            db, provider, account_id,
+            [r.thread_id for r in rows if r.thread_id not in held])
         await _persist_rotated_creds(db, store, account_id, provider)
         _log.info("email.retry_failed_done", account_id=account_id,
                   considered=len(rows), repaired=repaired,
@@ -594,6 +606,15 @@ async def retry_failed_executions(
         return {"considered": len(rows), "repaired": repaired,
                 "still_failing": still_failing,
                 "skipped_actions": sorted(skipped)}
+
+
+async def _skip_held_execution(db: Any, exec_id: str) -> None:
+    """A rule run that the hold stops (task 3995): SKIPPED, with the reason of
+    the hold, so History says why it did not run."""
+    await db.execute(text(
+        "UPDATE email_executed_rules SET status = 'SKIPPED', reason = :reason "
+        "WHERE id = :eid"
+    ), {"eid": exec_id, "reason": mark_done.HELD_SKIP_REASON})
 
 
 class RetryFailedRequest(BaseModel):
@@ -657,6 +678,12 @@ async def approve_execution(
             raise HTTPException(status_code=400, detail="Not pending")
         if not row.rule_id:
             raise HTTPException(status_code=400, detail="Rule no longer exists")
+        # Task 3995 (D5): a proposal of a held conversation does not run. The
+        # member marked the conversation done after the rule proposed it.
+        if await mark_done.thread_is_held(db, str(row.account_id), row.thread_id):
+            await _skip_held_execution(db, exec_id)
+            return {"ok": True, "status": "SKIPPED", "actions": [],
+                    "reason": mark_done.HELD_SKIP_REASON}
 
         act_rows = (await db.execute(text(
             """SELECT type, label, subject, content, to_address, cc_address,
@@ -683,6 +710,9 @@ async def approve_execution(
             "UPDATE email_executed_rules SET status='APPLIED', actions_taken=:acts "
             "WHERE id=:eid"
         ), {"eid": exec_id, "acts": json.dumps(taken)})
+        # The hold may have begun during the provider I/O above.
+        await mark_done.recheck_after_io(
+            db, provider, str(row.account_id), [row.thread_id])
         if row.message_id:
             await _stamp_processed_watermark(
                 db, row.message_id, provider=provider)
@@ -1304,10 +1334,12 @@ async def run_rules_on_message(
             "SELECT categories, folder FROM email_messages WHERE id = :id"
         ), {"id": str(row.id)})).fetchone()
         primary = matches[0]
+        # Task 3995: in a held conversation no rule ran, and the answer says so.
+        held = primary.get("suppressed") == mark_done.HELD_SUPPRESSION
         return {
-            "matched": True, "applied": True,
+            "matched": True, "applied": not held,
             "rule": {"id": primary["rule"]["id"], "name": primary["rule"]["name"]},
-            "reason": primary["reason"],
+            "reason": mark_done.HELD_SKIP_REASON if held else primary["reason"],
             "actions": primary["rule"]["actions"],
             "applied_rules": [m["rule"]["name"] for m in matches],
             "categories": list(fresh.categories or []) if fresh else [],
@@ -1342,8 +1374,10 @@ async def _apply_and_log_match(
             "rname": rule.get("name"), "mid": str(r.id),
             "pmid": r.provider_message_id, "tid": r.thread_id,
             "subj": r.subject or "", "frm": frm.get("email", ""),
-            "reason": ("Suppressed: part of a conversation — the thread's "
-                       "status is the classification.")})
+            "reason": (mark_done.HELD_SKIP_REASON
+                       if match["suppressed"] == mark_done.HELD_SUPPRESSION
+                       else "Suppressed: part of a conversation — the thread's "
+                            "status is the classification.")})
         return
     action_errors: list[dict[str, str]] = []
     gone_reason: str | None = None
@@ -1477,7 +1511,17 @@ async def _apply_matches(
     Reply Zero status BETWEEN the apply and the stamp, so the watermark must stay
     last (a message is "processed" only once everything that reads it has run).
     Call ``_stamp_processed_watermark`` at the call site after that work.
+
+    Task 3995: in a thread that the member marked done by hand, each match is
+    suppressed and the cold blocker does not run. This is the one choke point of
+    the three apply paths, and Process past reaches it with no resolver.
+    The hold may begin during the provider I/O of an apply (D6), so the apply
+    asks again after it and puts "Done" back (``mark_done.recheck_after_io``).
     """
+    held = await mark_done.thread_is_held(db, account_id, r.thread_id)
+    if held:
+        matches = mark_done.hold_matches(matches)
+        cold_blocker = None
     if matches:
         for match in matches:
             await _apply_and_log_match(
@@ -1485,6 +1529,9 @@ async def _apply_matches(
                 about, signature, account_user, account_id,
                 sole_match=len(matches) == 1,
             )
+        if apply and not dry_run and not held:
+            await mark_done.recheck_after_io(
+                db, provider, account_id, [r.thread_id])
         return
     if dry_run or not log_no_match:
         return
@@ -1559,9 +1606,8 @@ async def _project_thread_status_for_backfill(
     thread's block, so a failed thread rolls back only its own writes.
     """
     from gateway.routes.email.automation.replyzero import (  # noqa: PLC0415
-        _reconcile_thread_labels,
         conversation_match_proposes,
-        project_reply_status_from_matches,
+        project_and_reconcile,
     )
     tids = list(latest_by_thread)
     # Threads with mail newer than what this run saw — skip them.
@@ -1584,12 +1630,11 @@ async def _project_thread_status_for_backfill(
             continue
         try:
             async with _tenant_session() as db:
-                keep_label = await project_reply_status_from_matches(
-                    db, account_id, row, matches)
-                # EM-G11c2 (G5): a manual conversation rule proposes.
-                if keep_label and not conversation_match_proposes(matches):
-                    await _reconcile_thread_labels(
-                        db, provider, account_id, tid, keep_label)
+                # EM-G11c2 (G5): a manual conversation rule proposes. Task
+                # 3995: with the flag on, the status row is the last write.
+                await project_and_reconcile(
+                    db, provider, account_id, row, matches,
+                    labels=not conversation_match_proposes(matches))
         except Exception as exc:  # noqa: BLE001 — one thread must not abort the rest
             _log.warning("email.past_project_status_failed",
                          account_id=account_id, thread_id=tid,
@@ -1844,6 +1889,59 @@ def _classify_unavailable(account_id: str, r: Any, exc: Exception) -> None:
                  error=str(exc)[:160])
 
 
+
+async def _project_and_stamp(
+    db: Any, provider: Any, account_id: str, r: Any,
+    matches: list[dict[str, Any]], *, dry_run: bool, projected_threads: set[str],
+) -> None:
+    """The tail of Block W of :func:`_run_rules_job`: the Reply Zero
+    projection of the thread, then the watermark stamp."""
+    # Task 3995 (§6.6 "The locks"): with the flag on, the
+    # status row is the last write of the block, so the stamp
+    # goes first. One commit holds both, so the order inside
+    # the block changes nothing that a reader sees.
+    status_last = mark_done.mark_done_on()
+    if status_last:
+        await _stamp_processed_watermark(
+            db, r.id, provider=provider, dry_run=dry_run)
+    # Reply Zero: project this thread's status from the matched
+    # rule (latest message per thread only). Read-only of the
+    # mailbox — runs even when the provider failed to
+    # authenticate.
+    if not dry_run and r.thread_id \
+            and r.thread_id not in projected_threads:
+        projected_threads.add(r.thread_id)
+        # The savepoint keeps a failed projection from aborting
+        # the row block, so the watermark stamp below still
+        # lands.
+        try:
+            from gateway.routes.email.automation.replyzero import (  # noqa: PLC0415
+                conversation_match_proposes,
+                project_and_reconcile,
+            )
+            async with _savepoint(db):
+                # Collapse the thread to that one conversation
+                # label, clearing any stale Reply / Awaiting /
+                # FYI / Follow-up left on earlier messages
+                # (inbox-zero mutually-exclusive labels).
+                # EM-G11c2 (G5): a manual conversation rule
+                # proposes, so its label waits too.
+                await project_and_reconcile(
+                    db, provider, account_id, r, matches,
+                    labels=provider is not None
+                    and not conversation_match_proposes(matches))
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("email.project_reply_status_failed",
+                         account_id=account_id,
+                         error=str(exc)[:160])
+    # Stamp the watermark LAST — after Reply Zero projection —
+    # and only when the run could actually act (guarded inside
+    # the helper).
+    if not status_last:
+        await _stamp_processed_watermark(
+            db, r.id, provider=provider, dry_run=dry_run)
+
+
 async def _rules_job_provider(acc: Any) -> tuple[Any, Any]:
     """The provider and the key store of the rules job, or ``(None, None)``
     with no account row. The provider authenticates here, with no session
@@ -2031,46 +2129,9 @@ async def _run_rules_job(
                         account_id=account_id, cold_blocker=cold_blocker,
                         log_no_match=not skipped,
                     )
-                    # Reply Zero: project this thread's status from the matched
-                    # rule (latest message per thread only). Read-only of the
-                    # mailbox — runs even when the provider failed to
-                    # authenticate.
-                    if not dry_run and r.thread_id \
-                            and r.thread_id not in projected_threads:
-                        projected_threads.add(r.thread_id)
-                        # The savepoint keeps a failed projection from aborting
-                        # the row block, so the watermark stamp below still
-                        # lands.
-                        try:
-                            from gateway.routes.email.automation.replyzero import (  # noqa: PLC0415
-                                _reconcile_thread_labels,
-                                conversation_match_proposes,
-                                project_reply_status_from_matches,
-                            )
-                            async with _savepoint(db):
-                                keep_label = await project_reply_status_from_matches(
-                                    db, account_id, r, matches)
-                                # Collapse the thread to that one conversation
-                                # label, clearing any stale Reply / Awaiting /
-                                # FYI / Follow-up left on earlier messages
-                                # (inbox-zero mutually-exclusive labels).
-                                # EM-G11c2 (G5): a manual conversation rule
-                                # proposes, so its label waits too.
-                                if keep_label and provider is not None \
-                                        and not conversation_match_proposes(
-                                            matches):
-                                    await _reconcile_thread_labels(
-                                        db, provider, account_id, r.thread_id,
-                                        keep_label)
-                        except Exception as exc:  # noqa: BLE001
-                            _log.warning("email.project_reply_status_failed",
-                                         account_id=account_id,
-                                         error=str(exc)[:160])
-                    # Stamp the watermark LAST — after Reply Zero projection —
-                    # and only when the run could actually act (guarded inside
-                    # the helper).
-                    await _stamp_processed_watermark(
-                        db, r.id, provider=provider, dry_run=dry_run)
+                    await _project_and_stamp(
+                        db, provider, account_id, r, matches,
+                        dry_run=dry_run, projected_threads=projected_threads)
             except LLMUnavailable as exc:
                 # From Block R, from the ask, or from the resolver at the head
                 # of Block W, before any write. The block rolls back, so the

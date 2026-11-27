@@ -789,6 +789,9 @@ UPDATE tool_gaps SET organization_id = (SELECT id FROM organization WHERE slug =
 UPDATE user_tool_runs SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
+UPDATE member_action SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
 UPDATE kb_documents SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
