@@ -324,7 +324,7 @@ MCP-P2a (`external_agent_access.md` §19.13, task 866) later sets the door op of
 | CRM-M2h | Business rules and the open questions of the AI |
 | CRM-M2i | Mapping plans, field suggestions and the conversion mapping. The suggestions and the preview are built (task 3954): `crm_mapping_suggestions`, `crm_preview_suggestion` and `crm_decide_suggestion`. The approve, dismiss and undo log no Change history row yet. task 3971 adds the rows. The mapping plans are built (task 3953): `crm_list_mapping_plans`, `crm_draft_mapping_plan`, `crm_approve_mapping_plan` and `crm_restore_mapping_plan`. A held chat drops the approve of a plan |
 | CRM-M2j | Rename a pipeline, add a stage and remove a stage. Set the win chance and the warning days of a stage in one pipeline (CRM-M3b) |
-| CRM-M2k | Connect, sync, import, cut over, reset and run the analysis again. The re-run is built (task 3954): `crm_rerun_analysis`. The re-run logs no Change history row yet. task 3971 adds the row |
+| CRM-M2k | Connect, sync, import, cut over, reset and run the analysis again. The re-run is built (task 3954): `crm_rerun_analysis`. The re-run logs no Change history row yet. task 3971 adds the row. A held chat drops the re-run, because it spends AI credits (task 4001) |
 | CRM-M2l | The reads of the setup screens, the digests and the exports. The analysis read is built (task 3954): `crm_analysis_status`. It is a read, so it logs no Change history row |
 
 ### CRM-M3. Many deal pipelines (#1097) — Wave 2

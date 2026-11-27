@@ -1564,10 +1564,12 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "update_deal_status": _pin("deal_id stage lost_reason"),
     "log_activity": _pin("entity record_id activity_type subject body due_at"),
     "convert_lead": _pin("lead_id deal_name amount expected_close_date"),
-    # P-3 (task 3954): a suggestion of the field map, and a new AI analysis.
-    # Each card names the list and the module, or the steps, before the write.
+    # P-3 (task 3954): a suggestion of the field map. Its card names the list
+    # and the module before the write. Task 4001: crm_rerun_analysis is not
+    # here, so a held chat drops it. A run spends AI credits, and nothing can
+    # undo that (D169). It also has no late approve and no stored-call resume,
+    # because both read this list.
     "crm_decide_suggestion": _pin("action list_name module"),
-    "crm_rerun_analysis": _pin(""),
     # WS-CRM CRM-M3a: a new deal pipeline. Its card shows each stage. It says
     # open_world=True as each CRM write does, so a covered run holds it off.
     # CRM-M4a adds `kind` and `feeds`: a lead pipeline, and the deal pipeline
