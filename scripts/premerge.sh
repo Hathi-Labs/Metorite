@@ -168,7 +168,7 @@ while IFS= read -r f; do
   n="$(num "$f")"
   [ -n "$n" ] || continue
   if [ "$n" -le "$main_max" ]; then
-    fail "migration $(basename "$f") is not above main's highest number ($main_max). Take $((main_max + 1)) (R1)."
+    fail "migration $(basename "$f") is not above main's highest number ($main_max). Take $((main_max + 1)) (R1). lane-merge runs \`merge_bot.sh --renumber <pr> <sha>\` to fix it (CIV-RN)."
   fi
 done < <(git diff --name-only --diff-filter=A "$base" HEAD -- infra/postgres/ | grep -E '/[0-9]+_[^/]*\.sql$' || true)
 

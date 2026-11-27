@@ -217,6 +217,11 @@ _CHILD_REPORT = (
     "signed agent starts or stops a child run, through its hook. MCP_ROUTES "
     "stays its allowlist."
 )
+_PACKAGE_FIELDS = (
+    "WS-PKG PKG-14a: the dark door of the extension values of a package "
+    "(package_host.md §8.3). No chat tool reaches it yet. PKG-14b adds the "
+    "tool with the task panel, and the door adds nothing before then."
+)
 _AGENT_DELETE = (
     "The typed tool delete_task of §9 serves this route, after the yes of the "
     "member (EA3-51). MCP_ROUTES stays its allowlist."
@@ -505,6 +510,11 @@ PROJECTS_DOOR = App(
         Route("GET", "/projects/analytics/dataset", "task_dataset", "A", off_door=LATER),
         Route("POST", "/projects/plan/preview", "propose_plan", "B", off_door=LATER),
         Route("GET", "/projects/plan/analysis", "get_plan", "A", off_door=TYPED, sandbox=True),
+        # ── package_fields.py (WS-PKG PKG-14a, dark behind PACKAGE_HOST_ORGS) ──
+        Route("GET", "/projects/tasks/{task_id}/package-fields", "", "X",
+              reason=_PACKAGE_FIELDS),
+        Route("PUT", "/projects/tasks/{task_id}/package-fields/{install_id}/{field_key}", "",
+              "X", reason=_PACKAGE_FIELDS),
         Route("GET", "/projects/reports", "report_list", "A", off_door=LATER, sandbox=True),
         Route("GET", "/projects/reports/templates", "render_report", "A", off_door=LATER,
               sandbox=True),
