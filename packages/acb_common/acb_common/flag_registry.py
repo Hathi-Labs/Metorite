@@ -559,6 +559,19 @@ class FlagRegistry(BaseSettings):
     # find_engine.md sections 6 and 8.
     chat_search_orgs: str = ""
 
+    # ── One send runs once (HRD-17a, chat_failure_modes.md §6) ─────────────
+    #
+    # CHAT_SEND_ONCE_ORGS: a comma list of organization ids, or `*`. Empty:
+    # off, the default, and the run route makes no Redis call for it. On, a
+    # send that the browser sends again with the same `user_message_id`
+    # starts no second run. It replays the first run, or answers that the
+    # run is final. The same id with other words gets 409 `send_id_reused`.
+    # The key is per org, thread, member and id, in tenant Redis. The one
+    # reader is `orchestrator.send_once.send_once_on`. A SIGHUP reload
+    # applies a change (`gateway/flag_reload.py`). It calls no model.
+    # Fence: tests/unit/test_send_once.py.
+    chat_send_once_orgs: str = ""
+
     # ── The topics of the chat list (chat_organization.md §6, WS-CO CO-2a) ─
     #
     # `chat_topics_orgs` lists the organization ids where the routes of
@@ -866,6 +879,20 @@ class FlagRegistry(BaseSettings):
 
     email_insights_orgs: str = ""
 
+    # ── Mark done in Email (email_app_master_plan.md §6.6, task 3995) ───────
+    #
+    # `email_mark_done_orgs` lists the organization ids whose Email app shows
+    # "Mark done", or `*` for each one. Empty means off, the default:
+    # `POST /email/reply-zero/resolve` and each Reply Zero writer behave as
+    # before. On, a Done by hand writes a held status that no automated writer
+    # moves until a new inbound message arrives. The one reader is
+    # `gateway.routes.email.automation.mark_done.mark_done_on`, and it fails
+    # closed. The name ends in `_orgs`, so a SIGHUP applies a change with no
+    # restart. A value on a box is an `enforcement-flip`: name the flag and the
+    # box in the same message.
+    # Fence: tests/unit/test_email_mark_done_r8.py.
+    email_mark_done_orgs: str = ""
+
     # ── Email signature layouts (WS-17 SG-2, email_app_master_plan.md §23.5) ─
     #
     # `email_signature_templates_orgs` lists the organization ids whose
@@ -1060,6 +1087,14 @@ class FlagRegistry(BaseSettings):
     # the gateway applies a change. Any non-empty value is OWNER-ONLY
     # (work_plan.md §6 D4). Fence: tests/unit/test_pack_choose_server_words.py.
     mcp_mail_precedence_orgs: str = ""
+
+    # MM-1: MEMBER_ACTIONS_ORGS lists the org ids where the act record
+    # (`member_action`) takes rows. `*` opens every org. Empty opens none, and
+    # the writer then records nothing. A SIGHUP reload applies a change
+    # (`docs/flag_reload.md`). The one reader is
+    # `acb_common.member_actions.enabled_for`. Spec: personalization.md
+    # section 19.4. Fence: tests/unit/test_member_action_writer.py.
+    member_actions_orgs: str = ""
 
     # ── Member code runs on the box (WS-STU STU-Q15a) ──────────────────────
     #
