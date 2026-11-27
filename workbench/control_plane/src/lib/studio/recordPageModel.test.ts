@@ -9,7 +9,7 @@ import { boundPageState, decodePageState, encodePageState, EMPTY_PAGE_STATE, typ
 import { previewControls } from "./packagePreview";
 import { verbMap } from "./realDoor";
 import { mergePageQuery } from "./usePageState";
-import {
+import { MAX_FACTS, fileCount, recordFacts,
   RELATED_LIMIT, closeRecord, fileFields, linkedDoor, openRecord, openedRecord, parseRecordLink, pickRecordTab,
   recordLinkBase, linesFields, recordTabs, fileLabel, newButtonState, relatedArgs, relatedLists, withFullPage, withRecordTab, type RecordObject,
 } from "./recordPageModel";
@@ -257,3 +257,40 @@ describe("the Lines tab (STU-D17a)", () => {
   });
 });
 
+
+describe("recordFacts (STU-LY-3)", () => {
+  const fields = [
+    { key: "name", type: "text", label: "Name" },
+    { key: "notes", type: "longText", label: "Notes" },
+    { key: "when", type: "date", label: "When" },
+    { key: "status", type: "select", label: "Status", options: ["open", "done"] },
+    { key: "owner", type: "person", label: "Owner" },
+    { key: "site", type: "text", label: "Site" },
+    { key: "extra", type: "text", label: "Extra" },
+    { key: "photos", type: "file", label: "Photos" },
+  ];
+  const rec = { name: "Visit 1", notes: "long", when: "2026-11-15", status: "open", owner: "a@x.io", site: "North", extra: "e", photos: [{ id: "f1" }] };
+  it("puts the select first, keeps the object order, and stops at the cap", () => {
+    const f = recordFacts(fields, rec, "name");
+    expect(f.map((x) => x.key)).toEqual(["status", "when", "owner", "site"]);
+    expect(f.length).toBeLessThanOrEqual(MAX_FACTS);
+  });
+  it("leaves out the title, a long text, a file and a field with no value", () => {
+    const f = recordFacts(fields, { ...rec, when: "", owner: null, site: [] }, "name");
+    expect(f.map((x) => x.key)).toEqual(["status", "extra"]);
+  });
+  it("gives no fact for an empty record", () => {
+    expect(recordFacts(fields, {}, "name")).toEqual([]);
+    expect(recordFacts(fields, rec, "name", 0)).toEqual([]);
+  });
+});
+
+describe("fileCount (STU-LY-3)", () => {
+  const fields = [{ key: "photos", type: "file" }, { key: "doc", type: "file" }, { key: "name", type: "text" }];
+  it("counts attachments over the file fields only", () => {
+    expect(fileCount(fields, { photos: [{ id: "a" }, { id: "b" }], doc: { id: "c" }, name: [{ id: "x" }] })).toBe(3);
+    expect(fileCount(fields, { photos: [], doc: null })).toBe(0);
+    expect(fileCount(fields, undefined)).toBe(0);
+    expect(fileCount(fields, { photos: ["junk", { id: 5 }] })).toBe(0);
+  });
+});

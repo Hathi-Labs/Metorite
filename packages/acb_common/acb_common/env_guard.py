@@ -110,6 +110,8 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     "DATABASE_URL", "REDIS_URL", "CC_DSN", "APP_DB", "DBS",
     # What `tenant_session` does with an aborted transaction (H-249).
     "TENANT_SESSION_ABORT_MODE",
+    # What a service does at start with an empty or public secret (task 574).
+    "SECRET_STARTUP_CHECK",
     # Sign-in and access. EXECUTIVE_EMAILS grants the EXECUTIVE role, and
     # ALLOWED_EMAIL_DOMAIN decides who may sign in at all.
     "ALLOWED_EMAIL_DOMAIN", "EXECUTIVE_EMAILS", "ACCESS_LEGACY_FALLBACK",
@@ -379,6 +381,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # question and opens the list of the questions, so only the owner writes
     # it.
     "AGENT_QUESTIONS_ORGS",
+    # WS-MCP SW-48: APP_LEAD_RUNS_ORGS lets the app lead Release and Resume a
+    # teammate's agent run. It widens who may write to a run, so only the
+    # owner writes it.
+    "APP_LEAD_RUNS_ORGS",
     # WS-55 CIV-14b: MCP_IMAGE_UPLOAD_ORGS lets an outside agent upload an
     # image to a task and show it on a question. A tenant must not open it
     # for another org, so only the owner writes it.

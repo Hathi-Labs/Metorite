@@ -28,10 +28,13 @@ block. Run it locally with ``uvicorn agent_edge.app:app``.
 """
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
 from acb_auth import agent_oauth
+from acb_auth.secret_check import check_startup_secrets
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -79,6 +82,17 @@ def _resource_metadata_paths() -> list[str]:
     return [base, f"{base}{path}"] if path else [base]
 
 
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Check the secrets of the edge at start (task 574, WS-2d, BO-8).
+
+    Shadow (the default) logs each empty or public secret by name. Enforce
+    refuses the start. Fence: tests/unit/test_secret_startup_check.py.
+    """
+    check_startup_secrets("agent_edge")
+    yield
+
+
 def create_app() -> FastAPI:
     """Build the edge app. The routes read Settings on each request."""
     app = FastAPI(
@@ -86,6 +100,7 @@ def create_app() -> FastAPI:
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+        lifespan=_lifespan,
     )
     app.add_middleware(EdgeGate)
 

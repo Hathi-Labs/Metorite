@@ -183,6 +183,9 @@ const EVIDENCE: readonly string[] = [
   "crm_mapping_suggestions",
   "crm_preview_suggestion",
   "crm_analysis_status",
+  // WS-CRM CRM-M2f and CRM-M2i (task 3953): the Field map and its plan.
+  "crm_field_map",
+  "crm_list_mapping_plans",
   // ── Every data agent (WS-48, `acb_skills/narrowing.py`) ────────────────
   // `narrow_and_read` searches, picks and reads, and changes nothing. One
   // name serves the email and the WhatsApp agents.
@@ -392,6 +395,11 @@ const WRITE: readonly string[] = [
   // WS-CRM CRM-M2e (task 3951): a stage, a lead status or a lost reason.
   "crm_edit_status",
   "crm_edit_lost_reason",
+  // WS-CRM CRM-M2f and CRM-M2i (task 3953): a field rule and the plan.
+  "crm_edit_field_rule",
+  "crm_draft_mapping_plan",
+  "crm_approve_mapping_plan",
+  "crm_restore_mapping_plan",
   // ── The assistant profile (WS-63 PZ-6a): each acts at once, with Undo ──
   "profile_remember",
   "profile_forget",
