@@ -3740,8 +3740,14 @@ async def drop_lost_goal(
     :func:`goal_link_lost` says so, it sets ``goal_task_id`` to NULL in
     *values* and records the old Goal in *dropped*, so the timeline keeps it.
     An epic that stays an epic keeps its Goal, because the link works across
-    projects. ``tasks._cross_root_values`` and ``move.move_tasks`` both call
-    it, so the two move paths cannot disagree."""
+    projects. A Goal that epics point at must land as a Goal type, or the
+    move gets 409 (:func:`assert_goal_keeps_type`), the rule of a PATCH.
+    ``tasks._cross_root_values`` and ``move.move_tasks`` both call it, so the
+    two move paths cannot disagree."""
+    if "type_id" in values:
+        await assert_goal_keeps_type(
+            db, getattr(task, "organization_id", None), task, values["type_id"],
+        )
     if await goal_link_lost(db, task, values.get("type_id")):
         values["goal_task_id"] = None
         dropped["goal_task_id"] = str(task.goal_task_id)
@@ -3801,9 +3807,62 @@ async def assert_goal_type_has_no_links(
     db: Any, organization_id: str | None, type_id: str,
 ) -> None:
     """WM-5. 409 when an epic points at a task of the type *type_id*. A type
-    write that sets ``is_goal`` false calls it."""
+    write that sets ``is_goal`` false calls it, and so does the delete of a
+    Goal type, because the delete leaves each of its tasks with no type."""
     await _refuse_goal_links(
         db, _TYPE_GOAL_LINKS_SQL, {"type_id": str(type_id)}, organization_id,
+    )
+
+
+async def assert_goal_keeps_type(
+    db: Any, organization_id: str | None, task: Any, type_id_after: str | None,
+) -> None:
+    """WM-5. 409 when *task* is a Goal that epics point at, and its type
+    after the write, *type_id_after*, is not a Goal type. So no epic keeps a
+    link to a task that is not a Goal.
+
+    A PATCH that sets a new type calls it (``tasks._check_goal_patch``). A
+    move to another root calls it through :func:`drop_lost_goal`, because the
+    move remaps the type by name and can land it as no type. A task with no
+    type before the write is no Goal, so it reads nothing.
+    """
+    type_before = getattr(task, "type_id", None)
+    if not type_before or str(type_id_after or "") == str(type_before):
+        return
+    old = await load_row(db, "pm_task_types", str(type_before))
+    if not is_goal_type(old):
+        return
+    new = (
+        await load_row(db, "pm_task_types", str(type_id_after))
+        if type_id_after else None
+    )
+    if not is_goal_type(new):
+        await assert_goal_has_no_links(db, organization_id, str(task.id))
+
+
+#: WM-5. The links of the tasks of one type, cleared when the type stops
+#: being an epic type. Only a row that holds a link changes.
+_CLEAR_TYPE_GOALS_SQL = """
+UPDATE pm_tasks
+   SET goal_task_id = NULL
+ WHERE type_id = CAST(:type_id AS uuid)
+   AND organization_id = CAST(:org AS uuid)
+   AND goal_task_id IS NOT NULL
+"""
+
+
+async def clear_goals_of_type(
+    db: Any, organization_id: str | None, type_id: str,
+) -> None:
+    """WM-5. Only an epic carries a Goal. A type that stops being an epic
+    type (``is_epic`` false on a PATCH, or the delete of the type) clears the
+    Goal of each of its tasks in the same transaction. No flag check: a clear
+    only removes a link, as :func:`goal_link_lost` says. No org, no rows."""
+    if not organization_id:
+        return
+    await db.execute(
+        text(_CLEAR_TYPE_GOALS_SQL),
+        {"type_id": str(type_id), "org": str(organization_id)},
     )
 
 #: SP-8a (``project_management_app.md`` §13.3). The 422 of an epic contract

@@ -41,6 +41,7 @@ from gateway.routes.projects.core import (
     assert_goal_type_has_no_links,
     can_manage_settings,
     clean_payload,
+    clear_goals_of_type,
     count_where,
     holds_lanes,
     hue_values,
@@ -1402,6 +1403,12 @@ async def patch_type(
             await assert_goal_type_has_no_links(
                 db, getattr(existing, "organization_id", None), type_id,
             )
+        if values.get("is_epic") is False and is_epic_type(existing):
+            # WM-5. Only an epic carries a Goal. The tasks of a type that
+            # stops being an epic type lose their Goal in this same write.
+            await clear_goals_of_type(
+                db, getattr(existing, "organization_id", None), type_id,
+            )
         if not values:
             return row_to_dict(existing, TypeModel)
         try:
@@ -1447,6 +1454,15 @@ async def delete_type(
                 detail=f"'{EPIC_TYPE_NAME}' is a system type and cannot be deleted.",
             )
         affected = await count_where(db, "pm_tasks", "type_id", type_id)
+        org = getattr(existing, "organization_id", None)
+        if is_goal_type(existing):
+            # WM-5. The delete leaves each Goal of the type with no type. A
+            # Goal that epics point at keeps a Goal type, so 409 names them.
+            await assert_goal_type_has_no_links(db, org, type_id)
+        elif is_epic_type(existing):
+            # WM-5. Only an epic carries a Goal. The tasks of the type lose
+            # their type here, so they lose their Goal in the same write.
+            await clear_goals_of_type(db, org, type_id)
         await db.execute(
             text("DELETE FROM pm_task_types WHERE id = CAST(:tid AS uuid)"),
             {"tid": type_id},

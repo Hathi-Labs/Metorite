@@ -51,10 +51,18 @@ Run::
 * M9. ``G/tasks.py``: ``_cross_root_values`` drops the ``goal_link_lost``
   test. ``test_a_move_to_another_root_clears_the_goal_of_a_lost_epic_type``.
 * M10. ``G/tasks.py``: ``_check_goal_patch`` drops the
-  ``assert_goal_has_no_links`` call.
+  ``assert_goal_keeps_type`` call.
   ``test_a_goal_that_epics_link_to_keeps_its_goal_type``.
 * M11. ``G/rollup.py``: ``goal_rollup`` drops ``hidden_slices``.
   ``test_a_hidden_epic_is_counted_and_never_named``.
+* M12. ``G/core.py``: ``drop_lost_goal`` drops the ``assert_goal_keeps_type``
+  call. ``test_a_move_of_a_linked_goal_to_another_root_is_refused``.
+* M13. ``G/admin.py``: ``delete_type`` drops the
+  ``assert_goal_type_has_no_links`` call.
+  ``test_the_delete_of_a_linked_goal_type_is_refused``.
+* M14. ``G/admin.py``: ``patch_type`` or ``delete_type`` drops the
+  ``clear_goals_of_type`` call.
+  ``test_a_type_that_stops_being_an_epic_type_clears_each_goal``.
 """
 from __future__ import annotations
 
@@ -503,6 +511,89 @@ class TestTheGoalOnARealDatabase:
         assert (await _patch(live, epic, {"goal_task_id": None})).status_code == 200
         sent = await _patch(live, goal, {"type_id": live.wm5["plain"]})
         assert sent.status_code == 200, sent.text
+
+    async def test_a_move_of_a_linked_goal_to_another_root_is_refused(
+        self, live, goals_on,
+    ):
+        """The move remaps the type by name. The Goal type is org-wide, so it
+        lands as no type, and the Goal would stop being a Goal (409)."""
+        _setup(live)
+        goal = _mk(live, "wm5 goal moves root", kind="goal")
+        epic = _mk(live, "wm5 epic of moved goal", kind="epic", goal=goal)
+        live.seeder.one("UPDATE pm_tasks SET created_by = :m WHERE id = CAST(:t AS uuid)"
+                        " RETURNING id", m=w.MEMBER, t=goal)
+        moved = await t._send(live, "POST", f"/projects/tasks/{goal}/move",
+                              signed=None, body={"project_id": live.other})
+        assert moved.status_code == 409, moved.text
+        assert moved.json()["detail"] == "1 epic links to this Goal, so unlink them first."
+        with live.admin.begin() as c:
+            row = c.execute(text("SELECT project_id, type_id FROM pm_tasks"
+                                 " WHERE id = CAST(:t AS uuid)"), {"t": goal}).one()
+        assert (str(row.project_id), str(row.type_id)) == (live.team, live.wm5["goal"])
+        assert _goal_of(live, epic) == goal
+        # Unlinked, the Goal moves.
+        assert (await _patch(live, epic, {"goal_task_id": None})).status_code == 200
+        moved = await t._send(live, "POST", f"/projects/tasks/{goal}/move",
+                              signed=None, body={"project_id": live.other})
+        assert moved.status_code == 200, moved.text
+
+    async def test_the_delete_of_a_linked_goal_type_is_refused(self, live, goals_on):
+        """The delete leaves each Goal of the type with no type (409)."""
+        _setup(live)
+        root = live.seeder.root(live.team)
+        kind = str(live.seeder.one(
+            "INSERT INTO pm_task_types (project_id, name, organization_id, is_goal)"
+            " VALUES (CAST(:p AS uuid), :n, CAST(:o AS uuid), true) RETURNING id",
+            p=root, n=f"WM5 goal del {uuid.uuid4().hex[:6]}", o=live.org))
+        goal = _mk(live, "wm5 goal of deleted type")
+        live.seeder.one("UPDATE pm_tasks SET type_id = CAST(:ty AS uuid)"
+                        " WHERE id = CAST(:t AS uuid) RETURNING id", ty=kind, t=goal)
+        epic = _mk(live, "wm5 epic of deleted goal type", kind="epic", goal=goal)
+        sent = await t._send(live, "DELETE", f"/projects/types/{kind}", signed=None)
+        assert sent.status_code == 409, sent.text
+        assert sent.json()["detail"] == "1 epic links to this Goal, so unlink them first."
+        assert _goal_of(live, epic) == goal
+        # Unlinked, the type goes.
+        assert (await _patch(live, epic, {"goal_task_id": None})).status_code == 200
+        sent = await t._send(live, "DELETE", f"/projects/types/{kind}", signed=None)
+        assert sent.status_code == 200, sent.text
+
+    async def test_a_type_that_stops_being_an_epic_type_clears_each_goal(
+        self, live, goals_on,
+    ):
+        """``is_epic`` false on a PATCH, and the delete of an epic type, each
+        clear the Goal of the tasks of the type in the same write."""
+        _setup(live)
+        root = live.seeder.root(live.team)
+        goal = _mk(live, "wm5 goal of an epic type", kind="goal")
+
+        def epic_kind() -> str:
+            return str(live.seeder.one(
+                "INSERT INTO pm_task_types (project_id, name, organization_id, is_epic)"
+                " VALUES (CAST(:p AS uuid), :n, CAST(:o AS uuid), true) RETURNING id",
+                p=root, n=f"WM5 epic kind {uuid.uuid4().hex[:6]}", o=live.org))
+
+        def epic_of(kind: str, title: str) -> str:
+            task = _mk(live, title, goal=None)
+            live.seeder.one("UPDATE pm_tasks SET type_id = CAST(:ty AS uuid),"
+                            " goal_task_id = CAST(:g AS uuid) WHERE id = CAST(:t AS uuid)"
+                            " RETURNING id", ty=kind, g=goal, t=task)
+            return task
+
+        flagged = epic_kind()
+        one = epic_of(flagged, "wm5 epic unflagged")
+        sent = await t._send(live, "PATCH", f"/projects/types/{flagged}",
+                             signed=None, body={"is_epic": False})
+        assert sent.status_code == 200, sent.text
+        assert _goal_of(live, one) is None
+
+        deleted = epic_kind()
+        two = epic_of(deleted, "wm5 epic of a deleted type")
+        sent = await t._send(live, "DELETE", f"/projects/types/{deleted}", signed=None)
+        assert sent.status_code == 200, sent.text
+        assert _goal_of(live, two) is None
+        roll = (await _read(live, goal)).json()["rollup"]
+        assert (roll["epics"], roll["epics_total"]) == ([], 0)
 
     async def test_the_target_must_be_a_goal(self, live, goals_on):
         _setup(live)

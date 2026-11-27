@@ -83,7 +83,7 @@ from gateway.routes.projects.core import (
     archive_note,
     assert_assignable_here,
     assert_epic_has_no_parent,
-    assert_goal_has_no_links,
+    assert_goal_keeps_type,
     assert_goal_link,
     assert_holds_tasks,
     assert_move_keeps_privacy,
@@ -101,10 +101,8 @@ from gateway.routes.projects.core import (
     goal_link_lost,
     insert_assignees,
     insert_row,
-    is_goal_type,
     lift_subtasks_to_grandparent,
     load_default_status,
-    load_row,
     load_visible_project,
     load_visible_task,
     lock_task,
@@ -1523,7 +1521,8 @@ async def _check_goal_patch(
     names a Goal that the writer sees, and it replaces the old one, because
     the link is one column. A new type that is not an epic clears the link in
     the same write (:func:`core.goal_link_lost`). A Goal that epics point at
-    keeps a Goal type (:func:`core.assert_goal_has_no_links`, 409).
+    keeps a Goal type (:func:`core.assert_goal_keeps_type`, 409), the rule
+    that a move to another root keeps too.
     """
     type_after = (
         values["type_id"] if "type_id" in values else getattr(before, "type_id", None)
@@ -1534,12 +1533,8 @@ async def _check_goal_patch(
             await assert_goal_link(db, vis, type_after, values["goal_task_id"])
     elif "type_id" in values and await goal_link_lost(db, before, type_after):
         values["goal_task_id"] = None
-    type_before = getattr(before, "type_id", None)
-    if "type_id" in values and type_before and str(type_after or "") != str(type_before):
-        old = await load_row(db, "pm_task_types", str(type_before))
-        new = await load_row(db, "pm_task_types", str(type_after)) if type_after else None
-        if is_goal_type(old) and not is_goal_type(new):
-            await assert_goal_has_no_links(db, vis.organization_id, str(before.id))
+    if "type_id" in values:
+        await assert_goal_keeps_type(db, vis.organization_id, before, type_after)
 
 
 async def _bump_closed_runs(user: UserContext, recipients: list[str]) -> None:
