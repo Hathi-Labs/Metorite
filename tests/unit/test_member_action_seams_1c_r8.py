@@ -1,14 +1,12 @@
-"""WS-PZ MM-1c — the feature reads and a My Day act, on a real database (R8).
+"""WS-PZ MM-1c — the feature reads, on a real database (R8).
 
-Code: ``routes/email/act_features.py`` over ``email_messages``, and
-``acb_common.member_actions.record_act`` as the My Day seam calls it. Hermetic
+Code: ``routes/email/act_features.py`` over ``email_messages``. Hermetic
 twin: ``test_member_action_seams_1c.py``. Run on a PRIVATE ladder database as
 ``test_member_action_r8.py`` says.
 
 a. ``of_message`` and ``of_thread`` read the sender domain of the right mail
    (the newest INBOUND mail of a thread), and the casts match the uuid columns.
 b. Org B reads nothing of org A's mail (RLS).
-c. A My Day act lands with the card id and kind, and no text.
 """
 from __future__ import annotations
 
@@ -25,7 +23,6 @@ pytest.importorskip("sqlalchemy")
 from acb_common import get_settings, member_actions
 from acb_common.db import tenant_session
 from gateway.routes.email import act_features
-from gateway.routes.shell import state
 from sqlalchemy import text
 
 from tests.unit._tenant_ladder import tenant_engine_scope
@@ -94,23 +91,3 @@ def test_r8_org_b_reads_nothing_of_org_a(world) -> None:
     b = world.p.org_b
     assert _go(world, b, lambda db: act_features.of_message(db, b, M_IN)) == {}
     assert _go(world, b, lambda db: act_features.of_thread(db, b, ACC, THREAD)) == {}
-
-
-def test_r8_a_my_day_act_lands_with_the_card_id_and_kind(world) -> None:
-    a = world.p.org_a
-    user = SimpleNamespace(organization_id=a, email=ANA)
-    items = [SimpleNamespace(action="acted", signal_id="sig-1", kind="task_due"),
-             SimpleNamespace(action="seen", signal_id="sig-2", kind="task_due")]
-
-    async def go(db: Any) -> None:
-        await state.record_card_acts(db, user, items, {"sig-1": {}, "sig-2": {}})
-
-    _go(world, a, go)
-    with world.p.admin_engine.connect() as c:
-        rows = [dict(r) for r in c.execute(text(
-            "SELECT * FROM member_action WHERE member_email LIKE :t"), {"t": _LIKE}).mappings()]
-    [row] = rows
-    assert (row["app"], row["act"], row["via"], row["item_kind"], row["item_id"]) == (
-        "my_day", "card_acted", "app", "signal", "sig-1")
-    assert row["features"] == {"signal_kind": "task_due"} and str(row["organization_id"]) == a
-    assert member_actions.counts_as_choice(row["via"])

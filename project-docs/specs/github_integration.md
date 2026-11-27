@@ -435,6 +435,8 @@ On `pull_request` `opened`, `reopened`, `edited`, `synchronize` and `ready_for_r
 
 A `pull_request` `closed` event, merged or not, or a poll read or a lazy read (§11) that writes `merged` or `closed`. A close without a merge can still finish a task whose other pull request merged earlier (§12.3 step 4). `github_merge.on_merged(db, org, ref, merged_at, merged_by)` runs in the bound tenant, in the transaction of the write. `github_sync.apply_pull_request` is the one caller (§8.6). A refused read past the bound of step 4 calls `github_merge.on_unblocked` for the tasks of that reference.
 
+**The numbers of the task (SW-27c2).** For a write INTO `merged` only, `apply_pull_request` also calls `github_sync.mark_reservations_used`, before `on_merged` and apart from it. It marks the task's project-sequence numbers used, when they are still `reserved` and were reserved at or before the merge (`agent_coordination.md` SW-27). It runs even for a task that the steps of §12.3 skip. Like §12, it covers an org on the App only: the token path of TR-1 marks no number. Fence: `test_sequence_merge_r8.py`.
+
 ### 12.2 The agent-worked rule
 
 A task is **agent-worked** at time `T` when either of these rows exists, with `created_at < T`:
@@ -449,6 +451,7 @@ A task is **agent-worked** at time `T` when either of these rows exists, with `c
 For each task with a `pull_request` reference to the merged pull request:
 
 1. **Skip a closed or held task.** Skip when the task is archived, or its status category is `completed`, `cancelled` or `triage`.
+   Also skip a task of the project `TOOL_FAILURE_PROJECT_ID` in the org `TOOL_FAILURE_ORG_ID`, while `TOOL_FAILURE_TASKS` is on. The failure sync job is the one closer of that project (`tool_failure_log.md` §7.5, TOF-2e).
 2. **Skip a task that people run.** Skip when `agent_worked.reason` is None.
 3. **Skip a task that a person took back.** Look at the newest `status_change` row of the task. Skip when all three are true:
    - its `meta.via` is absent, or does not start with `mcp:` and is not `github`. A move through the in-product chat carries `chat:projects-assistant` (`skill_projects/client.py:52`), and it is a person's move.

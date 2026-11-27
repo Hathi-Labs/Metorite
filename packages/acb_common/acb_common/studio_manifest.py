@@ -117,6 +117,23 @@ CONTRIBUTION_POINTS: tuple[str, ...] = (
 #: The loader owns the second list (`_CONTRIBUTES_KEYS`), so this module keeps no copy of it.
 ALLOWED_POINTS: frozenset[str] = frozenset(CONTRIBUTION_POINTS) | frozenset(_P0_POINTS)
 
+#: The host records that a package may extend (package_host.md section 8.3, PKG-14a-2).
+#: A copy of `HOST_RECORD_KINDS` in `gateway/package_host/field_values.py`, because this
+#: package cannot import the gateway. `tests/unit/test_studio_field_claims.py` holds the
+#: two equal, so a change to one without the other fails there.
+HOST_RECORD_KINDS: tuple[str, ...] = ("task", "crm.lead", "crm.contact", "crm.company", "crm.deal")
+#: The most entries of `contributes.fields` in one manifest (PKG-14a-2).
+MAX_HOST_FIELDS = 20
+#: The keys of one entry of `contributes.fields`: the record kind and a field spec of
+#: `studio_fields` without `required`, `hot` and `to`.
+HOST_FIELD_KEYS: frozenset[str] = frozenset({"record", "key", "type", "label", "many", "options"})
+#: The parts of a field spec that an extension field cannot set. The same set as
+#: `REFUSED_SPEC_KEYS` of `field_values.py`, and the same test holds the two equal.
+HOST_FIELD_REFUSED_KEYS: frozenset[str] = frozenset({"required", "hot", "to"})
+#: The types that an extension field cannot have. The same set as `REFUSED_TYPES`
+#: of `field_values.py`.
+HOST_FIELD_REFUSED_TYPES: frozenset[str] = frozenset({"relation", "file", "autonumber"})
+
 #: Points that only a shipped `system` file holds. An anchor is the guide's contract with the
 #: shipped shell code (assistant_guide.md section 5.7), so a package never declares one.
 SYSTEM_ONLY_POINTS: frozenset[str] = frozenset({"anchors"})
@@ -188,7 +205,10 @@ MAX_CONNECTIONS = 32
 #: STU-I1a. The grammar of one name of ``connections``: an MCP server of the
 #: registry (``mcp:<server>``), or a provider id such as ``zoho``. I1 checks
 #: the grammar only. IN-11 adds the check that the connector list holds it.
-CONNECTION_NAME_RE = re.compile(rf"mcp:{MCP_SERVER_NAME}|{_NAME}")
+#: API-5 adds an API connection of a template (``api:<template>``), such as
+#: ``api:zoho_books`` (``api_connections.md`` §2.2). The connector list holds
+#: that id, and each id of the list matches this grammar.
+CONNECTION_NAME_RE = re.compile(rf"mcp:{MCP_SERVER_NAME}|api:{_NAME}|{_NAME}")
 #: STU-I9a. The two whose-account values of a connection need.
 CONNECTION_AS = ("org", "member")
 #: STU-I9a. The most scopes, and the longest scope, of one connection need.
@@ -321,6 +341,19 @@ class FieldDef(_Strict):
     reset: str | None = None
 
 
+#: The cap of the tabs of a record page (STU-AF5b, §5.5). `lib/studio/manifest.ts` holds the same
+#: number as `MAX_RECORD_TABS`, and `recordCaps.test.ts` checks it against the schema file.
+MAX_RECORD_TABS = 6
+
+
+class RecordDef(_Strict):
+    #: The tab ids, in order. `_check_record` refuses a duplicate. Without `record`, rule 3 of
+    #: §5.5 gives the default tabs.
+    tabs: list[Literal["details", "lines", "related", "files"]] = Field(
+        min_length=1, max_length=MAX_RECORD_TABS
+    )
+
+
 class ObjectDef(_Strict):
     name: str = Field(pattern=rf"^{_NAME}$")
     #: The CHECK `studio_objects_label` of C1 holds the same cap.
@@ -332,6 +365,8 @@ class ObjectDef(_Strict):
     #: C8a. The grant of each role on this object. None means an open object. The
     #: one parser is `studio_access.parse_access`, and `_check_access` calls it.
     access: list[dict[str, Any]] | None = None
+    #: The tabs of the record page of this object (STU-AF5b). None means the defaults.
+    record: RecordDef | None = None
 
 
 class ActionDef(_Strict):
@@ -594,6 +629,7 @@ class Manifest(_Strict):
     shell: Shell | None = None
     # PKG-5a: package_host.md sections 3.1, 4, 5.4 and 8. Loose by design.
     # PKG-14 to PKG-16 give `slots`, `needs` and `overrides` their meaning.
+    # PKG-14a-2: `_check_host_fields` checks `contributes.fields`. The schema stays loose.
     contributes: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     extends: str | None = Field(default=None, pattern=rf"^{_DASHED}$")
     slots: list[dict[str, Any]] = Field(default_factory=list)
@@ -1085,6 +1121,8 @@ def _check_objects(m: Manifest, objects: dict[str, set[str]], out: list[Manifest
                 # never into a form of the app. The narrow rule, because a
                 # field such as `token_number` holds member data.
                 out.append(_err(f"{base}[{fi}].key", SECRET_FIELD + _got(f.key)))
+        if o.record is not None:
+            _dupes(list(o.record.tabs), f"$.objects[{oi}].record.tabs", "record tab", out)
         _check_rules(o, f"$.objects[{oi}].rules", out, m.objects)
     _check_lines(m, out)
     _check_access(m, out)
@@ -1172,6 +1210,49 @@ def _check_lines(m: Manifest, out: list[ManifestError]) -> None:
                 out.append(_err(path, problem))
             else:
                 owners[f.to] = o.name
+
+
+def _check_host_fields(m: Manifest, out: list[ManifestError]) -> None:
+    """The extension fields of `contributes.fields` (package_host.md section 8.3,
+    PKG-14a-2). Each entry names a host record kind and holds a field spec of
+    `studio_fields` without its three refused parts. The field rules are
+    `studio_fields.validate_field_spec`, the one check. This adds the record
+    kind, the refused parts and types, the duplicates and the count cap."""
+    entries = m.contributes.get("fields")
+    if not entries:
+        return
+    base = "$.contributes.fields"
+    if len(entries) > MAX_HOST_FIELDS:
+        out.append(_err(base, f"A package declares at most {MAX_HOST_FIELDS} extension fields."))
+    seen: set[tuple[str, str]] = set()
+    for i, entry in enumerate(entries):
+        path = f"{base}[{i}]"
+        for extra in sorted(str(k) for k in entry if k not in HOST_FIELD_KEYS):
+            message = (f"An extension field cannot set `{extra}`. Remove it."
+                       if extra in HOST_FIELD_REFUSED_KEYS
+                       else "This is not a key of an extension field. Remove it.")
+            out.append(_err(f"{path}.{_short(extra)}", message))
+        record = entry.get("record")
+        if not isinstance(record, str) or record not in HOST_RECORD_KINDS:
+            out.append(_err(
+                f"{path}.record",
+                f"The record kind is one of {', '.join(HOST_RECORD_KINDS)}.{_got(record)}"))
+        spec = {k: v for k, v in entry.items() if k in HOST_FIELD_KEYS and k != "record"}
+        for problem in validate_field_spec(spec):
+            tail = "" if problem.got is None else _got(problem.got)
+            where = f"{path}.{problem.path}" if problem.path else path
+            out.append(_err(where, problem.message + tail))
+        kind = entry.get("type")
+        if isinstance(kind, str) and kind in HOST_FIELD_REFUSED_TYPES:
+            out.append(_err(f"{path}.type", f"An extension field cannot have the type `{kind}`."))
+        key = entry.get("key")
+        if isinstance(record, str) and isinstance(key, str):
+            if (record, key) in seen:
+                out.append(_err(
+                    f"{path}.key",
+                    f"The field `{_short(key)}` of `{_short(record)}` is declared twice. "
+                    "Each must be unique."))
+            seen.add((record, key))
 
 
 def _rollup_sources(others: Sequence[ObjectDef], own: str) -> dict[str, RollupSource]:
@@ -1374,6 +1455,7 @@ def _semantic_errors(m: Manifest, catalog: Mapping[str, str] | None) -> list[Man
     _check_pages(m, {v.id for v in m.views}, out)
     _check_nav(m, out)
     _check_links(m, objects, catalog, out)
+    _check_host_fields(m, out)
     if m.extends is not None and m.extends == m.id:
         out.append(_err("$.extends", "A package cannot extend itself. Name the host package."
                         + _got(m.extends)))

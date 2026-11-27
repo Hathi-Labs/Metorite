@@ -6,16 +6,19 @@ from __future__ import annotations
 import functools
 import json
 import time
+import uuid
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
 from acb_common import db_busy, member_actions
 from acb_common.tenant_redis import get_tenant_redis, key, organization_scope
+from acb_common.tool_refusals import strip_id_label
 from email_ingestion import html_tier
 from email_ingestion import storage as ingest_storage
 from email_ingestion.body_backfill import _html_to_text
 from email_ingestion.providers.base import canonical_folder, local_folder_after_move
 from fastapi import Depends, HTTPException, Query, status
+from fastapi.responses import JSONResponse
 from gateway.routes.email import act_features
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
@@ -61,6 +64,10 @@ from gateway.routes.email.provider_errors import (
 )
 from gateway.routes.email.quoting import strip_for_reading
 from gateway.routes.email.transport.attachments import _canonical_uuid
+from gateway.routes.email.transport.recipient_filters import (
+    attachment_name_clause,
+    recipient_clause,
+)
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -217,6 +224,8 @@ async def list_messages(
     has_attachments: bool | None = Query(None),
     importance: str | None = Query(None),       # high | normal | low
     from_email: str | None = Query(None),       # substring match on sender address
+    to_addr: str | None = Query(None),          # substring on any To/Cc recipient (LOOP-19)
+    attachment_name: str | None = Query(None),  # substring on a file name (LOOP-19)
     sender_category: str | None = Query(None),  # email_senders category
     sort: str = Query("newest"),                # newest | oldest | importance
     collapse: bool = Query(False),              # one row per conversation
@@ -339,6 +348,10 @@ async def list_messages(
         if has_attachments is not None:
             where_clauses.append("em.has_attachments = :has_attachments")
             params["has_attachments"] = has_attachments
+        for clause in (recipient_clause(params, to_addr),
+                       attachment_name_clause(params, attachment_name)):
+            if clause:
+                where_clauses.append(clause)
         if importance:
             where_clauses.append("LOWER(em.importance) = LOWER(:importance)")
             params["importance"] = importance
@@ -818,6 +831,41 @@ class MessageSummariesRequest(BaseModel):
     ids: list[str]
 
 
+def summary_ids(raw: list[str] | None) -> list[str]:
+    """The valid message ids of a summaries request, canonical, in order.
+
+    A client may send ``id=<uuid>``, the label that the list tools print, so
+    the label drops first. An id that is not a UUID drops out. One bad id
+    must never fail the batch: asyncpg raised ``DataError`` for it, and the
+    route answered 500 for every row (task 3863).
+    """
+    out: list[str] = []
+    for item in raw or []:
+        try:
+            out.append(str(uuid.UUID(strip_id_label(item))))
+        except ValueError:
+            continue
+    return out
+
+
+def _summary_extra(row: Any) -> dict[str, Any]:
+    """The mailbox, the folder, the To addresses and the snippet of one
+    summaries row (task 3977). A row without a column gives an empty value."""
+    to = getattr(row, "to_addresses", None)
+    if isinstance(to, str):
+        try:
+            to = json.loads(to or "[]")
+        except ValueError:
+            to = []
+    account = getattr(row, "account_id", None)
+    return {
+        "account_id": str(account) if account else None,
+        "folder": getattr(row, "folder", None),
+        "to_addresses": to if isinstance(to, list) else [],
+        "snippet": getattr(row, "snippet", None) or "",
+    }
+
+
 @router.post("/messages/summaries")
 async def message_summaries(
     req: MessageSummariesRequest,
@@ -831,14 +879,15 @@ async def message_summaries(
     server-side, so the card is self-contained regardless of which list tool
     (or none) surfaced the id. Owner-scoped; unknown/foreign ids are omitted.
     Order follows the input ``ids`` so the agent's grouping is preserved."""
-    ids = [i for i in (req.ids or []) if i]
+    ids = summary_ids(req.ids)
     if not ids:
         return {"summaries": []}
     async with _tenant_session() as db:
         rows = (await db.execute(
             text(
                 """SELECT em.id, em.thread_id, em.subject, em.from_address,
-                          em.received_at, em.is_read, em.has_attachments
+                          em.received_at, em.is_read, em.has_attachments,
+                          em.account_id, em.folder, em.to_addresses, em.snippet
                    FROM email_messages em
                    JOIN email_accounts ea ON em.account_id = ea.id
                    WHERE """
@@ -860,6 +909,9 @@ async def message_summaries(
                 "received_at": r.received_at.isoformat() if r.received_at else None,
                 "is_read": r.is_read,
                 "has_attachments": r.has_attachments,
+                # Task 3977 (§18.13): the chat trash tells a draft from a
+                # mail, and matches drafts, with no read of each message.
+                **_summary_extra(r),
             }
         # Preserve caller order (and drop ids the user doesn't own).
         summaries = [by_id[i] for i in ids if i in by_id]
@@ -1340,12 +1392,27 @@ async def snooze_message(
         }
 
 
+#: The values of ``provider`` in the answer of ``DELETE ...?report=true``
+#: (task 3977, ``email_app_master_plan.md`` §18.13).
+TRASH_CONFIRMED = "confirmed"
+TRASH_NOT_CONFIRMED = "not_confirmed"
+
+
 @router.delete("/messages/{message_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_message(
     message_id: str,
     user: UserContext = Depends(get_current_user),
+    report: bool = False,
 ):
-    """Move email to trash (locally and on the provider)."""
+    """Move email to trash (locally and on the provider).
+
+    The answer is 204 with no body, as before. Task 3977 (§18.13): with
+    ``?report=true`` the answer is 200 and says what the provider did.
+    ``provider`` is ``confirmed`` only when the provider accepted the trash.
+    It is ``not_confirmed`` when no provider loads, when it does not
+    authenticate, or when its trash raises. The local row then reads Trash,
+    and the next sync can bring the message back. ``reason`` is one fixed
+    word, and never the text of an error."""
     async with _tenant_session() as db:
         result = await db.execute(
             text(
@@ -1375,16 +1442,20 @@ async def delete_message(
     # ── Two-way sync: trash on the provider too (best-effort) ──
     # The local trash committed with the block above, BEFORE the push
     # (2026-10-28). No session is open across the provider call.
+    confirmed = False
+    reason = "no_provider" if built is None else "not_authenticated"
+    discarded = False
     if built is not None:
         provider, provider_msg_id, account_id, store = built
         new_pid = None
-        discarded = False
         try:
             if await provider.authenticate():
                 new_pid = await provider.trash_message(provider_msg_id)
+                confirmed = True
                 discarded = provider_msg_id in getattr(provider, "discarded_drafts", ())
         except Exception as exc:  # noqa: BLE001
             push_error = exc
+            reason = "provider_error"
         rekeyed = bool(new_pid) and new_pid != provider_msg_id
         if discarded or rekeyed or provider.credentials_dirty():
             try:
@@ -1410,6 +1481,16 @@ async def delete_message(
             "delete_message.provider_sync_failed",
             message_id=message_id, error=str(push_error)[:200],
         )
+    if not report:
+        return None
+    # A failure AFTER the provider accepted (the local re-key or the saved
+    # tokens) does not undo the trash, so it stays confirmed.
+    return JSONResponse({
+        "id": message_id,
+        "provider": TRASH_CONFIRMED if confirmed else TRASH_NOT_CONFIRMED,
+        "reason": "" if confirmed else reason,
+        "discarded": discarded,
+    })
 
 
 @router.get("/messages/{message_id}/full-body")

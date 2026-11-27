@@ -6,7 +6,13 @@ built, dark behind `CHAT_CONSTRAINTS` (2026-10-25, "As built" below). OA-5
 is BUILT (2026-10-25): the report is `docs/one_assistant_measure_2026-10-25.md`.
 TS-5a is BUILT (2026-11-14, task 3288): the Studio chats and the checks of the `search` arm, scripted only, in `evals/one_assistant_measure`. TS-5b is BUILT (2026-11-15, task 3289, stacked on TS-2a PR 3): the `find_tools` plans, the scripted pass of the `search` arm and the cap chat `stu_cap`. No live run, no spend.
 
-§9 (task 1648, 2026-11-04) is a design for a way through a held chat: slices WT-1 to WT-6. WT-1 is BUILT, dark behind `CHAT_CONTINUE_ORGS` (2026-11-05, task 1684, migration 345). WT-2 is BUILT, dark (task 1686). WT-3 is BUILT (2026-11-07, task 1687). WT-1b and WT-4 to WT-6 are not built.
+**As built, task 3649 (2026-11-17).** The measure holds a tune split and a held-out split. The tag `holdout` marks a held-out chat. A results file keeps counts only for the held-out rows. The rows go to a sibling file, and no fixer brief names it. `run --compare B.json,A.json` prints the flips and the noise of B. It exits 0 only when A wins.
+
+A wins when each `case:<k>` chat passes both repeats of A and the tune gain on `t2874` is at least `max(2, n + 1)`. Neither the held-out count nor the email count may fall by more than the noise `n`. The README of `evals/one_assistant_measure` holds the rule.
+
+Task 2874 adds seven chats of the owner chat of 2026-11-11, with their checks, in `evals/one_assistant_measure`. The switch `--mirror-prod` sets the chat flags of production in the eval process only. Scripted only, no live run, no spend.
+
+§9 (task 1648, 2026-11-04) is a design for a way through a held chat: slices WT-1 to WT-6. WT-1 is BUILT, dark behind `CHAT_CONTINUE_ORGS` (2026-11-05, task 1684, migration 345). WT-2 is BUILT, dark (task 1686). WT-3 is BUILT (2026-11-07, task 1687). WT-6a is BUILT, dark behind `HELD_CLASS_C_ORGS` (2026-11-07, task 1690). WT-4 is BUILT (2026-11-07, task 1688, "WT-4 as built" in §9.4). It has no flag of its own and goes live with `TOOL_PACKS` (owner approval 2026-11-27, task 1688). WT-1b, WT-5 and WT-6b are not built.
 
 OA-8a is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-8a" in §4.3.2). The flag flip is OWNER-GATE.
 
@@ -30,6 +36,8 @@ OA-9b and the OA-9a worker half are BUILT, dark behind `SPAWN_SUBAGENTS_ORGS` (2
 
 OA-9b hardening is BUILT (2026-10-28, "As built, OA-9b hardening" in §4.5). It closes the seven faults of the Opus review. The flag flip stays OWNER-GATE.
 
+Task 2492 NARROWS the pack mark (2026-11-09, "Each call" in "As built, OA-7b"). Only a pack call whose answer can bring outside text marks the chat. A new `send_email` leaves the chat clear. `send_draft`, `schedule_send` and `manage_inbox` mark, because their answer can quote a draft or a mail. The map is `tool_packs.PACK_OUTSIDE_TEXT`, and the fence is `tests/unit/test_pack_outside_text.py`.
+
 OA-9c is BUILT, dark behind `SPAWN_SUBAGENTS_ORGS` (2026-10-29, "As built, OA-9c" in §4.5). A child can hold the read tools of a pack that the main assistant holds. No email tool says `read_only=True`, so an email pack gives a child no tool yet. The flag flip stays OWNER-GATE.
 
 OA-9f is BUILT, dark behind `SPAWN_SUBAGENTS_ORGS` (2026-10-30, "As built, OA-9f" in §4.5). It changes the rule of §6.3 from a count to a kind of job. A child reads long material or runs a chain of steps. The main assistant makes light reads itself, in parallel. The flag flip stays OWNER-GATE.
@@ -49,6 +57,11 @@ guarded builder its live caller.
 
 OA-7c is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7c"
 below, PR #1383). The flag is off on each box, so no run loads a pack yet.
+
+G2 is BUILT, dark behind `CHAT_PACKS_BATCH_ORGS` (2026-11-18, task 3494,
+`chat_reach.md` §3.2, "G2" in §4.2.7). The member's own WhatsApp turn holds
+the read tools of its packs and no write tool. The specialist of each owner
+stays. No pack of mail loads there. The flag flip is OWNER-GATE.
 
 RX-1 is BUILT, not merged (2026-11-02, D169, "As built, RX-1" in §4.2.3). A held chat keeps the writes that a card shows, and a load makes room. It ships dark behind `HELD_CARD_WRITES_ORGS`, which is empty by default, and a merge changes no held chat until a person names an org. `TOOL_PACKS` must name `projects-reminders`, or no run loads that pack.
 
@@ -288,6 +301,10 @@ middle of a turn.
   of a mail pack says that a connected server stops it. Precedence differs
   by layer. In layer (a) the email pack wins and the MCP server stays out.
   In layer (b) the MCP tool wins and the pack stays out.
+- **A server named in the turn (CSY-4).** CSY-4 adds one reason to layer (a),
+  dark behind `MCP_MAIL_PRECEDENCE_ORGS`. A turn that names a connected server
+  evicts each sticky mail pack that it does not name. It acts only in a chat
+  whose mail mark reads set. `chat_connected_systems.md` §3.4 holds the rule.
 - **The refusal acts live.** A load of `email-setup` after `email` gives
   the run every email pack. From that call on, a hand-off to the email
   assistant gets the pack refusal (`PackRun.refusal`). The answer gives the
@@ -733,7 +750,9 @@ dropped names and the skipped names. A slug that is no pack gives None.
   forward or a new mail goes to the held card.
 - **Each call.** `_pack_call` puts `tool_packs.owner_scope` outside the
   permission gate. It marks the chat before the tool body, through the
-  executor's `_mark_untrusted_session`. It closes the profile writes after
+  executor's `_mark_untrusted_session`. Task 2492: it marks only for a call
+  that `tool_packs.marks_chat` names, which reads `PACK_OUTSIDE_TEXT`. A read,
+  a search and a thread mark. A send that reads nothing does not. It closes the profile writes after
   the call, also after a raise. It writes the email working set through
   `_email_working_set_for` and `_record_email_working_set`.
 - **The held set.** A held pack drops each tool that `_is_egress` or
@@ -744,7 +763,8 @@ dropped names and the skipped names. A slug that is no pack gives None.
   form. It names no other assistant. It does not say that the web is off,
   because the orchestrator's own web tools stay on behind the card.
   The `email` rules name `artifact:orchestrator:<path>` for a file of the
-  chat, because a bare path names a file of the email assistant.
+  chat. `send_email` also writes a bare path of a chat folder as its
+  `artifact:` ref (task 3598). A held run takes no such file.
 - **The marks.** Each pack tool carries `__cc_gated__`, so
   `_gate_own_maf_tools` never gates it twice. `PACK_OWNER_ATTR` names the
   owner. `_inject_mcp_servers` gives no registry MCP server to a run that
@@ -1336,6 +1356,13 @@ OA-5 §7 named OA-4 as the home of the rule (report `:324-326`). The owner chose
   - **One reader**, `tool_packs.tool_search_on`, in the pattern of `packs_on`. It fails closed. The name ends in `_ORGS`, so a SIGHUP reloads it with no deploy (`docs/flag_reload.md`).
   - **The flip is owner-only.** It moves which tools a run holds, and it spends model tokens. TS-2a PR 3 added the flag to `work_plan.md` §6 D4, beside `TOOL_PACKS`.
   - **Off leaves each item of the list below byte-identical**, and the run reads and writes no state of a found tool. The fence is `tests/unit/test_tool_search_off.py`, in the pattern of `test_tool_packs_off.py`.
+- **G2: `CHAT_PACKS_BATCH_ORGS`** (BUILT, dark, task 3494, `chat_reach.md` §3.2) lists the organization ids, or `*`. Empty means off. With the org named, the member's own WhatsApp turn holds the read tools of its packs. The words or the sticky packs of the turn choose them.
+  - **One reader**, `tool_packs.packs_batch_on`. It fails closed. Two callers ask it, `executor._start_pack_turn` and `executor._whatsapp_pack_turn_due`. The first runs with `whatsapp=True`. The second reads the channel. A SIGHUP reloads it (`docs/flag_reload.md`).
+  - **The gates** are the channel `whatsapp` that `bot_run` binds, a solo room, a chat thread, the verified member and no delegation. A workflow run, a shared room and a sender with no verified member get no pack.
+  - **Read only.** `tool_packs.batch_read_tools` keeps a tool only when the risk registry marks it read-only, so a tool with no mark leaves. A mail pack never loads (`batch_allowed`), so the run keeps its MCP servers. The record refuses no hand-off, so the specialist still does the writes. A write tool that reaches a pack call answers `tool_packs.BATCH_WRITE_REFUSED`.
+  - **The subset.** The WhatsApp subset holds the READ tools of the Projects packs, the Studio read packs, CRM and calendar-day, but never a display tool (`subagent_contract.DISPLAY_TOOLS`). **Owner question (task 3494):** may a WhatsApp turn read CRM, calendar and Projects data? The recommendation is yes.
+  - **No loader.** The turn holds no `load_skill_tools`, no `find_tools` and no published skill. Its sticky state lives in `tool_packs.BATCH_NAMESPACE`, so a WhatsApp turn never changes the sticky packs of the web chat.
+  - **Off leaves the batch run byte-identical**, and the run never calls the pack turn. The fence is `tests/unit/test_chat_packs_batch.py`.
 
 **Off leaves these byte-identical:**
 - the tool names of the orchestrator, their order and each specialist tool
@@ -1591,6 +1618,7 @@ It does not settle each case where layer (a′), the persona, the loader plan an
 6. **The add.** It calls `context.add_tools(subset)` (`agent_framework/_middleware.py:469-504`). The next request of the same run carries the full schemas.
 7. **The answer.** It gives one line for each found tool: its name and the first line of its description. Then it gives the rules block of each owning pack, once in a run (below). With no match, it says so and names `load_skill_tools`.
    - (D225, 2026-11-15) SBX-1 extends the no-match answer. `find_tools` then also checks the library and the catalog actions, and writes a `tool_gaps` row (`agent_sandbox.md` §6.1). D187 planned that as a second tool, `find_tool`, and SBX-1 does not build it.
+   - (SBX-1a, 2026-11-26) The extension is the hook `on_gap` of `FindTools`, made by `orchestrator.tool_gap_path.make_gap_hook` behind `user_tool_find_enabled`. With no hook, the no-match answer stays `FIND_NONE` (`agent_sandbox.md` §12.1 decision 2).
 
 **The rules block and the hold note go with the tools.** D117 item 2 makes a pack of its tools and a rules block, so a found tool needs both.
 - Today the rules block reaches the model on three paths. `persona_for` adds it for each pack in `loaded` (`tool_packs.py:2543`, `:2609`). The `LOADED` answer of `load_skill_tools` carries it (`:2936`, `:3670`). Layer (c) puts it in the instructions of the turn (`load_early`, `:3596-3598`, the text at `:3630`).
@@ -3070,8 +3098,10 @@ must stay green with `test_crm_answer_check.py`,
 
 ## 9. A way through a held chat (task 1648, owner brief 2026-11-05)
 
-**Status:** WT-1 BUILT, dark (2026-11-05, task 1684). WT-2 BUILT, dark (2026-11-05, task 1686). WT-3 BUILT (2026-11-07, task 1687). The plain text is live for every org. The tap form is dark. The rest is design
-(2026-11-04). Task 1648. The review below is checked against
+**Status:** WT-1 BUILT, dark (2026-11-05, task 1684). WT-2 BUILT, dark (2026-11-05, task 1686). WT-3 BUILT (2026-11-07, task 1687). The plain text is live for every org. The tap form is dark. WT-6a BUILT, dark (2026-11-07, task 1690). WT-4 BUILT (2026-11-07, task 1688). It has no flag of its own and goes live with `TOOL_PACKS` (owner approval 2026-11-27, task 1688). The rest is design
+(2026-11-04).
+
+Task 1648. The review below is checked against
 the code on 2026-11-04 at `origin/main` `7ad8dc559`. It changes no guard. The slices
 in §9.4 build it, and the first one is dark. Owner of `chat_session.continued_from`:
 this section. `chat_organization.md` §7.1 reads it and writes it never.
@@ -3085,10 +3115,14 @@ do the act. The member's own words go across. Untrusted text never goes across.
 
 A swap in place is **not** a way through a hold. The mark is keyed on
 `(org, session_id)` and slides for 400 days (`packages/acb_skills/acb_skills/egress.py:328-453`, slide at :430). No code
-clears it. `_pack_held` re-reads the same mark (`_tool_injection.py:3198`), so
+clears it. `_pack_held` re-reads the same mark (`_tool_injection.py:3199`), so
 a new persona or a reloaded pack stays held. A swap in place is for a **topic
-change that is not held**. It reuses `persona_for` (`tool_packs.py:1907`) and
-`load_tool` (`:2515`), and adds no second router. A mark-clear act is a
+change that is not held**. It reuses `persona_for` (`tool_packs.py:2231`) and
+`load_tool` (`:2910`), and adds no second router.
+
+The swap itself is already
+built (layer (a) of `begin_turn`, with the RX-1 eviction), dark under
+`TOOL_PACKS`. WT-4 adds only the line that tells the member (§9.4). A mark-clear act is a
 separate HIGH design, and it is out of scope here.
 
 ### 9.2 The review: each act the hold removes
@@ -3129,6 +3163,14 @@ separate HIGH design, and it is out of scope here.
    `custom_events`, `agent_state`, `authority`, `tool_events`,
    `member_summary` or a file reference. `prepare_new_session` purges by id
    only, so no file id crosses.
+   **HRD-19a (2026-11-17, task 2998).** The carry of a chat ROW stays as this item
+   says. Beside it, the route copies two server records of the SAME member, key
+   to key, in the store that owns each: the decisions of the OA-4 list
+   (`chat_constraints.carry_decisions`, under `CHAT_CONSTRAINTS`, the kind
+   `decision` only) and the item in focus (`chat_focus.carry_focus`, under
+   `CHAT_FOCUS_ORGS`, with its original time, only while it is fresh). A copy
+   writes no `text`, no `chat_message` row and no `continued_from` read. A shared
+   room copies nothing. Open cards and limits do not cross (HRD-19b).
 6. **No seed row.** The route writes no `chat_message` row. It returns
    `{session_id, text}`. The web shell puts `text` in the composer, and the
    member sends it. `_write_prompt_row` (`apps/services/gateway/gateway/routes/agent.py:2625`)
@@ -3157,15 +3199,59 @@ separate HIGH design, and it is out of scope here.
 | Slice | What | Tier | Gate |
 |---|---|---|---|
 | WT-1 | 🔨 **BUILT, dark (2026-11-05, task 1684).** Migration 345 (`345_chat_session_continued_from.sql`) adds `continued_from`, with its foreign key NOT VALID. A later release validates it. Route `continue_session`, flag reader `continue_allowed`. Fences: `test_continue_carry.py` (R8), `test_continued_from_readers.py`. Migration (next free number at build. It was 344 on 2026-11-04) for `continued_from`. Route `POST /chat/sessions/{id}/continue` in `routes/chat.py` by §9.3. Flag `CHAT_CONTINUE_ORGS` in `settings.py` and `env_guard.py`, default empty. | HIGH | AGENT-SAFE, dark |
-| WT-1b | The stranger-text frame for a typed row that matches a stored mail body: the match rule, the store, the cost, the test. | HIGH | AGENT-SAFE, dark |
+| WT-1b | The stranger-text frame for a typed row that matches a stored mail body: the match rule, the store, the cost, the test. Since 2026-11-17, slice HRD-14d of `chat_failure_modes.md` §4.7b owns the stored-mail match. | HIGH | AGENT-SAFE, dark |
 | WT-2 | 🔨 **BUILT, dark (2026-11-05, task 1686).** The tap: a `Continue in a fresh chat` pill. The server marks a held turn with the event `chat_continue_offer`. Only an org on `CHAT_CONTINUE_ORGS` gets it. The dock opens the new chat and fills the composer, and never sends. WT-1 fix: a failed room lookup answers 503. Fences: `test_continue_offer.py`, `chatContinue.test.ts`. | STANDARD | AGENT-SAFE, dark |
 | WT-3 | 🔨 **BUILT (2026-11-07, task 1687): no hold text says "new chat".** The `_CONTINUE` form of each `NO_WRITES` text names the pill "Continue in a fresh chat". `egress.py` takes that form only after `offer_continue()` sent the event of the pill. Else the plain form names the app and offers no tap. The persona hold note is built before the run queue exists, so it always takes the plain form. The `_CONTINUE` form reaches the model through a refused held write. Fences: `test_no_new_chat_copy.py`, `test_continue_offer.py`, `test_held_card_writes.py`. ⚠️ Before the WT-5 flip: only the dock draws the pill, so a member on `/chat` or an app rail reads a tap with no pill. | HIGH | AGENT-SAFE |
-| WT-4 | Topic change (not held): a suggestion chip, and a swap in place through `persona_for` and `load_tool`. Line: "Switched to Calendar". | STANDARD | AGENT-SAFE |
+| WT-4 | The switch line (not held): when this turn loads a pack that the sticky set of the last turn did not hold, the run sends one `chat_pack_switched` event with the pack label, and the chat shows "Switched to Projects". It reads `begin_turn` and `packs_on`, and adds no second matcher. **No suggestion chip** (see WT-4 below). No flag of its own: it follows `TOOL_PACKS`, which production sets, so it is live (owner approval 2026-11-27). Needs PR 1743 for the event seam (`offer_continue` pattern). | STANDARD | AGENT-SAFE, live with `TOOL_PACKS` |
 | WT-5 | The flips: `CHAT_CONTINUE_ORGS`, `HELD_CARD_WRITES_ORGS`, `EMAIL_HELD_CARD_SEND`. ⚠️ Before the `CHAT_CONTINUE_ORGS` flip: only the assistant dock draws the pill (`AssistantDock.tsx`). `/chat`, the Tasks and Projects rails, the email chat and the app editor do not. Either each host draws the pill, or the owner accepts the gap. | — | **OWNER-GATE** (`work_plan.md` §6 D4) |
-| WT-6 | Class C cards with an Undo receipt, and the person-class tick for `nudge_task`. | HIGH | AGENT-SAFE, dark |
+| WT-6a | 🔨 **BUILT, dark (2026-11-07, task 1690).** `egress.HELD_CLASS_C_TOOLS` and its reader `held_class_c_on`. Flag `HELD_CLASS_C_ORGS` in `settings.py` and `env_guard.py`, empty. `ask_tools.publish_card_undo` sends `confirmation_undo`. The two unarchive routes take an optional `If-Match`. The client is `src/lib/archiveUndo.ts`. No migration. Class C archive with an Undo receipt. `archive_task` and `archive_project` join the held set behind a NEW flag `HELD_CLASS_C_ORGS`, default empty. The chat receipt line (`ConfirmationReceipts`) offers Undo. Undo calls the existing unarchive route under the member's own session, as a `lib/undo.ts` command in the style of `taskUndo.ts` (If-Match, 412 means changed since). | HIGH | AGENT-SAFE, dark. The flip is OWNER-GATE (`work_plan.md` §6 D4) |
+| WT-6b | The person-class tick (email plan §21.4) for the report recipient tools, which add a person to a list for mail later. The `nudge_task` tick is dropped: its person is always an org member who waits on the task, so the class is always `org` and the tick decides nothing. | HIGH | AGENT-SAFE, dark |
 
 **WT-1 done when:** each case of §9.5 passes on a real database, the flag-off
 answer is 404, and the verification commands of §9.6 pass.
+
+**WT-6a done when:** (owner decision, 2026-11-07)
+
+- `archive_task` and `archive_project` run from a held chat only when `HELD_CLASS_C_ORGS` holds the org. The flag is a comma list of org ids or `*`, empty by default, with one reader that fails closed. The name ends in `_ORGS`, so a flag reload applies it.
+- `HELD_CARD_WRITES_ORGS` does NOT open Class C. The owner approved that flag for class B only (RX-1, D169).
+- `delete_*`, `merge_*`, `move_project` and `revert_activity` stay out of the held set until a server restore exists. A restore for them is its own HIGH slice.
+- The receipt offers Undo. Undo calls `unarchive_task` or `unarchive_project` under the member's own session and RLS. It never uses a server token. A 412 says the row changed since. A receipt of chat A does not undo in chat B. A member of org X does not undo in org Y (R5).
+- Each new held tool has its name, the `card_write` annotation and the exact parameter pin (`is_held_card_write`).
+- A held chat archives one task, with Undo. It never archives a subtree. It refuses `include_subtasks`.
+- The Undo token is the version that the archive wrote. A stale Undo never clears a later archive by another member.
+- Fences: `tests/unit/test_held_card_writes.py` (flag off means refused), an R8 test (archive in a held chat, Undo restores the row, 412 after another member's change, cross-org gives 404), and vitest beside `taskUndo.test.ts`.
+
+**WT-6a as built (2026-11-07):**
+
+- The class C flag acts only where `HELD_CARD_WRITES_ORGS` is on too. With that flag off, the held rule is off, as before RX-1.
+- After an approved archive, the tool sends `confirmation_undo` with the card's `request_id`, the row and its version. The tool names no card. Only an APPROVE sets the card that it names.
+- The line offers Undo only while `HELD_CLASS_C_ORGS` holds the org. The line reads that flag only, and not `HELD_CARD_WRITES_ORGS`.
+- A held chat refuses `include_subtasks` (`egress.HELD_REFUSED_PARAMS`). With subtasks and no answer, a held chat does not ask. Its card says that the subtasks stay on the board. So a held chat archives one task, with Undo, and never a subtree.
+- An open chat can still file subtasks. That receipt offers no Undo, because the route restores one task.
+- The browser calls `POST /api/projects/tasks/{id}/unarchive` or `.../nodes/{id}/unarchive` with `If-Match`. The task rule is `precondition_holds`. The node rule is strict equality on `updated_at`.
+- `archive_node` and `unarchive_node` stamp `updated_at = now()` on the root row. The descendants keep their stamp. The archive answers the new root stamp, and the tool sends that stamp as the Undo token. A restore and a new archive by others then give 412.
+- The task half needed no change to its version. Migration 304 moves `fields_at` when `archived_at` changes.
+- The archive route of a task answers `was_archived` (review fix, 2026-11-22). It is true when another member archived the task first, and the route then writes nothing. The tool offers Undo only when `was_archived` is false. So member A's Undo cannot clear member B's archive. A reply with no `was_archived` offers no Undo, as a project reply with no stamp.
+- A 409 from the unarchive route (`core.transient_as_409`) wrote nothing. The receipt keeps its Undo button, and the member can try again.
+- Fences: `tests/unit/test_held_card_writes.py` §12 and §13, `tests/unit/test_archive_undo_r8.py` (R8), and `src/lib/archiveUndo.test.ts`.
+
+**WT-4 done when:**
+
+- A new pack in an unheld chat sends one switch event with its `SKILL_FAMILIES` label. The label is a pack label. "Calendar" is a surface of the `projects` pack, so the line reads "Switched to Projects".
+- A held chat sends no switch event, and its mark stays set. A Redis fault reads as held.
+- `TOOL_PACKS` off sends nothing. The same pack as the last turn sends nothing.
+- The slice only READS the mark (`session_mark_state` or `_pack_held`). It never writes, clears or re-keys it. An edit to the mark code moves the slice to HIGH.
+- **The chip.** Layer (a) already switches with no tap, so a chip that asks first is a second decision path. WT-4 builds no chip. A chip for a load that layer (a) did not do needs an owner decision first (open question on task 1688).
+
+**WT-4 as built (2026-11-07, task 1688).**
+
+- `tool_packs.pack_switch_label(turn, slugs)` is the pure signal. It compares the sticky set of `begin_turn` with the packs that layer (a) loaded. It returns the `SKILL_FAMILIES` label of the first new pack, or None.
+- It counts only packs that `packs_on` allows. It gives None on the first turn and after a failed sticky read.
+- A follower pack (Calendar day planner) gives way to its parent. So Calendar reads "Switched to Projects".
+- `executor._pack_switch_event` reads the hold with `_pack_held`, and it fails closed. A held chat and a Redis fault send nothing. It never writes the mark.
+- The event rides `_ProfileMarkHold.add`. It leaves with the first output, so a turn with no answer sends none.
+- The client twin is `src/lib/packSwitch.ts`. `PackSwitchMark` draws the line beside the mailbox mark.
+- Open: a pack that the model loads mid-turn with `load_skill_tools` (layer (b)) draws no line. A later slice can add it.
 
 ### 9.5 Fences (R7)
 
@@ -3184,6 +3270,12 @@ answer is 404, and the verification commands of §9.6 pass.
   - The route writes no `chat_message` row.
   - The new id is the server's.
   - The carry holds only `content`.
+- `tests/unit/test_continue_carries.py` (HRD-19a): the decisions and the item in
+  focus cross key to key, and the answer and `text` stay as above. Nothing else
+  of the old chat crosses: no limit, no record of another member or another
+  org, no old or bad item. A Redis fault gives the normal 200. A shared room and
+  every flag off copy nothing. The route holds no `cc:` key of its own.
+- `tests/unit/test_pack_switch_line.py` (WT-4): `test_a_new_pack_in_an_unheld_chat_sends_one_switch_event_with_its_label`, `test_a_held_chat_sends_no_switch_event_and_its_mark_stays_set`, `test_a_redis_fault_reads_as_held_and_sends_nothing`, `test_tool_packs_off_sends_nothing`, `test_the_same_pack_as_the_last_turn_sends_nothing`, `test_the_calendar_surface_names_the_projects_label`, and `test_the_switch_reads_packs_on_and_no_second_matcher` (a structural scan). The client twin is `src/lib/packSwitch.test.ts`.
 - `tests/unit/test_continued_from_readers.py`: a structural scan allows the
   `continued_from` column in three places only. They are the WT-1 route, the
   session list and the CO-5 chip read.
@@ -3195,4 +3287,20 @@ bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_continue_carry.py tests/unit/test_continued_from_readers.py tests/unit/test_delegation_no_egress.py tests/unit/test_chat_summary_r8.py tests/unit/test_held_card_writes.py tests/unit/test_tenant_coverage.py -q
 uv run ruff check apps/services/gateway packages/acb_common
 uv run python scripts/affected_tests.py --run
+```
+
+WT-6a adds these:
+
+```
+uv run pytest tests/unit/test_held_card_writes.py tests/unit/test_archive_undo_r8.py tests/unit/test_delegation_no_egress.py -q
+uv run ruff check packages/acb_skills apps/skills/skill-projects apps/services/gateway
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/archiveUndo.test.ts src/lib/confirmationReceipts.test.ts
+```
+
+WT-4 adds these:
+
+```
+uv run pytest tests/unit/test_pack_switch_line.py tests/unit/test_delegation_no_egress.py tests/unit/test_tool_packs_choice.py -q
+uv run ruff check packages/acb_skills apps/services/orchestrator
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/packSwitch.test.ts
 ```

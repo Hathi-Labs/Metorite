@@ -125,6 +125,14 @@ describe("describeToolStep — a step in words", () => {
     expect(step("create_types", {}, "running").label).toBe("Adding task types to a project");
   });
 
+  it("names the Home tools in plain words, never by the tool name (PAR-8b)", () => {
+    expect(step("home_read").label).toBe("Read your Home page");
+    expect(step("home_card").label).toBe("Updated a Home card");
+    expect(step("home_prefs", {}, "running").label).toBe("Saving a Home setting");
+    expect(step("home_layout").label).toBe("Set the default sidebar");
+    expect(step("home_test_push").label).toBe("Checked your notifications");
+  });
+
   it("keys on the bare name when a runtime prefixes it", () => {
     expect(bareToolName("skill_projects.create_task")).toBe("create_task");
     expect(step("skill_projects.create_task").label).toBe("Created a task");

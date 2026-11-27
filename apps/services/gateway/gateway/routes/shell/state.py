@@ -57,6 +57,11 @@ Redis fault gives the affinity 0, as a failed state read keeps the feed. A
 learned fault sets ``Applied.cacheable`` False and never ``Applied.ok``. The
 member comes from the session, and the org from the bound session (R5).
 
+**What the join hands on** (LOOP-4b). For a listed org, ``Applied`` also
+holds ``taught``, what the join learned, and ``acted``, the cards whose row is
+``acted``. ``feed.feed_answer`` reads both for the sentences of "Why am I
+seeing this" (``feed_why.explain``). The join itself adds no card key for it.
+
 **Who reads the learned join.** ``feed.feed_cards`` is the one compute, so
 the reach loop, the briefs and the chat brief read the same join as My Day
 (``reach.loop.snapshot``). A muted kind leaves them too. A muted needs card in
@@ -82,7 +87,6 @@ from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from acb_auth import UserContext, get_current_user
-from acb_common import member_actions
 from acb_common.settings import get_settings
 from fastapi import Depends, HTTPException
 from gateway.db import tenant_session as _tenant_session
@@ -99,13 +103,6 @@ SIGNAL_ID_PATTERN = r"^[a-z_]+:[^\s]{1,200}$"
 STATE_FP_PATTERN = r"^[0-9a-f]{8,64}$"
 KIND_PATTERN = r"^[a-z_]{1,40}$"
 Action = Literal["seen", "snooze", "dismiss", "not_useful", "acted", "restore"]
-
-#: The acts of the act record (``personalization.md`` §19.4) that a card action
-#: makes. A `seen` and a `restore` make none.
-MEMBER_ACTS: dict[str, str] = {
-    "acted": "card_acted", "snooze": "card_snooze", "dismiss": "card_dismiss",
-    "not_useful": "card_not_useful",
-}
 Until = Literal["later_today", "tomorrow", "next_week", "on_change"]
 
 #: Two sightings within this time are one visit (§6.2).
@@ -759,6 +756,11 @@ class Applied:
     another reason: a fault of the learned path (LOOP-4a). It never changes
     ``ok``, so a learned fault never makes a snapshot incomplete. The read
     cache stores an answer only when both are True (``feed.feed_answer``).
+
+    ``taught`` is what the join learned, and None with the org off
+    ``MY_DAY_LEARN_ORGS`` or after a failed state read. ``acted`` holds the
+    signal ids whose state row is ``acted``. The sentences of "Why am I seeing
+    this" read both (LOOP-4b, ``feed_why.explain``).
     """
 
     cards: list[dict[str, Any]]
@@ -766,6 +768,8 @@ class Applied:
     day: Day | None = None
     ok: bool = True
     cacheable: bool = True
+    taught: Learned | None = None
+    acted: frozenset[str] = frozenset()
 
 
 def snooze_edge(rows: dict[str, dict[str, Any]], now: datetime) -> datetime | None:
@@ -947,25 +951,12 @@ async def apply_state(user: UserContext, cards: list[dict[str, Any]],
         logger.warning("shell.feed state read failed", extra={"error": type(exc).__name__})
         return Applied(join(cards, {}, Context(now, Day(ZoneInfo("UTC")))), ok=False)
     taught = await learned(user, now, day)
+    acted = frozenset(sid for sid, row in rows.items() if row.get("state") == "acted")
     if taught is None:  # the org is off MY_DAY_LEARN_ORGS: the join of before
-        return Applied(join(cards, rows, Context(now, day)), snooze_edge(rows, now), day)
+        return Applied(join(cards, rows, Context(now, day)), snooze_edge(rows, now), day,
+                       acted=acted)
     return Applied(join(cards, rows, Context(now, day), taught), snooze_edge(rows, now), day,
-                   cacheable=taught.ok)
-
-
-async def record_card_acts(db: Any, user: UserContext, items: list[StateItem],
-                           written: dict[str, Any]) -> None:
-    """WS-PZ MM-1c: what the member did with a card is an act in the act record
-    (``personalization.md`` §19.4). A `seen` and a `restore` are not one, and a
-    card whose write changed nothing is not one (*written* holds the rows that
-    changed). The row holds the card id and its kind, never its text. Dark
-    behind MEMBER_ACTIONS_ORGS, it never fails the write, and a long batch
-    records its first 20."""
-    for item in [i for i in items if i.action in MEMBER_ACTS and i.signal_id in written][:20]:
-        await member_actions.record_act(
-            db, org=member_actions.org_of(user), member=user.email or "", app="my_day",
-            act=MEMBER_ACTS[item.action], via="app", item_kind="signal",
-            item_id=item.signal_id, features={"signal_kind": item.kind})
+                   cacheable=taught.ok, taught=taught, acted=acted)
 
 
 async def write_state(user: UserContext, items: list[StateItem], now: datetime) -> int:
@@ -999,7 +990,6 @@ async def write_state(user: UserContext, items: list[StateItem], now: datetime) 
             await db.execute(text(_UPSERT_SQL), [
                 {"member": member, "signal_id": sid, **{c: new[c] for c in COLUMNS}}
                 for sid, new in sorted(final.items())])
-            await record_card_acts(db, user, items, final)
     return written
 
 

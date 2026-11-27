@@ -47,6 +47,8 @@ class TestTheTable:
         assert feed_rank.BASE == {
             # WS-66 RM-2b: the five needs bases rose by 3, to make room for the
             # three reminder kinds above `agent_asks`.
+            # AO-2: the AI vendor alert, above `overdue` as in KIND_ORDER.
+            "provider_alert": 66,
             "overdue": 63, "approval": 59, "due_today": 55, "notification": 51,
             "needs_reply": 47, "agent_asks": 43, "decision": 43,
             "agent_questions": 43, "promise_due": 42,

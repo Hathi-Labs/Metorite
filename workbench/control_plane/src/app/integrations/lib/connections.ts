@@ -16,6 +16,8 @@ import { hasCapability } from "@/lib/access";
 import { safeStudioReturn } from "@/lib/studio/returnPath";
 import { relativeTime } from "@/lib/taskCard";
 
+import { apiDisconnectCopy } from "./apiConnect";
+
 export type ConnectionKind = "oauth" | "mailbox" | "whatsapp" | "mcp" | "api_key";
 /** WS-STU I8a: a calendar row and a Drive row name their own app (`_SETUP_HREF` of the gateway). */
 export type OwningApp = "crm" | "email" | "whatsapp" | "calendar" | "knowledge" | "integrations";
@@ -83,6 +85,7 @@ const ERROR_TEXT: Record<string, string> = {
   invalid_grant: "The sign-in was revoked. Connect again.",
   auth_failed: "The account refused the sign-in.",
   unauthorized: "The account refused the sign-in.",
+  needs_signin: "This server asks for a sign-in. Connect it to start.",
   rate_limited: "The provider is slowing requests. It will retry.",
   unreachable: "The server did not answer.",
   timeout: "The server took too long to answer.",
@@ -284,6 +287,10 @@ export function mcpConnect(row: Connection, canManage: boolean): "connect" | "re
   if (!canManage || row.kind !== "mcp" || row.can_connect !== true || mcpName(row) === null) {
     return null;
   }
+  // A row that the server asked to sign in has no consent yet: it offers Connect.
+  if (row.status === "needs_reconnect" && row.last_error === "needs_signin" && !row.acts_as) {
+    return "connect";
+  }
   return row.acts_as || row.status === "needs_reconnect" ? "reconnect" : "connect";
 }
 
@@ -459,6 +466,8 @@ export function disconnectCopy(row: Connection): ConfirmCopy {
       confirmLabel: "Remove",
     };
   }
+  // API-5 (IN-10): an API connection names what uses it, and asks once.
+  if (row.provider.startsWith("api:")) return apiDisconnectCopy(row);
   if (row.provider === "zoho") {
     return {
       title: "Disconnect Zoho?",

@@ -7,6 +7,7 @@
 # this file to `bash -s` over ssh after the deploy is verified. By hand:
 #
 #     cd /opt/acb/app && bash deploy/smoke_chat.sh
+#     cd /opt/acb/app && bash deploy/smoke_chat.sh --turn-only
 #
 # It does three things:
 #
@@ -15,6 +16,50 @@
 #   2. It waits for the workbench to answer /api/auth/me as that member in the
 #      smoke org. A restart gives a short 502 window (H-60), so it retries.
 #   3. It runs scripts/smoke_chat_persist.py, and exits with its code.
+#
+# 🤖 THE MODEL TURN (CIV-SMOKE-TURN, task 4061). It is DARK. When the switch
+# is on, step 3 also runs ONE short real model turn, with tools on, in the
+# smoke org (scripts/smoke_chat_turn.py). The turn must stream to its `done`
+# event and save an answer with text. A failure of either is red. In the
+# acb-gateway journal from the turn start, a Traceback on a line with the
+# thread id of the turn is red. Any other Traceback is a WARNING, and the
+# smoke prints only the count and the times, never the log text. Its lines
+# start with `T`.
+#
+#   SMOKE_CHAT_TURN          the switch. Off by default. `1` turns it on.
+#   SMOKE_CHAT_TURN_CAP_USD  the monthly cap of the smoke org, in USD. No
+#                            default. On with no cap: REFUSED, exit 2.
+#   SMOKE_CHAT_TURN_EST_USD  the cost of one turn for the count guard.
+#                            Default 0.25.
+#
+# 🔧 THE OPERATOR SETS BOTH in /opt/acb/app/.env, the file of the box flags.
+# This script reads the last line of each key there on each run, so a change
+# needs no restart and no SIGHUP. A value in the environment of this script
+# wins over the file.
+#
+# Two guards come before the turn, and either one skips it. The smoke keeps
+# its own count of this month's turns in /var/lib/acb/smoke-chat-turn.json
+# (SMOKE_TURN_STATE), and it writes count + 1 BEFORE the turn. It skips when
+# count x SMOKE_CHAT_TURN_EST_USD reaches the cap. It also reads the smoke
+# org's metered spend of this UTC month. A skip prints a WARNING line, and
+# the smoke stays green. A retry after an ssh drop can run up to 3 turns in
+# one release. The count counts each one.
+#
+# ⚠️ BEFORE THE FLIP, run `journalctl -u acb-gateway -n 1` as acb. If acb
+# cannot read it, add acb to the systemd-journal group. Without that, T4
+# cannot check the log, and it gives a WARNING on each run.
+# ⚠️ T4 can be red ONLY with LOG_FORMAT=json in the gateway environment. With
+# the console format (the box default on 2026-11-27), a Traceback spans many
+# journal lines, so its line never holds the thread id, and T4 only warns.
+# ⚠️ After the first turn, check that the cost rollup of the smoke org shows
+# calls > 0. A model with no price writes no calls, and then each later turn
+# of the month skips with a WARNING.
+# ⚠️ Size the cap: about 7 turns a day x SMOKE_CHAT_TURN_EST_USD (0.25) is
+# about 53 USD a month. A lower cap stops the turn early in the month.
+#
+# `--turn-only` runs the turn alone: no sweep, no save check. A later
+# flag_flip.sh calls it after a flag flip. With the switch off, it checks
+# the identity, prints one `skip T0` line and exits 0.
 #
 # Steps 2 and 3 hold a SHARED lock on the deploy lock. `vps_apply.sh` takes
 # that same file EXCLUSIVE for the whole apply (`deploy_lock_acquire`), on the
@@ -36,10 +81,12 @@
 # expires on a date is a red run with no fault in it.
 #
 # Exit codes are the smoke's own:
-#   0  all four steps passed
-#   1  a step failed. Chat does not save. Do NOT retry, look at the box.
-#   2  the environment is wrong: no AUTH_SECRET, no node, no smoke org, or a
-#      session that the workbench does not accept.
+#   0  all four steps passed. A turn that is off or skipped is still 0.
+#   1  a step failed. Chat does not save, or the model turn failed. Do NOT
+#      retry, look at the box.
+#   2  the environment is wrong: no AUTH_SECRET, no node, no smoke org, a
+#      session that the workbench does not accept, an unknown argument, or
+#      SMOKE_CHAT_TURN on with no SMOKE_CHAT_TURN_CAP_USD.
 #   75 BUSY. Another deploy held the lock for SMOKE_LOCK_WAIT seconds, so
 #      nothing was checked. That deploy runs its own smoke. Not a red.
 #
@@ -48,7 +95,10 @@
 #   the lock wait      SMOKE_LOCK_WAIT                                 240 s
 #   the identity wait  12 probes x (timeout 20 s + 5 s) + 11 naps x 10 410 s
 #   the persist run    SMOKE_RUN_S 240 s + 10 s kill grace             250 s
-#   worst case                                                         935 s
+#   the model turn     SMOKE_TURN_S, in the same child                 240 s
+#   worst case                                                        1175 s
+# The persist child gets SMOKE_RUN_S + SMOKE_TURN_S, with the switch on or
+# off. scripts/smoke_chat_turn.py bounds the turn at 227 s inside it.
 #
 # Overrides, all optional:
 #   APP_DIR              /opt/acb/app
@@ -60,8 +110,16 @@
 #   SMOKE_WAIT_NAP       10 (seconds)
 #   DEPLOY_LOCK          /opt/acb/acb-deploy.lock (the file vps_apply.sh locks)
 #   SMOKE_LOCK_WAIT      240 (seconds)
+#   SMOKE_TURN_S         240 (seconds)
 set -uo pipefail
 set +x   # never trace. A trace prints the secret and the cookie.
+
+SMOKE_TURN_ONLY=0
+case "${1:-}" in
+  "") ;;
+  --turn-only) SMOKE_TURN_ONLY=1 ;;
+  *) echo "smoke_chat: unknown argument '$1'. Use no argument, or --turn-only." >&2; exit 2 ;;
+esac
 
 APP_DIR="${APP_DIR:-/opt/acb/app}"
 SMOKE_BASE_URL="${SMOKE_BASE_URL:-https://app.metorite.com}"
@@ -78,16 +136,21 @@ SMOKE_ORG_ID="${SMOKE_ORG_ID:-2df62642-751d-4ddd-a079-f643ea544c74}"
 # cookie name is also the salt of the JWE.
 COOKIE_NAME="__Secure-authjs.session-token"
 # The session must outlive everything after the mint: the mint 35 s, the
-# identity wait 410 s and the persist run 250 s, so 695 s. 900 s is the margin.
-MAX_AGE_S=900
+# identity wait 410 s, the persist run 250 s and the turn 240 s, so 935 s.
+# 1200 s is the margin.
+MAX_AGE_S=1200
 # The time bound of the persist run: the sweep (one list and at most five
 # deletes) plus the four steps, each call at most 15 s. 11 calls = 165 s.
 SMOKE_RUN_S="${SMOKE_RUN_S:-240}"
+# The time bound of the model turn (scripts/smoke_chat_turn.py, 227 s).
+SMOKE_TURN_S="${SMOKE_TURN_S:-240}"
 
 WB_DIR="$APP_DIR/workbench/control_plane"
 WB_ENV="$WB_DIR/.env.local"
 PY="$APP_DIR/.venv/bin/python"
 SMOKE_PY="$APP_DIR/scripts/smoke_chat_persist.py"
+# The box flags. The operator flips the model turn here.
+BOX_ENV="$APP_DIR/.env"
 
 # The commit the box holds. A failure prints it, so an overlap with another
 # deploy is easy to see.
@@ -106,6 +169,18 @@ cd "$APP_DIR" || env_fail "no app checkout at $APP_DIR"
 [ -x "$PY" ] || env_fail "no python at $PY"
 [ -f "$SMOKE_PY" ] || env_fail "no $SMOKE_PY in this checkout"
 command -v node >/dev/null 2>&1 || env_fail "node is not on PATH"
+
+# One key of the box .env: the last line wins, and one pair of quotes is
+# removed. A file that cannot be read gives an empty value, so the turn is off.
+box_env() {
+  local v
+  v="$(sed -n "s/^$1=//p" "$BOX_ENV" </dev/null 2>/dev/null | tail -n 1 | tr -d '\r')"
+  v="${v#\"}"; v="${v%\"}"; v="${v#\'}"; v="${v%\'}"
+  printf '%s' "$v"
+}
+SMOKE_CHAT_TURN="${SMOKE_CHAT_TURN:-$(box_env SMOKE_CHAT_TURN)}"
+SMOKE_CHAT_TURN_CAP_USD="${SMOKE_CHAT_TURN_CAP_USD:-$(box_env SMOKE_CHAT_TURN_CAP_USD)}"
+SMOKE_CHAT_TURN_EST_USD="${SMOKE_CHAT_TURN_EST_USD:-$(box_env SMOKE_CHAT_TURN_EST_USD)}"
 
 # The shared lock, on fd 9, until this script exits. It comes BEFORE the
 # mint, so a long lock wait cannot use up the life of the session. `flock` ignores the
@@ -181,6 +256,7 @@ else:
     print("ok")
 '
 export SMOKE_BASE_URL SMOKE_MEMBER_EMAIL SMOKE_ORG_SLUG
+export SMOKE_CHAT_TURN SMOKE_CHAT_TURN_CAP_USD SMOKE_CHAT_TURN_EST_USD SMOKE_TURN_ONLY
 state=""
 for try in $(seq 1 "$SMOKE_WAIT_TRIES" </dev/null); do
   state="$(SMOKE_COOKIE="$SMOKE_COOKIE" timeout -k 5 20 "$PY" -c "$PROBE_PY" </dev/null 2>/dev/null)" || state="down:000"
@@ -206,13 +282,15 @@ case "$state" in
     env_fail "$SMOKE_BASE_URL/api/auth/me did not answer 200 after $SMOKE_WAIT_TRIES tries ($state). Nothing was written." ;;
 esac
 
-# The smoke. Its step lines are the only lines on stdout.
+# The smoke. Its step lines are the only lines on stdout. The bound holds the
+# model turn too, with the switch on or off.
+run_s=$((SMOKE_RUN_S + SMOKE_TURN_S))
 rc=0
-SMOKE_COOKIE="$SMOKE_COOKIE" timeout -k 10 "$SMOKE_RUN_S" "$PY" "$SMOKE_PY" </dev/null || rc=$?
+SMOKE_COOKIE="$SMOKE_COOKIE" timeout -k 10 "$run_s" "$PY" "$SMOKE_PY" </dev/null || rc=$?
 unset SMOKE_COOKIE
 [ "$rc" = 0 ] || echo "smoke_chat: the box holds $(served_sha)" >&2
 case "$rc" in
   0|1|2) exit "$rc" ;;
-  124|137) echo "smoke_chat: the smoke did not finish in ${SMOKE_RUN_S}s (exit $rc)" >&2; exit 1 ;;
+  124|137) echo "smoke_chat: the smoke did not finish in ${run_s}s (exit $rc)" >&2; exit 1 ;;
   *) echo "smoke_chat: the smoke exited $rc" >&2; exit 1 ;;
 esac

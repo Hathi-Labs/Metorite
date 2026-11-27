@@ -1,16 +1,13 @@
 """WS-PZ MM-1c — more seams of the act record (hermetic).
 
-Task 3615. Code: ``routes/email/act_features.py``, ``routes/shell/state.py``
-(``record_card_acts``), ``transport/forward.py``, ``transport/send.py``,
+Task 3615. Code: ``routes/email/act_features.py``, ``transport/forward.py``, ``transport/send.py``,
 ``automation/senders.py`` (bulk archive by ids), ``automation/replyzero.py``.
 
 a. The sender domain is read from a ``from_address`` of any shape, and no
    address, subject or body reaches a feature.
-b. A My Day card action maps to its act. A `seen` and a `restore` make none,
-   and only a card whose write changed a row counts.
-c. The forward row carries the sender domain of a jsonb ``from_address``
+b. The forward row carries the sender domain of a jsonb ``from_address``
    (the first slice read it as a string and got none).
-d. A bulk archive by NAMED ids records, a sweep records nothing.
+c. A bulk archive by NAMED ids records, a sweep records nothing.
 """
 from __future__ import annotations
 
@@ -22,7 +19,6 @@ from typing import Any
 import pytest
 from acb_common import member_actions
 from gateway.routes.email import act_features
-from gateway.routes.shell import state
 
 _G = Path(act_features.__file__).parents[2]
 ORG = "11111111-1111-1111-1111-111111111111"
@@ -80,54 +76,6 @@ def test_the_flag_off_reads_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     assert asyncio.run(act_features.of_thread(db, ORG, "a1", "t1")) == {}
     assert asyncio.run(act_features.of_message(db, None, "m1")) == {}
     assert db.sql == []
-
-
-def _item(action: str, sid: str, kind: str = "task_due") -> Any:
-    return SimpleNamespace(action=action, signal_id=sid, kind=kind)
-
-
-def test_a_card_action_maps_to_its_act(monkeypatch: pytest.MonkeyPatch) -> None:
-    got: list[dict[str, Any]] = []
-
-    async def fake(db: Any, **kw: Any) -> bool:
-        got.append(kw)
-        return True
-
-    monkeypatch.setattr(member_actions, "record_act", fake)
-    user = SimpleNamespace(organization_id=ORG, email="ana@x.com")
-    items = [_item("acted", "a"), _item("snooze", "b"), _item("dismiss", "c"),
-             _item("not_useful", "d"), _item("seen", "e"), _item("restore", "f"),
-             _item("acted", "g")]
-    asyncio.run(state.record_card_acts("DB", user, items, {k: {} for k in "abcdef"}))
-    assert [(k["act"], k["item_id"]) for k in got] == [
-        ("card_acted", "a"), ("card_snooze", "b"), ("card_dismiss", "c"),
-        ("card_not_useful", "d")]
-    assert all(k["app"] == "my_day" and k["via"] == "app" and k["item_kind"] == "signal"
-               and k["org"] == ORG and k["member"] == "ana@x.com"
-               and k["features"] == {"signal_kind": "task_due"} for k in got)
-    assert set(state.MEMBER_ACTS.values()) <= member_actions.ACTS["my_day"]
-
-
-def test_a_long_batch_records_the_first_twenty(monkeypatch: pytest.MonkeyPatch) -> None:
-    n: list[int] = []
-
-    async def fake(db: Any, **kw: Any) -> bool:
-        n.append(1)
-        return True
-
-    monkeypatch.setattr(member_actions, "record_act", fake)
-    user = SimpleNamespace(organization_id=ORG, email="ana@x.com")
-    items = [_item("acted", f"s{i}") for i in range(30)]
-    asyncio.run(state.record_card_acts("DB", user, items, {i.signal_id: {} for i in items}))
-    assert len(n) == 20
-
-
-def test_write_state_calls_the_recorder_inside_its_session() -> None:
-    src = (_G / "routes" / "shell" / "state.py").read_text(encoding="utf-8")
-    body = src.split("async def write_state", 1)[1].split("@router.post", 1)[0]
-    assert body.index("await db.execute(text(_UPSERT_SQL)") < body.index(
-        "await record_card_acts(db, user, items, final)")
-    assert body.index("record_card_acts") < body.index("return written")
 
 
 def test_the_forward_row_reads_a_jsonb_sender() -> None:
