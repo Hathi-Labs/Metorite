@@ -114,7 +114,9 @@ GUARDED_ROUTES: dict[tuple[str, str], str] = {
         "the predicate. Without it, the route makes a new meeting of the caller",
 }
 
-_METHODS = {"get", "post", "put", "patch", "delete", "api_route"}
+#: ``websocket`` too: a socket route has no ``Depends(get_current_user)``, so the
+#: fence flags it until somebody names it with its reason.
+_METHODS = {"get", "post", "put", "patch", "delete", "api_route", "websocket"}
 
 
 # ── The reader ─────────────────────────────────────────────────────────────
@@ -450,6 +452,11 @@ _HEAD = (
 )
 
 PLANTED = {
+    "a websocket with no check": (
+        "@router.websocket('/meetings/{meeting_id}/ws')\n"
+        "async def ws(websocket: WebSocket, meeting_id: str):\n"
+        "    await websocket.send_json(_bus(meeting_id).ring)\n"
+    ),
     "check after the read": (
         "@router.get('/meetings/{meeting_id}/a')\n"
         "async def a(meeting_id: str, user=Depends(get_current_user)):\n"
