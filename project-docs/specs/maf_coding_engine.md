@@ -781,6 +781,9 @@ card counts as a refusal.
   measured the recreate at 1.27 s.
 - `HTTP_PROXY` and `HTTPS_PROXY` in the container point at the proxy and carry
   the grant token.
+- The broker writes these settings to a file of mode 0600 in a folder of mode
+  0700, and passes it with `docker run --env-file`. It removes the file when
+  the run starts. So the token never shows in a process list.
 - Two organizations never share an egress network. So one tenant's container
   cannot reach another tenant's container.
 - At the run's end, `revoke_egress()` removes the grant and recreates the
@@ -793,7 +796,9 @@ So the host needs a rule that drops every packet from a sandbox bridge to a
 host address. WS-43g writes the rule as
 `apps/services/orchestrator/sandbox/host_firewall.sh`, with a test. To install
 it on the box is WS43-G1. Until the rule is on the box, `sandbox_egress_enabled`
-stays off there.
+stays off there. `host_firewall.sh --check` also refuses a Docker daemon that
+CVE-2024-29018 affects. Before 26.0.0, 25.0.5 and 23.0.11, the embedded DNS
+of an `--internal` network sends outside names out. The 24.x line has no fix.
 
 **The proxy.**
 
@@ -804,6 +809,21 @@ stays off there.
   holds no credential.
 - It reads the grants from a file that only the broker writes. The file lies
   outside every sandbox mount, and the proxy mounts it read-only.
+- It runs with `net.ipv4.ip_forward=0` and `net.ipv6.conf.all.forwarding=0`,
+  so it never routes a packet between its networks.
+- Its limits (review round 1, 2026-11-26):
+  - The whole request head must arrive in 10 s (`HEAD_DEADLINE_S`).
+  - One peer address holds at most 4 connections that have not passed the
+    token check (`MAX_PREAUTH_PER_PEER`). The proxy checks this before it
+    takes a slot of `MAX_CLIENTS`. A fifth gets 503 and one log line.
+  - One grant token holds at most 8 requests at a time (`MAX_PER_GRANT`).
+    The proxy holds at most 32 in all (`MAX_CLIENTS`).
+  - A tunnel closes after 300 s with no byte (`TUNNEL_IDLE_S`).
+  - A tunnel closes after 1800 s in any case (`TUNNEL_MAX_S`). That is the
+    longest grant.
+- It refuses a request head with a control byte other than tab, a C1 byte
+  (`0x80` to `0x9f`), or a CR outside a CRLF. So one header line cannot
+  hide a second header.
 
 **What the proxy refuses:**
 
@@ -815,7 +835,8 @@ stays off there.
 3. A port other than 80 and 443.
 4. A host with any resolved address for which Python's `ipaddress` gives
    `is_global == False`. The proxy also refuses `64:ff9b::/96` (NAT64),
-   `2002::/16` (6to4) and the IPv4-mapped forms. Each of them carries an
+   `2002::/16` (6to4), the IPv4-mapped forms, the IPv4-compatible
+   `::/96` and the IPv4-translated `::ffff:0:0:0/96`. Each of them carries an
    IPv4 address inside.
 5. A second DNS answer. The proxy resolves once, checks the addresses, and
    connects to the address it checked. A DNS rebind cannot change the target.
@@ -834,6 +855,32 @@ method field reads `CONNECT`.
 `pypi.org,files.pythonhosted.org`. These two exact hosts serve `pip install`.
 `upload.pypi.org` is not on the list. The production list reaches third
 parties, so the owner sets it (WS43-G4).
+
+**The door forward (WS-43g1, task 4009).** The door client of
+`agent_sandbox.md` §12.3 calls `http://metorite-api.sandbox`. The proxy
+forwards that one name to the gateway.
+
+- The door name is a host on the grant's list, like any other host. Rules 1,
+  2 and 3 apply to it.
+- The proxy forwards a plain HTTP request for the exact name
+  `metorite-api.sandbox`, on port 80, to the address in
+  `sandbox_egress_door_upstream`. That value is an IP address and a port.
+- The proxy does no DNS lookup for the door. So rules 4 and 5 do not apply to
+  it. Only the broker sets its private address, and no request can name one.
+- The proxy refuses the door when the setting is empty or holds a name, for a
+  `CONNECT`, and for a request with no `X-Sandbox-Capability` header.
+- The proxy adds no header and holds no key. It removes
+  `Proxy-Authorization` and the hop-by-hop headers. It sets
+  `Connection: close`, so each connection carries one request.
+
+**The settings.** Each default keeps egress off.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `sandbox_egress_enabled` | `False` | Off: the broker refuses each grant, and makes no proxy and no egress network |
+| `sandbox_egress_allow_hosts` | `pypi.org,files.pythonhosted.org` | The hosts that a grant may name. A grant names an entry exactly |
+| `sandbox_egress_door_upstream` | empty | The IP address and port of the door upstream. Empty refuses the door |
+| `sandbox_egress_grant_ttl_seconds` | 1800 | The longest life of a grant. The run's end revokes it first |
 
 ### 7.4 The tools
 
@@ -2613,7 +2660,7 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
 
 **Gate.** AGENT-SAFE. It ships dark.
 
-### WS-43g — Egress: the proxy, the approved grant and the host firewall 🔲
+### WS-43g — Egress: the proxy, the approved grant and the host firewall 🔲 · 🔨 **WS-43g1 built 2026-11-26, dark, on branch `mt-abaa42b0-ws43g1-egress` (task 4009)**
 
 **Scope.**
 
@@ -2641,6 +2688,49 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
    back on `--network none`.
 8. With the firewall script applied in CI, a sandbox cannot connect to the
    bridge gateway address on port 8080.
+9. The proxy forwards only the exact name `metorite-api.sandbox`, to the
+   address in `sandbox_egress_door_upstream`. It does no DNS lookup for it,
+   and it adds no header. With the setting empty, it refuses that name.
+
+**WS-43g1, the first slice (task 4009).** The audit of 2026-11-26 narrowed
+WS-43g to an agent-safe first slice. It ships dark.
+
+- In:
+  - `sandbox/egress_proxy.py`, with the five rules of §7.3, the door forward
+    and one JSON log line per request.
+  - The proxy container. It runs as uid 65534, with `--cap-drop ALL` and no
+    `-p`.
+  - A per-organization `--internal` network, and the grants file under
+    `sandbox_state_dir`.
+  - `grant_egress()` and `revoke_egress()`. Each recreates the container
+    through `mount_list`. The run's end revokes. `sweep()` removes the proxy
+    and the networks.
+  - The four settings of §7.3. Each default keeps egress off.
+  - `sandbox/host_firewall.sh`, written and tested. Nothing applies it.
+  - `grant_egress()` refuses on `docker-remote`.
+- Out:
+  - WS-43g2: the live `request_network_access`, the `timeout_s` parameter
+    and the approval card (done-when 4 to 6).
+  - WS-43g3: the firewall script applied in CI (done-when 8).
+  - The proxy baked into the image, and egress on `docker-remote`.
+  - Each flag flip and each act on a box.
+- Fences: WS43-F5 and WS43-F9 are new. WS43-F2 gains the egress flags.
+- Done-when 1, 2, 3 and 9 hold for WS-43g1. Done-when 7 holds for the grant
+  and the network. Its card half waits for WS-43g2.
+
+**Open item for the owner (review round 1, 2026-11-26).** Two members of one
+organization share one egress bridge. So the container of one member can
+reach the container of the other member on that network. The fix needs an
+owner decision between two options:
+
+1. A network per run, or per member, in place of a network per organization.
+2. An iptables rule on `mtr-eg-+` that allows only traffic between a sandbox
+   and the proxy.
+
+WS-43g1 keeps the network per organization until the owner decides.
+
+**Status, 2026-11-26.** WS-43g1 is built dark on branch
+`mt-abaa42b0-ws43g1-egress` (task 4009). WS-43g2 and WS-43g3 are not built.
 
 **Verification.**
 
@@ -4574,7 +4664,7 @@ An agent refuses each of these by name:
 
 | # | Act |
 |---|---|
-| WS43-G1 | Change Docker access on the box, such as adding the gateway user to the `docker` group. Or install the host firewall rule of §7.3. The broker's own unit is `box_hardening.md` BH-3 (WS-49) |
+| WS43-G1 | Change Docker access on the box, such as adding the gateway user to the `docker` group. Or install the host firewall rule of §7.3. Before egress turns on, `host_firewall.sh --check` must pass on the box. It checks the rule and a Docker daemon of 26.0.0 or later, 25.0.5 or later in 25.x, or 23.0.11 or later in 23.x (CVE-2024-29018). The broker's own unit is `box_hardening.md` BH-3 (WS-49) |
 | WS43-G2 | Build or load the sandbox image on the box, or write the deploy step under `deploy/` |
 | WS43-G3 | Set `MAF_CODING_SCOPE` on production, for any organization. First, the owner confirms that the caps of §7.1 rule 8 fit the box's memory |
 | WS43-G4 | Set `SANDBOX_EGRESS_ENABLED` on production, or set the production allowlist |
@@ -6043,7 +6133,7 @@ The order is: CA-1 first. Then CA-2 and CA-3. Then the rest, as each
 - **Risk.** HIGH (code execution). The sandbox stays the boundary (D130).
   Blocked by CA-1.
 
-#### CA-4 (task 1032) — Network: egress proxy, web fetch, web search, package install. This is WS-43g.
+#### CA-4 (task 1032, live task 4009) — Network: egress proxy, web fetch, web search, package install. This is WS-43g.
 
 **Since D148, the web service has its own owner.** `web_research.md` owns the fetch guard, the readers and the search providers. CA-4 owns the coding session's egress proxy and its profiles, and its `web_fetch` and `web_search` call that one service.
 
