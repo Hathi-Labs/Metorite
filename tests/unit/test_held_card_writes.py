@@ -82,19 +82,27 @@ KEPT_PROJECTS = frozenset({
     "update_reminder", "update_status", "update_tag", "update_task", "update_tasks",
     "update_type", "watch",
 })
-#: The eleven CRM writes. Each says ``open_world=True`` and keeps saying it.
-#: CRM-M2e (task 3951) added the two set-up writes of stages and lost reasons.
+#: The fourteen CRM writes that a held chat keeps. Each says ``open_world=True``
+#: and keeps saying it. CRM-M2e (task 3951) added the two set-up writes of
+#: stages and lost reasons. Task 3954 added crm_decide_suggestion and
+#: crm_rerun_analysis. CRM-M2f and CRM-M2i (task 3953) added the three class B
+#: writes of the Field map. 7 + 2 + 2 + 3 = 14.
 KEPT_CRM = frozenset({
     "convert_lead", "create_lead", "log_activity", "update_deal_status",
     # P-3 (task 3954): a suggestion of the field map, and a new AI analysis.
     "crm_decide_suggestion", "crm_rerun_analysis",
     "crm_update_record", "crm_update_task", "crm_create_pipeline",
     "crm_edit_status", "crm_edit_lost_reason",
+    "crm_edit_field_rule", "crm_draft_mapping_plan", "crm_restore_mapping_plan",
 })
-#: The CRM writes that a held chat drops. Task 3994: a delete of a stage or a
-#: lost reason is class C (D169), and the order acts on every row of a kind.
-#: No owner decision keeps them, so none is on ``HELD_CARD_WRITE_TOOLS``.
-OFF_CRM = frozenset({"crm_delete_status", "crm_delete_lost_reason", "crm_order_statuses"})
+#: The CRM writes that a held chat drops. The approve of a plan is class C and
+#: approves the field map of the whole org (task 3953). Task 3994: a delete of
+#: a stage or a lost reason is class C (D169), and the order acts on every row
+#: of a kind. No owner decision keeps them, so none is on ``HELD_CARD_WRITE_TOOLS``.
+OFF_CRM = frozenset({
+    "crm_approve_mapping_plan",
+    "crm_delete_status", "crm_delete_lost_reason", "crm_order_statuses",
+})
 
 #: The Projects writes that a held chat does not hold: every class C tool but
 #: ``promote_reminder``. A covered run still holds them. ``answer_decision``
@@ -807,14 +815,16 @@ def test_each_write_of_the_crm_agent_is_in_the_table() -> None:
 
 @pytest.mark.parametrize("name", sorted(OFF_CRM))
 def test_a_class_c_crm_write_stays_off_in_a_held_chat(name: str, crm_tools) -> None:
-    """Task 3994: the two deletes and the order are on no list, so a held chat
-    drops them, and the two edit tools stay. Mutation: put one of them on
+    """Tasks 3953 and 3994: the approve of a plan, the two deletes and the
+    order are on no list, so a held chat drops them, and the other CRM set-up
+    writes stay. Mutation: put one of them on
     ``HELD_CARD_WRITE_TOOLS`` -> red."""
     tool = crm_tools[name]
     assert name not in eg.HELD_CARD_WRITE_TOOLS and name not in eg.HELD_CLASS_C_TOOLS
     assert eg.is_held_card_write(tool) is False
     assert eg.is_held_chat_off(tool, owner=CRM) is True
-    for kept in ("crm_edit_status", "crm_edit_lost_reason"):
+    for kept in ("crm_edit_status", "crm_edit_lost_reason", "crm_edit_field_rule",
+                 "crm_draft_mapping_plan", "crm_restore_mapping_plan"):
         assert eg.is_held_chat_off(crm_tools[kept], owner=CRM) is False, kept
 
 
@@ -839,7 +849,7 @@ def test_a_held_delegated_run_of_the_owner_drops_it(monkeypatch) -> None:
 
 def test_the_owner_rule_drops_only_off_crm_from_the_crm_agent(crm_tools, monkeypatch) -> None:
     """Each other tool of the agent is a read or a listed write, so a held
-    delegated run keeps it. The tools of ``OFF_CRM`` leave (task 3994).
+    delegated run keeps it. The tools of ``OFF_CRM`` leave (tasks 3953 and 3994).
     Mutation: drop the read test -> the reads leave -> red."""
     monkeypatch.setattr(ti, "_run_covered", lambda *_a, **_k: False)
     agents = [_agent_with(list(crm_tools.values()))]

@@ -673,6 +673,15 @@ lists every org, and it is allowed only while self-serve signup is off. Its
 one reader is `acb_auth.sandbox_capabilities.door_orgs`. A reload applies a
 change. The flip stays OWNER-GATE (`enforcement-flip`).
 
+`SECRET_STARTUP_CHECK` sets what a service does at start when a secret that
+it needs is empty or public (task 574, `docs/secrets_drop.md` §6). `shadow`
+is the default, and `enforce` refuses the start. It is not a `*_ORGS` or
+`*_MODES` key, and a service reads it at start only. The gateway and the
+agent edge read it, and each unit reads its own env file. Set the value in
+that file, then restart the unit. A flip to `enforce` is the grant
+`enforcement-flip`, and only after the shadow line of the unit reads
+`unusable=0`.
+
 `SEMANTIC_MODEL_ORGS` turns on the semantic kinds of the CRM plan
 (`semantic_model.md` §3.4, SEM-7). For each listed org, the plan checks the
 kinds `measure`, `join` and `query`, and `org_facts` serves the approved

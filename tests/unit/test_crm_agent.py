@@ -180,10 +180,11 @@ def test_build_agents_constructs_one_native_maf_agent() -> None:
     assert getattr(agent, "_permission_handler", None) is None
     tools = (agent.default_options or {}).get("tools")
     assert tools, "built with no tools"
-    # 21 own tools: 11 before, the two set-up writes of CRM-M2e (task 3951),
-    # the five of the suggestions and the AI analysis (P-3, task 3954), and
-    # the two deletes and the order of the set-up (task 3994).
-    assert len(tools) == len(_M._TOOLS) == 21 + len(_T.CRM_TOOLS)
+    # 27 own tools: 11 before, the two set-up writes of CRM-M2e (task 3951),
+    # the five of the suggestions and the AI analysis (P-3, task 3954), the
+    # six of the Field map and its plan (CRM-M2f, CRM-M2i, task 3953), and the
+    # two deletes and the order of the set-up (task 3994). 11 + 2 + 5 + 6 + 3 = 27.
+    assert len(tools) == len(_M._TOOLS) == 27 + len(_T.CRM_TOOLS)
 
 
 def test_the_advertised_description_does_not_still_say_read_only() -> None:
@@ -216,6 +217,8 @@ def test_register_agent_tools_maps_names() -> None:
         "crm_analysis_status", "crm_rerun_analysis",
         "crm_update_record", "crm_update_task",
         "crm_edit_status", "crm_edit_lost_reason",
+        "crm_field_map", "crm_edit_field_rule", "crm_list_mapping_plans",
+        "crm_draft_mapping_plan", "crm_approve_mapping_plan", "crm_restore_mapping_plan",
         # Task 3994: the two deletes and the order of the set-up.
         "crm_delete_status", "crm_delete_lost_reason", "crm_order_statuses",
     } | set(_T.CRM_TOOL_NAMES)
@@ -250,9 +253,46 @@ _STATUSES = [
 ]
 
 
+def _plan_item(field: str) -> dict[str, Any]:
+    return {"kind": "field", "entity": "deal", "field_api_name": field,
+            "field_type": "text", "target_column": "next_step", "profile_version": 1}
+
+
+#: The plan of CRM-M2i: version 1 superseded, 2 approved, 3 a draft on 2.
+_PLANS: dict[str, dict[str, Any]] = {
+    "1": {"version": 1, "state": "superseded", "rules": []},
+    "2": {"version": 2, "state": "approved", "rules": [_plan_item("Industry_Code")],
+          "based_on": 1},
+    "3": {"version": 3, "state": "draft", "based_on": 2,
+          "rules": [_plan_item("Industry_Code"), _plan_item("Region")]},
+}
+
+
+def _map_routes(call: dict) -> Any:
+    """The Field map and the plan routes, well shaped (task 3953)."""
+    path, method = call["path"], call["method"]
+    if path == "/crm/field-rules" and method == "GET":
+        return {"entity": "deal", "profile_version": 1, "rules": [], "targets": [],
+                "fields": [{"key": "Industry_Code", "label": "Industry code",
+                            "type": "text", "targets": ["next_step"]}]}
+    if path.startswith("/crm/field-rules"):
+        return {"id": _ID, "field_api_name": "Industry_Code",
+                "target_column": "next_step", "status": "approved"}
+    if path == "/crm/mapping/plans" and method == "GET":
+        return {"approved": 2, "versions": [
+            {"version": int(v), "state": p["state"], "rule_count": len(p["rules"]),
+             "created_by": "admin@fracktal.in"} for v, p in _PLANS.items()]}
+    if method == "GET":
+        return _PLANS[path.rsplit("/", 1)[-1]]
+    return {"version": 4, "state": "approved", "based_on": 2, "rules": []}
+
+
 def _responder(call: dict) -> Any:
     """Minimal well-shaped payload per route, so formatting runs for real."""
     path = call["path"]
+    # CRM-M2f and CRM-M2i (task 3953): the Field map and the plan.
+    if path.startswith(("/crm/field-rules", "/crm/mapping/plans")):
+        return _map_routes(call)
     # Ordered before the generic ``/crm/<entity>/<id>`` arm below, which these
     # two would otherwise match on segment count alone.
     if path == "/crm/statuses/deal":
@@ -304,6 +344,16 @@ _INVOCATIONS: dict[str, Any] = {
     "crm_edit_status": lambda: _M.crm_edit_status("deal", "change", "Negotiation",
                                                   new_name="Talks"),
     "crm_edit_lost_reason": lambda: _M.crm_edit_lost_reason("add", "Budget cut"),
+    # CRM-M2f and CRM-M2i (task 3953): the Field map and its plan.
+    "crm_field_map": lambda: _M.crm_field_map("deals"),
+    "crm_edit_field_rule": lambda: _M.crm_edit_field_rule(
+        "add", "deals", "Industry code", "next_step"),
+    "crm_list_mapping_plans": lambda: _M.crm_list_mapping_plans(),
+    "crm_draft_mapping_plan": lambda: _M.crm_draft_mapping_plan([
+        {"op": "put", "entity": "deals", "field_api_name": "Industry_Code",
+         "target_column": "next_step"}]),
+    "crm_approve_mapping_plan": lambda: _M.crm_approve_mapping_plan(3),
+    "crm_restore_mapping_plan": lambda: _M.crm_restore_mapping_plan(1),
     # Task 3994: the two deletes and the order of the set-up.
     "crm_delete_status": lambda: _M.crm_delete_status("deal", "Negotiation"),
     "crm_delete_lost_reason": lambda: _M.crm_delete_lost_reason("Price"),
@@ -616,7 +666,9 @@ def test_every_tool_declares_its_risk_and_the_write_half_declares_it_destructive
     annotations = pytest.importorskip("acb_skills.tool_annotations")
     writers = {"create_lead", "update_deal_status", "log_activity", "convert_lead",
                "crm_create_pipeline", "crm_update_record", "crm_update_task",
-               "crm_edit_status", "crm_edit_lost_reason"}
+               "crm_edit_status", "crm_edit_lost_reason",
+               "crm_edit_field_rule", "crm_draft_mapping_plan",
+               "crm_approve_mapping_plan", "crm_restore_mapping_plan"}
     # P-3 (task 3954): the two card writes of the suggestions and the analysis.
     writers |= {"crm_decide_suggestion", "crm_rerun_analysis"}
     # Task 3994: the two deletes and the order of the set-up.
