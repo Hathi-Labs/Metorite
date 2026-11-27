@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_common import member_actions
 from email_ingestion.llm_cap import LLMBudgetExhausted, automation_job
 from email_ingestion.post_sync import status_skips_rule_match, triage_once_per_cycle
 from fastapi import BackgroundTasks, Depends, Query
@@ -3173,6 +3174,13 @@ async def resolve_thread(
                 await propagate_thread_done_to_tasks(
                     db, user.email or "anonymous", req.account_id,
                     req.thread_id)
+            # WS-PZ MM-1: the member marked the thread done. One row in the act
+            # record, with no text. Dark behind MEMBER_ACTIONS_ORGS, and it never
+            # fails the act (acb_common.member_actions.record_act).
+            await member_actions.record_act(
+                db, org=member_actions.org_of(user), member=user.email or "",
+                app="email", act="mark_done", via="app", item_kind="thread",
+                item_id=req.thread_id, mailbox_id=req.account_id)
         else:
             # Reopen: re-derive from the latest message's folder. Resolve the
             # latest message directly (don't rely on last_message_id, which may

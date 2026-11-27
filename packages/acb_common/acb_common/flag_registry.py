@@ -1075,6 +1075,14 @@ class FlagRegistry(BaseSettings):
     # (work_plan.md §6 D4). Fence: tests/unit/test_pack_choose_server_words.py.
     mcp_mail_precedence_orgs: str = ""
 
+    # MM-1: MEMBER_ACTIONS_ORGS lists the org ids where the act record
+    # (`member_action`) takes rows. `*` opens every org. Empty opens none, and
+    # the writer then records nothing. A SIGHUP reload applies a change
+    # (`docs/flag_reload.md`). The one reader is
+    # `acb_common.member_actions.enabled_for`. Spec: personalization.md
+    # section 19.4. Fence: tests/unit/test_member_action_writer.py.
+    member_actions_orgs: str = ""
+
     # ── Member code runs on the box (WS-STU STU-Q15a) ──────────────────────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,

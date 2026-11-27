@@ -598,6 +598,19 @@ Its one reader is `acb_skills.egress.mcp_mail_precedence_on`, which
 on the run's org. A reload applies a change. Any value other than empty is
 owner-only (`work_plan.md` §6 D4), and the §3a window does not open it.
 
+`MEMBER_ACTIONS_ORGS` turns on the act record of each listed org
+(`personalization.md` §19.4, MM-1). The email send, reply, forward, mark done,
+archive, snooze and label of a member then write one row of `member_action`.
+A row holds no subject and no body. `*` lists every org, and the default is
+empty. Empty writes no row.
+
+Its one reader is `acb_common.member_actions.enabled_for`, which the writer
+asks on each act, on the org of the session. A reload applies a change. Before
+you add an org, turn on `JOB_QUEUE`, because the prune job deletes the rows
+after 180 days. The profile must also be on for the org:
+`ASSISTANT_PROFILE_ENABLED` on, and `ASSISTANT_PROFILE_ORGS` empty or with the
+org in it. Without the profile, the member cannot see or turn off `learning`.
+
 `MY_DAY_LEARN_ORGS` lets the My Day feed of each listed org learn from the
 member (`proactive_loop.md` §7.2, LOOP-4a). The feed reads the kind mutes of
 the member, and it adds the affinity of each kind to the score. A needs card

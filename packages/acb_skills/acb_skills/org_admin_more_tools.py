@@ -1621,7 +1621,8 @@ _PURGE_LOSS_WORDS: dict[str, str] = {
     "studio": "the private Studio skills, skill runs and views, and the tool runs of "
               "the member",
     "own": "the settings, reminders, briefs, goals, focus sessions, push devices, "
-           "Knowledge favourites, calendar entries and connection asks of the member",
+           "Knowledge favourites, calendar entries, connection asks and the record of acts "
+           "of the member",
 }
 #: The keys of ``members._PURGE_KEEPS``: what a purge keeps. The same fence.
 _PURGE_KEEPS: frozenset[str] = frozenset({
