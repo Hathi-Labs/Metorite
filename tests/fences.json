@@ -482,6 +482,7 @@
       "tests/unit/test_task_check_r8.py",
       "tests/unit/test_task_edit_card_r8.py",
       "tests/unit/test_team_scope_isolation_r8.py",
+      "tests/unit/test_teams_read_model_r8.py",
       "tests/unit/test_tool_failure_tasks_r8.py",
       "tests/unit/test_user_settings_per_org_r8.py",
       "tests/unit/test_user_tool_registry.py",

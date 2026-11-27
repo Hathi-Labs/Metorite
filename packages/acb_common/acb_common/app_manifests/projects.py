@@ -34,8 +34,9 @@ op sends.
   whole space.
 * Import stays class X. Its routes need ``admin:access:manage``, the right
   of an admin (§19.11), and its upload is a file, not JSON.
-* Goals and teams have no route in the Projects router. A goal object is
-  later work (task 977), and a team is a filter (D87).
+* Goals have no route in the Projects router. A goal object is later work
+  (task 977). A team is a filter (D87). Its one read, ``GET /projects/teams``,
+  stays off the door until T-6 (task 2537).
 
 **What never gets an op (§19.11).** A grant or a pin that acts as one, the
 answer of a person, a bulk export, and an act that reaches another person.
@@ -85,6 +86,12 @@ GRANT = (
 DECISION = (
     "§19.11: the person whom a decision asks answers it in Projects. An agent "
     "never answers for that person."
+)
+
+#: WS-39 T-1: the read of the teams of a member waits for its own slice.
+TEAMS_READ = (
+    "T-6 (task 2537) builds the chat and MCP read of the teams of a member. It "
+    "decides the door op of this row."
 )
 
 #: The door never deletes a record for good.
@@ -251,6 +258,8 @@ PROJECTS_DOOR = App(
     feature="projects",
     router="gateway.routes.projects",
     routes=(
+        # ── teams.py (WS-39 T-1, task 2532), dark behind TEAMS_ORGS ──
+        Route("GET", "/projects/teams", "list_teams", "A", off_door=TEAMS_READ),
         # ── tree.py ──
         Route("GET", "/projects/tree", "projects_tree", "A", off_door=TYPED, sandbox=True),
         Route("GET", "/projects/nodes", "", "X", reason=_FLAT_TREE),
