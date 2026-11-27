@@ -18,6 +18,7 @@
  * keyboard move (`laneSwitch.ts`, STU-LY-4b).
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { flushSync } from "react-dom";
 
 import { ValueElement } from "@/components/CardFieldValue";
 import { Board } from "@/components/board/Board";
@@ -30,7 +31,7 @@ import { statusAccent } from "@/lib/statusAccent";
 import { displayValue, labelOf } from "@/lib/studio/blocks";
 import { buildLanes, keyStep, optionOf, parseBoard, recordsOf, rowId, type BoardConfig, type Lane } from "@/lib/studio/boardModel";
 import { createMover, type MoverState } from "@/lib/studio/boardMove";
-import { laneMark, laneTabs, shownLane } from "@/lib/studio/laneSwitch";
+import { createScrollGate, keyCancelsHold, laneAfterCancel, laneMark, laneTabs, shownLane } from "@/lib/studio/laneSwitch";
 import { moreLine, type Row, type StudioDataDoor } from "@/lib/studio/dataDoor";
 import type { FieldSpec } from "@/lib/studio/fieldCheck";
 
@@ -87,6 +88,7 @@ function BoardView({ config, rows: given, door }: { config: BoardConfig; rows: R
   if (focusLane !== undefined && focusLane !== wantedLane) setWantedLane(focusLane);
   const shown = shownLane(laneIds, wantedLane, hold);
   const switcherRef = useRef<HTMLDivElement>(null);
+  const [gate] = useState(createScrollGate);
   const laneById = (id: string): Lane | undefined => lanes.find((l) => l.id === id);
   const movable = mover !== null;
 
@@ -94,20 +96,35 @@ function BoardView({ config, rows: given, door }: { config: BoardConfig; rows: R
   useLayoutEffect(() => {
     if (st.focusId === null) return;
     const card = document.querySelector<HTMLElement>(`[data-card-id="${CSS.escape(st.focusId)}"] [role=button]`);
-    card?.focus();
+    // A refusal can arrive while the keyboard holds another card. The hold keeps its focus.
+    if (!(switcher && mover?.getState().hold)) card?.focus();
     mover?.clearFocus();
-  }, [st.focusId, mover]);
+  }, [st.focusId, mover, switcher]);
 
   // The tab bar scrolls sideways, so the selected tab can sit outside it. Only the bar scrolls, not the page.
   useLayoutEffect(() => {
     const bar = switcherRef.current?.querySelector<HTMLElement>("[role=tablist]");
     const tab = bar?.querySelector<HTMLElement>('[aria-selected="true"]');
-    if (!bar || !tab) return;
+    if (!bar || !tab || !gate.open()) return;
     const outer = bar.getBoundingClientRect();
     const inner = tab.getBoundingClientRect();
     if (inner.left < outer.left) bar.scrollLeft -= outer.left - inner.left;
     else if (inner.right > outer.right) bar.scrollLeft += inner.right - outer.right;
-  }, [shown]);
+  }, [shown, gate]);
+
+  // End the hold and show the lane `at`, or the lane of the held card (`laneSwitch.ts`).
+  const cancelHold = (at: string | null) => {
+    const held = mover?.getState().hold;
+    if (!held) return;
+    setWantedLane(laneAfterCancel(held, at));
+    mover?.setHold(null);
+    mover?.say("Move cancelled");
+  };
+  const laneAt = (el: Element) => el.closest("[data-lane-id]")?.getAttribute("data-lane-id") ?? null;
+  const heldCard = (board: Element) => {
+    const held = mover?.getState().hold;
+    return held ? board.querySelector(`[data-card-id="${CSS.escape(held.id)}"] [role=button]`) : null;
+  };
 
   const send = (id: string, to: string | undefined, keyboard = false) => {
     const target = to ? laneById(to) : undefined;
@@ -151,19 +168,35 @@ function BoardView({ config, rows: given, door }: { config: BoardConfig; rows: R
       {more ? <p role="status" className="text-xs text-muted-foreground">{`${more} The lane counts cover these records only.`}</p> : null}
       <p className="sr-only" aria-live="polite">{st.live}</p>
       {switcher && shown !== null ? (
-        <div ref={switcherRef} className="sm:hidden" data-lane-switcher="">
+        <div
+          ref={switcherRef} className="sm:hidden" data-lane-switcher=""
+          onPointerDownCapture={gate.press} onPointerCancel={gate.release} onClickCapture={gate.release}
+        >
           <Tabs variant="underline" chrome="inline" activeTab={shown} onTabChange={setWantedLane} tabs={laneTabs(lanes)} />
         </div>
       ) : null}
-      {switcher && hold ? (
-        // The held card is out of sight on a phone. This line says what the keys do. The live line speaks.
-        <p aria-hidden="true" className="px-3 text-xs text-muted-foreground sm:hidden">
-          {`Card picked up. Space drops it in ${laneById(hold.over)?.title ?? ""}. Escape cancels.`}
-        </p>
-      ) : null}
       <Board
         aria-label="Board"
-        onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) mover?.blur(); }}
+        onBlur={(e) => {
+          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+          if (switcher) cancelHold(null);
+          else mover?.blur();
+        }}
+        // With the lane switcher, a hold lasts only while the held card has focus (STU-LY-4b).
+        onKeyDown={switcher ? (e) => {
+          gate.release();
+          // The card handles its own Escape first, so the store has no hold then. `flushSync` draws the lane
+          // of the card before the browser moves focus for Tab.
+          if (keyCancelsHold(e.key)) flushSync(() => cancelHold(null));
+        } : undefined}
+        onFocus={switcher ? (e) => {
+          if (e.target !== heldCard(e.currentTarget)) cancelHold(laneAt(e.target));
+        } : undefined}
+        onPointerDownCapture={switcher ? (e) => {
+          // Before the focus moves: the pressed lane stays, so the press keeps its target.
+          const el = e.target as Element;
+          if (el.closest("a[href],button,[role=button]") !== heldCard(e.currentTarget)) cancelHold(laneAt(el) ?? shown);
+        } : undefined}
         className={`max-sm:flex-col max-sm:[&>*]:w-full${switcher ? " max-sm:[&>[data-lane-off]]:hidden max-sm:[&>[data-lane-held]]:sr-only" : ""}`}>
         {lanes.map((lane, i) => {
           const mark = switcher ? laneMark(lane.id, shown, hold) : "shown";
@@ -171,6 +204,7 @@ function BoardView({ config, rows: given, door }: { config: BoardConfig; rows: R
             <BoardColumn
               key={lane.id}
               as="ul"
+              data-lane-id={lane.id}
               data-lane-off={mark === "off" ? "" : undefined}
               data-lane-held={mark === "held" ? "" : undefined}
               header={{
@@ -263,6 +297,13 @@ function BoardView({ config, rows: given, door }: { config: BoardConfig; rows: R
           );
         })}
       </Board>
+      {switcher && hold ? (
+        // The held card is out of sight on a phone. This line says what the keys do. The live line speaks.
+        // It sits under the board: above it, its removal on a press would move the target before the click.
+        <p aria-hidden="true" className="sticky bottom-0 bg-background px-3 py-1 text-xs text-muted-foreground sm:hidden">
+          {`Card picked up. Space drops it in ${laneById(hold.over)?.title ?? ""}. Escape cancels.`}
+        </p>
+      ) : null}
       {menu ? <ContextMenu x={menu.x} y={menu.y} items={menuItems} autoFocus onClose={() => setMenu(null)} /> : null}
     </div>
   );

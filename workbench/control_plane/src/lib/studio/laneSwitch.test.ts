@@ -5,10 +5,15 @@
  * Mutation 2: let `phoneSwitch` change its input. "never changes its input" turns red.
  * Mutation 3: let `shownLane` ignore the hold. "follows the lane under the held card" turns red.
  * Mutation 4: let `laneMark` say `off` for the lane of the held card. "keeps the lane of the held card" turns red.
+ * Mutation 5: drop Tab from `keyCancelsHold`. "cancels on Tab and Escape" turns red.
+ * Mutation 6: let `laneAfterCancel` ignore `at`. "stays on the lane that the member pressed" turns red.
+ * Mutation 7: let the gate stay open after a press. "stays shut from a press to its click" turns red.
  */
 import { describe, expect, it } from "vitest";
 
-import { activeLane, laneMark, laneTabs, phoneSwitch, shownLane } from "./laneSwitch";
+import {
+  activeLane, createScrollGate, keyCancelsHold, laneAfterCancel, laneMark, laneTabs, phoneSwitch, shownLane,
+} from "./laneSwitch";
 import { keyStep, parseBoard, type Hold } from "./boardModel";
 
 describe("activeLane", () => {
@@ -50,6 +55,38 @@ describe("a keyboard move on a phone", () => {
   it("goes back to the wanted lane when the hold ends, and marks no lane held", () => {
     expect(shownLane(ids, "c", null)).toBe("c");
     expect(marks("b", null)).toEqual(["off", "shown", "off"]);
+  });
+});
+
+describe("the end of a hold", () => {
+  const hold = { from: "a" };
+
+  it("cancels on Tab and Escape, and on no key of the move", () => {
+    expect(["Tab", "Escape"].map(keyCancelsHold)).toEqual([true, true]);
+    expect([" ", "ArrowLeft", "ArrowRight", "Shift", "Enter"].filter(keyCancelsHold)).toEqual([]);
+  });
+
+  it("goes back to the lane of the card when no lane was pressed or focused", () => {
+    expect(laneAfterCancel(hold, null)).toBe("a");
+    expect(laneAfterCancel(hold, undefined)).toBe("a");
+  });
+
+  it("stays on the lane that the member pressed", () => {
+    expect(laneAfterCancel(hold, "b")).toBe("b");
+    // No lane is marked held after the cancel, so nothing out of sight can take focus.
+    expect(["a", "b", "c"].map((id) => laneMark(id, shownLane(["a", "b", "c"], "b", null), null)))
+      .toEqual(["off", "shown", "off"]);
+  });
+});
+
+describe("createScrollGate", () => {
+  it("stays shut from a press to its click, and opens again", () => {
+    const gate = createScrollGate();
+    expect(gate.open()).toBe(true);
+    gate.press();
+    expect(gate.open()).toBe(false);
+    gate.release();
+    expect(gate.open()).toBe(true);
   });
 });
 

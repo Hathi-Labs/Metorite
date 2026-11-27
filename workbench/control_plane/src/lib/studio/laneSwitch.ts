@@ -9,6 +9,10 @@
  * The keyboard move takes the shown lane with it. While a card is held, the lane under the hold shows, and
  * the lane of the held card stays in the page out of sight, so the card keeps focus (`laneMark` "held").
  * After a drop or a refusal, the shown lane is the lane of the card, and the card takes focus there.
+ *
+ * A hold lasts only while the held card has focus. Tab, Escape, a press elsewhere on the board and a focus
+ * move all cancel it (`keyCancelsHold`, `laneAfterCancel`), so no element out of sight takes focus. The tab
+ * bar never scrolls between a press on it and the click (`createScrollGate`).
  */
 
 /** The lane that shows on a phone: the wanted one when it exists, else the first. `null` for no lane. */
@@ -33,6 +37,35 @@ export function shownLane(
 export function laneMark(laneId: string, shown: string | null, hold: { from: string } | null): "shown" | "held" | "off" {
   if (laneId === shown) return "shown";
   return hold?.from === laneId ? "held" : "off";
+}
+
+/**
+ * The keys that cancel a hold from anywhere on the board. Tab is one of them: the hold ends before focus
+ * moves, so focus never walks the lane that is out of sight.
+ */
+export function keyCancelsHold(key: string): boolean {
+  return key === "Escape" || key === "Tab";
+}
+
+/**
+ * The wanted lane after a hold is cancelled. A member who pressed or focused something in a lane stays on
+ * that lane. With no such lane (a key, or focus that left the board), the lane of the held card returns.
+ */
+export function laneAfterCancel(hold: { from: string }, at: string | null | undefined): string {
+  return at || hold.from;
+}
+
+/**
+ * Stops the tab bar from scrolling under a finger. A press on the bar closes the gate, and the click (or a
+ * cancelled pointer, or a key) opens it. On touch, focus moves after `pointerup`, so `pointerup` must not.
+ */
+export function createScrollGate(): { press(): void; release(): void; open(): boolean } {
+  let pressed = false;
+  return {
+    press: () => { pressed = true; },
+    release: () => { pressed = false; },
+    open: () => !pressed,
+  };
 }
 
 /** The tabs of the switcher: the title and the count of each lane. */
