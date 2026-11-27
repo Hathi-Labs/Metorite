@@ -1041,7 +1041,8 @@ each slice. Each flip or `on` mode is OWNER-GATE.
 |---|---|---|---|---|---|---|---|
 | 1 | 1 | LBB-2 the claim gate and the `land_your_pr` row | 4041 | HIGH | `CLAIM_GATE_SHADOW_ORGS`, `CLAIM_GATE_ORGS` | §7b.2 | build AGENT-SAFE, flip `enforcement-flip` |
 | 2 | 1 | LBB-4 zero orphans at a stop | 4042 | STANDARD | `STOP_DISPOSITION_PRS` | `.claude/hooks/stop-disposition.mjs`, `~/lanes/winddown.sh` | build AGENT-SAFE, `block` by the owner |
-| 3 | 1 | LBB-3 the landing sweeper | 4043 | HIGH (merge path) | `LANDING_SWEEPER_MODE` | `scripts/home_server/lane_handover.sh`, `merge_bot.sh` | build AGENT-SAFE, `on` and the timer are `deploy` |
+| 3 | 1 | LBB-3a the landing sweeper, a dry report (§7b.5) | 4043 | STANDARD | `LANDING_SWEEPER_MODE=dry` | `scripts/home_server/merge_bot.sh`, `scripts/hand_over.sh`, `scripts/release_freeze.sh` | build AGENT-SAFE, the timer and `dry` are `deploy` |
+| 3b | 1 | LBB-3b the sweeper's actions | (to make) | HIGH (merge path) | `LANDING_SWEEPER_MODE=on` | §7b.5 rules | NO-GO until metorite-78 takes the two decisions of §7b.5 |
 | 4 | 2 | LBB-1 done means live | 4044 | STANDARD | `LIVE_CHECK_MODE` | `GET /version`, the merger steps of `lane-merge.md` | build AGENT-SAFE, `on` is `deploy` |
 | 5 | 2 | LBB-6 built, not live, in My Day and the review | 4045 | STANDARD, UI | `BUILT_NOT_LIVE_ORGS` | `.claude/commands/delivery-review.md`, My Day "Needs you" (WS-58) | build AGENT-SAFE, D145 preview before the flip |
 | 6 | 2 | LBB-5 merge capacity follows build capacity | 4046 | HIGH (merge path) | `PREMERGE_MERGE_TEST=auto` | `scripts/premerge.sh` step 4 | build AGENT-SAFE, the default flip is the owner's |
@@ -1079,7 +1080,8 @@ library, plus `gh` and `git`). The units
 `scripts/home_server/metorite-landing-sweeper.service` and `.timer` run it
 every 2 hours, in the shape of `metorite-answer-watcher.service`:
 `Type=oneshot`, `EnvironmentFile=-%h/.config/metorite/landing-sweeper.env`,
-`ExecStart=/usr/bin/python3 <the repo path of the script>`,
+`ExecStart=/usr/bin/python3 %h/.local/lib/metorite/landing_sweeper.py` (an
+install copies the script there, as for the answer watcher),
 `TimeoutStartSec=900`. The script keeps its own clone,
 `~/lanes/sweeper-src`, and makes it with `git clone` when it is missing. It
 runs `gh` from that clone.
@@ -1101,7 +1103,11 @@ lane-land reads it):
   commit (`gh pr view N --json commits`), and its checks (`gh pr checks N`),
   read with the newest-row rule of `PY_CHECKS` in `merge_bot.sh` and its
   list of required checks.
-- The box queues: `~/lanes/merge-bot-queue.tsv` and `~/lanes/merge-queue.tsv`.
+- The box queues: `~/lanes/merge-bot-queue.tsv`, its result log
+  `~/lanes/merge-bot.log`, and `~/lanes/merge-queue.tsv`.
+- Its clone: each run fetches `main` and `refs/pull/N/head` for each PR that
+  rule 5 reaches. A short `<sha>` resolves only from those objects. Else the
+  PR gets `SKIP` with reason `error verify sha`.
 - `scripts/release_freeze.sh` (exit 75 means a freeze window).
 
 **The rules, first match wins.**
@@ -1110,10 +1116,15 @@ lane-land reads it):
    draft; a base other than `main`; a fork; the head is the base of another
    open PR; `mergeable` is `UNKNOWN`; or the last commit is less than 24 hours
    old ("pushed" in rule 3 means the `committedDate` of the last commit).
-2. `WAIT`: the PR is held by a merger: a line for it in
-   `~/lanes/merge-bot-queue.tsv` with no later DONE or BACK result, or a
-   `REQUEUE` line for it in `~/lanes/merge-queue.tsv` after its last commit.
-   Also `WAIT`, for every rule below, while `release_freeze.sh` exits 75.
+2. `WAIT`: the PR is held by a merger. That is one of these:
+   - its hand-overs in `~/lanes/merge-bot-queue.tsv` outnumber its DONE and
+     BACK lines in `~/lanes/merge-bot.log`, and it has no DONE (the count rule
+     of `read_script` in `hand_over.sh`);
+   - any `REQUEUE` line for N in `~/lanes/merge-queue.tsv`, while N is open. A
+     real line: `REQUEUE<TAB>2487<TAB>3590<TAB>box-loop<TAB>CI red cause found: ...`
+     (keyword, PR, task, lane, note).
+   Also `WAIT`, for every rule below, while `release_freeze.sh` exits 75 or 1
+   (a freeze, or an answer it cannot read).
 3. `LAND`: `mergeable` is `CONFLICTING`, or a required check is red, and the
    PR is older than 48 hours. The reason names the conflict or the red checks.
 4. `UPDATE`: the head does not hold main
@@ -1137,6 +1148,10 @@ lane-land reads it):
 6. `LAND` with reason `no verify sha`: green, older than 48 hours, and no
    `VERIFY: PASS` line.
 7. Else `SKIP` with reason `nothing to do`.
+
+**Test seams.** `LANDING_SWEEPER_GH` (the `gh` command), `LANDING_SWEEPER_FREEZE_CMD`
+(the freeze check), `LANDING_SWEEPER_LANES` (the folder of the queue files and
+the report) and `LANDING_SWEEPER_SRC` (the clone).
 
 **Fails safe.** A `gh` or `git` call that fails gives that PR a `SKIP` line with
 reason `error <step>`. An answer that does not parse ends the run with exit 0
