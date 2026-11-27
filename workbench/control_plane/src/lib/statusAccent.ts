@@ -472,6 +472,46 @@ export function projectStateAccent(value?: string | null): StatusAccent {
   return ACCENTS[state ? state.hue : "gray"];
 }
 
+/* ── Project health (WS-39 LP-1a, `project_management_app.md` §14.2a) ──────
+ *
+ * The health of a project UPDATE: how the lead says the project goes. A
+ * fourth axis, beside a task's status, a project's run state and an agent's
+ * state, and this is still the one module it becomes a colour in (rule 4).
+ * It is a CLOSED lookup, like `PROJECT_STATES`, and never goes through
+ * `resolveHue`, because "track" and "risk" are no keyword of that chain.
+ *
+ * The three values map onto existing hues of this palette, and add none:
+ * On track is green (`--success`), At risk is amber (`--warning`) and Off
+ * track is red (`--destructive`). Each also carries a glyph and its words, so
+ * the chip never depends on colour alone.
+ */
+
+export interface ProjectHealthVisual {
+  /** What a person reads. Never the stored value. */
+  label: string;
+  hue: AccentHue;
+  /** Lucide name for `<Icon name=… />`. */
+  icon: string;
+}
+
+export const PROJECT_HEALTHS: Record<string, ProjectHealthVisual> = {
+  on_track: { label: "On track", hue: "green", icon: "CircleCheck" },
+  at_risk: { label: "At risk", hue: "amber", icon: "TriangleAlert" },
+  off_track: { label: "Off track", hue: "red", icon: "CircleX" },
+};
+
+/** How a health draws, or `null` when the value is not one. */
+export function projectHealth(value?: string | null): ProjectHealthVisual | null {
+  const key = value?.trim().toLowerCase();
+  return (key && Object.hasOwn(PROJECT_HEALTHS, key) && PROJECT_HEALTHS[key]) || null;
+}
+
+/** The chip's class pair (fill and ink) for a health. Unknown is gray. */
+export function projectHealthChip(value?: string | null): string {
+  const visual = projectHealth(value);
+  return ACCENTS[visual ? visual.hue : "gray"].chip;
+}
+
 /* ── Agent run state (WS-55 EA-12c, `external_agent_access.md` §12.1) ──────
  *
  * The pill on a task that an outside agent works on. A third axis, beside a
@@ -495,15 +535,45 @@ export interface AgentStateVisual {
   icon: string;
 }
 
+/** The key of the Done state of the Agents view in `AGENT_STATES` and `AGENT_MARKS`. */
+export const AGENT_DONE_KEY = "lens_done";
+
 export const AGENT_STATES: Record<string, AgentStateVisual> = {
   awaiting: { hue: "amber", icon: "MessageCircleQuestion" },
   answered: { hue: "blue", icon: "CircleCheck" },
   working: { hue: "gray", icon: "Bot" },
+  // Task 1045a: neutral, as working is. The agent still holds the task.
+  waiting: { hue: "gray", icon: "Hourglass" },
   queued: { hue: "gray", icon: "CircleDashed" },
   stale: { hue: "gray", muted: true, icon: "CirclePause" },
   stopping: { hue: "gray", muted: true, icon: "CircleStop" },
   failed: { hue: "red", icon: "CircleAlert" },
+  // AMR-4: a session whose last run completed, drawn by the Agents view only.
+  // ⚠️ The key is not a state of the server. A `completed` run keeps the gray
+  // chip on every surface outside `AGENT_LENSES_ORGS`.
+  [AGENT_DONE_KEY]: { hue: "green", icon: "CircleCheck" },
 };
+
+/**
+ * AMR-4: the fill of the small mark of an agent state, the square of a session
+ * and the part of a sub-agent bar (`agent_coordination.md` §3.12.9). Tokens
+ * only. The Agents view draws it beside the word of the state, never in place
+ * of it: each mark carries a name.
+ */
+export const AGENT_MARKS: Record<string, string> = {
+  awaiting: "bg-warning",
+  failed: "bg-destructive",
+  working: "bg-primary",
+  waiting: "bg-primary/40",
+  stale: "bg-muted-foreground/35",
+  [AGENT_DONE_KEY]: "bg-success/50",
+};
+
+/** The fill of the mark of a state. An unknown state reads as idle. */
+export function agentMarkFill(value?: string | null): string {
+  const key = value?.trim().toLowerCase();
+  return (key && Object.hasOwn(AGENT_MARKS, key) && AGENT_MARKS[key]) || AGENT_MARKS.stale;
+}
 
 /** How an agent state draws, or `null` when the value is not one. */
 export function agentStateVisual(value?: string | null): AgentStateVisual | null {

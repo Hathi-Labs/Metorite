@@ -235,11 +235,18 @@ async def test_a_routed_call_never_loads_tenant_provider_keys(monkeypatch, spy):
     assert len(spy.router_calls) == 1
 
 
+@pytest.mark.direct_arm_guard
 async def test_the_local_path_still_loads_them_when_the_flag_is_off(monkeypatch, spy):
     """The other half of the same property — proving the assertion above is not
-    passing because the whole route is broken."""
+    passing because the whole route is broken.
+
+    Task 3554: the local path runs on a dev box only, so this test says
+    ``ACB_ENV=dev`` and runs the real guard. Outside dev the door answers the
+    Router's 502 (``test_internal_ai_is_routed.py``,
+    ``TestTheV1DoorIsClosedOutsideDev``)."""
     import litellm
 
+    monkeypatch.setenv("ACB_ENV", "dev")
     _configure(monkeypatch, flag="0")
     spy.raises = AssertionError("the router must not be called with the flag off")
 
@@ -330,6 +337,9 @@ async def test_the_attribution_headers_are_forwarded(monkeypatch, spy):
         # DECIDE their cap. Attribution keeps working — the four fields above
         # are unchanged — and only enforcement waits for a signed proof.
         "member_proven": False,
+        # AUTO-8b-2b: no `X-CC-Run-Ceiling` came in, so none goes out. The
+        # hop forwards it raw when it comes (`test_run_ceiling_header.py`).
+        "run_ceiling": None,
     }
 
 

@@ -1,8 +1,10 @@
 """The Operator Console's verb list must equal the Console's own (CP-13b).
 
 🔴 **Why this fence exists.** ``workbench/operator_console/src/lib/invocation.ts``
-mirrors three constants from ``customer_console/catalog.py``:
-``KNOWN_INVOCATIONS``, ``NATIVE_INVOCATION_PREFIX`` and ``NATIVE_TASKS``. The
+mirrors four constants from ``customer_console/catalog.py``:
+``KNOWN_INVOCATIONS``, ``NATIVE_INVOCATION_PREFIX``, ``NATIVE_TASKS`` and
+``NATIVE_ONLY_TASKS`` (VOX-2). It mirrors two maps of the handler table too:
+the vendor and the task of each native verb. The
 declare form offers what the mirror holds. A verb the Console adds and the
 mirror misses cannot be declared from the page. A verb the mirror keeps after
 the Console drops it answers 400 on submit. Either way the two drift in
@@ -78,4 +80,28 @@ def test_native_provider_map_equals_the_handler_table() -> None:
     expected = {
         verb: handlers.native_provider_of(verb) for verb in handlers.NATIVE_HANDLERS
     }
+    assert found == expected
+
+
+def test_native_only_tasks_equal_the_consoles() -> None:
+    """VOX-2. ``transcribe`` joined ``NATIVE_TASKS`` and keeps its litellm
+    verb, so the form reads a second set: the jobs that take ONLY a native
+    verb. A copy that drifted would refuse ``atranscription`` in the form, or
+    offer ``acompletion`` for ``decide``."""
+    assert _string_array("NATIVE_ONLY_TASKS") == set(catalog.NATIVE_ONLY_TASKS)
+
+
+def test_native_task_map_equals_the_handler_table() -> None:
+    """VOX-2. Each native verb serves the ONE job its handler names. The
+    form reads ``NATIVE_TASK_OF`` to offer ``native_sarvam`` for
+    ``transcribe`` alone, and the Console reads ``handlers.native_task_of``."""
+    from customer_console import handlers
+
+    match = re.search(
+        r"export const NATIVE_TASK_OF\b[^=]*=\s*\{(?P<body>[^}]*)\}", _source()
+    )
+    assert match, f"could not find the NATIVE_TASK_OF map in {_TS.name}"
+    found = dict(re.findall(r'(\w+):\s*"([^"]+)"', match.group("body")))
+    assert found, f"NATIVE_TASK_OF parsed as empty from {_TS.name}"
+    expected = {verb: handlers.native_task_of(verb) for verb in handlers.NATIVE_HANDLERS}
     assert found == expected

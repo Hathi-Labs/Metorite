@@ -100,6 +100,12 @@ TOOL_MODULES: tuple[str, ...] = (
 #: ``"<path>::<function>::<slice source>"`` → why the cut is not a lost row.
 #: This list only shrinks. Fix the tool with ``paged`` and delete the line.
 ALLOWED: dict[str, str] = {
+    "packages/acb_skills/acb_skills/crm_tools.py::find_line::near[:10]":
+        "Names, not rows: the line names at most 10 near spellings that a q counted. "
+        "The list under it holds every row, with its total (CRM-Q34-7).",
+    "packages/acb_skills/acb_skills/crm_tools.py::find_line::nearest[:3]":
+        "Names, not rows: a zero offers its 3 nearest stored names as a hint. "
+        "No row is behind a zero (CRM-Q34-7).",
     'apps/agents/agent-email-assistant/agents.py::_reply_form::notices[:4]':
         "No notice is lost: the card shows four (clean_reply_form refuses more), "
         "and _reply_form puts notices[4:] into the card's note. Removing the cut "
@@ -144,6 +150,8 @@ ALLOWED: dict[str, str] = {
         'A digest. Each section prints its count, and query_inbox pages the mail.',
     'apps/agents/agent-email-assistant/agents.py::_one::(items or [])[:5]':
         'A digest. Each section prints its count, and query_inbox pages the mail.',
+    "apps/skills/skill-my-tasks/skill_my_tasks/core.py::_why::' '.join(str(exc).split())[:120]":
+        'A failed step of a day flow. It keeps the first 120 characters of the error text, no row is lost.',
     'apps/skills/skill-my-tasks/skill_my_tasks/core.py::_fmt_plan::evicted[:5]':
         "A plan receipt. It prints the count and '…', and my_tasks_list(view='next') lists the tasks.",
     'apps/skills/skill-my-tasks/skill_my_tasks/core.py::_fmt_plan::unplaced[:5]':
@@ -238,8 +246,6 @@ ALLOWED: dict[str, str] = {
     'packages/acb_skills/acb_skills/web_tools.py::_jina_read::body[:MAX_MARKDOWN_BYTES]':
         "Bytes of one web page, not rows: four bytes for each character of MAX_CHARS, so "
         "the text still fills the ceiling, and frame_page marks the cut (WEB-1 repair 2).",
-    'apps/agents/agent-email-assistant/agents.py::_inbox_card_parts::rows[:_CARD_MESSAGE_LINES]':
-        "A confirm card's message lines (#1019). It ends with '+N more', and the act takes every message.",
     'apps/agents/agent-email-assistant/agents.py::_card_name::\' \'.join(\'\'.join((ch for ch in text if ch not in \'"\\\'`()[]{}\')).split())[:80]':
         'Text: one string with its whitespace collapsed, then cut. A join of words, not of rows.',
     "apps/agents/agent-email-assistant/agents.py::_card_text::' '.join(kept.split())[:limit]":
@@ -269,8 +275,6 @@ ALLOWED: dict[str, str] = {
         "Text, not rows: the cut shortens one string.",
     "packages/acb_skills/acb_skills/studio_tools.py::_skeleton::title[:1]":
         "Text: the first letter of a name, upper-cased. Not rows.",
-    "packages/acb_skills/acb_skills/studio_tools.py::_slug::re.sub('^[^a-z]+', '', words)[:40]":
-        "Text, not rows: the cut shortens one string.",
     "packages/acb_skills/acb_skills/studio_tools.py::_shown_diff::diff[:MAX_DIFF_LINES]":
         "The cut list ends with one line that counts the rest ('... N more'). Each patch call returns the diff again.",
     "packages/acb_skills/acb_skills/studio_tools.py::_shown_errors::errors[:MAX_ERRORS]":
@@ -287,6 +291,26 @@ ALLOWED: dict[str, str] = {
         "Text, not rows: one object name cut so that the action id fits the 48-character limit of the manifest (STU-BETA-2).",
     "packages/acb_skills/acb_skills/studio_tools.py::with_record_actions::base[:48 - len(str(n))]":
         "Text, not rows: one action id cut so that it fits the limit with its number (STU-BETA-2).",
+    "packages/acb_skills/acb_skills/studio_tools.py::_delete_rows::tables[:MAX_DELETE_CARD_TABLES]":
+        "No row is lost: the delete card names ten tables, counts the other tables in 'and N more "
+        "tables', and the totals row counts every table. The delete takes every table (STU-A5c-2).",
+    "packages/acb_skills/acb_skills/studio_tools.py::_frame_lines::names[:MAX_OUTLINE_PAGES_SHOWN]":
+        "No page is lost: the Pages line of the outline names four pages, says 'and N more', and "
+        "gives the total in the same line. The manifest keeps every page (STU-AF-8a).",
+    "packages/acb_skills/acb_skills/org_facts_tools.py::verified_lines::' '.join(_member_words().split())[:MATCH_WORDS_MAX]":
+        "One string, not rows: the member's own words, cut to MATCH_WORDS_MAX characters before "
+        "the match call. No row is behind the cut (SEM-8).",
+    "apps/agents/agent-email-assistant/agents.py::_rules_changed_text::rows[:12]":
+        "No row is lost: the text of a refused copy names at most 12 changed lines and says 'and N more lines'. The copy writes nothing, and the model reads the rules again (HRD-10d-4).",
+    "apps/skills/skill-projects/skill_projects/writes.py::_edit_note::new.who[:_NOTE_PEOPLE_MAX]":
+        "No person is lost: the note of an edited card names at most ten people and says 'and N more'. The write already took every person (EAC-1b).",
+    "apps/skills/skill-projects/skill_projects/writes.py::_note_item::flat[:_NOTE_ITEM_MAX - 1]":
+        "The member's words, cut as one string. It is not a list of rows (EAC-1b).",
+    "apps/agents/agent-email-assistant/agents.py::_capped_lines::lines[:cap]":
+        "No row is lost in silence: a cut list of card lines ends with '+N more' (task 3977).",
+    "apps/agents/agent-email-assistant/agents.py::_pick_drafts::plan.ordered[:rule.MAX_DRAFTS]":
+        "The card says 'The card lists N of M matching drafts'. A draft that it does not "
+        "list has no tick, so it stays in Drafts (task 3977).",
 }
 
 #: The size of :data:`ALLOWED`. Raising it is a deliberate edit of this file.
@@ -310,8 +334,17 @@ ALLOWED: dict[str, str] = {
 #: view (81). STU-BETA-2 added one: the plan card names six objects at most
 #: and says 'and N more', and two cuts keep a made action id in 48 characters (84).
 #: STU-B2c-2b added two: a refusal names at most two field keys, and it writes
-#: nothing, so the next call names the rest (86).
-ALLOWED_CEILING = 86
+#: nothing, so the next call names the rest (86). CAL-4 added one: the error text
+#: of a failed day-flow step, cut to 120 characters (87). STU-A5c-2 added one: the
+#: delete card names ten tables and counts the rest, and the delete takes every
+#: table (88). STU-AF-8a added one: the outline's Pages line names four pages and
+#: says 'and N more' (89). SEM-8 added one: the member's words, cut as one string (91).
+#: HRD-10d-4 added one: the refused copy names 12 changed lines and says 'and N more lines' (92).
+#: EAC-1b added two: the note of an edited card names ten people and says 'and N more',
+#: and cuts one text of the member to 120 characters (94).
+#: Task 3977 added two: the shared cut of card lines ends with '+N more', and the
+#: draft pick card counts the drafts that it does not list (96).
+ALLOWED_CEILING = 96
 
 
 def _stringy(node: ast.AST) -> bool:
@@ -1124,7 +1157,9 @@ def test_crm_module_record_pages_its_fields(monkeypatch) -> None:
     _gw(monkeypatch, crm_tools, lambda p, q: record)
     first = asyncio.run(crm_tools.crm_get_module_record("Products", rid))
     assert "Call again with page=2 for the rest." in first
-    assert "Field 60: v60" in asyncio.run(crm_tools.crm_get_module_record("Products", rid, page=2))
+    # CRM-Q34-6: the key stands beside the label of a module field.
+    last = asyncio.run(crm_tools.crm_get_module_record("Products", rid, page=2))
+    assert "Field 60 (key f60): v60" in last
 
 
 def test_crm_owners_say_when_the_route_cap_is_hit(monkeypatch) -> None:

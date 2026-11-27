@@ -44,17 +44,18 @@ HELD = frozenset({"projects", "tasks", "email", "chat"})
 
 # ── 1. The pure checks ──────────────────────────────────────────────────────
 
-def _nav_panes() -> dict[str, str | None]:
-    """The LIVE literal ``href`` entries of ``nav.ts`` and their ``feature``.
+def _nav_panes() -> dict[str, tuple[str | None, bool]]:
+    """The LIVE literal ``href`` entries of ``nav.ts``: their ``feature`` and
+    whether they are ``adminOnly``.
 
     ``launch_surface.md`` §2 is the allowlist of record, and ``nav.ts``
     mirrors it (``nav.test.ts``). A preview pane is left out, as ``PANES``
-    leaves it out (review of #1197, P2). So is an admin page: the admin-only
-    pane and every ``/settings/…`` page, which the tool never opens. A
-    template href (the Centers) is not literal, so it is not here (D49).
+    leaves it out (review of #1197, P2). The Admin section is in (PAR-1): an
+    ``adminOnly`` pane maps to the admin gate of ``PANES``. A template href
+    (the Centers) is not literal, so it is not here (D49).
     """
     text = NAV_TS.read_text(encoding="utf-8")
-    out: dict[str, str | None] = {}
+    out: dict[str, tuple[str | None, bool]] = {}
     for part in re.split(r"\bhref:\s*", text)[1:]:
         href = re.match(r'"([^"]+)"', part)
         if href is None:
@@ -63,10 +64,9 @@ def _nav_panes() -> dict[str, str | None]:
         body = part[:end] if end > 0 else part
         if not re.search(r'\blaunch:\s*"live"', body):
             continue
-        if re.search(r"adminOnly:\s*true", body) or href.group(1).startswith("/settings"):
-            continue
         feature = re.search(r'\bfeature:\s*"([^"]+)"', body)
-        out[href.group(1)] = feature.group(1) if feature else None
+        out[href.group(1)] = (feature.group(1) if feature else None,
+                              bool(re.search(r"adminOnly:\s*true", body)))
     assert len(out) >= 10, "nav.ts parse found too few live panes"
     return out
 
@@ -74,14 +74,27 @@ def _nav_panes() -> dict[str, str | None]:
 def test_panes_mirror_nav_ts_live_entries() -> None:
     """One list, on both sides. A pane that goes live or dark in ``nav.ts``
     must join or leave ``PANES`` in the same PR."""
-    ours = {p.href: p.feature for p in iap.PANES if p.href != "/"}
+    ours = {p.href: (p.feature, p.admin) for p in iap.PANES if p.href != "/"}
     assert ours == _nav_panes()
 
 
-def test_no_preview_or_admin_pane_is_in_the_allowlist() -> None:
+def test_every_live_nav_page_opens_for_an_admin_who_holds_its_feature() -> None:
+    """PAR-1: no live page of the sidebar is a dead end for the chat."""
+    every = frozenset(f for f, _ in _nav_panes().values() if f)
+    for href in _nav_panes():
+        assert iap.refusal(href, every, True) is None, href
+
+
+def test_an_admin_only_pane_is_the_admin_flag_of_nav_ts() -> None:
+    admin = {href for href, (_f, adm) in _nav_panes().items() if adm}
+    assert admin == {"/settings/organization"}
+    assert {p.href for p in iap.PANES if p.admin} == admin
+
+
+def test_no_preview_pane_is_in_the_allowlist() -> None:
     hrefs = {p.href for p in iap.PANES}
     for dark in ("/dashboard", "/notes", "/memory", "/workflows", "/build/apps", "/build/agents",
-                 "/agents", "/observability", "/settings/organization", "/settings/appearance"):
+                 "/agents", "/observability", "/tasks"):
         assert dark not in hrefs, dark
 
 
@@ -106,7 +119,7 @@ def test_pane_of_takes_the_longest_href(path: str, href: str) -> None:
 
 
 @pytest.mark.parametrize("path", ["/nowhere", "/project", "/centers/sales",
-                                  "/settings/organization", "/settings/appearance",
+                                  "/settings", "/settings/members", "/settings/models",
                                   "/peoplex", "/build/apps", "/connect/authorize",
                                   "/signup", "/_next/static/x.js", "/projects/../crm"])
 def test_pane_of_knows_no_other_path(path: str) -> None:
@@ -120,8 +133,10 @@ def test_pane_of_knows_no_other_path(path: str) -> None:
     ("/projects\tx", "not a path inside this app"),
     ("/nowhere", "no page of this app at that path"),
     ("/crm", "the member does not hold /crm"),
-    ("/settings/organization", "no page of this app at that path"),
-    ("/settings/appearance", "no page of this app at that path"),
+    ("/settings/organization", "Only an admin of your organization opens Organisation."),
+    ("/settings/organization?tab=members",
+     "Only an admin of your organization opens Organisation."),
+    ("/settings", "no page of this app at that path"),
     ("/connect/authorize", "no page of this app at that path"),
     ("/signup", "no page of this app at that path"),
     ("/_next/static/x.js", "not a path inside this app"),
@@ -129,6 +144,22 @@ def test_pane_of_knows_no_other_path(path: str) -> None:
 ])
 def test_refusal_names_the_reason(path: str, reason: str) -> None:
     assert iap.refusal(path, HELD) == reason
+
+
+def test_the_admin_pages_open_for_an_admin_and_appearance_for_every_member() -> None:
+    """PAR-1. Mutation: drop ``admin`` from the refusal -> a member opens Organisation."""
+    for path in ("/settings/organization", "/settings/organization?tab=members",
+                 "/settings/organization/"):
+        if path.endswith("/"):
+            assert iap.refusal(path, HELD, True) == "not a path inside this app"
+            continue
+        assert iap.refusal(path, HELD, True) is None, path
+        assert iap.refusal(path, HELD, False) == (
+            "Only an admin of your organization opens Organisation.")
+    assert iap.refusal("/settings/appearance", HELD) is None
+    assert iap.refusal("/settings/appearance", HELD, True) is None
+    # Nobody known holds nothing, even with an admin flag.
+    assert iap.refusal("/settings/organization", None, True) is not None
 
 
 #: The P0 of the review of #1197: each one resolved to another page in the
@@ -256,8 +287,8 @@ def test_a_dot_segment_is_refused_and_sends_nothing(run: _Queue, path: str) -> N
     assert run.events == []
 
 
-@pytest.mark.parametrize("path", ["/connect/authorize", "/signup", "/settings/appearance",
-                                  "/settings/organization", "/centers/sales", "/build/apps"])
+@pytest.mark.parametrize("path", ["/connect/authorize", "/signup", "/settings",
+                                  "/settings/members", "/centers/sales", "/build/apps"])
 def test_a_path_off_the_allowlist_is_refused_and_sends_nothing(run: _Queue, path: str) -> None:
     assert _call(path) == {"error": "no page of this app at that path"}
     assert run.events == []
@@ -556,3 +587,79 @@ def test_a_specialist_that_calls_the_orchestrator_moves_nothing() -> None:
     assert not [e for e in record.events if e.get("type") == "CUSTOM" and e.get("name") == "navigate"]
     results = _tool_results(orchestrator)
     assert results and all("only the member's own assistant opens a page" in r for r in results), results
+
+
+# ── PAR-1: an admin page, at the tool ───────────────────────────────────────
+
+def _as_admin(monkeypatch: pytest.MonkeyPatch, value: bool) -> None:
+    from orchestrator import guide_tools
+
+    async def _admin() -> bool:
+        return value
+
+    monkeypatch.setattr(guide_tools, "member_is_admin", _admin)
+
+
+def test_an_admin_opens_organisation_on_the_members_tab(
+    run: _Queue, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The demo of task 3101: "open the page where I invite users"."""
+    _as_admin(monkeypatch, True)
+    out = _call("/settings/organization?tab=members", "Here you invite members.")
+    assert out == _opened("/settings/organization?tab=members")
+    assert len(_navigates(run)) == 1
+
+
+def test_a_member_who_is_no_admin_gets_the_refusal_and_no_page_moves(
+    run: _Queue, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _as_admin(monkeypatch, False)
+    assert _call("/settings/organization") == {
+        "error": "Only an admin of your organization opens Organisation."}
+    assert run.events == []
+    # The refusal gave the turn back: a page the member holds still opens.
+    assert _call("/projects") == _opened("/projects")
+
+
+def test_the_admin_right_is_read_only_for_a_pane_that_needs_it(
+    run: _Queue, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from orchestrator import guide_tools
+
+    reads: list[int] = []
+
+    async def _admin() -> bool:
+        reads.append(1)
+        return False
+
+    monkeypatch.setattr(guide_tools, "member_is_admin", _admin)
+    assert _call("/projects") == _opened("/projects")
+    assert reads == []
+
+
+def test_appearance_opens_for_every_member(run: _Queue, monkeypatch: pytest.MonkeyPatch) -> None:
+    _as_admin(monkeypatch, False)
+    assert _call("/settings/appearance") == _opened("/settings/appearance")
+
+
+def test_the_tool_text_names_every_page_it_opens() -> None:
+    """The page map of the docstring holds each pane of ``PANES``, and "invite" names
+    Organisation. Mutation: add a pane to ``PANES`` and not to the text -> red."""
+    from orchestrator.agents import show_in_app
+
+    doc = show_in_app.__doc__ or ""
+    for pane in iap.PANES:
+        if pane.href != "/":
+            assert pane.href in doc, pane.href
+    assert re.search(r"/settings/organization: Invite members", doc)
+    for dead in ("/tasks,", "/notes", "/dashboard"):
+        assert dead not in doc, dead
+
+
+def test_tasks_is_refused_and_the_refusal_names_projects() -> None:
+    """Task 3865: ``/tasks`` is a preview pane that redirects into Projects."""
+    got = iap.refusal("/tasks", frozenset({"tasks", "projects"}))
+    assert got == "no page of this app at that path. Open /projects instead."
+    assert iap.refusal("/tasks?x=1", None) == got
+    assert "/tasks" not in {p.href for p in iap.PANES}
+    assert iap.refusal("/nowhere", None) == "no page of this app at that path"

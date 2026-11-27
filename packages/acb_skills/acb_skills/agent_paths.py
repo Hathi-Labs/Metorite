@@ -59,6 +59,7 @@ has always honoured it.
 from __future__ import annotations
 
 import base64
+import enum
 import hashlib
 import hmac
 import re
@@ -66,6 +67,7 @@ from pathlib import Path
 
 __all__ = [
     "AGENT_NAME_RE",
+    "BROKER_AGENT_NAMES",
     "RUN_DATA_DIR",
     "SKILLS_REL",
     "SKILL_AUTHOR_MARKER",
@@ -73,10 +75,12 @@ __all__ = [
     "SKILL_FOREIGN",
     "SKILL_MINE",
     "SKILL_NAME_RULE",
+    "SKILL_REFUSAL_TEXT",
     "SKILL_UNCLAIMED",
     "TENANT_INSTANCE_PREFIX",
     "THREAD_HEADS",
     "InvalidAgentName",
+    "SkillClaimRefusal",
     "SkillNameRefused",
     "SkillOwnedElsewhere",
     "agent_code_dir",
@@ -87,6 +91,8 @@ __all__ = [
     "instance_slug",
     "is_loose_rel",
     "is_other_thread_rel",
+    "is_personal_instance",
+    "is_shared_instance",
     "is_tenant_instance",
     "is_thread_slug",
     "is_valid_agent_name",
@@ -95,10 +101,12 @@ __all__ = [
     "require_agent_name",
     "run_data_rel",
     "skill_author_id",
+    "skill_folder_orphaned",
     "skill_owner",
     "skill_top_rel",
     "state_root",
     "tenant_instance",
+    "thread_file_parts",
     "thread_inputs_rel",
     "thread_outputs_rel",
     "thread_scoped_rel",
@@ -122,6 +130,16 @@ _INSTANCE_MARKER = ".cc-instance"
 #: inside ``repos/``. Every filesystem use of an agent name goes through
 #: :func:`require_agent_name` or :func:`is_valid_agent_name`.
 AGENT_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+#: The agent names that the sandbox broker uses for its own steps (SBX-4b1,
+#: ``agent_sandbox.md`` §12.4 decision 11). The broker keys a container by
+#: (org, agent, thread), so a registered agent with one of these names would
+#: share the container key of a broker step (§6.2). Both names pass
+#: :data:`AGENT_NAME_RE`, so ``register_agent`` refuses them by this set.
+#: ``user-tool`` is ``USER_TOOL_AGENT`` and ``compute`` is ``COMPUTE_AGENT`` of
+#: ``orchestrator/sandbox_broker.py``. Fence:
+#: ``tests/unit/test_user_tool_build.py``.
+BROKER_AGENT_NAMES: frozenset[str] = frozenset({"user-tool", "compute"})
 
 
 class InvalidAgentName(ValueError):
@@ -219,6 +237,36 @@ def is_tenant_instance(instance: object) -> bool:
         and instance.startswith(TENANT_INSTANCE_PREFIX)
         and len(instance) > len(TENANT_INSTANCE_PREFIX)
     )
+
+
+#: The prefix of a personal key, ``u:<email>`` (``manifest.instance_key``).
+PERSONAL_INSTANCE_PREFIX = "u:"
+#: The prefix of a team key, ``t:<team>`` (``manifest.instance_key``).
+TEAM_INSTANCE_PREFIX = "t:"
+
+
+def is_personal_instance(instance: object) -> bool:
+    """True when *instance* is a ``u:<email>`` key: a dir of one member only."""
+    return isinstance(instance, str) and instance.startswith(PERSONAL_INSTANCE_PREFIX)
+
+
+def is_shared_instance(instance: object) -> bool:
+    """True when the dir of *instance* can hold the files of more than one member.
+
+    Every key that is not a personal key (H-245, task 618 review F1): a tenant
+    dir (``o:<org>``), a team dir (``t:<team>``), and the shared key ``''``.
+    A key that is not a string is shared too, so the skill rules fail closed.
+    """
+    return not is_personal_instance(instance)
+
+
+def store_ask_instances(instance: str) -> tuple[str, ...]:
+    """The store keys that a rehydrate of the dir of *instance* restores.
+
+    A tenant dir also restores this tenant's older rows (``instance=''``,
+    ``executor._rehydrate_target``). Every other dir restores its own key only.
+    """
+    return (instance, "") if is_tenant_instance(instance) else (instance,)
 
 
 # ── The thread's own folders and run data (D86, maf_coding_engine §16.3, H-227) ──
@@ -392,6 +440,34 @@ def is_loose_rel(rel: str) -> bool:
     """
     parts = _rel_parts(rel)
     return len(parts) >= 2 and parts[0] in THREAD_HEADS and not is_thread_slug(parts[1])
+
+
+def thread_file_parts(rel: object) -> tuple[list[str], str] | None:
+    """The parts of ``<inputs|outputs>/<thread slug>/<file>`` and the chat id
+    that the slug names, else ``None`` (task 3598).
+
+    THE one shape rule of a file of a chat folder. The gateway resolver
+    (``workspace._chat_path_parts``) and the email tool's rewrite of a bare
+    path to an ``artifact:`` ref both use it. It reads no disk and no store.
+
+    A NUL, an absolute path, a drive, a ``..`` or ``.`` part, a head that is
+    not ``inputs`` or ``outputs`` in lower case, and a path with no file
+    below the slug give ``None``. The slug must be the exact slug of its id
+    (:func:`thread_slug`), so one slug names one chat.
+    """
+    text = str(rel or "").replace("\\", "/")
+    if "\x00" in text or text.startswith("/") or (len(text) > 1 and text[1] == ":"):
+        return None
+    parts = [p for p in text.split("/") if p != ""]
+    if any(p in (".", "..") for p in parts):
+        return None
+    if len(parts) < 3 or parts[0] not in THREAD_HEADS or not is_thread_slug(parts[1]):
+        return None
+    session_id = parts[1].rsplit("-", 1)[0]
+    try:
+        return (parts, session_id) if thread_slug(session_id) == parts[1] else None
+    except ValueError:
+        return None
 
 
 # ── Names that no reader serves (the gateway's file routes, package_artifacts) ──
@@ -615,8 +691,51 @@ def own_skill_names(workspace: Path, member: str | None) -> tuple[str, ...]:
     return tuple(sorted(names))
 
 
+class SkillClaimRefusal(enum.Enum):
+    """Why :func:`claim_skill` refused a skill folder (H-245 review, P2).
+
+    * ``FOREIGN``: the folder has the marker of another member, or another
+      member claimed it first (a race). Only this reason says "another member".
+    * ``IN_USE``: no marker, but the name is taken. The folder holds files
+      (:func:`skill_folder_orphaned`), or the blob store holds rows under it.
+    * ``STORE_UNREAD``: the blob store did not answer, so no name is free.
+    """
+
+    FOREIGN = "foreign"
+    IN_USE = "in_use"
+    STORE_UNREAD = "store_unread"
+
+
+#: The text that a member (the Files routes) and the model (the file store)
+#: read for each refusal. It says what happened and the next step
+#: (``workbench/control_plane/DESIGN_SYSTEM.md`` §10).
+SKILL_REFUSAL_TEXT = {
+    SkillClaimRefusal.FOREIGN: "That skill belongs to another member.",
+    SkillClaimRefusal.IN_USE: "That skill name is in use. Pick another name.",
+    SkillClaimRefusal.STORE_UNREAD: (
+        "This server cannot check that skill name right now, so nothing was "
+        "saved. Try again in a minute."
+    ),
+}
+
+
 class SkillOwnedElsewhere(PermissionError):
-    """Another member made this skill folder, or claimed it first (a race)."""
+    """:func:`claim_skill` refused the skill folder. :attr:`reason` says why.
+
+    The reason is FOREIGN unless the raiser names another one, so a raise
+    with no reason never reads as a free name.
+    """
+
+    def __init__(
+        self, message: str = "", *, reason: SkillClaimRefusal = SkillClaimRefusal.FOREIGN,
+    ) -> None:
+        super().__init__(message or SKILL_REFUSAL_TEXT[reason])
+        self.reason = reason
+
+    @property
+    def member_text(self) -> str:
+        """The text of :data:`SKILL_REFUSAL_TEXT` for :attr:`reason`."""
+        return SKILL_REFUSAL_TEXT[self.reason]
 
 
 class SkillNameRefused(ValueError):
@@ -656,7 +775,73 @@ def refused_write(
     return None
 
 
-def claim_skill(workspace: Path, rel: str, member: str | None) -> tuple[str, bytes] | None:
+def skill_folder_orphaned(workspace: Path, top_rel: str) -> bool:
+    """True when the skill folder *top_rel* holds an entry and no marker.
+
+    Such a folder came from a writer that records no author, from before
+    PR #603, or from a rehydrate that failed part way and brought back a
+    member's files with no marker. In a shared dir, no member may take it
+    (:func:`claim_skill`), and the file store reads none of it (H-245 step 1). A folder that
+    cannot be listed (a link, a read error) is orphaned too, so the rule fails
+    closed. A missing or empty folder is not.
+    """
+    from acb_skills import safe_open
+
+    try:
+        held = safe_open.list_dir(Path(workspace), top_rel)
+    except (safe_open.UnsafePath, OSError):
+        return True
+    names = {name for name, _kind in held or ()}
+    return bool(names) and SKILL_AUTHOR_MARKER not in names
+
+
+def _store_refusal(
+    workspace: Path, top_rel: str, organization_id: str | None, instance: str,
+) -> SkillClaimRefusal | None:
+    """Why the blob store keeps *top_rel* from a new author, or ``None``.
+
+    H-245 step 2. The disk is a cache of the store, so a folder that the disk
+    lost can still be another member's. ``IN_USE`` when the store holds a
+    row under the folder, ``STORE_UNREAD`` when it cannot say, and ``None``
+    when it holds none.
+
+    The key is *instance*, the store key of the run's mirror, from the
+    caller's binding. It never comes from the dir's ``.cc-instance`` marker:
+    a container writes the dir that it mounts.
+
+    The ask binds every shared dir (:func:`is_shared_instance`): a tenant dir
+    and a team dir. It asks for the keys that a rehydrate of the dir restores
+    (:func:`store_ask_instances`). A personal dir (``u:``) holds only its
+    member's files, so the ask protects nothing there, and a store outage must
+    not block a personal skill. The tenant is *organization_id*, else the
+    bound one. Only a process with no store reads as "no row".
+    """
+    if not is_shared_instance(instance):
+        return None
+    try:
+        from acb_memory import blob_store
+    except ImportError:
+        return None  # no store in this process, so nothing can come back
+    agent, _marked = workspace_blob_key(workspace)
+    try:
+        held = blob_store.has_rows_under(
+            agent, top_rel, instances=store_ask_instances(instance),
+            organization_id=organization_id,
+        )
+    except Exception as exc:  # no answer is a refusal
+        from acb_common import get_logger
+
+        get_logger("acb_skills.agent_paths").warning(
+            "skill_claim.store_unread", agent=agent, error=type(exc).__name__,
+        )
+        return SkillClaimRefusal.STORE_UNREAD
+    return SkillClaimRefusal.IN_USE if held else None
+
+
+def claim_skill(
+    workspace: Path, rel: str, member: str | None, *, instance: str,
+    organization_id: str | None = None,
+) -> tuple[str, bytes] | None:
     """Record *member* as the author of the skill folder of *rel*, when none is.
 
     Returns ``(marker rel, bytes)`` when it wrote the marker, so the caller can
@@ -666,8 +851,16 @@ def claim_skill(workspace: Path, rel: str, member: str | None) -> tuple[str, byt
     Raises ``ValueError`` when there is no member id (no member, or no usable
     secret), because a skill with no author never loads. Raises
     :class:`SkillOwnedElsewhere` when the folder is not this member's,
-    also when another member claimed it between the check and the write. So
-    ``None`` always means "this member's folder", and the caller may write.
+    also when another member claimed it between the check and the write. It
+    raises it too, in a shared dir (:func:`is_shared_instance`), for a folder
+    with files and no marker (:func:`skill_folder_orphaned`), and for a folder
+    that the blob store still holds or cannot answer for (:func:`_store_refusal`).
+    In a personal dir, its member claims an unmarked folder.
+    Its :attr:`~SkillOwnedElsewhere.reason` says which. So ``None`` always
+    means "this member's folder", and the caller may write.
+
+    *instance* is the store key of the dir, from the caller's binding. It has
+    no default, so a caller that leaves it out fails at once (task 618, F3).
     """
     top = skill_top_rel(rel)
     if top is None:
@@ -688,15 +881,21 @@ def claim_skill(workspace: Path, rel: str, member: str | None) -> tuple[str, byt
     from acb_skills import safe_open
 
     # A folder that already holds files and no marker came from a writer that
-    # records no author, or from before PR #603. The routes hide it from every
-    # member, so no member may take it and read what is in it.
-    try:
-        held = safe_open.list_dir(Path(workspace), top)
-    except (safe_open.UnsafePath, OSError):
-        raise SkillOwnedElsewhere("that skill folder cannot be read") from None
-    names = {name for name, _kind in held or ()}
-    if names and SKILL_AUTHOR_MARKER not in names:
-        raise SkillOwnedElsewhere("that skill folder has no author, so no member can take it")
+    # records no author, or from before PR #603. In a shared dir the routes and
+    # the file store hide it from every member, so no member may take it and
+    # read what is in it. A personal dir (``u:``) holds only its member's files,
+    # and the Files routes write no marker there, so its member claims the
+    # folder (H-245 review, P1).
+    if is_shared_instance(instance) and skill_folder_orphaned(workspace, top):
+        raise SkillOwnedElsewhere(
+            "that skill folder has no author, so no member can take it",
+            reason=SkillClaimRefusal.IN_USE,
+        )
+    # The disk can lose a folder that the store still holds. A later rehydrate
+    # would put those files in this member's folder (H-245 step 2).
+    held = _store_refusal(workspace, top, organization_id, instance)
+    if held is not None:
+        raise SkillOwnedElsewhere(SKILL_REFUSAL_TEXT[held], reason=held)
     marker = f"{top}/{SKILL_AUTHOR_MARKER}"
     data = who.encode("ascii")
     try:

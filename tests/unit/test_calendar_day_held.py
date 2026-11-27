@@ -6,8 +6,11 @@ A held chat is one that read outside mail. The choice, and why:
   tools is held off for ``task-manager``. ``is_held_off_write`` matches on the
   bare name before the owner, so the pack must not put the names in
   ``egress._owner_tool_names()``.
-* **The pack keeps its two reads** (``my_tasks_day_digest`` and
-  ``my_tasks_list_schedule``, ``read_only=True``).
+* **The pack keeps its eight reads** (``my_tasks_day_digest``,
+  ``my_tasks_get_calendar_settings``, ``my_tasks_list_day_rules``,
+  ``my_tasks_list_events`` (CE-15), ``my_tasks_list_schedule``, and the three
+  reads of P-1a (task 3112): ``my_tasks_list_calendar_connections``,
+  ``my_tasks_suggest_title`` and ``my_tasks_enrich``, ``read_only=True``).
 * **The pack holds off its six writes.** They show no card: a plan is proposed
   in text and applied by a second call, so mail that the chat read could steer
   the apply. ``egress.HELD_OFF_PACK_WRITES`` names them by pack slug.
@@ -26,11 +29,15 @@ from acb_skills.tool_guard import tool_name
 from orchestrator import _tool_injection as ti
 
 from tests.unit._egress_mark_store import install_memory_mark_store
-from tests.unit.test_calendar_day_pack import EIGHT, SLUG
+from tests.unit.test_calendar_day_pack import SLUG, TWENTY
 from tests.unit.test_tool_packs_choice import _run_ctx, _tenant
 
-READS = ("my_tasks_day_digest", "my_tasks_list_schedule")
-WRITES = tuple(n for n in EIGHT if n not in READS)
+#: CE-15 (task 3463): the read of the synced events is the fifth read.
+#: P-1a (task 3112): the connected calendars and the two task proposals make eight.
+READS = ("my_tasks_day_digest", "my_tasks_get_calendar_settings",
+         "my_tasks_list_day_rules", "my_tasks_list_events", "my_tasks_list_schedule",
+         "my_tasks_list_calendar_connections", "my_tasks_suggest_title", "my_tasks_enrich")
+WRITES = tuple(n for n in TWENTY if n not in READS)
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +48,7 @@ def _held_card_writes_on(monkeypatch) -> None:
 
 
 def test_the_reads_are_marked_read_only() -> None:
-    """Mutation: drop ``read_only=True`` from either read -> red."""
+    """Mutation: drop ``read_only=True`` from any read -> red."""
     for name in READS:
         hints = getattr(getattr(skill_my_tasks, name), "__tool_risk__", None)
         assert hints and hints.get("read_only") is True, name
@@ -49,8 +56,8 @@ def test_the_reads_are_marked_read_only() -> None:
         assert not getattr(skill_my_tasks, name).__tool_risk__.get("read_only"), name
 
 
-@pytest.mark.parametrize("name", EIGHT)
-def test_the_tasks_assistant_keeps_all_eight_in_a_held_chat(name: str) -> None:
+@pytest.mark.parametrize("name", TWENTY)
+def test_the_tasks_assistant_keeps_every_planner_tool_in_a_held_chat(name: str) -> None:
     """The regression fence. On main no planner tool is held off for the Tasks
     assistant. Mutation: put the family in ``_owner_tool_names()`` -> red."""
     fn = getattr(skill_my_tasks, name)
@@ -59,7 +66,7 @@ def test_the_tasks_assistant_keeps_all_eight_in_a_held_chat(name: str) -> None:
     assert name not in eg._owner_tool_names()
 
 
-def test_the_pack_holds_off_its_six_writes_and_keeps_its_two_reads() -> None:
+def test_the_pack_holds_off_its_twelve_writes_and_keeps_its_eight_reads() -> None:
     """Mutation: add a read to ``HELD_OFF_PACK_WRITES`` or drop a write -> red."""
     assert set(eg.HELD_OFF_PACK_WRITES[SLUG]) == set(WRITES)
     for name in WRITES:
@@ -74,13 +81,13 @@ def test_the_switch_off_holds_nothing_off(monkeypatch) -> None:
     from acb_common import get_settings
 
     monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "")
-    for name in EIGHT:
+    for name in TWENTY:
         assert not eg.is_held_off_pack_write(name, SLUG)
 
 
 async def test_check_my_inbox_and_rebuild_my_day_in_a_held_chat(monkeypatch) -> None:
     """The turn "check my inbox and rebuild my day": the chat read mail, so the
-    pack builds held. The two reads stay and the six writes go. Mutation: skip
+    pack builds held. The eight reads stay and the twelve writes go. Mutation: skip
     ``_is_held_off_pack`` in ``_pack_tools`` -> the writes stay -> red. Mutation:
     hold off a read -> red."""
     install_memory_mark_store(monkeypatch)

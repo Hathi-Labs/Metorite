@@ -40,7 +40,7 @@ import errno
 import os
 import shutil
 import stat as _stat
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterator, Sequence
 from pathlib import Path
 from typing import BinaryIO
 
@@ -53,8 +53,11 @@ __all__ = [
     "publish_bytes",
     "publish_stream",
     "read_bytes",
+    "remove_links",
+    "remove_nested_git",
     "remove_tree",
     "replace_bytes",
+    "replace_stream",
     "split_rel",
     "stat_file",
     "unlink",
@@ -427,6 +430,38 @@ def replace_bytes(root: Path, rel: str, data: bytes) -> None:
     write leaves the old file as it was. The rename replaces a link at the
     target, and never follows it. The temp file is removed on any failure.
     """
+
+    def fill(tmp_rel: str) -> None:
+        write_bytes(root, tmp_rel, data, exclusive=True, make_parents=False)
+
+    _replace_via_temp(root, rel, fill)
+
+
+def replace_stream(root: Path, rel: str, write: Callable[[BinaryIO], object]) -> None:
+    """:func:`replace_bytes`, with the bytes from *write* and never all in memory.
+
+    *write* fills the temp file through a binary file, in chunks. An error
+    from *write* propagates, and the old file stays as it was. The sandbox
+    broker writes each file of a remote copy with it (SBX-15).
+    """
+
+    def fill(tmp_rel: str) -> None:
+        parts = split_rel(tmp_rel)
+        fd = _open_for_write(root, parts, exclusive=True, make_parents=False)
+        with os.fdopen(fd, "wb") as fh:
+            write(fh)
+            fh.flush()
+
+    _replace_via_temp(root, rel, fill)
+
+
+def _replace_via_temp(root: Path, rel: str, fill: Callable[[str], None]) -> None:
+    """The one rename of :func:`replace_bytes` and :func:`replace_stream`.
+
+    *fill* makes the temp file at the relative name it gets, with an
+    exclusive create. Then the temp file goes over ``root/rel`` through the
+    dir descriptor. The temp file is removed on any failure.
+    """
     import secrets
 
     parts = split_rel(rel)
@@ -435,7 +470,7 @@ def replace_bytes(root: Path, rel: str, data: bytes) -> None:
     tmp_name = f".{parts[-1]}.tmp-{secrets.token_hex(8)}"
     tmp_rel = "/".join([*parts[:-1], tmp_name])
     try:
-        write_bytes(root, tmp_rel, data, exclusive=True, make_parents=False)
+        fill(tmp_rel)
         if _FD_WALK:
             with _dir_fd(root, parts[:-1]) as fd:
                 os.replace(tmp_name, parts[-1], src_dir_fd=fd, dst_dir_fd=fd)
@@ -690,3 +725,101 @@ def remove_tree(root: Path, rel: str) -> bool:
             return True
     except FileNotFoundError:
         return False
+
+
+def remove_links(root: Path, *, skip: Collection[str] = (".git",)) -> list[str]:
+    """Remove each symbolic link below *root*, and follow none. Returns their paths.
+
+    WS-43h (review P0). After each command of an ``app_builder`` container,
+    so a link that a command made never stays in the app dir for a host
+    reader that follows links (the host T2 build, git). A top-level name in
+    *skip* is not walked: the container cannot write the ``.git`` cover.
+    Paths are relative to *root*, with ``/``.
+    """
+    removed: list[str] = []
+    if not _FD_WALK:
+        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+            here = Path(dirpath)
+            if here == root:
+                dirnames[:] = [d for d in dirnames if d not in skip]
+            kept: list[str] = []
+            for name in [*dirnames, *filenames]:
+                entry = here / name
+                if not (entry.is_symlink() or entry.is_junction()):
+                    if name in dirnames:
+                        kept.append(name)
+                    continue
+                try:
+                    entry.unlink()
+                except (IsADirectoryError, PermissionError):
+                    os.rmdir(entry)
+                removed.append(entry.relative_to(root).as_posix())
+            dirnames[:] = kept
+        return removed
+    with _dir_fd(root, []) as root_fd:
+        for dirpath, dirnames, filenames, dir_fd in os.fwalk(
+            ".", dir_fd=root_fd, follow_symlinks=False,
+        ):
+            if dirpath == ".":
+                dirnames[:] = [d for d in dirnames if d not in skip]
+            rel_dir = dirpath[2:] if dirpath.startswith("./") else ""
+            kept = []
+            for name in [*dirnames, *filenames]:
+                try:
+                    st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                except OSError:
+                    continue
+                if not _stat.S_ISLNK(st.st_mode):
+                    if name in dirnames:
+                        kept.append(name)
+                    continue
+                os.unlink(name, dir_fd=dir_fd)
+                removed.append("/".join(p for p in (rel_dir, name) if p))
+            dirnames[:] = kept
+    return removed
+
+
+def remove_nested_git(root: Path) -> list[str]:
+    """Remove each ``.git`` entry below the top of *root*, and follow no link.
+
+    WS-43h (review round 2, P0). A command in an ``app_builder`` container
+    can run ``git init sub`` and put a filter in ``sub/.git/config``. Host git
+    in the app dir would then run that filter on the host. The top ``.git``
+    is the host's own repo, under a read-only cover, and stays. Returns the
+    paths removed, relative to *root*, with ``/``.
+    """
+    removed: list[str] = []
+    if not _FD_WALK:
+        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+            here = Path(dirpath)
+            if here == root:
+                dirnames[:] = [d for d in dirnames if d != ".git"]
+                filenames = [f for f in filenames if f != ".git"]
+            for name in [n for n in (*dirnames, *filenames) if n == ".git"]:
+                entry = here / name
+                if entry.is_dir() and not (entry.is_symlink() or entry.is_junction()):
+                    shutil.rmtree(entry)
+                else:
+                    entry.unlink()
+                removed.append(entry.relative_to(root).as_posix())
+            dirnames[:] = [d for d in dirnames if d != ".git"]
+        return removed
+    with _dir_fd(root, []) as root_fd:
+        for dirpath, dirnames, filenames, dir_fd in os.fwalk(
+            ".", dir_fd=root_fd, follow_symlinks=False,
+        ):
+            top = dirpath == "."
+            rel_dir = dirpath[2:] if dirpath.startswith("./") else ""
+            names = [n for n in (*dirnames, *filenames) if n == ".git"]
+            dirnames[:] = [d for d in dirnames if d != ".git"]
+            if top:
+                continue
+            for name in names:
+                st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                if _stat.S_ISDIR(st.st_mode):
+                    shutil.rmtree(name, dir_fd=dir_fd)
+                else:
+                    os.unlink(name, dir_fd=dir_fd)
+                removed.append("/".join(p for p in (rel_dir, name) if p))
+    return removed
+

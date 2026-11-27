@@ -305,9 +305,11 @@ A new table `pm_alignment_findings`.
 6. The server verifies the answer. The quoted task words must occur in the task. The rule id must be an active rule of the project. No proof, no finding.
 7. In `shadow` mode it writes a row with `visibility = 'shadow'` and tells no one. In `on` mode it writes a `live` row and starts ALN-9.
 
+**The checker in the proactive loop, proposed 2026-11-16.** `proactive_loop.md` §4.2 names ALN-7 as the first detector of a contradiction, and its §6 maps a finding of §4.3 onto the fields of a finding. ALN-Q5 binds that spec too.
+
 ### 6.2 Mode and the flag
 
-The mode order is `off`, `shadow`, then `on` (D75.7, D100.2). `mode_for` needs a new branch: a `projects.` prefix that reads a new setting `projects_decide_orgs`, as `crm.` reads `crm_decide_orgs`. The feature goes in `REGISTERED`. **The flag spends credits, so the owner flips it** (CLAUDE.md §3a rule 3). ALN-8 sets the gate for `on`.
+The mode order is `off`, `shadow`, then `on` (D75.7, D100.2). `mode_for` has the branch (DEC-1, task 2306): a `projects.` prefix reads the setting `projects_decide_orgs`, as `crm.` reads `crm_decide_orgs`. A call with this prefix bills `projects`. The feature is one entry of `FEATURE_TABLE` in `decide_features.py`, and `projects.align` is there already, off by default. Its cool-down is its own: a 402 from `projects.` calls pauses only `projects.` calls. **The flag spends credits, so the owner flips it** (CLAUDE.md §3a rule 3). ALN-8 sets the gate for `on`.
 
 ### 6.3 Who pays and the cap
 

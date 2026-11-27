@@ -2,22 +2,23 @@
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from acb_auth import (UserContext, UserRole, get_current_user,
                       identity_read_failed, require_authenticated,
                       require_role)
 from acb_common import configure_logging, get_logger, get_settings
 from acb_common import db_busy
-from acb_common.child_env import copilot_env
 from acb_common.db import TenantUnbound, clear_tenant, release_tenant
 from fastapi import BackgroundTasks, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from gateway.build_info import applied_marker, build_sha
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 _log = get_logger("gateway")
 
@@ -66,6 +67,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         from acb_llm.ride_through import install_stop_hook
         install_stop_hook()
     except Exception:  # noqa: BLE001 - a missing hook is a slower restart only
+        pass
+
+    # The release of each failure row of this process (TOF-2e,
+    # tool_failure_log.md §6 "The release"): the SHA that build_sha() cached
+    # at start. With no SHA, a row holds NULL.
+    try:
+        from acb_common import failure_log as _failure_log
+        _failure_log.set_release(build_sha())
+    except Exception:  # a row with no release only
         pass
 
     # Expose the gateway's venv to every child process (the Copilot CLI, agent
@@ -130,29 +140,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:  # pragma: no cover
         _log.warning("gateway.runtime_check_failed", error=str(exc))
 
-    # Pre-warm the Copilot model list cache so /api/models/all returns instantly.
-    async def _warmup_copilot_models() -> None:
-        try:
-            _gh = getattr(settings, "github_token", "") or os.environ.get("GITHUB_TOKEN", "")
-            if not _gh:
-                return
-            os.environ.setdefault("GITHUB_TOKEN", _gh)
-            import time as _t
-
-            _m = await _list_copilot_models(_gh)
-            if _m:
-                _copilot_models_cache["data"] = {
-                    "models": [{"id": x.id, "label": x.name, "model_picker_enabled": True}
-                               for x in _m if not x.policy or x.policy.state == "enabled"],
-                    "source": "live",
-                }
-                _copilot_models_cache["ts"] = _t.monotonic()
-                _log.info("gateway.copilot_models_cache_warmed", count=len(_m))
-        except Exception as _e:
-            _log.warning("gateway.copilot_models_warmup_failed", error=str(_e))
-
     import asyncio as _asyncio
-    _asyncio.ensure_future(_warmup_copilot_models())
 
     # Sweep any `cc-copilot-*` sandbox containers (BO-7 phase 2 —
     # copilot_sandbox.py) left running by a prior crashed gateway process.
@@ -261,6 +249,17 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             _log.warning("gateway.warm_clone_skipped", error=str(exc))
 
     _asyncio.ensure_future(_warm_clone_agents())
+
+    # TOF-1e: build the chat tools of the packs once, on a thread, so the
+    # first catalog read after a restart never builds them on the event loop.
+    # Only with the flag set for some org. A later flip warms on first read.
+    try:
+        if str(getattr(settings, "studio_chat_tools_orgs", "") or "").strip():
+            from gateway.studio import chat_tool_actions
+
+            chat_tool_actions.start_warm()
+    except Exception as exc:
+        _log.warning("gateway.chat_tools_warm_skipped", error=str(exc)[:200])
 
     # Load provider API keys from encrypted Postgres store into litellm SDK.
     #
@@ -447,6 +446,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.kb_sync_skipped", error=str(exc))
 
+    # Start the calendar sync loop (gateway/calendar_sync/scheduler.py; spec
+    # calendar_events_reminders.md §8.1, WS-CAL CE-10). It READS Google (and
+    # later Outlook) events into calendar_entries. Dark by default: with
+    # CALENDAR_SYNC_READ empty it starts no task and logs once. The gate lives
+    # inside the start function.
+    try:
+        from gateway.calendar_sync.scheduler import start_calendar_sync
+        calendar_sync_started = await start_calendar_sync()
+        _log.info("gateway.calendar_sync", started=calendar_sync_started)
+    except Exception as exc:
+        _log.warning("gateway.calendar_sync_skipped", error=str(exc))
+
     # Start the My Day loop (gateway/my_day_loop.py; spec my_day_feed.md §8.4,
     # WS-58 MD-5b). It trims the active set of each org and sweeps old card
     # state once a day. Dark by default: with MY_DAY_LOOP_ENABLED off it
@@ -546,6 +557,14 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.chat_summary_jobs_skipped", error=str(exc))
     try:
+        # The retention of the waiting chat cards registers its prune hook at
+        # import (task 3435, orchestrator/pending_ask.py). A route imports the
+        # module late, so the import here puts the hook in place before the
+        # first tick. Its own try, as above.
+        from orchestrator import pending_ask as _pending_ask  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.pending_ask_prune_skipped", error=type(exc).__name__)
+    try:
         # The stub of `align.check` registers at import (WS-ALN ALN-1,
         # gateway/align/check.py). Its own try, for the reason above.
         from gateway.align import check as _align_check  # noqa: F401
@@ -565,6 +584,20 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         from gateway.kb_entities import graph as _kg_graph  # noqa: F401
     except Exception as exc:
         _log.warning("gateway.graph_jobs_skipped", error=str(exc))
+    try:
+        # The failure sync kind, its seed hook and its prune hook register at
+        # import (WS-TOF TOF-2e, gateway/failures/sync.py). Dark: each needs
+        # TOOL_FAILURE_TASKS and the three ids. Its own try, for the reason above.
+        from gateway.failures import sync as _failure_sync  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.failure_jobs_skipped", error=type(exc).__name__)
+    try:
+        # The AI vendor alert kind and its seed hook register at import (AO-2,
+        # gateway/provider_alerts.py). Dark: the seed needs PROVIDER_ALERT_ORGS.
+        # Its own try, for the reason above.
+        from gateway import provider_alerts as _provider_alerts  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.provider_alert_jobs_skipped", error=type(exc).__name__)
     try:
         from gateway.jobs.worker import start_job_worker
         _log.info("gateway.job_worker", started=await start_job_worker())
@@ -605,6 +638,19 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         _log.info("gateway.agent_run_sweep", started=agent_run_sweep_started)
     except Exception as exc:
         _log.warning("gateway.agent_run_sweep_skipped", error=str(exc))
+
+    # Start the daily expiry of the package host (gateway/package_host/
+    # expiry_loop.py; spec package_host.md section 6.2, WS-PKG PKG-10b). Each
+    # day it archives each due install, and it deletes each install that
+    # stayed 30 days in the archive. Dark by default: with
+    # PACKAGE_EXPIRY_ENABLED off it starts no task and logs once. The gate
+    # lives inside the start function. A flip on production is the owner's.
+    try:
+        from gateway.package_host.expiry_loop import start_package_expiry
+        package_expiry_started = await start_package_expiry()
+        _log.info("gateway.package_expiry", started=package_expiry_started)
+    except Exception as exc:
+        _log.warning("gateway.package_expiry_skipped", error=str(exc))
 
     # Chat-run liveness (incident 2026-10-09). This process beats a heartbeat
     # key, so a run it holds reads as alive and a run of a dead process reads
@@ -690,6 +736,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception:
         pass
 
+    # Stop the calendar sync loop. Unconditional, like the Knowledge stop.
+    try:
+        from gateway.calendar_sync.scheduler import stop_calendar_sync
+        await stop_calendar_sync()
+    except Exception:
+        pass
+
     # Stop the My Day loop. Unconditional, like the CRM mirror stop above.
     try:
         from gateway.my_day_loop import stop_my_day_loop
@@ -739,6 +792,14 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception:
         pass
 
+    # Stop the drain of the failure log, and write the records that wait
+    # (TOF-2e, acb_common/failure_log.py). It never raises.
+    try:
+        from acb_common import failure_log as _failure_log
+        await _failure_log.stop_drain()
+    except Exception:  # a lost record is a lower count only
+        pass
+
     # Stop the Knowledge embed sweep and wait for a tick in progress.
     try:
         from gateway.kb_index.sweep import stop_kb_embed_sweep
@@ -757,6 +818,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         from gateway.agent_run_sweep import stop_agent_run_sweep
         await stop_agent_run_sweep()
+    except Exception:
+        pass
+
+    # Stop the daily expiry of the package host and wait for a tick in progress.
+    try:
+        from gateway.package_host.expiry_loop import stop_package_expiry
+        await stop_package_expiry()
     except Exception:
         pass
 
@@ -979,6 +1047,14 @@ PUBLIC_ROUTES: frozenset[str] = frozenset({
     # signed `org` in the URL, then clientState inside that tenant.
     "/email/webhook/microsoft",
 
+    # WS-17 SG-1 (D-EM-68) — a hosted signature image. Every reader of a mail
+    # fetches it with no session. The 256-bit token in the URL IS the
+    # credential: the route checks the org is a UUID, binds
+    # tenant_session(org) and reads the one row whose token matches, under
+    # RLS. Every miss is the same 404. It serves image bytes only, with
+    # nosniff and `default-src 'none'`. routes/email/signature_images.py.
+    "/email/signature-image/{org}/{token}.{ext}",
+
     # Meta webhook — verify-token on GET, signature on POST.
     "/whatsapp/webhook",
 
@@ -1180,6 +1256,27 @@ async def _db_unavailable(request: Request, exc: Exception):
     return PlainTextResponse("Internal Server Error", status_code=500)
 
 
+# ── A mail provider that did not answer a write is a 503, not a 500 ──────────
+# HRD-20 (task 3224). Graph answered 502 to a reply and a draft, and the
+# route answered 500 with a traceback. The provider raises one typed error, and
+# this handler answers 503 with its words. The words never say "nothing was
+# sent", because a 502 can hide a write that landed. The error holds no URL.
+# Fence: tests/unit/test_outlook_gateway_faults.py.
+from email_ingestion.providers.base import ProviderDidNotAnswer  # noqa: E402
+
+
+@app.exception_handler(ProviderDidNotAnswer)
+async def _provider_did_not_answer(request: Request, exc: ProviderDidNotAnswer):
+    _log.warning(
+        "email.provider_did_not_answer",
+        extra={"mail_path": request.url.path, "mail_kind": exc.kind},
+    )
+    return JSONResponse(
+        status_code=503, headers={"Retry-After": "60"},
+        content={"detail": exc.detail, "code": "provider_did_not_answer"},
+    )
+
+
 # ── Tenant scope (MT-1c / H2) ── every HTTP request runs inside its own tenant
 # scope: opened empty here, filled in by `_with_resolved_access` when the auth
 # dependency resolves the caller's organization, released after the response.
@@ -1188,6 +1285,126 @@ async def _db_unavailable(request: Request, exc: Exception):
 # inherit another's binding" true on any server task model, not just uvicorn's
 # task-per-request. Jobs and consumers get no scope from this; they bind
 # explicitly or fail closed with TenantUnbound (H4).
+#
+# TOF-2d: the door sites of the failure log (tool_failure_log.md §4.2, D225).
+# * D1: a route that raises writes one `unhandled_500`. The tenant of the
+#   request is still bound here. `_db_unavailable` runs after the release.
+#   An exception that `db_busy` names writes none (a 503 is an answer).
+# * D2: a route that ANSWERS 500 writes `route_500`, and 502 or 504 writes
+#   `route_upstream`. A request that a capture site already recorded writes
+#   none (the request mark), so one failure has one writer.
+# The record is a queue put that never raises. The door reads the status of
+# the answer and the matched route template only: never the concrete path,
+# the query or the body. The org comes from the tenant seam only (R5).
+# Fence: tests/unit/test_failure_capture_sites.py.
+import weakref  # noqa: E402
+from contextlib import suppress  # noqa: E402
+
+from acb_common import failure_log  # noqa: E402
+
+#: D2: the status that a route answers on purpose, and its failure code.
+_DOOR_CODES = {500: "route_500", 502: "route_upstream", 504: "route_upstream"}
+_ROUTE_PATHS: weakref.WeakKeyDictionary[Any, frozenset[str]] = weakref.WeakKeyDictionary()
+
+
+#: The deepest level of included routers that the walk reads.
+_ROUTE_WALK_DEPTH = 32
+
+
+def _node_paths(node: Any) -> list[str]:
+    """The template of one route node. A plain route has `.path`. A route of
+    an included router is an effective context of FastAPI, whose `.path`
+    holds the whole template with each prefix. Its other routes keep the
+    template on `.starlette_route`. Never raises."""
+    out = []
+    for holder in (node, getattr(node, "starlette_route", None)):
+        try:
+            path = getattr(holder, "path", None)
+        except Exception:  # a node that cannot say its path names none
+            continue
+        if isinstance(path, str) and path.startswith("/"):
+            out.append(path)
+    return out
+
+
+def _walk_routes(nodes: Any, out: set[str], depth: int = 0) -> None:
+    """Add the template of each route under *nodes* to *out*.
+
+    FastAPI keeps an included router as ONE node with no `.path`
+    (`fastapi.routing._IncludedRouter`). Its `effective_candidates()` gives
+    the routes and the nested routers, and `effective_low_priority_routes()`
+    gives the rest. A node of an unknown kind is left out, and the walk goes
+    on. Never raises."""
+    if depth > _ROUTE_WALK_DEPTH:
+        return
+    try:
+        items = list(nodes or ())
+    except Exception:  # nodes that cannot be read add nothing
+        return
+    for node in items:
+        out.update(_node_paths(node))
+        for reader in ("effective_candidates", "effective_low_priority_routes"):
+            try:
+                read = getattr(node, reader, None)
+                children = read() if callable(read) else None
+            except Exception:  # an unknown node: keep going
+                continue
+            if children:
+                _walk_routes(children, out, depth + 1)
+
+
+def _route_paths(app_obj: Any) -> frozenset[str]:
+    """The template of each route of the app, read once and kept for each
+    app (§3.2 rule 1). It walks each included router. Only a template in
+    this set names a route. Any other gives `route:other`. Never raises."""
+    try:
+        found = _ROUTE_PATHS.get(app_obj)
+    except TypeError:  # an app that takes no weak reference: no cache
+        found = None
+    if found is not None:
+        return found
+    paths: set[str] = set()
+    with suppress(Exception):  # the walk never fails the door
+        _walk_routes(getattr(app_obj, "routes", None), paths)
+    found = frozenset(paths)
+    with suppress(TypeError):  # an app that takes no weak reference: no cache
+        _ROUTE_PATHS[app_obj] = found
+    return found
+
+
+def _route_template(scope: Any) -> str | None:
+    """The template of the route that answered. FastAPI puts the effective
+    context of a route of an included router in `scope["fastapi"]`, and its
+    `.path` holds the whole template. `scope["route"].path` holds only the
+    part of the router, so it is the second choice. Never the concrete
+    path."""
+    fastapi_scope = scope.get("fastapi")
+    context = fastapi_scope.get("effective_route_context") if isinstance(fastapi_scope, dict) else None
+    paths = _node_paths(context) if context is not None else []
+    if paths:
+        return paths[0]
+    path = getattr(scope.get("route"), "path", None)
+    return path if isinstance(path, str) else None
+
+
+def _door_record(scope: Any, app_obj: Any, exc: BaseException | None, code: str) -> None:
+    """Record one door failure (D1 or D2). Never raises. An exception that
+    `db_busy` names writes none: its 503 is an answer (§4.1)."""
+    try:
+        if exc is not None and db_busy.is_db_unavailable(exc):
+            return
+        template = _route_template(scope)
+        method = scope.get("method")
+        tool = f"{method} {template}" if isinstance(template, str) and isinstance(method, str) else ""
+        actor = next((v for k, v in scope.get("headers") or () if k == b"x-actor-via"), b"")
+        failure_log.record_tool_failure(
+            exc, source="door_5xx", error_code=code, tool=tool, kind="route",
+            route_paths=_route_paths(app_obj),
+            surface=failure_log.door_surface(actor[:64].decode("latin-1")))
+    except Exception as err:  # the class only: the answer never changes
+        _log.debug("failure_log.door_failed", extra={"door_error": type(err).__name__})
+
+
 class TenantScopeMiddleware:
     def __init__(self, asgi_app):  # noqa: ANN001 — ASGI protocol shape
         self.asgi_app = asgi_app
@@ -1197,12 +1414,40 @@ class TenantScopeMiddleware:
             await self.asgi_app(scope, receive, send)
             return
         token = clear_tenant()
+        # FastAPI sets `scope["app"]` before its middleware. A mounted app
+        # can write over it lower down, so the door reads it here.
+        app_obj = scope.get("app")
+        mark, mark_token = failure_log.open_request_mark()
+        status = 0
+
+        async def send_status(message: Any) -> None:
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = message.get("status", 0)
+            await send(message)
+
         try:
-            await self.asgi_app(scope, receive, send)
+            await self.asgi_app(scope, receive, send_status)
+        except Exception as exc:
+            # D1. It records, then raises again, so every handler runs as before.
+            _door_record(scope, app_obj, exc, "unhandled_500")
+            raise
+        else:
+            code = _DOOR_CODES.get(status)
+            if code is not None and not mark.recorded:
+                _door_record(scope, app_obj, None, code)  # D2
         finally:
+            failure_log.close_request_mark(mark_token)
             release_tenant(token)
 
 
+# SBX-2 (agent_sandbox.md §12.2 decision 9): the 4 MB cap and the log line of
+# each call that the sandbox sibling of branch 0 admitted. Pure ASGI, and
+# inside TenantScopeMiddleware, so the record of the call and the route run
+# in one task. Every other request passes through byte for byte.
+from gateway.sandbox_door import SandboxDoorLimits  # noqa: E402
+
+app.add_middleware(SandboxDoorLimits)
 app.add_middleware(TenantScopeMiddleware)
 
 # WS-41 I-7: cap an import upload BEFORE it is read. FastAPI spools a whole
@@ -1211,6 +1456,12 @@ app.add_middleware(TenantScopeMiddleware)
 from gateway.routes.projects.import_body_limit import ImportBodyLimit  # noqa: E402
 
 app.add_middleware(ImportBodyLimit)
+
+# CIV-14b: keep a copy of the body of a SIGNED agent upload while FastAPI
+# parses the form, so branch 0 can check the signature over those bytes.
+from gateway.routes.projects.agent_upload_body import AgentUploadBody  # noqa: E402
+
+app.add_middleware(AgentUploadBody)
 
 # ── CORS ── allow workbench dev server (port 3001) and production origin
 app.add_middleware(
@@ -1655,6 +1906,27 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # API-2 — the connect flow of an API template (Zoho Books). Dark: while
+    # API_CONNECTIONS_ORGS does not hold the org, each route answers 404. The
+    # callback runs behind the member session through the BFF, so it is NOT
+    # in PUBLIC_ROUTES.
+    from gateway.routes.integrations_api_connect import router as _api_connect_router
+
+    app.include_router(_api_connect_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # API-3 — the four call routes of an API connection (find, describe,
+    # read, write). Dark: while API_CONNECTIONS_ORGS does not hold the org,
+    # each route answers 404. The write route refuses every call (D-API-4).
+    from gateway.routes.api_connections import router as _api_connections_router
+
+    app.include_router(_api_connections_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # WS-54 GH-3 — the connect flow of the Metorite GitHub App
     # (github_integration.md §7). Dark: with GITHUB_APP_ENABLED off, each of
     # its routes answers 404. The callback runs behind the member session
@@ -1825,6 +2097,16 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-FIND FIND-5 — `GET /search/names`, the route of `resolve_name`
+    # (find_engine.md §5.2). `FIND_ORGS` answers 404 first, and each source
+    # checks its own app's gates, as for `/search/company`.
+    from gateway.retrieval.names import router as _names_router
+
+    app.include_router(_names_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # WS-59 RE-1a — Reach: `/reach/preview` and `/reach/brief`
     # (proactive_reach.md). Gated on `feature:chat`, as the WhatsApp channel
     # is. With REACH_ENABLED off, or the member off the allowlist, both 404.
@@ -1913,6 +2195,37 @@ try:
     app.include_router(_chat_brief_router)
 except Exception:  # pragma: no cover
     pass
+
+try:
+    # projects_ai_chat.md §31 VOX-1 — the chat's voice input, a clip to the
+    # Console's metered transcribe door. Shares /chat's prefix, in its own
+    # module, as the brief does. Dark behind CHAT_VOICE_ORGS.
+    from gateway.routes.chat_transcribe import router as _chat_transcribe_router
+
+    app.include_router(_chat_transcribe_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # chat_organization.md §6 CO-2a — the topics of the chat list. Shares
+    # /chat's prefix, in its own module, as the brief does. Dark behind
+    # CHAT_TOPICS_ORGS. Fence: test_chat_topic.py checks that this app
+    # serves the routes, because a failed import here answers 404 too.
+    from gateway.routes.chat_topics import router as _chat_topics_router
+
+    app.include_router(_chat_topics_router)
+except Exception:  # pragma: no cover
+    pass
+
+# Task 2432 (F1 of STU-L0) — the rate limit of the React artifact compile.
+# The workbench takes one slot here before it starts esbuild. The counter
+# lives in the tenant Redis wrapper. No `try`: the module needs only
+# acb_auth, acb_common and fastapi, and a router that silently failed to
+# import would answer 404, which the workbench reads as an outage.
+# Fence: `test_artifact_compile_slot.py::test_the_real_gateway_app_serves_both_routes`.
+from gateway.routes.artifact_compile import router as _artifact_compile_router  # noqa: E402
+
+app.include_router(_artifact_compile_router)
 
 try:
     # WS-66 RM-4 — a tap on a reminder link opens the chat with a first
@@ -2209,6 +2522,23 @@ try:
 except Exception:  # pragma: no cover
     pass
 
+# KIT-4a — the download of the agent kit (orchestration_playbook.md §6a).
+# Dark: 404 while `PLAYBOOK_ORGS` does not hold the caller's org. A plain
+# import, so a real import error stops the start and does not hide.
+from gateway.routes.agent_kit import router as _agent_kit_router  # noqa: E402
+
+app.include_router(_agent_kit_router)
+
+try:
+    # WS-MCP SW-94 — one policy store for agent work (agent_coordination.md
+    # §3.11.5 and SW-94): the save of a policy row. Ships dark: 404 while
+    # `AGENT_POLICY_ORGS` does not hold the caller's org.
+    from gateway.routes.agent_policies import router as _agent_policies_router
+
+    app.include_router(_agent_policies_router)
+except Exception:  # pragma: no cover
+    pass
+
 try:
     # WS-ALN ALN-5a — the rules of a project (project_alignment.md §4.2), on
     # the one guidance store: create, accept, edit, retire, the level, the
@@ -2290,12 +2620,10 @@ class Version(BaseModel):
 
 
 def _runtime_checks() -> dict[str, dict]:
-    """Validate the GitHub Copilot SDK (Tier 1.5) sandbox prerequisites.
+    """Report the Tier 1.5 sandbox prerequisites that remain, plus the Router.
 
-    Checks (M2.6 cloud-sandbox requirements):
-      - copilot SDK importable (bundled copilot.exe present)
-      - pwsh on PATH (copilot.exe shell tool backend)
-      - GITHUB_TOKEN configured (Copilot auth)
+    WS-43o: no check imports the Copilot SDK. ``pwsh`` and ``github_token``
+    stay until WS-43q removes the executor Copilot path.
 
     Returns ``{check_name: {"ok": bool, "detail": str}}``. Never raises.
     """
@@ -2304,13 +2632,22 @@ def _runtime_checks() -> dict[str, dict]:
     settings = get_settings()
     checks: dict[str, dict] = {}
 
-    # copilot SDK importable
+    # The Router (Console) is how the model list and chat are served.
     try:
-        import copilot  # noqa: F401
+        from acb_llm.routed import router_wired
 
-        checks["copilot_sdk"] = {"ok": True, "detail": "importable"}
+        wired = router_wired()
+        # With Router serving on, chat needs the wiring (D57.7), so an unwired
+        # Router is a failed check. With serving off, the tier slate still lists.
+        serving = bool(getattr(settings, "router_serving_enabled", False))
+        checks["router"] = {
+            "ok": bool(wired) or not serving,
+            "detail": "wired" if wired else (
+                "NOT wired, and Router serving is on: chat fails" if serving
+                else "not wired (the tier slate still lists)"),
+        }
     except Exception as exc:
-        checks["copilot_sdk"] = {"ok": False, "detail": f"import failed: {exc}"}
+        checks["router"] = {"ok": False, "detail": f"router check failed: {exc}"}
 
     # pwsh on PATH
     pwsh = shutil.which("pwsh") or shutil.which("powershell")
@@ -2404,7 +2741,7 @@ async def version() -> Version:
 
 @app.get("/health/runtime", tags=["meta"])
 async def health_runtime() -> dict:
-    """Report Tier 1.5 sandbox readiness (copilot SDK, pwsh, GITHUB_TOKEN)."""
+    """Report runtime readiness (Router, pwsh, GITHUB_TOKEN). No Copilot SDK check."""
     checks = _runtime_checks()
     return {"ok": all(c["ok"] for c in checks.values()), "checks": checks}
 
@@ -2418,202 +2755,133 @@ async def health_runtime() -> dict:
 
 
 class EmbeddingRequest(BaseModel):
-    model: str = "text-embedding-3-small"
+    """The OpenAI-shaped body of ``POST /v1/embeddings``.
+
+    🔴 **Only ``input`` travels.** ``model`` is read and then dropped: the
+    door always names ``tier-embed``, and the Router picks the model (D32.7).
+    A field this model does not declare is ignored, so ``dimensions``,
+    ``encoding_format``, ``user`` and any tenant or member claim never reach
+    the Console (R11). The OpenAI SDK sends ``encoding_format`` by default,
+    so a refusal of extra fields would break Mem0 and Graphiti.
+    """
+
+    model: str = "tier-embed"
     input: str | list[str]
 
-@app.post("/v1/embeddings", tags=["openai"])
+    @field_validator("input")
+    @classmethod
+    def _bounded(cls, value: str | list[str]) -> str | list[str]:
+        """At most :data:`RELAY_MAX_INPUTS` texts, so a large batch costs no hop."""
+        from gateway.kb_index.embed import RELAY_MAX_INPUTS
+
+        texts = [value] if isinstance(value, str) else value
+        if not texts:
+            raise ValueError("input holds no text")
+        if len(texts) > RELAY_MAX_INPUTS:
+            raise ValueError(f"input holds more than {RELAY_MAX_INPUTS} texts")
+        return value
+
+
+def _embedding_attribution(user: UserContext) -> dict[str, Any]:
+    """Who the call is for: the SESSION's member, and whether it proved it.
+
+    🔴 **The member is ``user.email``, never a body field or a header** (R11).
+    It is PROVEN only when ``get_current_user`` bound it as verified in this
+    request's run context. That is branch 1a: the internal bearer and the
+    address that the proxy verified. A service call (``system:internal``)
+    names nobody. On a deployment-key box the Console client then refuses
+    locally, and the route answers 502.
+    """
+    from acb_llm.routed import run_attribution
+
+    found = run_attribution()
+    email = (user.email or "").strip()
+    member = email if "@" in email else None
+    proven = bool(member) and found.get("member") == member and bool(
+        found.get("member_proven")
+    )
+    return {
+        "member": member,
+        "member_proven": proven,
+        "agent": found.get("agent"),
+        "module_slug": found.get("module_slug"),
+        "run_id": found.get("run_id"),
+    }
+
+
+@app.post("/v1/embeddings", tags=["openai"], response_model=None)
 async def embeddings(
     req: EmbeddingRequest,
     user: UserContext = Depends(get_current_user),
-) -> dict:
-    """OpenAI-compatible embeddings endpoint.
+) -> Any:
+    """OpenAI-compatible embeddings, served by OUR Router (task 3553, 2449 S2).
 
-    When OPENAI_API_KEY is available, proxies to the real OpenAI API.
-    Otherwise returns a dummy embedding (zero-vector of 1536 dims) so
-    Mem0's add() can complete — facts are stored without semantic search.
+    The route calls :func:`gateway.kb_index.embed.relay`, which makes the one
+    ``embeddings_on_console`` call on ``tier-embed``. The Console meters the
+    call. This file builds no vendor client and reads no vendor key.
+
+    * A 200 answers the Console's body: ``data[].embedding``, ``usage`` and
+      ``model`` (the tier name).
+    * Any other status from the Console is a VERDICT, and it is relayed with
+      its status and its body. A 402 stays a 402.
+    * No answer (unwired box, a 5xx, 401, 408 or 429, a timeout) is a 502.
+      🔴 **There is NO fallback** (D57.7, owner directive 2026-11-16). The
+      zero vector that this route used to answer is gone too, because a
+      stored zero vector ranks every row the same.
+
+    The app-wide gate (``require_authenticated``) refuses a caller with no
+    identity, so the route never runs for an anonymous call.
     """
-    oai_key = os.environ.get("OPENAI_API_KEY", "").strip()
-    if oai_key:
-        from openai import OpenAI
-        client = OpenAI(api_key=oai_key)
-        inputs = req.input if isinstance(req.input, list) else [req.input]
-        # The client is synchronous. A worker thread keeps one embed from
-        # stalling the event loop for every tenant, because the gateway also
-        # calls this route over loopback on each Knowledge search and publish
-        # (WS-61 KB-3 review, 2026-10-16).
-        import asyncio as _asyncio
+    from gateway.kb_index.embed import EmbedUnavailable, relay
 
-        resp = await _asyncio.to_thread(
-            client.embeddings.create, model=req.model, input=inputs,
-        )
-        return resp.model_dump()
-    # No embedding provider configured → return a zero vector so Mem0's add()
-    # can still complete, but WARN loudly: semantic search is silently degraded
-    # (every "similarity" is identical), which otherwise looks like memory works
-    # when it doesn't (M13). Set OPENAI_API_KEY to restore real embeddings.
-    inputs = req.input if isinstance(req.input, list) else [req.input]
-    _log.warning(
-        "gateway.embeddings_degraded_zero_vector",
-        model=req.model, count=len(inputs),
-        detail="OPENAI_API_KEY unset — returning zero vectors; semantic search disabled",
-    )
-    dummy = [0.0] * 1536
-    return {
-        "object": "list",
-        "model": req.model,
-        "data": [
-            {
-                "object": "embedding",
-                "index": i,
-                "embedding": dummy,
-            }
-            for i in range(len(inputs))
-        ],
-        "usage": {"prompt_tokens": 0, "total_tokens": 0},
-    }
-
-
-
-# ---------- Copilot models ----------
-# Returns the list of models available via the GitHub Copilot SDK.
-# The UI at /api/models/all calls this to populate the Copilot SDK model group.
-# If GITHUB_TOKEN is not set, returns the static fallback list so the UI still
-# works without blocking.
-
-_COPILOT_MODELS_STATIC = [
-    {"id": "claude-sonnet-4.6",    "label": "Claude Sonnet 4.6"},
-    {"id": "claude-sonnet-4.5",    "label": "Claude Sonnet 4.5"},
-    {"id": "claude-haiku-4.5",     "label": "Claude Haiku 4.5"},
-    {"id": "claude-opus-4.6",      "label": "Claude Opus 4.6"},
-    {"id": "claude-opus-4.6-fast", "label": "Claude Opus 4.6 (fast mode)"},
-    {"id": "claude-opus-4.5",      "label": "Claude Opus 4.5"},
-    {"id": "gpt-5.4",              "label": "GPT-5.4"},
-    {"id": "gpt-5-mini",           "label": "GPT-5 mini"},
-]
-
-
-def _copilot_ctx(model_id: str) -> int:
-    """Curated context-window (tokens) for a Copilot SDK model id.
-
-    Used as a fallback when the SDK model object doesn't expose its limits.
-    Substring match so version variants (claude-sonnet-4.5/4.6, gpt-5.4/5.5)
-    resolve to the right family.
-    """
-    mid = (model_id or "").lower()
-    if "claude" in mid:
-        return 200_000
-    if "gpt-5" in mid or "gpt5" in mid:
-        return 400_000
-    if "gpt-4.1" in mid:
-        return 1_000_000
-    if "gpt-4o" in mid or "gpt-4" in mid:
-        return 128_000
-    if mid.startswith(("o1", "o3", "o4")) or "-o3" in mid or "-o1" in mid:
-        return 200_000
-    if "gemini-3" in mid or "gemini-2.5" in mid or "gemini" in mid:
-        return 1_000_000
-    # DeepSeek V4 via Copilot CLI: docs configure an 840K prompt limit
-    # (https://api-docs.deepseek.com/quick_start/agent_integrations/copilot_cli);
-    # native DeepSeek API context is 1M but Copilot CLI caps the prompt budget.
-    if "deepseek-v4" in mid or "deepseek/deepseek-v4" in mid:
-        return 840_000
-    if "deepseek" in mid:
-        return 128_000
-    return 0
-
-
-def _sdk_ctx(model: object) -> int:
-    """Best-effort extraction of a Copilot SDK model's context window.
-
-    The GitHub Copilot models API exposes
-    capabilities.limits.max_context_window_tokens; the SDK may surface it as
-    nested attributes or a dict.  Returns 0 when unavailable (caller falls back
-    to the curated map)."""
-    caps = getattr(model, "capabilities", None)
-    # Dict form
-    if isinstance(caps, dict):
-        lim = caps.get("limits") or {}
-        if isinstance(lim, dict):
-            v = lim.get("max_context_window_tokens") or lim.get("max_prompt_tokens")
-            if isinstance(v, int) and v > 0:
-                return v
-    # Attribute form
-    lim = getattr(caps, "limits", None)
-    for attr in ("max_context_window_tokens", "max_prompt_tokens"):
-        v = getattr(lim, attr, None)
-        if isinstance(v, int) and v > 0:
-            return v
-    return 0
-
-import time as _time
-
-_copilot_models_cache: dict = {"data": None, "ts": 0.0}
-_COPILOT_MODELS_CACHE_TTL = 300
-
-
-async def _list_copilot_models(github_token: str) -> list:
-    """Start one Copilot CLI to list the models, then stop it.
-
-    The startup warmup and ``/copilot/models`` both call this. WS-49 BH-1: the
-    CLI gets ``copilot_env()`` and no gateway secret. The SDK adds
-    ``COPILOT_SDK_AUTH_TOKEN`` from ``github_token`` itself.
-    """
-    from copilot import CopilotClient
-
-    sdk = CopilotClient(github_token=github_token, env=copilot_env())  # SDK 1.0: keywords (H-181)
-    await sdk.start()
+    texts = [req.input] if isinstance(req.input, str) else list(req.input)
+    started = time.monotonic()
     try:
-        return list(await sdk.list_models() or [])
-    finally:
-        await sdk.stop()
+        status, body = await relay(texts, **_embedding_attribution(user))
+    except EmbedUnavailable as exc:
+        _log.error(
+            "gateway.embeddings_router_unavailable",
+            error=str(exc), count=len(texts),
+            elapsed_ms=round((time.monotonic() - started) * 1000),
+        )
+        return JSONResponse(
+            status_code=502,
+            content={"error": {
+                "message": "the AI Router is unavailable",
+                "type": "ConsoleRouterUnavailable",
+                "code": 502,
+            }},
+        )
+    _log.info(
+        "gateway.embeddings_served", status=status, count=len(texts),
+        elapsed_ms=round((time.monotonic() - started) * 1000),
+    )
+    if status != 200:
+        # A VERDICT, with its own status. A 402 flattened into a 502 tells a
+        # customer the AI is down when they are out of credits.
+        return JSONResponse(status_code=status, content=body)
+    return body
 
+
+
+# ---------- Model list (WS-43o, D84) ----------
+# The Copilot SDK model list is gone. The model picker reads the Router tier
+# slate through the Control Plane at /api/models/all. This route stays so an
+# old caller gets a clear answer and not a 404.
 
 @app.get("/copilot/models", tags=["copilot"])
 async def copilot_models() -> dict:
-    """Return Copilot SDK models with 5-min TTL cache."""
-    _now = _time.monotonic()
-    if _copilot_models_cache["data"] is not None and (_now - _copilot_models_cache["ts"]) < _COPILOT_MODELS_CACHE_TTL:
-        return _copilot_models_cache["data"]
-    settings = get_settings()
-    github_token: str = (
-        os.environ.get("COPILOT_GITHUB_TOKEN", "")
-        or getattr(settings, "github_token", "")
-        or os.environ.get("GITHUB_TOKEN", "")
-    )
-    if github_token:
-        try:
-            os.environ.setdefault("GITHUB_TOKEN", github_token)
-            _models = await _list_copilot_models(github_token)
-            if _models:
-                result = {
-                    "models": [
-                        {
-                            "id": m.id,
-                            "label": m.name,
-                            "model_picker_enabled": True,
-                            # Real context window from the provider (SDK) when
-                            # exposed; curated fallback otherwise.
-                            "context_window": _sdk_ctx(m) or _copilot_ctx(m.id),
-                        }
-                        for m in _models if not m.policy or m.policy.state == "enabled"
-                    ],
-                    "source": "live",
-                }
-                _copilot_models_cache["data"] = result
-                _copilot_models_cache["ts"] = _now
-                return result
-        except Exception as _e:
-            _log.warning("gateway.copilot_models_failed", error=str(_e))
-    static = {
+    """Retired (WS-43o). Answers the Router tier slate, never the Copilot SDK."""
+    from acb_llm.routed import PICKER_WIRE_IDS
+
+    return {
         "models": [
-            dict(m, model_picker_enabled=False, context_window=_copilot_ctx(m["id"]))
-            for m in _COPILOT_MODELS_STATIC
+            {"id": wire, "label": slate, "model_picker_enabled": True}
+            for wire, slate in PICKER_WIRE_IDS.items()
         ],
-        "source": "static",
+        "source": "router",
+        "retired": "Use /api/models/all. The Copilot SDK list is removed.",
     }
-    _copilot_models_cache["data"] = static
-    _copilot_models_cache["ts"] = _now - (_COPILOT_MODELS_CACHE_TTL - 30)
-    return static
 
 
 # ---------- Pull mode (Phase 0 stub) ----------

@@ -94,6 +94,32 @@ def test_a_call_that_did_not_act_changes_nothing() -> None:
         assert ecc.update_working_set(before, [call]) == before, call
 
 
+def test_a_card_that_did_nothing_changes_nothing() -> None:
+    """HRD-7: a declined, timed-out or unshown card did not act, so its
+    arguments name nothing that the run worked on. This is the rule of the
+    test above, and the intended behaviour: the leads of the one table join
+    ``_NO_ACT``. Before HRD-7 only "Send cancelled" was in the list, so a
+    discarded reply ("Reply discarded ...") and a declined forward
+    ("Cancelled — ...", "Forward cancelled") still moved ``email_id``. A card
+    that the member's message closed is not in the list: its result names the
+    card's draft, and the member's next words act on that draft."""
+    from acb_skills import ask_tools as at
+
+    before = {"account_id": "acc-work", "email_id": "e-1"}
+    not_sent = "The reply was not sent."
+    for outcome in (at.CARD_DECLINED, at.CARD_TIMED_OUT, at.CARD_NOT_SHOWN,
+                    at.CARD_OTHER_MEMBER):
+        for tool in ("compose_reply", "forward_email"):
+            call = _call(tool, {"email_id": "e-2", "account_id": "acc-work"},
+                         at.card_outcome_text(outcome, not_sent))
+            assert ecc.update_working_set(before, [call]) == before, (outcome, tool)
+    closed = _call("compose_reply", {"email_id": "e-2", "account_id": "acc-work"},
+                   at.card_outcome_head(at.CLOSED_BY_YOUR_MESSAGE, "Nothing was sent.")
+                   + "\nDraft: draft_id=d-7 | subject: Re: Quote")
+    assert ecc.update_working_set(before, [closed]) == {
+        "account_id": "acc-work", "email_id": "e-2", "draft_id": "d-7"}
+
+
 def test_another_mailbox_starts_a_new_set() -> None:
     before = {"account_id": "acc-work", "email_id": "e-1", "draft_id": "d-9"}
     after = ecc.update_working_set(before, [
@@ -501,3 +527,12 @@ def test_the_sub_run_sends_the_mark_to_the_parent(monkeypatch, tenant) -> None:
     assert kinds.index("SUB_AGENT_TOOL_CALL_START") < kinds.index("SUB_AGENT_TEXT_DELTA")
     assert ecc.cached_working_set() == {"account_id": "acc-home"}
     bind_artifact_context()
+
+
+def test_an_id_label_is_not_kept_in_the_working_set() -> None:
+    uid = "41c0e817-fb4a-4e45-870a-2da9a953bf4b"
+    ws = ecc.update_working_set({}, [
+        _call("read_email", {"email_id": f"id={uid}", "thread_id": f"ID = {uid}",
+                             "account_id": "acc-work"}),
+    ])
+    assert ws == {"account_id": "acc-work", "email_id": uid, "thread_id": uid}

@@ -1,6 +1,6 @@
 ---
 slug: index
-version: 1
+version: 2
 title: Orchestration playbook
 summary: What this playbook holds, and how to use it in your first week.
 audience: both
@@ -9,6 +9,8 @@ audience: both
 # Orchestration playbook
 
 This playbook helps a team set up agents that work on a shared board. It gives patterns, not rules. Your organization decides which rules bind your work.
+
+**New here?** Read `start-here` first. It explains the words, a week of work and the first steps in plain language, with pictures.
 
 ## Start here
 
@@ -26,9 +28,11 @@ This playbook helps a team set up agents that work on a shared board. It gives p
 - `patterns/shared-artifact-and-arbiter`: peers work through the task, and a person decides.
 - `patterns/budgets-and-loop-guards`: set limits before you scale.
 - `patterns/structural-failures`: fix the structure, not the prompt.
+- `start-here`: the words, a week of work and the first steps, in plain language.
 - `brief-contract`, `gates`, `failures`, `cost-model`.
 - `kit/team-setup`: the setup for a team of people and agents on one board.
 - `kit/paste-in`: one block of rules to paste into the rules file of an agent.
+- `kit/plan-the-work`: plan a goal on the board, with the approval of a person at each gate.
 - `kit/`: files you can copy into your own repository.
 
 ## How layers work

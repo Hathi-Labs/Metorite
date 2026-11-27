@@ -34,6 +34,7 @@ import { updateEmailAccount } from "./lib/api";
 import { OnboardingPanel } from "./components/OnboardingPanel";
 import { OnboardingRulesStep } from "./components/OnboardingRulesStep";
 import { RemoveOlderMailDialog } from "./components/RemoveOlderMailDialog";
+import { AutoRunNotice } from "./components/AutoRunNotice";
 import { StorageNotice } from "./components/StorageNotice";
 import { StorageStep } from "./components/StorageStep";
 import { SyncBanner } from "./components/SyncBanner";
@@ -1184,6 +1185,14 @@ export default function EmailPage() {
             named={accounts.length > 1}
             onRemove={() => setRemovingId(storageAccount.id)}
           />
+        )}
+
+        {/* ── Auto-run notice (task 2267, EM-G11c2) ──
+            For the Gmail mailbox in view that has an enabled rule and no
+            stored Auto-run choice. The rules step shows its own switch, so
+            the notice waits until the setup ends. */}
+        {selectedAccount && selectedAccount.provider === "gmail" && setupStage !== "rules" && (
+          <AutoRunNotice key={`auto-run-notice-${selectedAccount.id}`} account={selectedAccount} />
         )}
 
         {/* ── The first import of the mailbox in view ──

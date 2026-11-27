@@ -24,6 +24,7 @@ import json
 from typing import Any
 
 from acb_auth import UserContext
+from acb_skills import safe_open
 from action_broker import AuthorityTier, propose, submit
 from fastapi import Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
@@ -35,16 +36,16 @@ from gateway.routes.apps._common import (
     app_workspace,
     can_edit,
     check_bundle_size,
+    clean_app_rel,
     get_app_or_404,
     iso,
     manifest_scopes,
     parse_db_manifest,
     publish_app_activity,
     read_workspace_manifest,
-    record_app_audit,
+    record_app_audit_bound,
     require_app_author,
     require_app_user,
-    resolve_app_file,
     router,
     scope_set_hash,
 )
@@ -57,6 +58,16 @@ from pydantic import BaseModel
 from sqlalchemy import text
 
 VISIBILITIES = ("private", "people", "org")
+
+#: The only review states that a rollback lets go live (task 3967). ``auto``
+#: means the publish needed no review, and ``approved`` means an admin
+#: approved it. Every other state, known or not, is refused (fail closed).
+_MAY_GO_LIVE = ("auto", "approved")
+
+
+def _may_go_live(review_status: Any) -> bool:
+    """True only for a review state in :data:`_MAY_GO_LIVE`."""
+    return review_status in _MAY_GO_LIVE
 
 # Sent on every bundle response: even a direct visit renders sandboxed, and
 # nothing sniffs the payload into another content type.
@@ -98,6 +109,88 @@ def _write_scopes(manifest: dict[str, Any]) -> list[str]:
     return out
 
 
+#: An approved version of the app with this scope set (§4.8). Re-review is
+#: keyed to the scope SET, so one approval covers every version that asks for
+#: the same scopes. The one copy of this query (task 3975).
+_APPROVED_SCOPE_SET_SQL = (
+    "SELECT 1 FROM app_versions WHERE app_id = :app_id "
+    "AND scope_set_hash = :hash AND review_status = 'approved' "
+    "LIMIT 1"
+)
+
+
+async def _scope_set_approved(db: Any, app_id: str, scope_hash: str) -> bool:
+    """True when an admin approved a version of the app with *scope_hash*."""
+    found = (await db.execute(
+        text(_APPROVED_SCOPE_SET_SQL), {"app_id": app_id, "hash": scope_hash},
+    )).fetchone()
+    return found is not None
+
+
+#: The row lock of one app (task 3975 review). The review check reads the
+#: visibility and the live version, and the UPDATE after it writes them. Two
+#: requests that hold this lock in turn cannot interleave the check of one
+#: with the write of the other. RLS of the bound session scopes it.
+#: ``FOR NO KEY UPDATE`` and not ``FOR UPDATE``: every writer of the two
+#: values is an UPDATE of the apps row, so this lock serializes them. It does
+#: not conflict with the ``FOR KEY SHARE`` of a foreign key, so an insert of
+#: an ``app_audit`` or ``app_grants`` row of the app does not wait for it.
+_LOCK_APP_SQL = (
+    "SELECT visibility, live_version FROM apps WHERE id = :id "
+    "FOR NO KEY UPDATE"
+)
+
+
+async def lock_app_row(db: Any, app_id: str) -> Any:
+    """Lock the app row until the transaction ends, and answer its
+    ``visibility`` and ``live_version`` as they are under the lock. A caller
+    reads these two values from here, never from the earlier unlocked
+    ``load_app`` copy. 404 when the row went away."""
+    locked = (await db.execute(text(_LOCK_APP_SQL), {"id": app_id})).fetchone()
+    if locked is None:
+        raise HTTPException(status_code=404, detail="App not found")
+    return locked
+
+
+async def require_org_review(
+    db: Any, app_id: str, version: int | None, visibility: str | None,
+) -> None:
+    """Refuse (409) when *version* would serve the whole org unreviewed.
+
+    Task 3975. The review gate of :func:`publish_app` runs at publish time
+    only. A rollback, or a visibility change, can put a version in front of
+    the org with no publish. So each such path calls this check first. An
+    org app whose live version asks for a write tool needs an ``approved``
+    version with the same scope set. A private app, a ``people`` app, a
+    version with no write scope, or no live version passes. The check writes
+    nothing, so a refused call changes nothing."""
+    if visibility != "org" or version is None:
+        return
+    vrow = (await db.execute(
+        text(
+            "SELECT manifest FROM app_versions "
+            "WHERE app_id = :app_id AND version = :version"
+        ),
+        {"app_id": app_id, "version": version},
+    )).fetchone()
+    if vrow is None:
+        return
+    manifest = parse_db_manifest(vrow.manifest)
+    if not _write_scopes(manifest):
+        return
+    scope_hash = scope_set_hash(manifest_scopes(manifest))
+    if await _scope_set_approved(db, app_id, scope_hash):
+        return
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            f"Version {version} cannot serve the whole organization: it uses "
+            "write tools that no admin approved. Publish the app to the "
+            "organization to ask for the admin review."
+        ),
+    )
+
+
 def _read_entry_bundle(row: Any) -> tuple[bytes, dict[str, Any]]:
     """The workspace's current entry file bytes + the effective manifest."""
     workspace = app_workspace(row)
@@ -106,12 +199,17 @@ def _read_entry_bundle(row: Any) -> tuple[bytes, dict[str, Any]]:
         or parse_db_manifest(row.manifest)
     )
     entry = str(manifest.get("entry") or "index.html")
-    entry_path = resolve_app_file(workspace, entry)
-    if not entry_path.is_file():
+    rel = clean_app_rel(entry)
+    try:
+        # The safe opener refuses a link at any depth (WS-43h review P0).
+        data = safe_open.read_bytes(workspace, rel)
+    except (OSError, ValueError):
+        data = None
+    if data is None:
         raise HTTPException(
             status_code=422, detail=f"Entry file missing: {entry}",
         )
-    return check_bundle_size(entry_path.read_bytes()), manifest
+    return check_bundle_size(data), manifest
 
 
 @router.post("/{slug}/publish")
@@ -126,6 +224,9 @@ async def publish_app(
     async with _tenant_session() as db:
         row, _grants = await get_app_or_404(db, slug, user, edit=True)
         await ensure_workspace(db, row)
+        # Task 3975: the review gate below reads the visibility under the row
+        # lock, so a parallel PATCH or rollback cannot change it in between.
+        locked = await lock_app_row(db, str(row.id))
         data, manifest = await asyncio.get_event_loop().run_in_executor(
             None, _read_entry_bundle, row,
         )
@@ -155,19 +256,10 @@ async def publish_app(
         # SET was already approved on a previous version of this app.
         scope_hash = scope_set_hash(manifest_scopes(manifest))
         write_scopes = _write_scopes(manifest)
-        effective_visibility = body.visibility or row.visibility
+        effective_visibility = body.visibility or locked.visibility
         needs_review = bool(write_scopes) and effective_visibility == "org"
-        if needs_review:
-            approved_before = (await db.execute(
-                text(
-                    "SELECT 1 FROM app_versions WHERE app_id = :app_id "
-                    "AND scope_set_hash = :hash AND review_status = 'approved' "
-                    "LIMIT 1"
-                ),
-                {"app_id": str(row.id), "hash": scope_hash},
-            )).fetchone()
-            if approved_before is not None:
-                needs_review = False
+        if needs_review and await _scope_set_approved(db, str(row.id), scope_hash):
+            needs_review = False
 
         await db.execute(
             text(
@@ -221,7 +313,7 @@ async def publish_app(
     # (best-effort — the version row above is already committed).
     await sync_workspace_best_effort(row)
     review = "pending" if needs_review else "auto"
-    await record_app_audit(
+    await record_app_audit_bound(
         app_id=str(row.id), user_email=_uid(user), kind="publish",
         app_version=version,
         detail={"notes": body.notes.strip()[:500],
@@ -242,18 +334,38 @@ async def rollback_app(
     body: RollbackRequest,
     user: UserContext = Depends(require_app_author),
 ) -> dict[str, Any]:
-    """Repoint the live version at an existing snapshot."""
+    """Repoint the live version at an existing snapshot.
+
+    Task 3967: only an ``approved`` version, or an ``auto`` one (no review
+    needed), can go live by this route. Any other review state (§4.8), such
+    as ``pending`` or ``rejected``, is 409, because it would skip the review.
+    Task 3975: on an org app, :func:`require_org_review` also refuses an
+    ``auto`` version with write tools that no admin approved."""
     async with _tenant_session() as db:
         row, _grants = await get_app_or_404(db, slug, user, edit=True)
-        exists = (await db.execute(
+        target = (await db.execute(
             text(
-                "SELECT 1 FROM app_versions "
+                "SELECT review_status FROM app_versions "
                 "WHERE app_id = :app_id AND version = :version"
             ),
             {"app_id": str(row.id), "version": body.version},
         )).fetchone()
-        if not exists:
+        if not target:
             raise HTTPException(status_code=404, detail="Version not found")
+        if not _may_go_live(target.review_status):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Version {body.version} cannot go live: its admin review "
+                    f"is {target.review_status}. Only an approved version, or "
+                    "one that needed no review, can go live."
+                ),
+            )
+        # Task 3975: an auto version (published while the app was private)
+        # can ask for write tools. The org may not see it unreviewed. The
+        # visibility comes from under the row lock.
+        locked = await lock_app_row(db, str(row.id))
+        await require_org_review(db, str(row.id), body.version, locked.visibility)
         await db.execute(
             text(
                 "UPDATE apps SET live_version = :version, updated_at = now() "
@@ -261,7 +373,7 @@ async def rollback_app(
             ),
             {"version": body.version, "id": str(row.id)},
         )
-    await record_app_audit(
+    await record_app_audit_bound(
         app_id=str(row.id), user_email=_uid(user), kind="rollback",
         app_version=body.version, detail={"to_version": body.version},
     )
@@ -347,7 +459,7 @@ async def get_app_bundle(
         if vrow is None:
             raise HTTPException(status_code=404, detail="Version not found")
     if track:
-        await record_app_audit(
+        await record_app_audit_bound(
             app_id=str(row.id), user_email=_uid(user), kind="open",
             app_version=vrow.version, detail={"requested": version},
         )

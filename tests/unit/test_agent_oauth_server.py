@@ -546,6 +546,70 @@ class TestTheOrgAllowlist:
         assert not agent_oauth.org_allowed(_ORG_Z)
 
 
+class TestTheRefreshReuseGrace:
+    """MCP-G17f (task 4032): the one reader of the grace window and its cap.
+
+    The R8 cases of the window are ``TestTheGraceWindow`` in
+    ``test_agent_connection_tokens.py``.
+    """
+
+    def test_the_setting_defaults_to_off(self):
+        from acb_common.settings import Settings
+
+        assert Settings.model_fields["agent_refresh_reuse_grace_s"].default == 0
+        assert agent_oauth.REFRESH_REUSE_GRACE_MAX_S == 60
+
+    @pytest.mark.parametrize(("raw", "want"), [
+        (0, 0), (-5, 0), (1, 1), (30, 30), (60, 60), (61, 60),
+        (300, 60), (10_000, 60), (True, 0), ("30", 0), (None, 0), (2.5, 0),
+    ])
+    def test_the_reader_clamps_to_the_cap(self, monkeypatch, raw, want):
+        monkeypatch.setattr(get_settings(), "agent_refresh_reuse_grace_s", raw)
+        assert agent_oauth.refresh_reuse_grace_s() == want
+
+    def test_the_env_key_sets_it(self, monkeypatch):
+        from acb_common.settings import Settings
+
+        monkeypatch.setenv("AGENT_REFRESH_REUSE_GRACE_S", "45")
+        assert Settings().agent_refresh_reuse_grace_s == 45
+
+    @pytest.mark.parametrize("raw", [0, -1, True, None])
+    async def test_a_window_of_zero_runs_no_sql(self, monkeypatch, raw):
+        """F1 (R7). With the window off, ``_in_grace`` must not ask the
+        database. ``used_at > now() - 0`` can be true for a rotation that
+        started before the winner spent the token, so a query at 0 would
+        give a pair where rule 5 says revoke. A fake session fails on any
+        ``execute``. Mutation: delete the ``grace_s <= 0`` guard, and this
+        goes red."""
+        monkeypatch.setattr(get_settings(), "agent_refresh_reuse_grace_s", raw)
+
+        class _NoSql:
+            async def execute(self, *_a, **_k):
+                raise AssertionError("_in_grace ran SQL with the window off")
+
+        found = await agent_tokens._in_grace(_NoSql(), "h" * 64, CLIENT, None)
+        assert found is None
+
+    async def test_a_window_above_zero_asks_with_the_capped_value(
+            self, monkeypatch):
+        """The twin: the fake sees one query, with the capped window."""
+        monkeypatch.setattr(get_settings(), "agent_refresh_reuse_grace_s", 999)
+        seen: list[dict] = []
+
+        class _Result:
+            def one_or_none(self):
+                return None
+
+        class _Recorder:
+            async def execute(self, _stmt, params):
+                seen.append(params)
+                return _Result()
+
+        assert await agent_tokens._in_grace(_Recorder(), "h" * 64, CLIENT, None) \
+            is None
+        assert [p["grace_s"] for p in seen] == [60.0]
+
+
 class TestTheConsentRoutesCheckTheList:
     """EA-10p door 1, database-free. A refused organization gets the 403 of
     rule 11 before the client fetch, the ticket and the code."""
@@ -1405,6 +1469,7 @@ class TestTheStructuralFences:
         # EA-4b added the member's own list and revoke (spec §15 EA-4b).
         # MCP-P1a added the two list routes of the app door (spec §19.4).
         # MCP-P1b-1 added the four routes of an app request (spec §19.5).
+        # EA-19c added the four box-token routes (spec §10.9).
         assert set(routes) == {"/agent-access/authorize/check",
                                "/agent-access/authorize/approve",
                                "/agent-access/connections",
@@ -1414,7 +1479,11 @@ class TestTheStructuralFences:
                                "/agent-access/apps/{app}/requests",
                                "/agent-access/requests",
                                "/agent-access/requests/{request_id}",
-                               "/agent-access/requests/{request_id}/decision"}, (
+                               "/agent-access/requests/{request_id}/decision",
+                               "/agent-access/box-tokens/check",
+                               "/agent-access/box-tokens",
+                               "/agent-access/box-tokens/{connection_id}/rotate",
+                               "/agent-access/box-tokens/revoke-all"}, (
             "the router did not mount — main.py swallows an import error")
         for path, route in routes.items():
             assert _is_guarded(route), path

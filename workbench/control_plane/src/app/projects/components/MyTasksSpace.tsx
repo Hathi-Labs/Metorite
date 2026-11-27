@@ -36,6 +36,7 @@ import { useCachedResource } from "@/lib/useCachedResource";
 import { filenameFromDisposition, saveCsv } from "@/lib/export";
 
 import {
+  type MyTodaySet,
   type NodeSummary,
   type StatusRow,
   type TaskRow,
@@ -62,13 +63,15 @@ import {
   chipCount,
   chipNeedsEveryPage,
   MY_TASKS_EMPTY_TEXT,
-  chipRows,
+  chipRowsWithSet,
   mineStatuses,
   myTasksQuery,
   myTasksTrulyEmpty,
   planMineDrop,
   quickAddHome,
   stageGroups,
+  todayIdsOf,
+  todaySetGap,
   truncationNotice,
 } from "../lib/myTasks";
 import { useSubtaskComplete } from "./useSubtaskComplete";
@@ -77,11 +80,13 @@ import { myDayLink } from "../lib/reportEntry";
 import { FilterChrome } from "./CompactFilterBar";
 import { CalendarView } from "./CalendarView";
 import { MoreTasksBar } from "./MoreTasksBar";
+import { MyArchiveView } from "./MyArchiveView";
 import NodeDashboard from "./NodeDashboard";
 import { NeedsAttentionList } from "./NeedsAttentionList";
 import { TableView } from "./TableView";
 import { TaskBoard } from "./TaskBoard";
 import { TaskList } from "./TaskList";
+import { TodaySetGap } from "./TodaySetGap";
 
 const MODE_OPTIONS: readonly ModeOption<MyTasksMode>[] = MY_TASKS_MODES;
 
@@ -103,6 +108,18 @@ export function useMySummary(enabled: boolean) {
   return useCachedResource<NodeSummary>(
     enabled ? projectsKey("my/summary") : null,
     () => projectsApi.mySummary(),
+  );
+}
+
+/**
+ * WS-MDC CC-2: the Today set, read only while the Today chip shows with
+ * `TODAY_RULE_ORGS` on. The chip adds each task of the set that the mine list
+ * does not hold.
+ */
+export function useMyTodaySet(enabled: boolean) {
+  return useCachedResource<MyTodaySet>(
+    enabled ? projectsKey("my/today", { with_tasks: "true" }) : null,
+    () => projectsApi.myTodaySet(),
   );
 }
 
@@ -146,7 +163,7 @@ async function readMine(
  */
 export function MyTasksActionRow({
   view,
-  onView,
+  onView: setView,
   attentionCount,
   onReport,
   onCapture,
@@ -158,11 +175,14 @@ export function MyTasksActionRow({
   onReport: (href: string) => void;
   onCapture: () => void;
 }) {
+  // ARC-1: the Archive chip draws no tab, so a tab pick leaves it for All.
+  const onView = (next: MyTasksView, pick?: boolean) =>
+    setView(pick && next.chip === "archive" && !next.attention ? { ...next, chip: "all" } : next, pick);
   return (
     <div className="flex flex-wrap items-center gap-1 px-3 pb-2 pt-1.5 glass:px-4 glass:pb-2.5" data-my-tasks-tabs="">
       <ModeSwitch
         modes={MODE_OPTIONS}
-        mode={view.attention ? null : view.mode}
+        mode={view.attention || view.chip === "archive" ? null : view.mode}
         layout="toolbar"
         onPick={(mode) => onView({ ...view, mode, attention: false }, true)}
       />
@@ -208,7 +228,7 @@ export function MyTasksChips({
 }) {
   return (
     <div className="border-b border-border px-3 py-1.5 glass:px-4 glass:py-2" data-my-tasks-chips="">
-      <ScrollStrip label="My tasks lists" className="gap-1">
+      <ScrollStrip label="My tasks lists" className="gap-1" revealKey={chip}>
         {MY_TASKS_CHIPS.map((entry) => {
           const count = chipCount(summary, entry.id);
           return (
@@ -245,6 +265,8 @@ interface Props {
   projectPath: (projectId: string) => readonly string[];
   /** OP-12b — true when a project is in the private space (the personal root or its folders). */
   isPrivateProject?: (projectId: string) => boolean;
+  /** ARC-1 — true when the project, or one above it, is archived. */
+  projectArchived: (projectId: string) => boolean;
   /** Where a quick add files: the member's personal root, or null. */
   personalRootId: string | null;
   /** Opens the ONE Projects task panel over My tasks. */
@@ -270,6 +292,7 @@ export default function MyTasksSpace({
   people,
   personLabels,
   projectPath,
+  projectArchived,
   isPrivateProject,
   personalRootId,
   onOpenTask,
@@ -304,7 +327,8 @@ export default function MyTasksSpace({
   // The zone the server counted Today in, so a chip and its count agree when
   // the browser sits in another zone (fix round item 8).
   const zone = summary.data?.time_zone || undefined;
-  const overview = mode === "overview" && !attention;
+  const archiveChip = chip === "archive";
+  const overview = mode === "overview" && !attention && !archiveChip;
   const stuck = useCachedResource(overview ? projectsKey("analytics/stuck", { subject: "me" }) : null, () =>
     projectsApi.stuck(undefined, "me"),
   );
@@ -321,7 +345,7 @@ export default function MyTasksSpace({
   );
 
   // ── The rows: paged like a board, every page while a chip filters ──────
-  const listMode = !attention && (mode === "list" || mode === "board" || mode === "table");
+  const listMode = !attention && !archiveChip && (mode === "list" || mode === "board" || mode === "table");
   const filterQuery = useMemo(() => toQuery(filters), [filters]);
   const queryKey = JSON.stringify(filterQuery);
   const wantsAll = chipNeedsEveryPage(chip);
@@ -417,7 +441,7 @@ export default function MyTasksSpace({
     undated: 0,
     truncated: false,
   });
-  const calendarOn = !attention && mode === "calendar";
+  const calendarOn = !attention && !archiveChip && mode === "calendar";
   useEffect(() => {
     if (!calendarOn) return;
     let live = true;
@@ -455,8 +479,40 @@ export default function MyTasksSpace({
     attentionRead.error && !attentionRead.data ? `Could not read the list. ${attentionRead.error}` : null;
 
   // ── What the canvases draw ──────────────────────────────────────────────
-  const shown = useMemo(() => chipRows(list.rows, chip, today, zone), [list.rows, chip, today, zone]);
-  const statuses = useMemo(() => mineStatuses(list.rows, known), [list.rows, known]);
+  // WS-MDC CC-2: the server's Today set, or null for the old rule. With the
+  // flag on, the Today chip also reads the rows of the set, so it lists each
+  // task that it counts, also a task of another member (fix round 1, item 1).
+  const todayIds = useMemo(() => todayIdsOf(summary.data), [summary.data]);
+  const todaySet = useMyTodaySet(Boolean(todayIds) && chip === "today");
+  const setRows = useMemo(() => todaySet.data?.rows.map((row) => row.task) ?? null, [todaySet.data]);
+  useEffect(() => {
+    // The lanes of a project that only the Today set names, so its rows draw
+    // their status as the list rows do.
+    for (const id of new Set((setRows ?? []).map((row) => row.project_id))) {
+      if (!id || asked.current.has(id)) continue;
+      asked.current.add(id);
+      void ownStatuses(id);
+    }
+  }, [setRows, ownStatuses]);
+  // Fix round 2: the place of each task that the read still brings, or one
+  // line when the read failed (`todaySetGap`, `TodaySetGap`).
+  // The read of the set takes no filter. With a filter on, the chip shows the
+  // rows that the server filtered, and it adds and awaits no row of the set.
+  const filtered = isFiltered(filters);
+  // The calendar draws its own window, so its gap reads those rows.
+  const canvasRows = calendarOn ? month.rows : list.rows;
+  const gap = useMemo(
+    () => todaySetGap(canvasRows, chip, todayIds, { data: todaySet.data, error: todaySet.error }, filtered),
+    [canvasRows, chip, todayIds, todaySet.data, todaySet.error, filtered],
+  );
+  const shown = useMemo(
+    () => chipRowsWithSet(list.rows, chip, today, zone, todayIds, setRows, filtered),
+    [list.rows, chip, today, zone, todayIds, setRows, filtered],
+  );
+  const statuses = useMemo(
+    () => mineStatuses(setRows ? [...list.rows, ...setRows] : list.rows, known),
+    [list.rows, setRows, known],
+  );
   // A status is a lane of ONE project, so the roll-up groups by stage instead.
   // The same holds for the lanes: a status lane would name one project's
   // status for cards of every project.
@@ -476,8 +532,8 @@ export default function MyTasksSpace({
     [statusSets, statuses],
   );
   const calendarRows = useMemo(
-    () => chipRows(month.rows, chip, today, zone),
-    [month.rows, chip, today, zone],
+    () => chipRowsWithSet(month.rows, chip, today, zone, todayIds, setRows, filtered),
+    [month.rows, chip, today, zone, todayIds, setRows, filtered],
   );
 
   // A quick add files to the personal root, or nowhere: never "" (item 10).
@@ -485,6 +541,7 @@ export default function MyTasksSpace({
   const reloadAll = () => {
     again();
     summary.refresh();
+    if (todayIds && chip === "today") todaySet.refresh();
   };
 
   /**
@@ -581,13 +638,31 @@ export default function MyTasksSpace({
   }
 
   const chips = <MyTasksChips chip={chip} summary={summary.data} onChip={(next) => onView({ ...view, chip: next })} />;
+  if (archiveChip) {
+    // ARC-1 — the Archive chip draws its own list in the place of the tabs.
+    return (
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden" data-testid="my-tasks-space" data-mode={mode} data-chip="archive">
+        {errorLine}
+        {chips}
+        <div className="min-h-0 flex-1 overflow-auto">
+          <MyArchiveView
+            projectPath={projectPath}
+            projectArchived={projectArchived}
+            onOpenTask={onOpenTask}
+            version={version}
+            onRestored={summary.refresh}
+          />
+        </div>
+      </div>
+    );
+  }
   const chrome = chromeKind({ overview: mode === "overview", phone, compact: compactChrome });
   const listLoaded = list.key === queryKey;
   // A chip other than All reads at most MY_TASKS_MAX_ROWS rows. Past that it
   // says so, in the place of the board's "Load more" bar (item 5).
   const truncated = wantsAll && listMode && listLoaded ? truncationNotice(list.rows.length, list.total) : null;
   // PJP-12a — chip All, read done, no row, no filter: the member has no tasks.
-  const trulyEmpty = myTasksTrulyEmpty({ chip, loaded: listLoaded, total: list.total ?? list.rows.length, filtered: isFiltered(filters) });
+  const trulyEmpty = myTasksTrulyEmpty({ chip, loaded: listLoaded, total: list.total ?? list.rows.length, filtered });
   const emptyChip = trulyEmpty ? (
     <EmptyState
       icon="ListChecks"
@@ -595,7 +670,7 @@ export default function MyTasksSpace({
       action={{ label: "Go to Projects", icon: "FolderKanban", onClick: onOpenProjects }}
     />
   ) : (
-    chip !== "all" && listLoaded && shown.length === 0 ? (
+    chip !== "all" && listLoaded && shown.length === 0 && gap.pending === 0 ? (
       <EmptyState
         icon="ListChecks"
         message={`Nothing in ${MY_TASKS_CHIPS.find((c) => c.id === chip)?.label ?? chip}.`}
@@ -694,6 +769,9 @@ export default function MyTasksSpace({
       ) : null}
       <div className="min-h-0 flex-1 overflow-auto">
         <LayoutBoundary key={`my-tasks:${mode}`} layout={`My tasks ${mode}`}>
+          {listLoaded && mode !== "overview" && gap.failed ? (
+            <TodaySetGap gap={gap} onRetry={todaySet.refresh} />
+          ) : null}
           {mode === "overview" ? (
             !summary.data && summary.error ? (
               // The read failed: say so, and offer it again. The other tabs
@@ -717,6 +795,9 @@ export default function MyTasksSpace({
             ) : (
               <SkeletonRows count={6} />
             )
+          ) : mode === "calendar" && gap.pending > 0 ? (
+            // The set read is on its way: no grid that lacks counted tasks.
+            <SkeletonBoard columns={7} />
           ) : mode === "calendar" ? (
             <CalendarView
               grid={grid}
@@ -753,6 +834,9 @@ export default function MyTasksSpace({
             />
           ) : !listLoaded ? (
             readError ? null : mode === "board" ? <SkeletonBoard columns={4} /> : <SkeletonRows count={8} />
+          ) : mode === "board" && gap.pending > 0 ? (
+            // The same for the board: no empty lanes while the set is on its way.
+            <SkeletonBoard columns={4} />
           ) : emptyChip ? (
             emptyChip
           ) : mode === "table" ? (
@@ -831,8 +915,14 @@ export default function MyTasksSpace({
               onSelect={onOpenTask}
               projectPath={pathOf}
               projectPrivate={privateOf}
+              phone={phone}
+              onDrop={(task, writes, patch) => void drop(task, writes, patch)}
+              statusesFor={statusesFor}
             />
           )}
+          {listLoaded && (mode === "list" || mode === "table") && gap.pending > 0 ? (
+            <TodaySetGap gap={gap} onRetry={todaySet.refresh} />
+          ) : null}
           {compactChrome && !wantsAll && listMode ? (
             <MoreTasksBar
               atEnd

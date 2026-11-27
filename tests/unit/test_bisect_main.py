@@ -119,6 +119,24 @@ def test_finds_the_breaking_pr_in_few_probes(tmp_path):
     assert list(tmp_path.glob("bisect.*")) == []
 
 
+def test_stdout_holds_only_the_answer_line(tmp_path):
+    """CIV-31e: the output of each probe goes to stderr. Before, pytest's lines
+    reached stdout, and the poller read "no tests ran" as the result."""
+    repo, shas = make_repo(tmp_path, broken={104, 105, 106})
+    proc, _ = run_bisect(repo, shas[101], shas[106], tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.splitlines() == [f"FIRST_BAD {shas[104]} change number 104 (#104) PR=104"]
+    assert "passed" in proc.stderr and "failed" in proc.stderr
+    # Exit 3 prints its reason as the one answer line, and stderr keeps it too.
+    (tmp_path / "b").mkdir()
+    repo, shas = make_repo(tmp_path / "b", broken={101, 102, 103, 104, 105, 106})
+    proc, _ = run_bisect(repo, shas[101], shas[106], tmp_path)
+    assert proc.returncode == 3
+    lines = proc.stdout.splitlines()
+    assert len(lines) == 1 and lines[0].startswith("ASSUMPTION FAILED: the good commit"), lines
+    assert lines[0] in proc.stderr
+
+
 def test_good_commit_that_fails_exits_3(tmp_path):
     repo, shas = make_repo(tmp_path, broken={101, 102, 103, 104, 105, 106})
     proc, probes = run_bisect(repo, shas[101], shas[106], tmp_path)
@@ -389,7 +407,7 @@ def test_poll_without_a_junit_artifact_is_a_known_gap(tmp_path):
 
 
 def test_scripts_parse():
-    for script in (BISECT, POLL):
+    for script in (BISECT, POLL, ROOT / "scripts" / "probe_present_tests.sh"):
         assert subprocess.run(["bash", "-n", str(script)]).returncode == 0
 
 

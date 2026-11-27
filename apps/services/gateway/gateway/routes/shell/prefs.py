@@ -7,8 +7,13 @@ any other key is a 422:
 =================  ==========================================================
 Key                Value
 =================  ==========================================================
-``mutes``          A list of feed kinds, 20 at most (§6.6). MD-9 reads it
-                   first. A mute changes the feed only, never the bell.
+``mutes``          A list of feed kinds, 20 at most (§6.6). The feed reads it
+                   for an org in ``MY_DAY_LEARN_ORGS`` (LOOP-4a,
+                   ``state.learned``). A mute never changes the bell, and a
+                   needs card goes to Later at worst. The reach loop, the
+                   briefs and the chat brief read the same feed, so a muted
+                   kind leaves them too. A muted needs card in Later is no
+                   interrupt and is in no brief. LOOP-5 owns the rest.
 ``open_in_app``    A list of feed kinds, 20 at most (§11.2 rule 4). MD-8
                    reads it.
 ``corrections``    The member's lines for ``decide``, newest first: 10 at
@@ -73,7 +78,7 @@ logger = logging.getLogger(__name__)
 PREF_KEYS: tuple[str, ...] = ("mutes", "open_in_app", "corrections", "hide_push_details",
                               "push_prompt", "rule_mutes", "block_notify")
 #: The longest list of kinds that ``mutes`` and ``open_in_app`` take.
-MAX_KINDS = 30
+MAX_KINDS = 32
 #: The most lines that ``corrections`` takes.
 MAX_CORRECTIONS = 10
 #: The longest correction line.
@@ -91,9 +96,10 @@ def feed_kinds() -> frozenset[str]:
     added ``kb_gap``, 25 after WS-61 KB-9b added ``doc_needs_review``
     and ``doc_shared_with_me``, 26 after KB-9b slice 2 added
     ``source_sync_failed``, and 29 after WS-66 RM-2 added the three
-    reminder kinds, and 30 after WS-ALN ALN-2b added ``decision``, which is
-    ``MAX_KINDS``
-    (§5.9 item 10.6: a ticket that adds a kind raises the cap)."""
+    reminder kinds, 30 after WS-ALN ALN-2b added ``decision``, and 31 after
+    WS-55 EA-18c added ``agent_questions``, and 32 after AO-2 added
+    ``provider_alert``, which is ``MAX_KINDS`` (§5.9 item 10.6: a ticket
+    that adds a kind raises the cap)."""
     return frozenset(feed_rank.BASE)
 
 

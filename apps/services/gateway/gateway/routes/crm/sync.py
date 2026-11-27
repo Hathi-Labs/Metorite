@@ -5,6 +5,7 @@ Spec: ``project-docs/specs/crm_platform.md`` §5.4 (Sync now, Health).
     GET   /crm/sync/status
     GET   /crm/sync/health      (admin; CRM-Q9, the Sync health card)
     GET   /crm/sync/short-reads (each member; CRM-Q30b, the short reads)
+    GET   /crm/sync/mirror-age  (each member; CRM-Q30c, the age of the mirror)
     POST  /crm/sync/zoho
 
 ⚠️ **Dark twice.** Each route needs the CRM kill switch (``CRM_ENABLED`` and
@@ -39,7 +40,7 @@ from fastapi import Depends, HTTPException
 from gateway.connections import store
 from gateway.routes.crm.access import ADMIN_PERMISSION
 from gateway.routes.crm.core import _tenant_session, router
-from gateway.routes.crm.flags import require_crm_mirror
+from gateway.routes.crm.flags import mirror_age_allowed, require_crm_mirror
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -365,25 +366,35 @@ _RECOVERED_7D_SQL = (
 _DELETED_SUFFIX = ":deleted"
 
 
+def _cursor_key(module: str, engine: Any) -> str | None:
+    """The count key of the changed cursor of a core entity that is not an
+    activity (``zoho:deal`` gives ``deals``), or of a generic module
+    (``zoho:module:Invoices`` gives ``module:Invoices``). None for each other
+    cursor row: a deleted list, an activity, the field rules, the module
+    counts … :func:`_short_by_keys` and :func:`mirror_ages` share this rule."""
+    prefix = f"{engine.PROVIDER}:"
+    if not module.startswith(prefix) or module.endswith(_DELETED_SUFFIX):
+        return None
+    entity = module[len(prefix):]
+    if entity in engine.ACTIVITY_TYPES:
+        return None
+    if entity in engine.SLUGS:
+        return str(engine.SLUGS[entity])
+    if entity.startswith(MODULE_KEY_PREFIX):
+        return entity
+    return None
+
+
 def _short_by_keys(cursors: dict[str, Any], engine: Any) -> dict[str, int]:
     """``short_by`` of each count key, from the cursor of its entity (CRM-Q24).
 
     Only a core entity that is not an activity and a generic module carry it.
     Every other cursor row (the field rules, the module counts …) is skipped.
     """
-    prefix = f"{engine.PROVIDER}:"
     out: dict[str, int] = {}
     for module, row in cursors.items():
-        if not module.startswith(prefix) or module.endswith(_DELETED_SUFFIX):
-            continue
-        entity = module[len(prefix):]
-        if entity in engine.ACTIVITY_TYPES:
-            continue
-        if entity in engine.SLUGS:
-            key = engine.SLUGS[entity]
-        elif entity.startswith(MODULE_KEY_PREFIX):
-            key = entity
-        else:
+        key = _cursor_key(module, engine)
+        if key is None:
             continue
         value = _int((row.state or {}).get(engine.SHORT_BY_KEY))
         if value is not None and value > 0:
@@ -467,6 +478,113 @@ async def get_short_reads(
         if not await is_mirror_mode(db, org):
             return []
         return await short_reads(db, org)
+
+
+class MirrorAgeModel(BaseModel):
+    """How old the mirror of one core entity or generic module is (CRM-Q30c).
+    A time and two marks only, never a record."""
+
+    #: The count key: a core slug (``deals``) or ``module:<ApiName>``.
+    key: str
+    #: The Zoho API name of the module: ``Invoices``, or ``Accounts`` for
+    #: ``organizations``.
+    api_name: str
+    #: The start of the run whose read of the module ended last, from the
+    #: cursor (``checked_at``). None when no finished read is on record, and
+    #: for an unavailable module, whose stamp is the time of the refused ask.
+    checked_at: datetime | None = None
+    #: The sync holds the key (CRM-Q16), so no scheduled run reads it.
+    held: bool = False
+    #: Zoho refused the module the last time the sync asked (CRM-Q15).
+    unavailable: bool = False
+
+
+def _stamp(value: Any) -> datetime | None:
+    """A ``checked_at`` of a cursor as a time with a zone, or None."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _api_name(key: str, engine: Any) -> str:
+    """The Zoho API name of a count key (``Invoices``, ``Deals``, ``Accounts``)."""
+    if key.startswith(MODULE_KEY_PREFIX):
+        return key[len(MODULE_KEY_PREFIX):]
+    from gateway.crm_sources.zoho.links import ENTITY_MODULES
+
+    for entity, slug in engine.SLUGS.items():
+        if slug == key and entity in ENTITY_MODULES:
+            return str(ENTITY_MODULES[entity])
+    return key
+
+
+def _readable_key(key: str, engine: Any) -> bool:
+    """A count key that a read tool reads: a core slug that is not the
+    activities, or a generic module. The holds also name ``activities`` and
+    ``tasks``, which no tool reads."""
+    if key.startswith(MODULE_KEY_PREFIX):
+        return len(key) > len(MODULE_KEY_PREFIX)
+    activities = {engine.SLUGS[entity] for entity in engine.ACTIVITY_TYPES}
+    return key in engine.SLUGS.values() and key not in activities
+
+
+async def mirror_ages(db: Any, org: str) -> list[MirrorAgeModel]:
+    """The age of the mirror of each core entity and generic module (WS-53
+    CRM-Q30c), for the read tools.
+
+    It reads the cursors through :func:`runs.read_cursors` and the holds
+    through :func:`holds.read`, the one reader of each. It writes no SQL of
+    its own. A held module whose first import never ran has no cursor row,
+    so each held key of :func:`_readable_key` joins the list too.
+    """
+    from gateway.crm_sync import engine, holds, runs
+
+    cursors = await runs.read_cursors(db, org, f"{engine.PROVIDER}:")
+    held = holds.held_keys(await holds.read(db, org))
+    found: dict[str, MirrorAgeModel] = {}
+    for module, row in cursors.items():
+        key = _cursor_key(module, engine)
+        if key is None:
+            continue
+        state = row.state or {}
+        unavailable = bool(state.get("unavailable"))
+        found[key] = MirrorAgeModel(
+            key=key, api_name=_api_name(key, engine),
+            checked_at=None if unavailable else _stamp(state.get("checked_at")),
+            held=key in held, unavailable=unavailable,
+        )
+    for key in held:
+        if key not in found and _readable_key(key, engine):
+            found[key] = MirrorAgeModel(key=key, api_name=_api_name(key, engine), held=True)
+    return [found[key] for key in sorted(found)]
+
+
+@router.get(
+    "/sync/mirror-age", response_model=list[MirrorAgeModel],
+    dependencies=[Depends(require_crm_mirror)],
+)
+async def get_mirror_age(
+    user: UserContext = Depends(get_current_user),
+) -> list[MirrorAgeModel]:
+    """How old the mirror of each module is, for each member that the CRM
+    access rule admits (CRM-Q30c). The read tools of ``crm_tools.py`` add one
+    line for the module that a call read. Times and marks only.
+
+    An org off ``CRM_MIRROR_AGE_ORGS`` gets an empty list, and no session
+    opens. A Native org gets an empty list too."""
+    from gateway.routes.crm.core import is_mirror_mode
+
+    org = _organization(user)
+    if not mirror_age_allowed(org):
+        return []
+    async with _tenant_session() as db:
+        if not await is_mirror_mode(db, org):
+            return []
+        return await mirror_ages(db, org)
 
 
 def _unkept(

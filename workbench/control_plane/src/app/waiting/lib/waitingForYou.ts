@@ -1,6 +1,6 @@
 /**
- * The agent questions of the page `/waiting` (CIV-14k, moved from
- * `/approvals` by WS-AP AP-2a): every open agent question of the member,
+ * The agent questions of the page `/waiting` and of the older "Waiting for
+ * you" section of `/approvals` (CIV-14k): every open agent question of the member,
  * across all projects, oldest first, until it has an answer. The rows come
  * from `GET /projects/agent-runs?status=awaiting&order=oldest&with_task=true`,
  * which lists the runs where `member_email` is the caller (AP-Q2 rule a).
@@ -11,6 +11,7 @@
 
 import {
   archiveRequestOf,
+  hasConfirmOption,
   runIdentity,
   type AgentActivity,
   type AgentRun,
@@ -50,6 +51,11 @@ export function waitingRuns(runs: readonly WaitingRun[]): WaitingRun[] {
     .map((x) => x.run);
 }
 
+/** The count in the title of /approvals: the questions plus the broker proposals. */
+export function waitingCount(questions: number, proposals: number): number {
+  return questions + proposals;
+}
+
 /** "#12 Fix the extruder", or the plain "Task" when the facts are absent. */
 export function rowTitle(run: WaitingRun): string {
   const number = run.task?.number;
@@ -73,7 +79,10 @@ export function taskHref(run: WaitingRun): string {
  * list shows it and links to the task card, where the member answers it.
  */
 export function answersInPlace(run: WaitingRun): boolean {
-  return archiveRequestOf(openQuestion(run)) === null;
+  const question = openQuestion(run);
+  // SW-43b. A costly option (`confirm: true`) asks "Are you sure?", and only
+  // the run card asks it. The list links to the card.
+  return archiveRequestOf(question) === null && !hasConfirmOption(question);
 }
 
 /**

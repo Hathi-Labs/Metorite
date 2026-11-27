@@ -18,20 +18,34 @@
  * My Day card's link to one proposal. The page scrolls to that row and marks
  * it. When the row is not in the queue, a line above the queue says so.
  * `lib/approvalLink.ts` reads the link. A bare `/approvals` opens as before.
- *
- * The agent questions of CIV-14k moved to `/waiting` (WS-AP AP-2a,
- * `waiting_on_me.md` §8). This page keeps the held writes, and one line
- * links to Waiting.
  */
 
 import { AppTopBar } from "@/components/AppTopBar";
 import Button from "@/components/ui/Button";
-import Link from "next/link";
+import ElicitationCard from "@/components/ElicitationCard";
+import { QuestionsView } from "@/app/projects/components/QuestionsView";
+import { useQuestionsBadge } from "@/app/projects/components/useQuestionsBadge";
+import { agentRunsApi } from "@/app/projects/lib/api";
+import { taskHref as questionTaskHref } from "@/app/projects/lib/agentQuestions";
+import { answerPayload, cardQuestion } from "@/app/projects/lib/agentRuns";
+import { relativeTime } from "@/lib/taskCard";
+import type { ElicitationAnswers } from "@/lib/elicitationAnswer";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import type { PendingAction } from "@/app/api/actions/pending/route";
 
+import { ApprovalTabs } from "./components/ApprovalTabs";
+import {
+  FULL_LIST_HREF,
+  FULL_LIST_LABEL,
+  type ApprovalTab,
+  QUESTIONS_READ_FAILED,
+  activeTab,
+  tabsPending,
+  tabsShown,
+  waitingSectionOn,
+} from "./lib/approvalTabs";
 import {
   actionIdFromSearch,
   afterLoad,
@@ -40,6 +54,16 @@ import {
   type LoadResult,
   type QueueState,
 } from "./lib/approvalLink";
+import {
+  answersInPlace,
+  openQuestion,
+  rowAgent,
+  rowTitle,
+  taskHref,
+  waitingCount,
+  waitingRuns,
+  type WaitingRun,
+} from "@/app/waiting/lib/waitingForYou";
 
 /**
  * The reader of `?action=<id>`. `useSearchParams` needs a Suspense boundary,
@@ -62,6 +86,19 @@ export default function ApprovalsPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<Record<string, "approve" | "reject">>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
+  // WS-55 EA-18c. The "For me" list of Projects. While its route is on
+  // (`AGENT_QUESTIONS_ORGS`), it replaces the CIV-14k section below and the
+  // page draws two tabs. `on` is false when the route answers 404.
+  const router = useRouter();
+  const questions = useQuestionsBadge();
+  const tabs = tabsShown(questions.on);
+  const [picked, setPicked] = useState<ApprovalTab | null>(null);
+  // CIV-14k. The open agent questions of the member, oldest first. `null`
+  // means the agent-run routes are off, and then no list draws. It reads only
+  // while the questions route is off (`waitingSectionOn`).
+  const [waiting, setWaiting] = useState<WaitingRun[] | null>(null);
+  const [waitingBusy, setWaitingBusy] = useState<Record<string, boolean>>({});
+  const [waitingErrors, setWaitingErrors] = useState<Record<string, string>>({});
   // The proposal a link names (MD-3a), and the row it marks.
   const [actionId, setActionId] = useState<string | null>(null);
   const { marked, gone } = markedRow(rows, actionId, queue.load);
@@ -91,11 +128,57 @@ export default function ApprovalsPage() {
     setLoading(false);
   }, []);
 
+  const loadWaiting = useCallback(async () => {
+    try {
+      const runs = await agentRunsApi.waiting();
+      setWaiting(runs === null ? null : waitingRuns(runs));
+    } catch {
+      // A failed read keeps the list the member sees. The next poll retries.
+    }
+  }, []);
+
   useEffect(() => {
     void load();
     const t = setInterval(() => void load(), 15_000);
     return () => clearInterval(t);
   }, [load]);
+
+  const waitingOn = waitingSectionOn(questions.on, questions.failed);
+  useEffect(() => {
+    if (!waitingOn) {
+      setWaiting(null);
+      return;
+    }
+    void loadWaiting();
+    const t = setInterval(() => void loadWaiting(), 15_000);
+    return () => clearInterval(t);
+  }, [waitingOn, loadWaiting]);
+
+  const answerWaiting = async (run: WaitingRun, answers: ElicitationAnswers) => {
+    const question = openQuestion(run);
+    if (!question) return;
+    setWaitingBusy((b) => ({ ...b, [run.id]: true }));
+    setWaitingErrors((e) => {
+      const n = { ...e };
+      delete n[run.id];
+      return n;
+    });
+    try {
+      await agentRunsApi.post(run.id, answerPayload(question, answers));
+      setWaiting((rows) => (rows ? rows.filter((r) => r.id !== run.id) : rows));
+    } catch (err) {
+      setWaitingErrors((e) => ({
+        ...e,
+        [run.id]: err instanceof Error ? err.message : "Could not send this answer.",
+      }));
+    } finally {
+      setWaitingBusy((b) => {
+        const n = { ...b };
+        delete n[run.id];
+        return n;
+      });
+    }
+  };
 
   const act = async (id: string, action: "approve" | "reject") => {
     setBusy((b) => ({ ...b, [id]: action }));
@@ -129,6 +212,18 @@ export default function ApprovalsPage() {
     }
   };
 
+  // One count in the title bar: the route's "For me" count with the tabs on,
+  // else the CIV-14k list. The Projects badge and the My Day card say the same.
+  const waitingLen = tabs ? (questions.count ?? 0) : (waiting?.length ?? 0);
+  // The default tab is decided ONCE, when the queue read first lands, and the
+  // page does not flip it afterwards. The member's own pick always wins.
+  const defaultTab = useRef<ApprovalTab | null>(null);
+  if (tabs && defaultTab.current === null && queue.load !== "pending") {
+    defaultTab.current = activeTab(null, queue.load === "closed");
+  }
+  // `null`: the body waits for the default, so nothing draws and then moves.
+  const shownTab: ApprovalTab | null = !tabs ? "actions" : (picked ?? defaultTab.current);
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <Suspense fallback={null}>
@@ -138,7 +233,11 @@ export default function ApprovalsPage() {
           and Refresh at the right end. */}
       <AppTopBar
         title="Approvals"
-        subtitle={rows.length > 0 ? `${rows.length} waiting` : undefined}
+        subtitle={
+          waitingCount(waitingLen, rows.length) > 0
+            ? `${waitingCount(waitingLen, rows.length)} waiting`
+            : undefined
+        }
         tools={
           <Button
             variant="ghost"
@@ -153,14 +252,101 @@ export default function ApprovalsPage() {
       />
       <div className="min-h-0 flex-1 overflow-auto">
     <div className="mx-auto max-w-3xl px-4 py-6">
-      {/* WS-AP AP-2a: the agent questions moved to Waiting. One line here. */}
-      <p className="mb-4 text-xs text-muted-foreground">
-        Questions that agents ask you are in{" "}
-        <Link href="/waiting" className="text-primary hover:underline">
-          Waiting
-        </Link>
-        .
-      </p>
+      {tabsPending(questions.on, questions.failed) && (
+        <div className="mb-4 h-7 glass:pointer-coarse:h-10" aria-hidden="true" data-approval-tabs-reserved="" />
+      )}
+      {tabs && (
+        <ApprovalTabs active={shownTab ?? "actions"} questionCount={questions.count} onPick={setPicked} />
+      )}
+      {tabs && shownTab === "questions" && (
+        <section aria-label="Agent questions" className="flex flex-col" data-approval-questions="">
+          <div className="flex min-h-[12rem] flex-col rounded-lg border border-border bg-card/50">
+            <QuestionsView
+              embedded
+              projects={[]}
+              onOpenTask={(id) => router.push(questionTaskHref(id))}
+              onOpenProject={(id) => router.push(`/projects?project=${encodeURIComponent(id)}`)}
+              onChanged={questions.refresh}
+            />
+          </div>
+          <a
+            href={FULL_LIST_HREF}
+            className="mt-3 text-xs text-primary hover:underline"
+            data-approval-full-list=""
+          >
+            {FULL_LIST_LABEL}
+          </a>
+        </section>
+      )}
+      {shownTab === "actions" && (
+      <>
+      {waiting !== null && waiting.length > 0 && (
+        <section aria-label="Waiting for you" className="mb-8">
+          <h2 className="text-sm font-semibold text-foreground">
+            Waiting for you ({waiting.length})
+          </h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Questions that agents asked you, oldest first. Each agent waits for
+            your answer, and the question stays here until you answer it.
+          </p>
+          <div className="mt-3 flex flex-col gap-3">
+            {waiting.map((run) => {
+              const question = openQuestion(run);
+              if (!question) return null;
+              return (
+                <div
+                  key={run.id}
+                  className="rounded-lg border border-border bg-card/50 p-3 text-xs"
+                >
+                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                    <a
+                      href={taskHref(run)}
+                      className="min-w-0 flex-1 basis-48 line-clamp-2 text-sm font-medium text-foreground hover:underline"
+                    >
+                      {rowTitle(run)}
+                    </a>
+                    <span className="text-muted-foreground">
+                      {rowAgent(run)}
+                      {question.created_at
+                        ? ` \u00b7 ${relativeTime(question.created_at)}`
+                        : ""}
+                    </span>
+                  </div>
+                  {run.task?.project_name && (
+                    <p className="mt-0.5 text-muted-foreground">{run.task.project_name}</p>
+                  )}
+                  <div className="mt-2">
+                    {answersInPlace(run) ? (
+                      <ElicitationCard
+                        id={`waiting:${question.id}`}
+                        questions={[cardQuestion(question)]}
+                        onSubmit={(answers) => void answerWaiting(run, answers)}
+                        disabled={!!waitingBusy[run.id]}
+                      />
+                    ) : (
+                      <p className="whitespace-pre-wrap break-words text-foreground">
+                        {question.content.body?.trim() || "The agent makes a request."}
+                        <span className="ml-1 text-muted-foreground">
+                          Open the task to answer it.
+                        </span>
+                      </p>
+                    )}
+                  </div>
+                  {waitingErrors[run.id] && (
+                    <p className="mt-1.5 text-destructive" role="alert">
+                      {waitingErrors[run.id]} Try again, or open the task.
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {queue.load !== "closed" && waiting !== null && waiting.length > 0 && (
+        <h2 className="text-sm font-semibold text-foreground">Proposed writes</h2>
+      )}
       {queue.load !== "closed" && (
         <p className="mt-1 text-xs text-muted-foreground">
           Outward writes an agent proposed through the Action Broker. Approving
@@ -175,12 +361,17 @@ export default function ApprovalsPage() {
       {/* One live region, always mounted, so a screen reader announces the
           line when it arrives. It is empty when there is nothing to say. */}
       <div role="status">
+        {questions.failed && questions.on === null && (
+          <p className="mt-4 text-xs text-destructive" data-approval-questions-failed="">
+            {QUESTIONS_READ_FAILED}
+          </p>
+        )}
         {queue.load === "failed" && (
           <p className="mt-4 text-xs text-destructive">
             Could not load the queue. Refresh to try again.
           </p>
         )}
-        {queue.load === "closed" && (
+        {queue.load === "closed" && (waiting?.length ?? 0) === 0 && (
           <p className="mt-4 rounded-lg border border-border bg-card/50 px-3 py-2 text-xs text-muted-foreground">
             An admin or a manager reviews proposed writes. Ask one of them to approve yours.
           </p>
@@ -193,7 +384,7 @@ export default function ApprovalsPage() {
       </div>
 
       <div className="mt-4 flex flex-col gap-2">
-        {queue.load === "ok" && rows.length === 0 && (
+        {queue.load === "ok" && rows.length === 0 && (waiting?.length ?? 0) === 0 && (
           <div className="rounded-lg border border-border bg-card/50 px-4 py-8 text-center">
             <p className="text-sm text-muted-foreground">
               Nothing awaiting approval.
@@ -277,6 +468,8 @@ export default function ApprovalsPage() {
           );
         })}
       </div>
+      </>
+      )}
     </div>
       </div>
     </div>

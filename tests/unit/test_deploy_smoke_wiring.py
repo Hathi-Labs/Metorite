@@ -74,7 +74,8 @@ def _code_lines(text: str) -> list[str]:
 
 def test_the_smoke_job_runs_after_the_deploy_on_both_paths(jobs: dict) -> None:
     job = jobs["chat-smoke"]
-    assert set(job["needs"]) == {"deploy", "pull-delivery"}
+    # CIV-30: `release-commit` gives the commit of the smoke script.
+    assert set(job["needs"]) == {"deploy", "pull-delivery", "release-commit"}
     # The WHOLE expression, with the whitespace folded. A substring check let
     # `${{ always() }} # needs.deploy.result == 'success'` through.
     cond = " ".join(job["if"].split())
@@ -153,12 +154,14 @@ def test_the_time_bounds_add_up(jobs: dict) -> None:
     three of those plus the connect budget fit inside the job timeout."""
     text = _read(SCRIPT)
     lock = _int_default(text, "SMOKE_LOCK_WAIT")
-    run = _int_default(text, "SMOKE_RUN_S")
+    # CIV-SMOKE-TURN: the persist child gets SMOKE_RUN_S + SMOKE_TURN_S.
+    run = _int_default(text, "SMOKE_RUN_S") + _int_default(text, "SMOKE_TURN_S")
     tries = _int_default(text, "SMOKE_WAIT_TRIES")
     nap = _int_default(text, "SMOKE_WAIT_NAP")
     assert "timeout -k 5 30 node " in text
     assert 'timeout -k 5 20 "$PY" -c "$PROBE_PY"' in text
-    assert 'timeout -k 10 "$SMOKE_RUN_S" "$PY" "$SMOKE_PY"' in text
+    assert "run_s=$((SMOKE_RUN_S + SMOKE_TURN_S))" in text
+    assert 'timeout -k 10 "$run_s" "$PY" "$SMOKE_PY"' in text
     worst = 35 + lock + tries * 25 + (tries - 1) * nap + run + 10
     m = re.search(r"worst case\s+(\d+) s", text)
     assert m and int(m.group(1)) == worst, (worst, m and m.group(1))
@@ -235,7 +238,7 @@ SECRET_LINES = {
     'SMOKE_COOKIE="$COOKIE_NAME=$jwe"',
     'state="$(SMOKE_COOKIE="$SMOKE_COOKIE" timeout -k 5 20 "$PY" -c "$PROBE_PY" </dev/null '
     '2>/dev/null)" || state="down:000"',
-    'SMOKE_COOKIE="$SMOKE_COOKIE" timeout -k 10 "$SMOKE_RUN_S" "$PY" "$SMOKE_PY" </dev/null '
+    'SMOKE_COOKIE="$SMOKE_COOKIE" timeout -k 10 "$run_s" "$PY" "$SMOKE_PY" </dev/null '
     '|| rc=$?',
 }
 _EXPANDS = re.compile(r"\$\{?(SMOKE_COOKIE|jwe|auth_secret)\b")
@@ -289,6 +292,7 @@ if [ "$1" = "-c" ]; then
   if [ "$n" -le "${PROBE_DOWN:-0}" ]; then echo "down:502"; else echo "${PROBE_STATE:-ok}"; fi
   exit 0
 fi
+printf '%s|%s|%s|%s\n' "${SMOKE_CHAT_TURN:-}" "${SMOKE_CHAT_TURN_CAP_USD:-}" "${SMOKE_CHAT_TURN_EST_USD:-}" "${SMOKE_TURN_ONLY:-}" >> "$FAKE/turn.log"
 [ -n "${SMOKE_HANG:-}" ] && exec /bin/sleep "$SMOKE_HANG"
 echo "ok   1 create session"
 [ "${SMOKE_RC:-0}" = 1 ] && { echo "FAIL 2 save one row: HTTP 500"; exit 1; }
@@ -320,9 +324,12 @@ def app(tmp_path: Path):
         f'AUTH_URL=https://app.metorite.com\nAUTH_SECRET="{SECRET}"\n',
         encoding="utf-8", newline="\n")
 
-    def run(via_stdin: bool = False, **extra: str) -> subprocess.CompletedProcess:
+    def run(via_stdin: bool = False, args: tuple[str, ...] = (),
+            **extra: str) -> subprocess.CompletedProcess:
         env = dict(os.environ)
-        env.pop("SMOKE_BASE_URL", None)
+        for name in ("SMOKE_BASE_URL", "SMOKE_CHAT_TURN", "SMOKE_CHAT_TURN_CAP_USD",
+                     "SMOKE_CHAT_TURN_EST_USD"):
+            env.pop(name, None)
         env.update(PATH=f"{binr}{os.pathsep}{env.get('PATH', '')}",
                    FAKE=fake.as_posix(), APP_DIR=appd.as_posix(), HOME=tmp_path.as_posix(),
                    DEPLOY_LOCK=(tmp_path / "acb-deploy.lock").as_posix())
@@ -332,7 +339,7 @@ def app(tmp_path: Path):
             return subprocess.run(["bash", "-s"], input=_read(SCRIPT), cwd=tmp_path, env=env,
                                   capture_output=True, text=True, encoding="utf-8",
                                   timeout=60)
-        return subprocess.run(["bash", SCRIPT.as_posix()], cwd=tmp_path, env=env,
+        return subprocess.run(["bash", SCRIPT.as_posix(), *args], cwd=tmp_path, env=env,
                               stdin=subprocess.DEVNULL, capture_output=True, text=True,
                               encoding="utf-8", timeout=60)
 
@@ -341,6 +348,7 @@ def app(tmp_path: Path):
 
     a = App()
     a.root, a.fake, a.run = tmp_path, fake, run
+    a.box_env = appd / ".env"
     return a
 
 
@@ -450,9 +458,52 @@ class TestTheScript:
             (app.fake / "stdin.log").read_text(encoding="utf-8"))
 
     def test_a_persist_run_past_its_bound_is_named_a_timeout(self, app) -> None:
-        r = app.run(SMOKE_HANG="5", SMOKE_RUN_S="1")
+        r = app.run(SMOKE_HANG="5", SMOKE_RUN_S="1", SMOKE_TURN_S="0")
         assert r.returncode == 1, r.stdout + r.stderr
         assert "did not finish in 1s" in r.stderr
+
+    # ── CIV-SMOKE-TURN (task 4061): the switch, the cap and --turn-only ──
+
+    def _turn_log(self, app) -> list[str]:
+        return (app.fake / "turn.log").read_text(encoding="utf-8").splitlines()
+
+    def test_the_turn_is_off_with_no_box_env(self, app) -> None:
+        r = app.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert self._turn_log(app) == ["|||0"], "no .env means the turn is off"
+
+    def test_the_switch_and_the_cap_come_from_the_box_env(self, app) -> None:
+        app.box_env.write_text(
+            'SMOKE_CHAT_TURN=0\nSMOKE_CHAT_TURN="1"\nSMOKE_CHAT_TURN_CAP_USD=\'5\'\r\n'
+            "SMOKE_CHAT_TURN_EST_USD=0.5\n",
+            encoding="utf-8", newline="\n")
+        r = app.run()
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert self._turn_log(app) == ["1|5|0.5|0"], "the last line wins, and quotes go"
+
+    def test_the_environment_wins_over_the_box_env(self, app) -> None:
+        app.box_env.write_text("SMOKE_CHAT_TURN=1\nSMOKE_CHAT_TURN_CAP_USD=5\n",
+                               encoding="utf-8", newline="\n")
+        r = app.run(SMOKE_CHAT_TURN="0")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert self._turn_log(app) == ["0|5||0"]
+
+    def test_turn_only_is_passed_on_and_leaks_nothing(self, app) -> None:
+        app.box_env.write_text("SMOKE_CHAT_TURN=1\nSMOKE_CHAT_TURN_CAP_USD=5\n",
+                               encoding="utf-8", newline="\n")
+        r = app.run(args=("--turn-only",))
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert self._turn_log(app) == ["1|5||1"]
+        argv = (app.fake / "argv.log").read_text(encoding="utf-8")
+        for value in (SECRET, JWE):
+            assert value not in argv and value not in r.stdout + r.stderr
+        assert "--turn-only" not in argv, "the flag goes to python in the environment"
+
+    def test_an_unknown_argument_exits_2_and_runs_nothing(self, app) -> None:
+        r = app.run(args=("--turn",))
+        assert r.returncode == 2
+        assert "unknown argument" in r.stderr
+        assert not (app.fake / "argv.log").exists()
 
     def test_no_secret_exits_2(self, app) -> None:
         (app.root / "app" / "workbench" / "control_plane" / ".env.local").write_text(
@@ -485,6 +536,8 @@ case "$mode" in
   drop) echo "client_loop: send disconnect: Connection reset by peer" >&2; exit 255 ;;
   nopass) echo "ok   1 create session"; exit 0 ;;
   busy) echo "smoke_chat: BUSY." >&2; exit 75 ;;
+  turnskip) echo "WARNING T1 turn skipped: 20 turns ran this month. No model turn ran."
+            echo "WARNING T4 gateway log: journalctl exited 1. The log was not checked." ;;
   fail) echo "FAIL 2 save one row: HTTP 500"; exit 1 ;;
   env)  echo "smoke_chat: the smoke org is missing." >&2; exit 2 ;;
   auth) echo "acb@10.0.0.1: Permission denied (publickey)." >&2; exit 255 ;;
@@ -552,6 +605,15 @@ class TestTheWorkflowStep:
     def test_a_wrong_environment_is_red_and_does_not_retry(self, runner, jobs) -> None:
         r = runner.run(jobs, SMOKE_MODE="env")
         assert r.returncode == 1, r.stdout + r.stderr
+        assert _runs(runner) == 1
+
+    def test_a_skipped_turn_is_green_with_a_warning(self, runner, jobs) -> None:
+        """Fix round 1 (review P2): a skip must show on the run page."""
+        r = runner.run(jobs, SMOKE_MODE="turnskip")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert ("::warning title=Model turn skipped::WARNING T1 turn skipped: 20 turns ran"
+                in r.stdout), r.stdout
+        assert "::warning title=Model turn log not checked::WARNING T4" in r.stdout
         assert _runs(runner) == 1
 
     def test_a_busy_lock_is_a_warning_and_not_a_red(self, runner, jobs) -> None:

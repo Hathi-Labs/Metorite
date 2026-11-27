@@ -9,6 +9,7 @@ import {
   rowTitle,
   taskHref,
   unanswered,
+  waitingCount,
   waitingRuns,
   type WaitingRun,
 } from "./waitingForYou";
@@ -61,7 +62,12 @@ describe("waitingRuns", () => {
   });
 });
 
-describe("the times and titles", () => {
+describe("the counts, times and titles", () => {
+  it("adds both lists", () => {
+    expect(waitingCount(4, 0)).toBe(4);
+    expect(waitingCount(2, 3)).toBe(5);
+  });
+
   it("reads the time of the open question, else the last activity", () => {
     expect(askedAt(run("q", "2026-11-01T10:00:00Z"))).toBe("2026-11-01T10:00:00Z");
     expect(askedAt(run("n", null, { last_activity_at: "2026-11-02T09:00:00Z" }))).toBe(
@@ -94,6 +100,18 @@ describe("answersInPlace", () => {
       } as Partial<AgentActivity>),
     });
     expect(answersInPlace(archive)).toBe(false);
+  });
+
+  it("is false for a question with a costly option, which only the task card confirms", () => {
+    const costly = run("c", "2026-11-01T10:00:00Z", {
+      open_elicitation: ask("2026-11-01T10:00:00Z", {
+        signal: "select",
+        signal_metadata: {
+          options: [{ id: "go", label: "Restart it now", confirm: true }, { id: "no", label: "No" }],
+        },
+      } as Partial<AgentActivity>),
+    });
+    expect(answersInPlace(costly)).toBe(false);
   });
 });
 

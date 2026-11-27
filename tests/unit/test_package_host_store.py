@@ -22,17 +22,25 @@ g. A route sends ``detail_for``, which hides the private install of another
    member.
 h. The store refuses a transaction that is not READ COMMITTED. The value
    check of a payload is the one copy in ``studio/packages_store.py``.
+i. The lifetime of PKG-10a: ``notice_times`` gives the two note times, each
+   lifetime statement names the bound org, and a time with no zone is
+   refused before the database. ``test_package_lifetime_r8.py`` is named in
+   the ``--must-run`` list of ``pr-check.yml`` and of ``deploy.yml``.
+j. The expiry loop of PKG-10b: ``test_package_expiry_loop_r8.py`` is named
+   in the same two ``--must-run`` lists.
 """
 
 from __future__ import annotations
 
 import re
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+from tests.unit import _r8_lists as r8_lists
 
 pytest.importorskip("sqlalchemy")
 
@@ -377,6 +385,43 @@ def test_a_system_key_at_a_point_of_many_claims_is_no_conflict() -> None:
     assert got.id == "install-1"
 
 
+def test_a_fields_key_of_another_app_is_taken_and_of_the_same_app_is_not() -> None:
+    """PKG-14a-2 and PKG-Q29: a ``fields`` claim meets the conflict rule of
+    §4, as a ``nav`` or a ``jobs`` claim does. The refusal names the point,
+    the key and the holder, and it writes nothing."""
+    claim = [Contribution("fields", "task:warranty_end", {"type": "date", "many": False})]
+    other = str(uuid.uuid4())
+    db = _FakeDb(held=(("fields", "task:warranty_end", "install-0", other, "org", "org"),))
+    with pytest.raises(ClaimTaken) as exc:
+        _run(store.install(db, **_args(contributions=claim)))
+    err = exc.value
+    assert (err.point, err.key, err.status) == ("fields", "task:warranty_end", 409)
+    assert err.holder == store.Holder(source="org", package=other, install_id="install-0",
+                                      scope_subject="org")
+    assert not any(s.startswith("INSERT") for s, _ in db.calls)
+    same = _FakeDb(held=(("fields", "task:warranty_end", "install-0", APP, "org", "org"),))
+    assert _run(store.install(same, **_args(contributions=claim))).id == "install-1"
+    # The same field key on another record kind is another key.
+    free = _FakeDb(held=(("fields", "crm.deal:warranty_end", "install-0", other, "org", "org"),))
+    assert _run(store.install(free, **_args(contributions=claim))).id == "install-1"
+
+
+def test_a_fields_key_that_a_system_package_holds_stays_with_it(monkeypatch) -> None:
+    """No system file holds a ``fields`` key today. When one does, the store
+    refuses each install that claims it, also with no other holder."""
+    from acb_common.app_manifests.shell_manifest import SystemContribution
+
+    held = SystemContribution(point="fields", key="task:warranty_end", package="projects")
+    monkeypatch.setattr(store, "_system_keys", lambda: {("fields", held.key): held})
+    db = _FakeDb()
+    with pytest.raises(ClaimTaken) as exc:
+        _run(store.install(db, **_args(contributions=[
+            Contribution("fields", "task:warranty_end", {"type": "date"})])))
+    assert exc.value.holder == store.Holder(source="system", package="projects")
+    assert not any(s.startswith("INSERT") for s, _ in db.calls)
+    assert "fields" not in store.MANY_CLAIMS
+
+
 # ── d. The one writer ──────────────────────────────────────────────────────
 
 
@@ -403,6 +448,21 @@ def test_only_the_store_writes_an_install_or_a_claim() -> None:
     assert _WRITE.search(store._DELETE_INSTALL_SQL)
     assert _WRITE.search(store._SET_STATE_SQL)
     assert "FOR UPDATE" in store._STATE_SQL
+    # PKG-11a: the store holds the UPDATE of the scope, and the read before
+    # it takes the row lock. ``promotion.py`` writes ``app_grants`` only.
+    assert _WRITE.search(store._PROMOTE_SQL)
+    assert store._INSTALL_FOR_UPDATE_SQL.endswith("FOR UPDATE")
+    share = (_ROOT / "apps/services/gateway/gateway/package_host/promotion.py").read_text(
+        encoding="utf-8")
+    assert not _WRITE.search(share)
+    # And each UPDATE of the lifetime (PKG-10a).
+    for sql in (store._KEEP_SQL, store._RESTORE_SQL, store._ARCHIVE_SQL):
+        assert _WRITE.search(sql), sql
+    for sql in (store._LIFE_SQL, store._DUE_SQL, store._SPENT_SQL):
+        assert "FOR UPDATE" in sql, sql
+    # And the UPDATE of the member of a run with no viewer (WS-STU B6a).
+    assert _WRITE.search(store._SET_RUN_AS_SQL)
+    assert "FOR UPDATE" in store._RUN_AS_LOCK_SQL
 
 
 def test_the_store_reads_apps_and_never_writes_it() -> None:
@@ -417,22 +477,14 @@ def test_the_store_reads_apps_and_never_writes_it() -> None:
 def test_the_r8_twin_is_named_in_the_ci_skip_guard() -> None:
     """The `--must-run` list of pr-check.yml is kept by hand. Without the
     entry, the R8 twin skips in CI with no database and the job stays green."""
-    workflow = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8")
-    assert "tests/unit/test_package_host_store_r8.py" in workflow
+    assert "tests/unit/test_package_host_store_r8.py" in r8_lists.must_run()
 
 
 def test_the_disposal_r8_suite_is_named_in_the_ci_skip_guard() -> None:
     """PKG-9. Without the entry, ``test_package_disposal_r8.py`` skips in CI
     with no database and the job stays green. The name must be in the
     ``--must-run`` list itself, not only somewhere in the file."""
-    lines = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(
-        encoding="utf-8").splitlines()
-    start = next(i for i, line in enumerate(lines) if line.strip() == "--must-run \\")
-    listed: list[str] = []
-    for line in lines[start + 1:]:
-        listed.append(line.strip().removesuffix("\\").strip())
-        if not line.rstrip().endswith("\\"):
-            break
+    listed = r8_lists.must_run()
     assert "tests/unit/test_package_disposal_r8.py" in listed
 
 
@@ -511,3 +563,61 @@ def test_the_value_check_of_a_payload_is_the_one_copy() -> None:
     source = (_ROOT / "apps/services/gateway/gateway/package_host/store.py").read_text(
         encoding="utf-8")
     assert "float.__repr__" not in source and "isfinite" not in source
+
+
+# ── i. The lifetime (PKG-10a) ──────────────────────────────────────────────
+
+
+def test_notice_times_gives_the_two_note_times() -> None:
+    """§6.2: a note 3 days before ``ends_at``, and a note 27 days after
+    ``archived_at``, which is 3 days before the deletion."""
+    ends = datetime(2026, 12, 10, 9, 30, tzinfo=UTC)
+    archived = datetime(2026, 12, 11, 2, 0, tzinfo=UTC)
+    assert store.notice_times(ends, archived) == (
+        datetime(2026, 12, 7, 9, 30, tzinfo=UTC), datetime(2027, 1, 7, 2, 0, tzinfo=UTC))
+    assert store.notice_times(ends, None) == (ends - timedelta(days=3), None)
+    assert store.notice_times(None, archived) == (None, archived + timedelta(days=27))
+    assert store.notice_times(None, None) == (None, None)
+    assert store.NOTICE_AFTER_ARCHIVE + store.NOTICE_BEFORE_END == store.RESTORE_DAYS
+
+
+def test_each_lifetime_statement_names_the_bound_org() -> None:
+    bound = f"organization_id = {store._BOUND_ORG}"
+    for sql in (store._LIFE_SQL, store._KEEP_SQL, store._RESTORE_SQL, store._DUE_SQL,
+                store._ARCHIVE_SQL, store._SPENT_SQL):
+        assert bound in sql, sql
+    # A paused install never expires (PKG-Q8), and one statement restores.
+    assert "state = 'active'" in store._DUE_SQL and "paused" not in store._DUE_SQL
+    assert "state = 'active' AND ends_at <= :now" in store._ARCHIVE_SQL
+    assert "state = 'active', archived_at = NULL" in store._RESTORE_SQL
+
+
+@pytest.mark.parametrize("now", [datetime(2026, 12, 1), "2026-12-01", None])
+def test_a_lifetime_time_with_no_zone_is_refused_before_the_database(now: Any) -> None:
+    for call in (lambda db: store.restore_install(db, install_id=APP, now=now),
+                 lambda db: store.expire_due(db, now=now)):
+        db = _FakeDb()
+        with pytest.raises(InstallError) as exc:
+            _run(call(db))
+        assert (exc.value.code, exc.value.status) == ("bad_now", 422)
+        assert db.calls == []
+
+
+@pytest.mark.parametrize("workflow", ["pr-check.yml", "deploy.yml"])
+def test_the_lifetime_r8_suite_is_named_in_each_must_run_list(workflow: str) -> None:
+    """PKG-10a. Without the entry, ``test_package_lifetime_r8.py`` skips in
+    CI with no database and the job stays green. The name must be in the
+    ``--must-run`` list itself, next to the PKG-9 suite."""
+    listed = r8_lists.must_run()
+    assert "tests/unit/test_package_lifetime_r8.py" in listed
+    assert "tests/unit/test_package_disposal_r8.py" in listed
+
+
+@pytest.mark.parametrize("workflow", ["pr-check.yml", "deploy.yml"])
+def test_the_expiry_loop_r8_suite_is_named_in_each_must_run_list(workflow: str) -> None:
+    """PKG-10b. Without the entry, ``test_package_expiry_loop_r8.py`` skips
+    in CI with no database and the job stays green. The name must be in the
+    ``--must-run`` list itself, next to the PKG-10a suite."""
+    listed = r8_lists.must_run()
+    assert "tests/unit/test_package_expiry_loop_r8.py" in listed
+    assert "tests/unit/test_package_lifetime_r8.py" in listed

@@ -160,7 +160,7 @@ test.describe("the AI agents view of Integrations (EA-4b)", () => {
     await expect(row.getByText("claude.ai", { exact: true })).toBeVisible();
     await expect(row.getByText("It calls itself “Claude Code”")).toBeVisible();
     await expect(row.getByText("Last token refresh")).toBeVisible();
-    await expect(row.getByText("Pinned to 1 project")).toBeVisible();
+    await expect(row.getByTestId("chip-projects")).toHaveText("1 project");
 
     await row.getByRole("button", { name: /^Revoke/ }).click();
     const dialog = page.getByRole("dialog");
