@@ -1621,7 +1621,7 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
     # SW-25: the MCP `get_task_context` of the agent session that holds the
     # task marks its affects notes read. A person who opens the panel marks nothing.
     ("GET", "/projects/tasks/{task_id}/relations"): {
-        "mark_read": "Only the MCP `get_task_context` of the agent session that holds the task sets it. The chat reads the notes and marks nothing (SW-25).",
+        "mark_read": "Only the MCP `get_task_context` of the agent session that holds the task sets it. The chat never sets it (SW-25).",
     },
     ("GET", "/projects/tasks/stats"): {
         "assigned": _STATS_ROUTE_REASON,
