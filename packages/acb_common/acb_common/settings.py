@@ -722,8 +722,8 @@ class Settings(BaseSettings):
     # `knowledge_orgs`. `*` is each org. It needs `knowledge_sync` and the
     # provider flag too. Empty, the default, means no organization: the loop
     # starts no index run, makes no provider call and opens no session for it.
-    # The one reader is `gateway.routes.knowledge.flags`. The agent may flip
-    # it on staging. A flip on production is the owner's.
+    # The one reader is `gateway.routes.knowledge.flags`. A flip on production
+    # is the owner's, and the two P1s of KC-5b (#463) block it.
     # Fence: tests/unit/test_kb_flags.py.
     knowledge_index: str = ""
     # WS-KG KG-4 (knowledge_graph.md §4.1 and §8). The organization ids whose
