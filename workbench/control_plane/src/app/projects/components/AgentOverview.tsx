@@ -14,30 +14,11 @@ import Icon from "@/components/Icon";
 import { PersonAvatar } from "@/components/room/Identity";
 import Button from "@/components/ui/Button";
 
-import { type LensCounts, type LensSession, lensWord } from "../lib/agentLenses";
+import { type LensSession, lensWord } from "../lib/agentLenses";
 import type { Tile, TilePerson } from "../lib/agentScale";
-import { NO_MATCH_COPY, NO_ORCHESTRATOR } from "./AgentBoardList";
-import { SquareLegend, Squares, SubBar } from "./AgentSquares";
+import { NO_MATCH_COPY, NO_ORCHESTRATOR, SquareLegend, Squares, SubBar, TileCounts } from "./AgentSquares";
 
-/** "2 need you · 1 failed · 13 working · 11 waiting · 22 idle or done". */
-export function TileCounts({ counts }: { counts: LensCounts }) {
-  const rest = counts.idle + counts.done;
-  const parts: Array<[string, string]> = [];
-  if (counts.you > 0) parts.push([counts.you === 1 ? "1 needs you" : `${counts.you} need you`, "text-warning"]);
-  if (counts.failed > 0) parts.push([`${counts.failed} failed`, "text-destructive"]);
-  if (counts.working > 0) parts.push([`${counts.working} working`, ""]);
-  if (counts.waiting > 0) parts.push([`${counts.waiting} waiting`, ""]);
-  if (rest > 0) parts.push([`${rest} idle or done`, ""]);
-  return (
-    <span className="flex min-w-0 flex-wrap gap-x-2 text-[11px] text-muted-foreground">
-      {parts.map(([text, tone]) => (
-        <span key={text} className={`whitespace-nowrap ${tone}`}>
-          {text}
-        </span>
-      ))}
-    </span>
-  );
-}
+export { TileCounts };
 
 export function tileName(tile: Pick<Tile, "orch">): string {
   return tile.orch?.name ?? NO_ORCHESTRATOR;

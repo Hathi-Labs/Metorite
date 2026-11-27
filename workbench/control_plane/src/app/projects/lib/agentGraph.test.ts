@@ -1,24 +1,31 @@
 import { describe, expect, it } from "vitest";
 
-import { type GraphOptions, GRAPH_X, layoutGraph, relatedNodes } from "./agentGraph";
-import { DEFAULT_STATES, buildLensModel } from "./agentLenses";
-import { BEN, fleet, mapOf, run, session } from "./agentLensesFixtures";
+import { type Graph, type GraphNode, type GraphOptions, GRAPH_X, ROOT_ID, SUB_SHIFT, layoutGraph, relatedNodes } from "./agentGraph";
+import { type SubRow, buildLensModel } from "./agentLenses";
+import { BEN, fleet, mapOf, run, session, splitFleet, workingFleet } from "./agentLensesFixtures";
+import { CARDS_MAX, NEW_VIEW, SUB_ROWS_MAX, bucketView, foldView, restView } from "./agentScale";
 
 const options = (over: Partial<GraphOptions> = {}): GraphOptions => ({
-  filters: { states: new Set(DEFAULT_STATES), person: "", find: "" },
-  collapsed: new Set(),
-  opened: new Set(),
-  waits: true,
+  ...NEW_VIEW,
+  mode: "active",
+  person: "",
+  find: "",
+  pin: null,
   unit: 1,
   nameOf: (e) => e,
   ...over,
 });
 const model = buildLensModel(fleet(), new Map(), BEN);
 const graph = layoutGraph(model, options());
-const node = (id: string, g = graph) => g.nodes.find((n) => n.id === id);
-const pairs = (g = graph) => g.edges.map((e) => `${e.from}>${e.to}:${e.kind}`).sort();
+const split = buildLensModel(splitFleet(), new Map(), { email: "ana@x.test" });
+const node = (id: string, g: Graph = graph) => g.nodes.find((n) => n.id === id);
+const pairs = (g: Graph = graph) => g.edges.map((e) => `${e.from}>${e.to}:${e.kind}`).sort();
+const kind = <K extends GraphNode["kind"]>(g: Graph, k: K) =>
+  g.nodes.filter((n): n is Extract<GraphNode, { kind: K }> => n.kind === k);
+/** Every node that is one agent: the cards of the bound. */
+const cards = (g: Graph) => g.nodes.flatMap((n) => (n.kind === "session" || n.kind === "orch" ? [n.session.id] : []));
 
-function expectNoOverlap(g: typeof graph) {
+function expectNoOverlap(g: Graph) {
   for (const a of g.nodes) {
     for (const b of g.nodes) {
       if (a.id >= b.id) continue;
@@ -28,91 +35,263 @@ function expectNoOverlap(g: typeof graph) {
   }
 }
 
-describe("layoutGraph", () => {
-  it("places four columns: person, orchestrator, session and what it waits on", () => {
+/** Every line ends on a node that is drawn. */
+function expectWholeLines(g: Graph) {
+  const ids = new Set(g.nodes.map((n) => n.id));
+  for (const e of g.edges) expect([ids.has(e.from), ids.has(e.to)], e.id).toEqual([true, true]);
+}
+
+describe("the map", () => {
+  it("places the columns: scope, person, orchestrator, agent, and You", () => {
+    expect(node(ROOT_ID)!.x).toBe(GRAPH_X.root);
     expect(node("p:ana@x.test")!.x).toBe(GRAPH_X.person);
     expect(node("s:boss")!.x).toBe(GRAPH_X.orch);
     expect(node("s:lane-a")!.x).toBe(GRAPH_X.session);
-    expect(node("b:ci")!.x).toBe(GRAPH_X.block);
-    expect(node("b:you")!.x).toBe(GRAPH_X.block);
+    expect(node("b:you")!.x).toBeGreaterThan(GRAPH_X.session);
+    expectNoOverlap(graph);
+    expectWholeLines(graph);
   });
-  it("draws the dispatch lines, and holds a loose session from its person", () => {
+  it("gives the agents the orchestrator column when no orchestrator draws", () => {
+    const g = layoutGraph(buildLensModel(mapOf([session("a")])), options());
+    expect(node("s:a", g)!.x).toBe(GRAPH_X.orch);
+  });
+  it("draws the dispatch lines, across people too, and the line to You", () => {
     expect(pairs()).toEqual(
       expect.arrayContaining([
+        `${ROOT_ID}>p:ana@x.test:tree`,
         "p:ana@x.test>s:boss:tree",
         "s:boss>s:lane-a:dispatch",
         "s:boss>s:lane-b:dispatch",
-        "s:lane-a>b:ci:wait",
+        "p:ben@x.test>s:lane-b:tree",
         "s:lane-b>b:you:you",
       ]),
     );
-    expect(pairs()).not.toContain("p:ben@x.test>s:lane-b:tree");
   });
-  it("folds the idle sessions of a group into one node", () => {
-    const folds = graph.nodes.filter((n) => n.kind === "fold");
-    expect(folds).toHaveLength(2);
-    expect(node("s:solo")).toBeUndefined();
-  });
-  it("bends a line between two sessions of the session column", () => {
-    const open = layoutGraph(model, options({ opened: new Set(["ana@x.test|boss"]) }));
-    expect(open.edges.find((e) => e.to === "s:sub")).toMatchObject({ from: "s:lane-a", side: true, kind: "dispatch" });
-    expectNoOverlap(open);
-  });
-  it("folds an orchestrator, and keeps the lane of another person with its line", () => {
-    const folded = layoutGraph(model, options({ collapsed: new Set(["boss"]) }));
-    expect(node("s:lane-a", folded)).toBeUndefined();
-    expect(pairs(folded)).toContain("s:boss>s:lane-b:dispatch");
-    expectNoOverlap(folded);
-  });
-  it("draws no waits-on column when it is off", () => {
-    const off = layoutGraph(model, options({ waits: false }));
-    expect(off.nodes.some((n) => n.kind === "block")).toBe(false);
-    expect(off.edges.some((e) => e.kind === "you" || e.kind === "wait")).toBe(false);
+  it("draws no node and no line for a wait on something else: the card says it", () => {
+    expect(kind(graph, "block").map((n) => n.id)).toEqual(["b:you"]);
+    expect(graph.edges.some((e) => e.from === "s:lane-a" && e.kind !== "tree" && e.to.startsWith("b:"))).toBe(false);
   });
   it("draws no line to You for a question of another member (EA3-50)", () => {
     const g = layoutGraph(buildLensModel(fleet(), new Map(), { email: "ana@x.test" }), options());
     expect(g.nodes.some((n) => n.id === "b:you")).toBe(false);
     expect(g.edges.some((e) => e.kind === "you")).toBe(false);
-    expect(pairs(g)).toContain("s:lane-b>b:member:wait");
   });
-  it("never invents a line for a wait with no structured field", () => {
-    const g = layoutGraph(
-      buildLensModel(mapOf([session("w", { state: "waiting" })], [run("r", "w", { state: "waiting" })])),
-      options(),
-    );
-    expect(g.nodes.some((n) => n.kind === "block")).toBe(false);
+  it("keeps the line to You and the dispatch line when a person folds", () => {
+    const g = layoutGraph(model, options({ ...foldView(NEW_VIEW, "p:ben@x.test", false, "ben@x.test") }));
+    expect(node("s:lane-b", g)).toBeUndefined();
+    expect(pairs(g)).toEqual(expect.arrayContaining(["s:boss>p:ben@x.test:dispatch", "p:ben@x.test>b:you:you"]));
+    expectNoOverlap(g);
+    expectWholeLines(g);
   });
-  it("shows one person, and overlaps no node", () => {
-    const one = layoutGraph(model, options({ filters: { states: new Set(DEFAULT_STATES), person: "ben@x.test", find: "" } }));
-    expect(one.nodes.filter((n) => n.kind === "person").map((n) => n.id)).toEqual(["p:ben@x.test"]);
-    expectNoOverlap(graph);
-    expectNoOverlap(one);
+  it("folds an orchestrator in place, and keeps the agent of another person with its line", () => {
+    const g = layoutGraph(model, options({ ...foldView(NEW_VIEW, "s:boss", false, "ana@x.test") }));
+    expect(node("s:lane-a", g)).toBeUndefined();
+    expect(node("s:boss", g)).toMatchObject({ folded: true, canFold: true });
+    expect(pairs(g)).toContain("s:boss>s:lane-b:dispatch");
+    expectNoOverlap(g);
+    expectWholeLines(g);
+  });
+  it("folds the root in place", () => {
+    const g = layoutGraph(model, options({ ...foldView(NEW_VIEW, ROOT_ID, false, null) }));
+    expect(g.nodes.map((n) => n.id)).toEqual([ROOT_ID]);
+    expect(g.edges).toEqual([]);
   });
   it("scales with the density unit", () => {
     const small = layoutGraph(model, options({ unit: 0.9 }));
     expect(node("s:lane-a", small)!.w).toBeCloseTo(node("s:lane-a")!.w * 0.9);
     expectNoOverlap(small);
   });
-  it("overlaps no node when a short group stands beside tall orchestrators", () => {
-    const m = buildLensModel(
-      mapOf(
-        [session("o1"), session("o2"), session("l1", { person: "ben@x.test" }), session("l2", { state: "quiet" })],
-        [],
-        [{ from: "o1", to: "l1" }, { from: "o2", to: "l2" }],
-      ),
+  it("draws one person only for one person", () => {
+    const g = layoutGraph(model, options({ person: "ben@x.test" }));
+    expect(kind(g, "person").map((n) => n.person)).toEqual(["ben@x.test"]);
+    expect(cards(g)).toEqual(["lane-b"]);
+    expect(node(ROOT_ID, g)).toMatchObject({ person: "ben@x.test" });
+    expectWholeLines(g);
+  });
+  it("shows the matches of a find, whatever the switch and the folds", () => {
+    const g = layoutGraph(model, options({ find: "solo", ...foldView(NEW_VIEW, "p:ana@x.test", false, "ana@x.test") }));
+    expect(cards(g)).toEqual(["solo"]);
+    expect(kind(g, "person").map((n) => n.person)).toEqual(["ana@x.test"]);
+    expect(kind(g, "rest")).toHaveLength(0);
+  });
+});
+
+describe("64 sessions of two people (the owner's view)", () => {
+  const g = layoutGraph(split, options());
+  it("draws one map: the root, both people, the 4 active agents and one idle or done node", () => {
+    expect(kind(g, "root")[0].sessions).toHaveLength(64);
+    expect(kind(g, "person").map((n) => [n.person, n.folded])).toEqual([
+      ["ana@x.test", false],
+      ["ben@x.test", true],
+    ]);
+    expect(cards(g).sort()).toEqual(["boss", "lane-1", "lane-2", "lane-3"]);
+    expect(kind(g, "rest").map((n) => [n.person, n.count, n.open])).toEqual([["ana@x.test", 43, false]]);
+    expect(kind(g, "bucket")).toHaveLength(0);
+    expect(kind(g, "person")[1].sessions).toHaveLength(17);
+    expectNoOverlap(g);
+    expectWholeLines(g);
+  });
+  it("opens the idle and done node in place, bounded", () => {
+    const open = layoutGraph(split, options({ ...restView(NEW_VIEW, "ana@x.test") }));
+    expect(cards(open)).toHaveLength(CARDS_MAX);
+    expect(kind(open, "rest").map((n) => [n.count, n.open])).toEqual([[43, true]]);
+    expect(kind(open, "bucket").length).toBeGreaterThan(0);
+    expectNoOverlap(open);
+  });
+  it("draws at most 40 agent cards with All, and the most urgent first", () => {
+    const all = layoutGraph(split, options({ mode: "all" }));
+    expect(cards(all)).toHaveLength(CARDS_MAX);
+    expect(cards(all)).toEqual(expect.arrayContaining(["boss", "lane-1", "lane-2", "lane-3"]));
+    expect(kind(all, "person").map((n) => n.folded)).toEqual([false, true]);
+    expect(kind(all, "rest")).toHaveLength(0);
+    expect(kind(all, "bucket").reduce((n, b) => n + b.sessions.length, 0)).toBe(47 - CARDS_MAX);
+    expectNoOverlap(all);
+    expectWholeLines(all);
+  });
+});
+
+/** Walks the map by clicks only, as a member does, and returns every agent that drew. */
+function walk(m: ReturnType<typeof buildLensModel>, mode: "active" | "all", pin: string | null = null): Set<string> {
+  let view = NEW_VIEW;
+  const seen = new Set<string>();
+  const draw = () => {
+    const g = layoutGraph(m, options({ ...view, mode, pin }));
+    const drawn = cards(g);
+    expect(drawn.length).toBeLessThanOrEqual(CARDS_MAX);
+    if (pin) expect(drawn).toContain(pin);
+    drawn.forEach((id) => seen.add(id));
+    return g;
+  };
+  for (const p of m.people) {
+    const own = () => draw().nodes.find((n) => n.id === `p:${p.person}`);
+    const head = own();
+    if (head?.kind === "person" && head.folded) view = foldView(view, head.id, true, p.person);
+    if (mode === "active" && kind(draw(), "rest").some((n) => n.person === p.person && !n.open)) {
+      view = restView(view, p.person);
+    }
+    const mine = m.sessions.filter((s) => s.person === p.person);
+    for (let click = 0; click < 600 && mine.some((s) => !seen.has(s.id)); click += 1) {
+      const buckets = kind(draw(), "bucket").filter((b) => b.person === p.person);
+      const next = buckets.find((b) => b.sessions.some((s) => !seen.has(s.id)));
+      if (!next) break;
+      view = bucketView(view, p.person, next.state, next.next);
+      draw();
+    }
+  }
+  return seen;
+}
+
+describe("every agent is reachable by clicks", () => {
+  for (const mode of ["active", "all"] as const) {
+    it(`the 64, with ${mode}`, () => {
+      expect(walk(split, mode).size).toBe(64);
+    });
+    it(`the 64, with ${mode}, while an agent is selected`, () => {
+      expect(walk(split, mode, "b3").size).toBe(64);
+    });
+  }
+  it("500 working agents", () => {
+    expect(walk(buildLensModel(workingFleet(500)), "active").size).toBe(500);
+  });
+});
+
+describe("the bound of the map", () => {
+  const many = buildLensModel(workingFleet(500));
+  const of = (sizes: Record<string, number>) =>
+    buildLensModel(
+      mapOf(Object.entries(sizes).flatMap(([who, n]) => Array.from({ length: n }, (_, i) => session(`${who}${i}`, { person: `${who}@x.test` })))),
     );
-    expectNoOverlap(layoutGraph(m, options({ filters: { states: new Set(), person: "", find: "" } })));
-    expectNoOverlap(layoutGraph(m, options()));
+  it("draws at most 40 agent cards of 500 working ones", () => {
+    const g = layoutGraph(many, options());
+    expect(cards(g).length).toBeLessThanOrEqual(CARDS_MAX);
+    expect(cards(g).length).toBeGreaterThan(20);
+    expect(kind(g, "person").filter((n) => !n.folded)).toHaveLength(1);
+    expectNoOverlap(g);
+    expectWholeLines(g);
+  });
+  it("folds the person with the most agents first", () => {
+    const g = layoutGraph(of({ ana: 30, ben: 20, cy: 5 }), options());
+    expect(kind(g, "person").map((n) => [n.person.slice(0, 3), n.folded]).sort()).toEqual([
+      ["ana", true],
+      ["ben", false],
+      ["cy@", false],
+    ]);
+    expect(cards(g)).toHaveLength(25);
+    expect(kind(g, "bucket")).toHaveLength(0);
+  });
+  it("keeps the person that the member opened, and folds another", () => {
+    const view = foldView(NEW_VIEW, "p:ana@x.test", true, "ana@x.test");
+    const g = layoutGraph(of({ ana: 30, ben: 20 }), options({ ...view }));
+    expect(kind(g, "person").map((n) => n.folded)).toEqual([false, true]);
+  });
+  it("draws the state node of AMR-4 for one person past 40", () => {
+    const g = layoutGraph(of({ ana: 55 }), options());
+    expect(cards(g)).toHaveLength(CARDS_MAX);
+    expect(kind(g, "bucket").map((b) => [b.state, b.sessions.length])).toEqual([["working", 15]]);
+  });
+  it("always draws the selected agent, in a folded person and under a folded orchestrator", () => {
+    const fleetOf = of({ ana: 60, ben: 50 });
+    for (const pin of ["ana59", "ben49"]) {
+      const g = layoutGraph(fleetOf, options({ pin }));
+      expect(cards(g)).toContain(pin);
+      expect(cards(g).length).toBeLessThanOrEqual(CARDS_MAX);
+    }
+    const folded = layoutGraph(model, options({ pin: "lane-a", ...foldView(NEW_VIEW, "s:boss", false, "ana@x.test") }));
+    expect(cards(folded)).toContain("lane-a");
+    expectWholeLines(folded);
+  });
+  it("lays out 500 agents well inside one second", () => {
+    const from = performance.now();
+    layoutGraph(buildLensModel(workingFleet(500)), options());
+    expect(performance.now() - from).toBeLessThan(1000);
+  });
+});
+
+describe("the subagents of one agent", () => {
+  const map = fleet();
+  map.sessions[1] = { ...map.sessions[1], subagents: { total: 20, working: 1, failed: 1, done: 18, names: [] } };
+  const m = buildLensModel(map, new Map(), BEN);
+  const rows: SubRow[] = Array.from({ length: 20 }, (_, i) => ({ id: `c${i}`, name: `c${i}`, state: "done", model: null, age: i }));
+  it("opens as at most 8 rows and a row for the rest, and moves You right", () => {
+    const shut = layoutGraph(m, options());
+    const g = layoutGraph(m, options({ subs: { sessionId: "lane-a", rows } }));
+    expect(kind(g, "sub")).toHaveLength(SUB_ROWS_MAX);
+    expect(kind(g, "submore")[0]).toMatchObject({ count: 12 });
+    expect(node("b:you", g)!.x - node("b:you", shut)!.x).toBe(SUB_SHIFT);
+    expectNoOverlap(g);
+  });
+  it("draws one note while the rows load", () => {
+    const g = layoutGraph(m, options({ subs: { sessionId: "lane-a", rows: null } }));
+    expect(kind(g, "subnote")).toHaveLength(1);
+  });
+});
+
+describe("the layout with lines between two agents", () => {
+  const map = mapOf(
+    [session("o1"), session("o2"), session("l1", { person: "ben@x.test" }), session("l2"), session("l3")],
+    [run("r", "o1")],
+    [
+      { from: "o1", to: "l1" },
+      { from: "o2", to: "l2" },
+      { from: "l2", to: "l3" },
+    ],
+  );
+  it("bends a line between two agents of the same column, and overlaps no node", () => {
+    const g = layoutGraph(buildLensModel(map), options());
+    expect(g.edges.find((e) => e.to === "s:l3")).toMatchObject({ from: "s:l2", side: true, kind: "dispatch" });
+    expectNoOverlap(g);
+    expectWholeLines(g);
   });
 });
 
 describe("relatedNodes", () => {
-  it("lights the chain above a session and what it waits on", () => {
+  it("lights the chain above an agent, and what it dispatched", () => {
     const lit = relatedNodes(graph, "s:lane-a");
-    expect([...lit].sort()).toEqual(["b:ci", "p:ana@x.test", "s:boss", "s:lane-a"].sort());
+    // The idle agent that lane-a dispatched sits in Ana's "idle or done" node.
+    expect([...lit].sort()).toEqual([ROOT_ID, "p:ana@x.test", "s:boss", "s:lane-a", "r:ana@x.test"].sort());
   });
-  it("lights the sessions of a waits-on node and the chain above each", () => {
+  it("lights the agents of You and the chain above each", () => {
     const lit = relatedNodes(graph, "b:you");
-    expect([...lit].sort()).toEqual(["b:you", "p:ana@x.test", "s:boss", "s:lane-b"].sort());
+    expect([...lit].sort()).toEqual(["b:you", ROOT_ID, "p:ana@x.test", "p:ben@x.test", "s:boss", "s:lane-b"].sort());
   });
 });

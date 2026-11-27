@@ -4,9 +4,11 @@
  * Each fill is a token of `AGENT_MARKS`, and each square says its session and
  * its state, so the colour is never the only signal. Names are untrusted text.
  */
+import Button from "@/components/ui/Button";
 import { relativeTime } from "@/lib/taskCard";
 
 import {
+  type LensCounts,
   type LensSession,
   type SubCounts,
   LENS_STATES,
@@ -16,6 +18,9 @@ import {
   subWords,
 } from "../lib/agentLenses";
 import { SQUARES_MAX } from "../lib/agentScale";
+
+export const NO_MATCH_COPY = "No session matches these filters.";
+export const NO_ORCHESTRATOR = "No orchestrator";
 
 /** What the tip of a square says. */
 export function squareTip(s: LensSession, nowMs: number): string {
@@ -126,5 +131,66 @@ export function SquareLegend() {
       ))}
       <span>One square is one session, the most urgent first.</span>
     </p>
+  );
+}
+
+/** "2 need you · 1 failed · 13 working · 11 waiting · 22 idle or done". */
+export function TileCounts({ counts }: { counts: LensCounts }) {
+  const rest = counts.idle + counts.done;
+  const parts: Array<[string, string]> = [];
+  if (counts.you > 0) parts.push([counts.you === 1 ? "1 needs you" : `${counts.you} need you`, "text-warning"]);
+  if (counts.failed > 0) parts.push([`${counts.failed} failed`, "text-destructive"]);
+  if (counts.working > 0) parts.push([`${counts.working} working`, ""]);
+  if (counts.waiting > 0) parts.push([`${counts.waiting} waiting`, ""]);
+  if (rest > 0) parts.push([`${rest} idle or done`, ""]);
+  return (
+    <span className="flex min-w-0 flex-wrap gap-x-2 text-[11px] text-muted-foreground">
+      {parts.map(([text, tone]) => (
+        <span key={text} className={`whitespace-nowrap ${tone}`}>
+          {text}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/** One bucket of folded sessions: its squares, its words and "Show". */
+export function BucketRow({
+  word,
+  sessions,
+  nowMs,
+  onOpen,
+  onPick,
+  max = 24,
+}: {
+  word: string;
+  sessions: readonly LensSession[];
+  nowMs: number;
+  onOpen: () => void;
+  onPick?: (session: LensSession) => void;
+  max?: number;
+}) {
+  return (
+    <div
+      onClick={onOpen}
+      data-agent-bucket=""
+      className="flex h-full min-h-10 w-full cursor-pointer items-center gap-2 overflow-hidden rounded-lg border border-border bg-card px-2.5 py-1 text-xs text-muted-foreground hover:bg-secondary"
+    >
+      <span className="min-w-0 flex-1 overflow-hidden">
+        <Squares sessions={sessions} nowMs={nowMs} max={max} onPick={onPick} />
+      </span>
+      <Button
+        variant="text"
+        size="none"
+        aria-label={`Show ${word}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpen();
+        }}
+        layout="shrink-0 whitespace-nowrap"
+      >
+        {word} · Show
+      </Button>
+    </div>
   );
 }

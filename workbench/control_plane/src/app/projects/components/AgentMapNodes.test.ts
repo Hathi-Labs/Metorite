@@ -1,0 +1,71 @@
+/**
+ * The node cards of the map (WS-MCP AMR-5). A server render draws no node of
+ * `@xyflow/react`, so these tests render each card by itself.
+ */
+import { type ReactElement, createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it, vi } from "vitest";
+
+import { type GraphNode, layoutGraph } from "../lib/agentGraph";
+import { buildLensModel } from "../lib/agentLenses";
+import { splitFleet } from "../lib/agentLensesFixtures";
+import { NEW_VIEW } from "../lib/agentScale";
+import { GraphCard } from "./AgentGraphLens";
+
+const NOW = Date.parse("2026-11-26T12:00:00Z");
+const model = buildLensModel(splitFleet(), new Map(), { email: "ana@x.test" });
+const graph = layoutGraph(model, { ...NEW_VIEW, mode: "active", person: "", find: "", pin: null, unit: 1, nameOf: (e) => e });
+const byId = (id: string) => graph.nodes.find((n) => n.id === id)!;
+type Data = Parameters<typeof GraphCard>[0]["data"];
+const data = (node: GraphNode, over: Partial<Data> = {}) =>
+  ({
+    node, selected: false, dim: false, nowMs: NOW, nameOf: (e: string) => e, subsOpen: false, namesOnly: false,
+    onPick: () => {}, onFold: () => {}, onHover: () => {}, onToggleSubs: () => {}, onRest: () => {},
+    onBucket: () => {}, onPickSession: () => {}, onPickId: () => {}, ...over,
+  }) as unknown as Data;
+const draw = (id: string, over: Partial<Data> = {}) =>
+  renderToStaticMarkup(createElement(GraphCard, { data: data(byId(id), over) }));
+const text = (html: string) => html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ");
+
+describe("the node cards of the map", () => {
+  it("says the totals of the scope on the root", () => {
+    const out = text(draw("root"));
+    for (const part of ["Everyone", "64 agents · 4 active", "0 subagents"]) expect(out).toContain(part);
+  });
+  it("draws a folded person as a card with counts and squares", () => {
+    const out = draw("p:ben@x.test");
+    expect(out).toContain('data-agent-graph-person="folded"');
+    expect(out).toContain("data-agent-squares");
+    expect(text(out)).toContain("17 agents · 0 active");
+    expect(text(out)).toContain("17 idle or done");
+    expect(out).toContain('aria-label="Unfold ben@x.test"');
+  });
+  it("draws an open person with its counts and a chevron that folds", () => {
+    const out = draw("p:ana@x.test");
+    expect(out).toContain('data-agent-graph-person="open"');
+    expect(out).not.toContain("data-agent-squares");
+    expect(text(out)).toContain("47 agents · 4 active");
+    expect(out).toContain('aria-label="Fold ana@x.test"');
+  });
+  it("draws the idle or done node", () => {
+    expect(text(draw("r:ana@x.test"))).toContain("43 idle or done Show");
+  });
+  it("writes another wait on the card of the agent", () => {
+    expect(text(draw("s:lane-2"))).toContain("Waiting on CI · about 4 min");
+  });
+  it("gives each node that folds one chevron", () => {
+    for (const id of ["root", "p:ana@x.test", "p:ben@x.test", "s:boss"]) {
+      expect(draw(id).split("data-agent-chevron").length - 1, id).toBe(1);
+    }
+  });
+  it("sends the click of a state node with its next cards", () => {
+    const bucket: GraphNode = {
+      id: "k", kind: "bucket", person: "ana@x.test", state: "working", sessions: [], shown: 0, next: 12, x: 0, y: 0, w: 1, h: 1,
+    };
+    const onBucket = vi.fn();
+    const card = GraphCard({ data: data(bucket, { onBucket }) }) as ReactElement<{ onOpen: () => void; word: string }>;
+    expect(card.props.word).toBe("+0 working");
+    card.props.onOpen();
+    expect(onBucket).toHaveBeenCalledWith("ana@x.test", "working", 12);
+  });
+});

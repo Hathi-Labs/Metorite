@@ -146,15 +146,6 @@ export interface LensWait {
   until: string | null;
 }
 
-/** The words of a "waits on" node of the graph. */
-export const WAIT_NODE_WORD: Record<AgentWaitingOn, string> = {
-  ci: "CI",
-  review: "A review",
-  deploy: "A deploy",
-  member: "A person",
-  agent: "Another agent",
-};
-
 export interface LensSession {
   id: string;
   person: string;

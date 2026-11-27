@@ -36,10 +36,8 @@ import {
 } from "../lib/agentLenses";
 import { PHONE_MORE, PHONE_PAGE, WINDOW_ABOVE, allSessionsOf, attention, rankSessions, subTotals } from "../lib/agentScale";
 import { useWindowedList } from "../lib/windowedList";
-import { NO_MATCH_COPY, NO_ORCHESTRATOR } from "./AgentBoardList";
-import { TileCounts } from "./AgentOverview";
 import { SessionCard, pressKeys } from "./AgentSessionCard";
-import { Squares, SubBar } from "./AgentSquares";
+import { NO_MATCH_COPY, NO_ORCHESTRATOR, Squares, SubBar, TileCounts } from "./AgentSquares";
 import { QuestionsView } from "./QuestionsView";
 
 /** One level of the phone view. An empty path is the first screen. */

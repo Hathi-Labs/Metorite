@@ -1,62 +1,59 @@
 /**
- * The Agents view · the Graph lens (WS-MCP AMR-1, `agent_coordination.md` §5.12).
+ * The Agents view · the map (WS-MCP AMR-5, `agent_coordination.md` §3.12.8).
  *
- * A fixed layered layout with four columns: person, orchestrator, session, and
- * what the session waits on. One pure function places the nodes, so a vitest
- * proves it (§3.12.4 rule 6). No layout library.
+ * A fixed layered layout, left to right: the scope, the person, the
+ * orchestrator, the agent, the sub-agents, and "You" for the questions. One
+ * pure function places the nodes, so a vitest proves it (§3.12.4 rule 6). No
+ * layout library.
  *
- * AMR-4 (§3.12.9): a session draws its sub-agents as a count. The one session
- * that is open adds a column of at most `SUB_ROWS_MAX` rows. `layoutOrchestrator`
- * draws one orchestrator of a large fleet: a bounded number of cards, and one
- * bucket for each state of the rest.
+ * AMR-4 (§3.12.9): an agent draws its sub-agents as a count. The one agent that
+ * is open adds a column of at most `SUB_ROWS_MAX` rows. `planMap` bounds the
+ * agent cards.
  *
  * The lines:
- *  - `tree`  neutral: a person holds a session that nothing dispatched.
- *  - `dispatch` neutral: one session dispatched another.
- *  - `you`   warning: the session waits on a person (the state "Needs you").
- *  - `wait`  primary: the session waits on something that a structured field
- *    of the run names. With no field there is no line. No line is invented.
+ *  - `tree`  neutral: a node holds the node.
+ *  - `dispatch` neutral, with an arrow: one agent dispatched another.
+ *  - `you`   warning: the agent waits on the viewer. Any other wait is text on
+ *    the card. No line is invented.
  */
-import type { AgentWaitingOn } from "./agentRuns";
 import {
-  type LensFilters,
-  type LensGroup,
   type LensModel,
   type LensSession,
   type LensState,
   type SubRow,
-  WAIT_NODE_WORD,
   matchesFind,
   membersOf,
-  personSessions,
-  splitSessions,
 } from "./agentLenses";
-import { type BucketWindows, SUB_ROWS_MAX, boundSessions } from "./agentScale";
+import { type PlanOptions, SUB_ROWS_MAX, isActive, personNodeId, planMap, sessionNodeId } from "./agentScale";
 
-export type BlockKey = "you" | AgentWaitingOn;
+/** The one "waits on" node of the map: the viewer. Any other wait is text on the card. */
+export type BlockKey = "you";
 
 export type GraphNode = { id: string; x: number; y: number; w: number; h: number } & (
-  | { kind: "person"; person: string; sessions: LensSession[] }
-  | { kind: "orch"; session: LensSession; members: LensSession[]; folded: boolean; groupKey: string }
+  /** The scope: everyone, or one person. */
+  | { kind: "root"; person: string; sessions: LensSession[]; folded: boolean }
+  | { kind: "person"; person: string; sessions: LensSession[]; folded: boolean }
+  | { kind: "orch"; session: LensSession; members: LensSession[]; folded: boolean; canFold: boolean }
   | { kind: "session"; session: LensSession }
-  | { kind: "fold"; groupKey: string; folded: LensSession[] }
+  /** The idle and done agents of a person, under the Active switch. */
+  | { kind: "rest"; person: string; count: number; open: boolean }
+  /** `next`: where a click starts the next cards of the state (`StateNode.next`). */
+  | { kind: "bucket"; person: string; state: LensState; sessions: LensSession[]; shown: number; next: number }
   | { kind: "block"; block: BlockKey; sessions: LensSession[] }
-  /** `rest`: the sessions of the state outside the first cards (`Bucket.rest`). */
-  | { kind: "bucket"; state: LensState; sessions: LensSession[]; shown: number; rest: number }
   | { kind: "sub"; sessionId: string; row: SubRow }
   | { kind: "submore"; sessionId: string; count: number }
   /** The open session's rows are loading, or did not load. */
   | { kind: "subnote"; sessionId: string; failed: boolean }
 );
 
-export type GraphEdgeKind = "tree" | "dispatch" | "you" | "wait";
+export type GraphEdgeKind = "tree" | "dispatch" | "you";
 
 export interface GraphEdge {
   id: string;
   from: string;
   to: string;
   kind: GraphEdgeKind;
-  /** Both ends sit in the session column, so the line bends out to the right. */
+  /** The target is not right of the source, so the line bends out to the right. */
   side: boolean;
 }
 
@@ -65,17 +62,9 @@ export interface Graph {
   edges: GraphEdge[];
 }
 
-export interface GraphOptions {
-  filters: LensFilters;
-  /** The ids of the orchestrators whose sessions are folded away. */
-  collapsed: ReadonlySet<string>;
-  /** The keys of the groups whose fold line is open. */
-  opened: ReadonlySet<string>;
-  /** Draw the fourth column. */
-  waits: boolean;
+export interface GraphOptions extends PlanOptions {
   /** The root font size over 16, so density scales the graph. */
   unit: number;
-  nameOf: (email: string) => string;
   /** The one session whose sub-agents show. */
   subs?: OpenSubs | null;
 }
@@ -87,37 +76,35 @@ export interface OpenSubs {
   failed?: boolean;
 }
 
-export const GRAPH_X = { person: 0, orch: 210, session: 490, block: 900 } as const;
-export const GRAPH_W = { person: 176, orch: 244, session: 300, block: 220, sub: 250 } as const;
-export const GRAPH_H = { person: 48, orch: 76, session: 60, fold: 40, block: 56, sub: 30 } as const;
-/** The columns of one orchestrator: its card, its sessions, and what they wait on. */
-export const ORCH_X = { root: 0, session: 300, block: 710 } as const;
-/** The sub-agent column sits this far right of the session cards, and moves the waits right. */
-export const SUB_GAP = 40;
-export const SUB_SHIFT = GRAPH_W.sub + SUB_GAP;
-/** The lowest top of the root of one orchestrator: two cards down. */
+/** The columns, left to right. With no orchestrator drawn, the agents take its column. */
+export const GRAPH_X = { root: 0, person: 206, orch: 456, session: 716 } as const;
+export const GRAPH_W = { root: 170, person: 214, orch: 224, session: 280, block: 150, sub: 240 } as const;
+export const GRAPH_H = { root: 96, person: 72, card: 116, orch: 76, session: 60, row: 40, block: 56, sub: 30 } as const;
+export const ROOT_ID = "root";
+/** The space between the agents and the next column. */
+export const COLUMN_GAP = 40;
+export const SUB_SHIFT = GRAPH_W.sub + COLUMN_GAP;
+/** The lowest top of the root: two cards down, so the first view holds it. */
 const ROOT_LOWEST = 140;
 const GAP = 10;
-const GROUP_GAP = 24;
-const PERSON_GAP = 28;
+const PERSON_GAP = 24;
 
-export const sessionNodeId = (id: string): string => `s:${id}`;
-export const personNodeId = (person: string): string => `p:${person}`;
+export { personNodeId, sessionNodeId };
+export const restNodeId = (person: string): string => `r:${person}`;
+export const bucketNodeId = (person: string, state: LensState): string => `k:${person}:${state}`;
 export const blockNodeId = (block: BlockKey): string => `b:${block}`;
 
-export function blockWord(block: BlockKey): string {
-  return block === "you" ? "You" : WAIT_NODE_WORD[block];
+export function blockWord(_block: BlockKey): string {
+  return "You";
 }
 
-export function blockSentence(block: BlockKey, n: number): string {
-  if (block === "you") return n === 1 ? "1 session waits on you" : `${n} sessions wait on you`;
-  return n === 1 ? "1 session waits" : `${n} sessions wait`;
+export function blockSentence(_block: BlockKey, n: number): string {
+  return n === 1 ? "1 session waits on you" : `${n} sessions wait on you`;
 }
 
-/** The "waits on" target of a session, or `null` when no fact names one. */
+/** The "waits on" target of a session: only a question for the viewer draws a line. */
 export function blockOf(s: LensSession): BlockKey | null {
-  if (s.state === "you") return "you";
-  return s.state === "waiting" && s.wait ? s.wait.on : null;
+  return s.state === "you" ? "you" : null;
 }
 
 /**
@@ -153,249 +140,194 @@ function placeSubs(
 
 type DistributiveOmit<T, K extends keyof never> = T extends unknown ? Omit<T, K> : never;
 
-/** The "waits on" nodes at column `x`, each near its sessions, and the lines into them. */
-function placeBlocks(graph: Graph, x: number, u: number): void {
-  const targets = new Map<BlockKey, Array<{ session: LensSession; node: GraphNode }>>();
-  for (const node of graph.nodes) {
-    if (node.kind !== "session" && node.kind !== "orch") continue;
-    const key = blockOf(node.session);
-    if (!key) continue;
-    targets.set(key, [...(targets.get(key) ?? []), { session: node.session, node }]);
-  }
-  const h = GRAPH_H.block * u;
-  let floor = 0;
-  const placed = [...targets.entries()]
-    .map(([block, list]) => ({
-      block,
-      list,
-      at: list.reduce((sum, t) => sum + t.node.y + t.node.h / 2, 0) / list.length - h / 2,
-    }))
-    .sort((a, b) => a.at - b.at || a.block.localeCompare(b.block));
-  for (const { block, list, at } of placed) {
-    const top = Math.max(at, floor);
-    floor = top + h + GROUP_GAP * u;
-    const id = blockNodeId(block);
-    graph.nodes.push({
-      id,
-      kind: "block",
-      block,
-      sessions: list.map((t) => t.session),
-      x,
-      y: top,
-      w: GRAPH_W.block * u,
-      h,
-    });
-    for (const t of list) {
-      graph.edges.push({ id: `${t.node.id}>${id}`, from: t.node.id, to: id, kind: block === "you" ? "you" : "wait", side: false });
-    }
-  }
-}
-
-export interface OrchestratorOptions {
-  states: ReadonlySet<LensState>;
-  find: string;
-  windows: BucketWindows;
-  /** The selected session. It always draws. */
-  pin: string | null;
-  subs: OpenSubs | null;
-  waits: boolean;
-  unit: number;
-  nameOf: (email: string) => string;
-}
-
 /**
- * One orchestrator, bounded (§3.12.9): its card, at most `CARDS_MAX` session
- * cards with the most urgent first, one bucket for each state of the rest, and
- * what the drawn sessions wait on. A group with no orchestrator takes the
- * person as its root.
+ * The one map of the Agents view (AMR-5): the scope, each person, their
+ * orchestrators, their agents and the sub-agents of the one open agent.
+ * `planMap` bounds the cards. A fold, a state node and the "idle or done" node
+ * stand for what they hide, so a dispatch line and a "waits on you" line always
+ * have an end.
  */
-export function layoutOrchestrator(person: string, group: LensGroup, options: OrchestratorOptions): Graph {
-  const { states, find, windows, pin, subs, waits, unit: u, nameOf } = options;
-  const graph: Graph = { nodes: [], edges: [] };
-  const orch = group.orch;
-  const rootId = orch ? sessionNodeId(orch.id) : personNodeId(person);
-  const { shown, buckets } = boundSessions(group.sessions, { states, find, windows, nameOf, pin: pin === orch?.id ? null : pin });
-  const open = subs !== null && [...shown, ...(orch ? [orch] : [])].some((s) => s.id === subs.sessionId && s.subs.total > 0);
-  const subX = (ORCH_X.session + GRAPH_W.session + SUB_GAP) * u;
-  const drawn = new Map<string, string>();
-  const centers: number[] = [];
-  let y = 0;
-  for (const s of shown) {
-    const id = sessionNodeId(s.id);
-    graph.nodes.push({ id, kind: "session", session: s, x: ORCH_X.session * u, y, w: GRAPH_W.session * u, h: GRAPH_H.session * u });
-    drawn.set(s.id, id);
-    centers.push(y + (GRAPH_H.session * u) / 2);
-    const bottom = placeSubs(graph, subs, s, { x: subX, top: y, u });
-    y = Math.max(y + (GRAPH_H.session + GAP) * u, bottom + GAP * u - 6 * u);
-  }
-  for (const bucket of buckets) {
-    const id = `k:${bucket.state}`;
-    graph.nodes.push({
-      id,
-      kind: "bucket",
-      state: bucket.state,
-      sessions: bucket.sessions,
-      rest: bucket.rest,
-      shown: shown.filter((s) => s.state === bucket.state).length,
-      x: ORCH_X.session * u,
-      y,
-      w: GRAPH_W.session * u,
-      h: GRAPH_H.fold * u,
-    });
-    graph.edges.push({ id: `${rootId}>${id}`, from: rootId, to: id, kind: "tree", side: false });
-    centers.push(y + (GRAPH_H.fold * u) / 2);
-    y += (GRAPH_H.fold + GAP) * u;
-  }
-  const rootH = (orch ? GRAPH_H.orch : GRAPH_H.person) * u;
-  const middle = centers.length > 0 ? (centers[0] + centers[centers.length - 1]) / 2 : rootH / 2;
-  // A tall column would centre the root below the first view, so it stays near the top.
-  const top = Math.max(Math.min(middle - rootH / 2, ROOT_LOWEST * u), 0);
-  const rootBox = { x: ORCH_X.root, y: top, w: GRAPH_W.orch * u, h: rootH };
-  if (orch) {
-    graph.nodes.push({
-      id: rootId,
-      kind: "orch",
-      session: orch,
-      members: membersOf(group),
-      folded: false,
-      groupKey: group.key,
-      ...rootBox,
-    });
-    drawn.set(orch.id, rootId);
-    // The sub-agents of the orchestrator sit in the same column, level with its card.
-    placeSubs(graph, subs, orch, { x: subX, top, u });
-  } else {
-    graph.nodes.push({ id: rootId, kind: "person", person, sessions: group.sessions, ...rootBox });
-  }
-  for (const s of shown) {
-    const id = sessionNodeId(s.id);
-    const from = s.dispatchers.map((d) => drawn.get(d)).filter((d): d is string => d !== undefined);
-    for (const source of from.length > 0 ? from : [rootId]) {
-      const direct = source === rootId;
-      graph.edges.push({
-        id: `${source}${direct ? ">" : "~"}${id}`,
-        from: source,
-        to: id,
-        kind: from.length > 0 ? "dispatch" : "tree",
-        side: !direct,
-      });
-    }
-  }
-  if (waits) placeBlocks(graph, (ORCH_X.block + (open ? SUB_SHIFT : 0)) * u, u);
-  return graph;
-}
-
 export function layoutGraph(model: LensModel, options: GraphOptions): Graph {
-  const { filters, collapsed, opened, waits, unit: u, nameOf, subs } = options;
+  const { unit: u, subs, person: scope, folds, find, nameOf } = options;
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
   const graph: Graph = { nodes, edges };
-  const subX = (GRAPH_X.session + GRAPH_W.session + SUB_GAP) * u;
-  let subsOpen = false;
-  /** Draws the rows of an open session, and keeps the next card below them. */
-  const withSubs = (s: LensSession, top: number): number => {
-    const bottom = placeSubs(graph, subs, s, { x: subX, top, u });
-    if (bottom > top) subsOpen = true;
-    return bottom;
+  const seen = new Set<string>();
+  const link = (from: string, to: string, kind: GraphEdgeKind) => {
+    const id = `${from}>${to}`;
+    if (from === to || seen.has(id)) return;
+    seen.add(id);
+    edges.push({ id, from, to, kind, side: false });
   };
-  /** Session id to the id of the node that draws it. A folded session has none. */
-  const drawn = new Map<string, string>();
-  /** Session node id to the id of the node that holds it when nothing else does. */
-  const parent = new Map<string, string>();
-  const box = (column: keyof typeof GRAPH_X, kind: keyof typeof GRAPH_H, y: number) => ({
-    x: GRAPH_X[column] * u,
-    y,
-    w: GRAPH_W[column] * u,
-    h: GRAPH_H[kind] * u,
-  });
-  const find = filters.find.trim();
+  const inScope = scope ? model.sessions.filter((s) => s.person === scope) : model.sessions;
+  if (inScope.length === 0) return graph;
+  const rootFolded = !find.trim() && folds.get(ROOT_ID) === false;
+  const plans = planMap(model, options);
+  const orchestrated = plans.some((p) =>
+    model.people.find((x) => x.person === p.person)?.groups.some((g) => g.orch && p.shown.has(g.orch.id)),
+  );
+  const orchX = GRAPH_X.orch;
+  const sessionX = orchestrated ? GRAPH_X.session : GRAPH_X.orch;
+  const subX = (sessionX + GRAPH_W.session + COLUMN_GAP) * u;
+  /** Session id to the node that draws it, or that stands for it. */
+  const rep = new Map<string, string>();
+  /** The sessions that draw their own card. */
+  const own = new Set<string>();
+  const centers: number[] = [];
+  let subsOpen = false;
   let y = 0;
 
-  for (const p of model.people) {
-    if (filters.person && p.person !== filters.person) continue;
-    const pid = personNodeId(p.person);
-    const centers: number[] = [];
-    for (const group of p.groups) {
-      const orch = group.orch;
-      const orchHit = orch !== null && (!find || matchesFind(orch, find, nameOf(orch.person)));
-      const folded = orch !== null && collapsed.has(orch.id) && !find;
-      const split = folded ? { shown: [], folded: [] } : splitSessions(group.sessions, filters, opened.has(group.key), nameOf);
-      if (find && !orchHit && split.shown.length === 0) continue;
-      const kids: number[] = [];
-      const holder = orch ? sessionNodeId(orch.id) : pid;
-      for (const s of split.shown) {
-        const id = sessionNodeId(s.id);
-        nodes.push({ id, kind: "session", session: s, ...box("session", "session", y) });
-        drawn.set(s.id, id);
-        parent.set(id, holder);
-        kids.push(y + (GRAPH_H.session * u) / 2);
-        const bottom = withSubs(s, y);
-        y = Math.max(y + (GRAPH_H.session + GAP) * u, bottom + (GAP - 6) * u);
-      }
-      if (split.folded.length > 0) {
-        const id = `f:${group.key}`;
-        nodes.push({ id, kind: "fold", groupKey: group.key, folded: split.folded, ...box("session", "fold", y) });
-        edges.push({ id: `${holder}>${id}`, from: holder, to: id, kind: "tree", side: false });
-        kids.push(y + (GRAPH_H.fold * u) / 2);
-        y += (GRAPH_H.fold + GAP) * u;
-      }
-      if (orch) {
-        const h = GRAPH_H.orch * u;
-        let top: number;
-        if (kids.length > 0) {
-          top = Math.max((kids[0] + kids[kids.length - 1]) / 2 - h / 2, 0);
-          // A short group must not let the tall orchestrator overlap the group below.
-          y = Math.max(y, top + h + GAP * u);
-        } else {
-          top = y;
-          y += h + GAP * u;
+  for (const plan of rootFolded ? [] : plans) {
+    const person = model.people.find((p) => p.person === plan.person)!;
+    const pid = personNodeId(plan.person);
+    const h = (plan.open ? GRAPH_H.person : GRAPH_H.card) * u;
+    const blockTop = y;
+    const kids: number[] = [];
+    const put = (node: DistributiveOmit<GraphNode, "x" | "y" | "w" | "h">, x: number, w: number, tall: number, top: number) => {
+      nodes.push({ ...node, x, y: top, w: w * u, h: tall * u } as GraphNode);
+    };
+    /** One agent card in the agent column, with its sub-agent rows. */
+    const card = (s: LensSession, holder: string) => {
+      const id = sessionNodeId(s.id);
+      put({ id, kind: "session", session: s }, sessionX * u, GRAPH_W.session, GRAPH_H.session, y);
+      own.add(s.id);
+      rep.set(s.id, id);
+      const mine = s.dispatchers.some((d) => model.byId.get(d)?.person === s.person && plan.shown.has(d));
+      // A card that no agent of its own person dispatched hangs from its holder.
+      if (!mine) link(holder, id, "tree");
+      const centre = y + (GRAPH_H.session * u) / 2;
+      const bottom = placeSubs(graph, subs, s, { x: subX, top: y, u });
+      if (bottom > y) subsOpen = true;
+      y = Math.max(y + (GRAPH_H.session + GAP) * u, bottom + (GAP - 6) * u);
+      return centre;
+    };
+
+    if (plan.open) {
+      for (const group of person.groups) {
+        const orch = group.orch;
+        const lanes = group.sessions.filter((s) => plan.shown.has(s.id));
+        if (!orch || !plan.shown.has(orch.id)) {
+          for (const s of lanes) kids.push(card(s, pid));
+          continue;
         }
         const id = sessionNodeId(orch.id);
-        nodes.push({
-          id,
-          kind: "orch",
-          session: orch,
-          members: membersOf(group),
-          folded,
-          groupKey: group.key,
-          ...box("orch", "orch", top),
-        });
-        drawn.set(orch.id, id);
-        y = Math.max(y, withSubs(orch, top) + (GAP - 6) * u);
-        edges.push({ id: `${pid}>${id}`, from: pid, to: id, kind: "tree", side: false });
-        centers.push(top + h / 2);
-      } else if (kids.length > 0) {
-        centers.push((kids[0] + kids[kids.length - 1]) / 2);
+        const folded = !find.trim() && folds.get(id) === false;
+        const inGroup: number[] = [];
+        const from = y;
+        for (const s of lanes) inGroup.push(card(s, id));
+        const tall = GRAPH_H.orch * u;
+        let top = from;
+        if (inGroup.length > 0) {
+          top = Math.max((inGroup[0] + inGroup[inGroup.length - 1]) / 2 - tall / 2, from);
+        }
+        const members = membersOf(group).filter((s) => matchesFind(s, find, nameOf(s.person)));
+        put(
+          { id, kind: "orch", session: orch, members, folded, canFold: !find.trim() && group.sessions.length > 0 },
+          orchX * u,
+          GRAPH_W.orch,
+          GRAPH_H.orch,
+          top,
+        );
+        own.add(orch.id);
+        rep.set(orch.id, id);
+        if (folded) for (const s of group.sessions) if (!plan.shown.has(s.id)) rep.set(s.id, id);
+        link(pid, id, "tree");
+        kids.push(top + tall / 2);
+        // A short group must not let the tall orchestrator overlap what follows.
+        y = Math.max(y, top + tall + GAP * u);
+        const bottom = placeSubs(graph, subs, orch, { x: subX, top: Math.max(top, from), u });
+        if (bottom > top) {
+          subsOpen = true;
+          y = Math.max(y, bottom + (GAP - 6) * u);
+        }
       }
-      y += (GROUP_GAP - GAP) * u;
+      const row = (node: DistributiveOmit<GraphNode, "x" | "y" | "w" | "h">) => {
+        put(node, sessionX * u, GRAPH_W.session, GRAPH_H.row, y);
+        link(pid, node.id, "tree");
+        kids.push(y + (GRAPH_H.row * u) / 2);
+        y += (GRAPH_H.row + GAP) * u;
+      };
+      for (const bucket of plan.buckets) {
+        const id = bucketNodeId(plan.person, bucket.state);
+        const shown = plan.sessions.filter((s) => s.state === bucket.state && plan.shown.has(s.id)).length;
+        row({ id, kind: "bucket", person: plan.person, state: bucket.state, sessions: bucket.sessions, shown, next: bucket.next });
+        for (const s of bucket.sessions) if (!rep.has(s.id)) rep.set(s.id, id);
+      }
+      if (plan.rest) {
+        const id = restNodeId(plan.person);
+        row({ id, kind: "rest", person: plan.person, count: plan.rest.count, open: plan.rest.open });
+        for (const s of plan.sessions) if (!rep.has(s.id) && !isActive(s)) rep.set(s.id, id);
+      }
+    } else {
+      for (const s of plan.sessions) rep.set(s.id, pid);
     }
-    if (centers.length === 0) continue;
-    const h = GRAPH_H.person * u;
-    const middle = (centers[0] + centers[centers.length - 1]) / 2;
-    const previous = nodes.filter((n) => n.kind === "person").at(-1);
-    const top = Math.max(middle - h / 2, previous ? previous.y + previous.h + GAP * u : 0);
-    nodes.push({ id: pid, kind: "person", person: p.person, sessions: personSessions(p), ...box("person", "person", top) });
-    y += (PERSON_GAP - GROUP_GAP + GAP) * u;
+    const middle = kids.length > 0 ? (Math.min(...kids) + Math.max(...kids)) / 2 : blockTop + h / 2;
+    const top = Math.max(middle - h / 2, blockTop);
+    put(
+      { id: pid, kind: "person", person: plan.person, sessions: plan.sessions, folded: !plan.open },
+      GRAPH_X.person * u,
+      GRAPH_W.person,
+      plan.open ? GRAPH_H.person : GRAPH_H.card,
+      top,
+    );
+    link(ROOT_ID, pid, "tree");
+    centers.push(top + h / 2);
+    y = Math.max(y, top + h + GAP * u) + (PERSON_GAP - GAP) * u;
   }
 
-  // The lines into each session: from its dispatchers, else from its holder.
-  for (const [sessionId, id] of drawn) {
-    const s = model.byId.get(sessionId);
-    if (!s || !parent.has(id)) continue;
-    const from = s.dispatchers.map((d) => drawn.get(d)).filter((d): d is string => d !== undefined);
-    if (from.length === 0) {
-      const holder = parent.get(id)!;
-      edges.push({ id: `${holder}>${id}`, from: holder, to: id, kind: "tree", side: false });
-      continue;
-    }
-    for (const source of from) {
-      // A source that is a session (not an orchestrator) sits in the same column.
-      edges.push({ id: `${source}~${id}`, from: source, to: id, kind: "dispatch", side: parent.has(source) });
+  const tall = GRAPH_H.root * u;
+  const middle = centers.length > 0 ? (centers[0] + centers[centers.length - 1]) / 2 : tall / 2;
+  nodes.push({
+    id: ROOT_ID,
+    kind: "root",
+    person: scope,
+    sessions: inScope,
+    folded: rootFolded,
+    x: GRAPH_X.root,
+    y: Math.max(Math.min(middle - tall / 2, ROOT_LOWEST * u), 0),
+    w: GRAPH_W.root * u,
+    h: tall,
+  });
+
+  // The dispatch lines, between whatever stands for each end.
+  const place = new Map(nodes.map((n) => [n.id, n]));
+  for (const s of inScope) {
+    const to = rep.get(s.id);
+    if (!to) continue;
+    for (const dispatcher of s.dispatchers) {
+      const from = rep.get(dispatcher);
+      if (!from) continue;
+      // Two fold nodes of one person say nothing: the person holds both.
+      if (!own.has(s.id) && !own.has(dispatcher) && model.byId.get(dispatcher)?.person === s.person) continue;
+      link(from, to, "dispatch");
     }
   }
 
-  if (waits) placeBlocks(graph, (GRAPH_X.block + (subsOpen ? SUB_SHIFT : 0)) * u, u);
-  return { nodes, edges };
+  // The "waits on you" lines. They always draw.
+  const asks = inScope.filter((s) => s.state === "you" && rep.has(s.id));
+  if (asks.length > 0) {
+    const sources = [...new Set(asks.map((s) => rep.get(s.id)!))];
+    const h = GRAPH_H.block * u;
+    const at = sources.reduce((sum, id) => sum + place.get(id)!.y + place.get(id)!.h / 2, 0) / sources.length - h / 2;
+    const id = blockNodeId("you");
+    nodes.push({
+      id,
+      kind: "block",
+      block: "you",
+      sessions: asks,
+      x: subX + (subsOpen ? SUB_SHIFT * u : 0),
+      y: Math.max(at, 0),
+      w: GRAPH_W.block * u,
+      h,
+    });
+    for (const from of sources) link(from, id, "you");
+  }
+  for (const edge of edges) {
+    const from = nodes.find((n) => n.id === edge.from)!;
+    const to = nodes.find((n) => n.id === edge.to)!;
+    edge.side = to.x <= from.x;
+  }
+  return graph;
 }
 
 /**

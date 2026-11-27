@@ -1,19 +1,18 @@
 "use client";
 
 /**
- * The Agents view · the Graph lens (WS-MCP AMR-1, `agent_coordination.md` §5.12).
+ * The Agents view · the map (WS-MCP AMR-5, `agent_coordination.md` §3.12.8).
  *
- * Reading this as: the board cards of the Board lens, laid in four columns, so
- * the lines can say who dispatched whom and what each session waits on. The
- * layout is the pure `layoutGraph`. `@xyflow/react` pans and zooms it
- * (§3.12.4 rule 6), as the map of SW-103 does.
+ * Reading this as: everyone's work as one mind map, left to right: the scope,
+ * the person, the orchestrator, the agent and its sub-agents. The layout is the
+ * pure `layoutGraph`. `@xyflow/react` pans and zooms it (§3.12.4 rule 6), as the
+ * map of SW-103 does. Each node folds in place with one chevron.
  *
- * AMR-4 (§3.12.9): one orchestrator of a large fleet draws bounded, with one
- * bucket for each state of the rest. A session opens its sub-agent rows. Under
- * 60 % zoom the cards show their names only.
+ * AMR-4 (§3.12.9): an agent opens its sub-agent rows. Under 60 % zoom the cards
+ * show their names only.
  *
  * ⚠️ **Read only.** Nothing drags, connects or edits. A click selects a node,
- * and the details open beside the graph.
+ * and the details open beside the map.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -41,49 +40,50 @@ import {
   type Graph,
   type GraphEdgeKind,
   type GraphNode,
-  type OpenSubs,
+  type GraphOptions,
   blockSentence,
   blockWord,
   layoutGraph,
-  layoutOrchestrator,
   relatedNodes,
 } from "../lib/agentGraph";
 import {
-  type LensFilters,
-  type LensGroup,
   type LensModel,
   type LensSession,
   type LensState,
   activeCount,
   countStates,
-  foldWord,
   lensEdge,
   lensWord,
   machineWord,
   subWords,
 } from "../lib/agentLenses";
-import { type BucketWindows, NAMES_ONLY_BELOW, bucketWord } from "../lib/agentScale";
-import { BucketRow } from "./AgentBoardList";
-import { CARD_FACE, CountLine, FoldRow, SessionCard, pressKeys } from "./AgentSessionCard";
-import { Square } from "./AgentSquares";
+import { NAMES_ONLY_BELOW, subTotals } from "../lib/agentScale";
+import { CARD_FACE, CountLine, SessionCard, pressKeys } from "./AgentSessionCard";
+import { BucketRow, Square, Squares, TileCounts } from "./AgentSquares";
 
-export const GRAPH_LABEL = "Graph of people, orchestrators and sessions";
+export const GRAPH_LABEL = "Map of people, orchestrators and agents";
+export const EVERYONE = "Everyone";
+export const LEGEND_LABEL = "Legend";
+/** The squares of a folded person card. The rest read "+N". */
+const CARD_SQUARES = 28;
 
 const LINE: Record<GraphEdgeKind, string> = {
   tree: "color-mix(in srgb, var(--muted-foreground) 45%, transparent)",
   dispatch: "color-mix(in srgb, var(--muted-foreground) 70%, transparent)",
   you: "var(--warning)",
-  wait: "color-mix(in srgb, var(--primary) 75%, transparent)",
 };
 
-/** What a node can ask of the graph. */
-interface NodeActions {
+/** What a node can ask of the map. */
+export interface NodeActions {
   onPick: (node: GraphNode) => void;
-  onFold: (sessionId: string) => void;
+  /** Folds or unfolds the node in place. */
+  onFold: (node: GraphNode) => void;
   onHover: (id: string | null) => void;
   /** AMR-4: opens or closes the sub-agents of a session. */
   onToggleSubs: (sessionId: string) => void;
-  onBucket: (state: LensState, rest: number) => void;
+  /** Opens the "idle or done" node of a person, or closes it. */
+  onRest: (person: string) => void;
+  onBucket: (person: string, state: LensState, next: number) => void;
   onPickSession: (session: LensSession) => void;
   /** Opens the details of a session by its id. */
   onPickId: (sessionId: string) => void;
@@ -97,8 +97,36 @@ interface NodeData extends Record<string, unknown>, NodeActions {
   nameOf: (email: string) => string;
   subsOpen: boolean;
   namesOnly: boolean;
-  /** False for one orchestrator: its sessions already fold into buckets. */
-  canFold: boolean;
+}
+
+/** "47 agents · 4 active". */
+export function agentTotals(sessions: readonly LensSession[]): string {
+  const n = sessions.length;
+  return `${n} ${n === 1 ? "agent" : "agents"} · ${activeCount(sessions)} active`;
+}
+
+const needWord = (n: number): string => (n === 1 ? "1 needs you" : `${n} need you`);
+
+const subagentWord = (n: number): string => `${n} ${n === 1 ? "subagent" : "subagents"}`;
+
+/** "idle or done" for a fold under the Active switch. */
+export const restWord = (node: { count: number; open: boolean }): string =>
+  `${node.open ? "Hide " : ""}${node.count} idle or done`;
+
+/** The one chevron of a node that folds in place. */
+function Chevron({ folded, name, onClick }: { folded: boolean; name: string; onClick: () => void }) {
+  return (
+    <Button
+      variant="ghost"
+      size="icon-xs"
+      icon={folded ? "ChevronRight" : "ChevronDown"}
+      aria-label={`${folded ? "Unfold" : "Fold"} ${name}`}
+      aria-expanded={!folded}
+      data-agent-chevron=""
+      onClick={onClick}
+      className="!absolute right-1.5 top-1.5 z-10"
+    />
+  );
 }
 
 function ring(selected: boolean): string {
@@ -108,6 +136,7 @@ function ring(selected: boolean): string {
 export function GraphCard({ data }: { data: NodeData }) {
   const { node, selected, nowMs, nameOf, onPick, onFold, subsOpen, namesOnly, onToggleSubs } = data;
   const pick = () => onPick(node);
+  const fold = () => onFold(node);
   if (node.kind === "session") {
     return (
       <SessionCard
@@ -121,16 +150,35 @@ export function GraphCard({ data }: { data: NodeData }) {
       />
     );
   }
-  if (node.kind === "fold") return <FoldRow word={foldWord(node.folded)} onShow={pick} />;
+  if (node.kind === "rest") {
+    const word = restWord(node);
+    const toggle = () => data.onRest(node.person);
+    return (
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={node.open}
+        aria-label={node.open ? word : `Show ${word}`}
+        onClick={toggle}
+        onKeyDown={pressKeys(toggle)}
+        data-agent-rest={node.person}
+        className="flex h-full w-full cursor-pointer items-center justify-between gap-2 rounded-lg border border-border bg-card px-2.5 text-xs text-muted-foreground hover:bg-secondary"
+      >
+        <span className="truncate">{node.open ? word.replace(/^Hide /, "") : word}</span>
+        <span className="shrink-0 font-medium text-primary">{node.open ? "Hide" : "Show"}</span>
+      </div>
+    );
+  }
   if (node.kind === "bucket") {
     const n = node.sessions.length;
+    const word = `+${n} ${lensWord(node.state).toLowerCase()}`;
     return (
       <BucketRow
-        word={bucketWord(node, lensWord(node.state), node.shown)}
+        word={word}
         sessions={node.sessions}
         nowMs={nowMs}
         max={namesOnly ? 0 : n > 24 ? 12 : 16}
-        onOpen={() => data.onBucket(node.state, node.rest)}
+        onOpen={() => data.onBucket(node.person, node.state, node.next)}
         onPick={data.onPickSession}
       />
     );
@@ -162,34 +210,77 @@ export function GraphCard({ data }: { data: NodeData }) {
       </div>
     );
   }
-  if (node.kind === "person") {
-    const counts = countStates(node.sessions);
+  if (node.kind === "root") {
+    const name = node.person ? nameOf(node.person) : EVERYONE;
+    const need = countStates(node.sessions).you;
+    const subs = subTotals(node.sessions).total;
     return (
-      <div
-        role="button"
-        tabIndex={0}
-        aria-pressed={selected}
-        aria-label={`${nameOf(node.person)}. ${activeCount(node.sessions)} active.`}
-        onClick={pick}
-        onKeyDown={pressKeys(pick)}
-        data-agent-graph-person=""
-        className={`flex h-full w-full cursor-pointer items-center gap-2 rounded-lg px-1 text-left hover:bg-secondary ${ring(selected)}`}
-      >
-        <PersonAvatar email={node.person} displayName={nameOf(node.person)} size={36} />
-        <span className="flex min-w-0 flex-col">
-          <span className="truncate text-sm font-semibold text-foreground">{nameOf(node.person)}</span>
-          <span className="flex gap-2 whitespace-nowrap text-[11px] text-muted-foreground">
-            <span>{activeCount(node.sessions)} active</span>
-            {counts.you > 0 ? <span className="text-warning">{counts.you} need you</span> : null}
+      <div className="relative h-full" data-agent-graph-root="">
+        <div className="flex h-full w-full flex-col justify-center gap-0.5 rounded-lg border-2 border-border bg-card px-2.5 shadow-sm">
+          <span className="flex min-w-0 items-center gap-1.5 pr-6">
+            <Icon name={node.person ? "User" : "Users"} size={15} className="shrink-0 text-muted-foreground" aria-hidden />
+            <span className={`truncate font-semibold text-foreground ${namesOnly ? "text-xl" : "text-sm"}`}>{name}</span>
           </span>
-        </span>
+          {namesOnly ? null : (
+            <>
+              <span className="text-[11px] text-muted-foreground">{agentTotals(node.sessions)}</span>
+              {need > 0 ? <span className="text-[11px] text-warning">{needWord(need)}</span> : null}
+              <span className="text-[11px] text-muted-foreground">{subagentWord(subs)}</span>
+            </>
+          )}
+        </div>
+        <Chevron folded={node.folded} name={name} onClick={fold} />
+      </div>
+    );
+  }
+  if (node.kind === "person") {
+    const name = nameOf(node.person);
+    const counts = countStates(node.sessions);
+    const subs = subTotals(node.sessions).total;
+    return (
+      <div className="relative h-full">
+        <div
+          role="button"
+          tabIndex={0}
+          aria-pressed={selected}
+          aria-label={`${name}. ${agentTotals(node.sessions)}.${counts.you > 0 ? ` ${needWord(counts.you)}.` : ""}`}
+          onClick={pick}
+          onKeyDown={pressKeys(pick)}
+          data-agent-graph-person={node.folded ? "folded" : "open"}
+          className={`flex h-full w-full cursor-pointer flex-col justify-center gap-1 rounded-lg border border-border bg-card px-2.5 py-1.5 text-left shadow-sm hover:shadow-md ${ring(selected)}`}
+        >
+          <span className="flex min-w-0 items-center gap-2 pr-6">
+            <PersonAvatar email={node.person} displayName={name} size={28} />
+            <span className="flex min-w-0 flex-col">
+              <span className={`truncate font-semibold text-foreground ${namesOnly ? "text-xl" : "text-sm"}`}>{name}</span>
+              {namesOnly ? null : (
+                <span className="truncate text-[11px] text-muted-foreground">{agentTotals(node.sessions)}</span>
+              )}
+            </span>
+          </span>
+          {namesOnly ? null : node.folded ? (
+            <>
+              <TileCounts counts={counts} />
+              <span className="min-w-0 overflow-hidden">
+                <Squares sessions={node.sessions} nowMs={nowMs} max={CARD_SQUARES} onPick={data.onPickSession} />
+              </span>
+              <span className="truncate text-[11px] text-muted-foreground">{subagentWord(subs)}</span>
+            </>
+          ) : (
+            <span className="flex min-w-0 gap-2 whitespace-nowrap text-[11px] text-muted-foreground">
+              {counts.you > 0 ? <span className="text-warning">{needWord(counts.you)}</span> : null}
+              <span className="truncate">{subagentWord(subs)}</span>
+            </span>
+          )}
+        </div>
+        <Chevron folded={node.folded} name={name} onClick={fold} />
       </div>
     );
   }
   if (node.kind === "orch") {
     const s = node.session;
     const sub = node.folded
-      ? `${node.members.length - 1} sessions folded`
+      ? `${node.members.length - 1} agents folded`
       : `Orchestrator · ${machineWord(s)}${s.model ? ` · ${s.model}` : ""}`;
     return (
       <div className="relative h-full">
@@ -202,7 +293,7 @@ export function GraphCard({ data }: { data: NodeData }) {
             role="button"
             tabIndex={0}
             aria-pressed={selected}
-            aria-label={`Orchestrator ${s.name}. ${sub}.`}
+            aria-label={`Orchestrator ${s.name}. ${lensWord(s.state)}. ${sub}.`}
             onClick={pick}
             onKeyDown={pressKeys(pick)}
             className={CARD_FACE}
@@ -219,17 +310,7 @@ export function GraphCard({ data }: { data: NodeData }) {
             {namesOnly ? null : <CountLine counts={countStates(node.members)} />}
           </div>
         </div>
-        {data.canFold ? (
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            icon={node.folded ? "ChevronRight" : "ChevronDown"}
-            aria-label={`${node.folded ? "Unfold" : "Fold"} ${s.name}`}
-            aria-expanded={!node.folded}
-            onClick={() => onFold(s.id)}
-            className="!absolute right-1.5 top-1.5 z-10"
-          />
-        ) : null}
+        {node.canFold ? <Chevron folded={node.folded} name={s.name} onClick={fold} /> : null}
         {s.subs.total > 0 && !namesOnly ? (
           <Button
             variant="ghost"
@@ -241,21 +322,16 @@ export function GraphCard({ data }: { data: NodeData }) {
             title={subWords(s.subs)}
             data-agent-sub-toggle={s.id}
             onClick={() => onToggleSubs(s.id)}
-            className={`!absolute top-1.5 z-10 ${data.canFold ? "right-8" : "right-1.5"}`}
+            className={`!absolute top-1.5 z-10 ${node.canFold ? "right-8" : "right-1.5"}`}
           />
         ) : null}
       </div>
     );
   }
-  const you = node.block === "you";
   const word = blockWord(node.block);
   const sentence = blockSentence(node.block, node.sessions.length);
   return (
-    <div
-      data-agent-edge={you ? "warning" : "steady"}
-      data-agent-graph-block={node.block}
-      className={`h-full rounded-lg ${ring(selected)}`}
-    >
+    <div data-agent-edge="warning" data-agent-graph-block={node.block} className={`h-full rounded-lg ${ring(selected)}`}>
       <div
         role="button"
         tabIndex={0}
@@ -266,10 +342,8 @@ export function GraphCard({ data }: { data: NodeData }) {
         className={CARD_FACE}
       >
         <span className="flex min-w-0 items-center gap-2">
-          <span
-            className={`flex size-7 shrink-0 items-center justify-center rounded-md bg-secondary ${you ? "text-warning" : "text-muted-foreground"}`}
-          >
-            <Icon name={you ? "MessageCircleQuestion" : "Hourglass"} size={15} aria-hidden />
+          <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-secondary text-warning">
+            <Icon name="MessageCircleQuestion" size={15} aria-hidden />
           </span>
           <span className="flex min-w-0 flex-col">
             <span className="truncate text-sm font-semibold">{word}</span>
@@ -414,25 +488,13 @@ function KeepSelected({ box, graph, selectedId }: { box: React.RefObject<HTMLDiv
   return null;
 }
 
-function Controls({
-  waits,
-  onWaits,
-  allFolded,
-  canFold,
-  onFoldAll,
-}: {
-  waits: boolean;
-  onWaits: () => void;
-  allFolded: boolean;
-  canFold: boolean;
-  onFoldAll: () => void;
-}) {
+function Controls({ legend, onLegend }: { legend: boolean; onLegend: () => void }) {
   const flow = useReactFlow();
   return (
     <Panel position="bottom-left">
       <div
         role="group"
-        aria-label="Graph controls"
+        aria-label="Map controls"
         className="flex items-center gap-0.5 rounded-xl border border-border bg-card p-1 shadow-md"
       >
         <Button variant="ghost" size="sm" icon="Scan" onClick={() => void flow.fitView({ padding: 0.06, maxZoom: 1 })}>
@@ -440,14 +502,9 @@ function Controls({
         </Button>
         <Button variant="ghost" size="icon-sm" icon="Minus" aria-label="Zoom out" onClick={() => void flow.zoomOut()} />
         <Button variant="ghost" size="icon-sm" icon="Plus" aria-label="Zoom in" onClick={() => void flow.zoomIn()} />
-        <Button variant="ghost" size="sm" icon="GitBranch" selected={waits} onClick={onWaits}>
-          Waits on
+        <Button variant="ghost" size="sm" icon="Info" selected={legend} aria-expanded={legend} onClick={onLegend}>
+          {LEGEND_LABEL}
         </Button>
-        {canFold ? (
-          <Button variant="ghost" size="sm" icon={allFolded ? "UnfoldVertical" : "FoldVertical"} onClick={onFoldAll}>
-            {allFolded ? "Unfold all" : "Fold all"}
-          </Button>
-        ) : null}
       </div>
     </Panel>
   );
@@ -463,15 +520,13 @@ const LEGEND_EDGES: ReadonlyArray<[string, string]> = [
 const LEGEND_LINES: ReadonlyArray<[GraphEdgeKind, string]> = [
   ["dispatch", "Dispatched"],
   ["you", "Waits on you"],
-  ["wait", "Waits on something else"],
 ];
 
-function Legend({ wide = false }: { wide?: boolean }) {
+export function Legend() {
   return (
-    // One orchestrator has three columns of cards, so its legend needs a wider window.
-    <Panel position="bottom-right" className={wide ? "hidden 2xl:block" : "hidden xl:block"}>
+    <Panel position="bottom-right" className="!mb-16 sm:!mb-4">
       <dl
-        aria-label="Legend"
+        aria-label={LEGEND_LABEL}
         className="grid grid-cols-[1.75rem_auto] items-center gap-x-2 gap-y-1 rounded-xl border border-border bg-card px-3 py-2 text-[11px] text-muted-foreground shadow-md"
       >
         {LEGEND_EDGES.map(([edge, word]) => (
@@ -516,98 +571,31 @@ function useRootScale(): number {
 
 export interface AgentGraphLensProps {
   model: LensModel;
-  filters: LensFilters;
-  opened: ReadonlySet<string>;
-  onOpenGroup: (key: string) => void;
+  /** What the map shows: the scope, the switch, the find and the folds. */
+  options: Omit<GraphOptions, "unit" | "subs">;
   selectedId: string | null;
-  onPick: (node: GraphNode) => void;
   nowMs: number;
-  nameOf: (email: string) => string;
-  /** False while the dock is open: the narrower graph has no room for it. */
-  legend?: boolean;
-  /** AMR-4: draw this one orchestrator, bounded, in place of the whole map. */
-  orchestrator?: { person: string; group: LensGroup } | null;
-  windows?: BucketWindows;
-  onBucket?: (state: LensState, rest: number) => void;
   /** The one session whose sub-agents show. */
-  subs?: OpenSubs | null;
-  onToggleSubs?: (sessionId: string) => void;
+  subs?: GraphOptions["subs"];
+  actions: Omit<NodeActions, "onHover" | "onPickId">;
   focus?: GraphFocus | null;
 }
 
-const NOOP = () => {};
-const NO_WINDOWS: BucketWindows = {};
-
-export function AgentGraphLens({
-  model,
-  filters,
-  opened,
-  onOpenGroup,
-  selectedId,
-  onPick,
-  nowMs,
-  nameOf,
-  legend = true,
-  orchestrator = null,
-  windows = NO_WINDOWS,
-  onBucket = NOOP,
-  subs = null,
-  onToggleSubs = NOOP,
-  focus = null,
-}: AgentGraphLensProps) {
+export function AgentGraphLens({ model, options, selectedId, nowMs, subs = null, actions, focus = null }: AgentGraphLensProps) {
   const { resolvedTheme } = useTheme();
   const unit = useRootScale();
   const box = useRef<HTMLDivElement | null>(null);
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
-  const [waits, setWaits] = useState(true);
+  const [legend, setLegend] = useState(false);
   const [hover, setHover] = useState<string | null>(null);
   const [namesOnly, setNamesOnly] = useState(false);
-  const pin = selectedId?.startsWith("s:") ? selectedId.slice(2) : null;
-  const person = orchestrator?.person ?? "";
-  const group = orchestrator?.group ?? null;
-  const graph = useMemo(
-    () =>
-      group
-        ? layoutOrchestrator(person, group, {
-            states: filters.states,
-            find: filters.find,
-            windows,
-            pin,
-            subs,
-            waits,
-            unit,
-            nameOf,
-          })
-        : layoutGraph(model, { filters, collapsed, opened, waits, unit, nameOf, subs }),
-    [model, filters, collapsed, opened, waits, unit, nameOf, person, group, windows, pin, subs],
-  );
-  const orchestrators = useMemo(
-    () => model.people.flatMap((p) => p.groups.flatMap((g) => (g.orch ? [g.orch.id] : []))),
-    [model],
-  );
-  const allFolded = orchestrators.length > 0 && orchestrators.every((id) => collapsed.has(id));
-  const onFold = useCallback((sessionId: string) => {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (next.has(sessionId)) next.delete(sessionId);
-      else next.add(sessionId);
-      return next;
-    });
-  }, []);
-  const pick = useCallback(
-    (node: GraphNode) => {
-      if (node.kind === "fold") onOpenGroup(node.groupKey);
-      else onPick(node);
-    },
-    [onOpenGroup, onPick],
-  );
-  const pickSession = useCallback((session: LensSession) => onPick({ kind: "session", session, id: `s:${session.id}`, x: 0, y: 0, w: 0, h: 0 }), [onPick]);
+  const graph = useMemo(() => layoutGraph(model, { ...options, unit, subs }), [model, options, unit, subs]);
+  const { onPick, onFold, onRest, onBucket, onToggleSubs, onPickSession } = actions;
   const pickId = useCallback(
     (sessionId: string) => {
       const session = model.byId.get(sessionId);
-      if (session) pickSession(session);
+      if (session) onPickSession(session);
     },
-    [model, pickSession],
+    [model, onPickSession],
   );
   const lit = useMemo(
     () => (hover && graph.nodes.some((n) => n.id === hover) ? relatedNodes(graph, hover) : null),
@@ -626,16 +614,16 @@ export function AgentGraphLens({
           selected: selectedId === node.id,
           dim: lit !== null && !lit.has(node.id),
           nowMs,
-          nameOf,
-          onPick: pick,
+          nameOf: options.nameOf,
+          onPick,
           onFold,
           onHover: setHover,
           subsOpen: (node.kind === "session" || node.kind === "orch") && subs?.sessionId === node.session.id,
           namesOnly,
-          canFold: !group,
           onToggleSubs,
+          onRest,
           onBucket,
-          onPickSession: pickSession,
+          onPickSession,
           onPickId: pickId,
         },
         draggable: false,
@@ -643,7 +631,7 @@ export function AgentGraphLens({
         selectable: false,
         focusable: false,
       })),
-    [graph, selectedId, lit, nowMs, nameOf, pick, onFold, subs, namesOnly, group, onToggleSubs, onBucket, pickSession, pickId],
+    [graph, selectedId, lit, nowMs, options.nameOf, onPick, onFold, subs, namesOnly, onToggleSubs, onRest, onBucket, onPickSession, pickId],
   );
   const edges: Edge[] = useMemo(
     () =>
@@ -673,7 +661,7 @@ export function AgentGraphLens({
       ref={box}
       role="group"
       aria-label={GRAPH_LABEL}
-      data-agent-graph={group ? "orchestrator" : ""}
+      data-agent-graph=""
       data-agent-names-only={namesOnly ? "" : undefined}
       className="min-h-0 flex-1"
       style={{ minHeight: 360 }}
@@ -698,19 +686,12 @@ export function AgentGraphLens({
           proOptions={{ hideAttribution: true }}
         >
           <Background gap={20} size={1.2} />
-          <StartView box={box} graph={graph} resetKey={`${group?.key ?? filters.person}|${filters.find.trim()}|${unit}`} />
+          <StartView box={box} graph={graph} resetKey={`${options.person}|${options.mode}|${options.find.trim()}|${unit}`} />
           <ZoomWatch onChange={setNamesOnly} />
           <CenterOn graph={graph} focus={focus} />
           <KeepSelected box={box} graph={graph} selectedId={selectedId} />
-          {/* The sub-agent column takes the room of the legend. */}
-          {legend && !subs ? <Legend wide={group !== null} /> : null}
-          <Controls
-            waits={waits}
-            onWaits={() => setWaits((v) => !v)}
-            canFold={!group && orchestrators.length > 0}
-            allFolded={allFolded}
-            onFoldAll={() => setCollapsed(new Set(allFolded ? [] : orchestrators))}
-          />
+          {legend ? <Legend /> : null}
+          <Controls legend={legend} onLegend={() => setLegend((v) => !v)} />
         </ReactFlow>
       </ReactFlowProvider>
     </div>

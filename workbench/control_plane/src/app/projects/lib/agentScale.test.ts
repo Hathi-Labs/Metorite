@@ -2,11 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import { AGENT_DONE_KEY, AGENT_MARKS, agentStateVisual } from "@/lib/statusAccent";
 
-import { layoutGraph, layoutOrchestrator, ORCH_X, SUB_SHIFT } from "./agentGraph";
 import {
   DEFAULT_STATES,
   LENS_STATES,
-  type SubRow,
   buildLensModel,
   lensMark,
   lensOfChild,
@@ -21,7 +19,6 @@ import {
   CARDS_MAX,
   OVERVIEW_ABOVE,
   SESSION_CARDS_MAX,
-  SUB_ROWS_MAX,
   boundSessions,
   findGroup,
   openBucket,
@@ -178,45 +175,6 @@ describe("the bound of one orchestrator", () => {
     const { shown } = boundSessions(group.sessions, { ...bound, pin: hidden.id });
     expect(shown).toHaveLength(SESSION_CARDS_MAX);
     expect(shown.map((s) => s.id)).toContain(hidden.id);
-  });
-});
-
-describe("the graph of one orchestrator", () => {
-  const base = { states: new Set(DEFAULT_STATES), find: "", windows: {}, pin: null, subs: null, waits: true, unit: 1, nameOf };
-  it("holds the orchestrator, 12 cards, the buckets and the waits", () => {
-    const graph = layoutOrchestrator("ben@x.test", group, base);
-    expect(graph.nodes.filter((n) => n.kind === "session")).toHaveLength(SESSION_CARDS_MAX);
-    expect(graph.nodes.filter((n) => n.kind === "orch")).toHaveLength(1);
-    expect(graph.nodes.some((n) => n.kind === "bucket")).toBe(true);
-    expect(graph.nodes.find((n) => n.kind === "block")?.x).toBe(ORCH_X.block);
-  });
-  it("opens one session as at most 8 rows and a row for the rest, and moves the waits right", () => {
-    const first = boundSessions(group.sessions, bound).shown[0];
-    const session = { ...first, subs: { total: 20, working: 1, failed: 1, done: 18 } };
-    const sessions = group.sessions.map((s) => (s.id === first.id ? session : s));
-    const rows: SubRow[] = Array.from({ length: 20 }, (_, i) => ({ id: `c${i}`, name: `c${i}`, state: "done", model: null, age: i }));
-    const graph = layoutOrchestrator("ben@x.test", { ...group, sessions }, { ...base, subs: { sessionId: first.id, rows } });
-    expect(graph.nodes.filter((n) => n.kind === "sub")).toHaveLength(SUB_ROWS_MAX);
-    expect(graph.nodes.find((n) => n.kind === "submore")).toMatchObject({ count: 12 });
-    expect(graph.nodes.find((n) => n.kind === "block")?.x).toBe(ORCH_X.block + SUB_SHIFT);
-    // No card of the session column lies over a sub-agent row.
-    const loading = layoutOrchestrator("ben@x.test", { ...group, sessions }, { ...base, subs: { sessionId: first.id, rows: null } });
-    expect(loading.nodes.filter((n) => n.kind === "subnote")).toHaveLength(1);
-  });
-  it("opens the rows in the whole graph too, and keeps the next card below them", () => {
-    const map = fleet();
-    map.sessions[1] = { ...map.sessions[1], subagents: { total: 6, working: 6, failed: 0, done: 0, names: [] } };
-    const model = buildLensModel(map, new Map(), BEN);
-    const rows: SubRow[] = Array.from({ length: 6 }, (_, i) => ({ id: `c${i}`, name: `c${i}`, state: "working", model: null, age: i }));
-    const graph = layoutGraph(model, {
-      filters: { states: ALL_ON, person: "", find: "" }, collapsed: new Set(), opened: new Set(), waits: true, unit: 1, nameOf,
-      subs: { sessionId: "lane-a", rows },
-    });
-    const subs = graph.nodes.filter((n) => n.kind === "sub");
-    expect(subs).toHaveLength(6);
-    const open = graph.nodes.find((n) => n.id === "s:lane-a")!;
-    const below = graph.nodes.filter((n) => n.kind === "session" && n.y > open.y);
-    for (const n of below) expect(n.y).toBeGreaterThanOrEqual(subs.at(-1)!.y + subs.at(-1)!.h);
   });
 });
 

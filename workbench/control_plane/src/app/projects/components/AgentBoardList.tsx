@@ -33,10 +33,9 @@ import {
 import { type BucketWindows, WINDOW_ABOVE, boundSessions, bucketWord } from "../lib/agentScale";
 import { useWindowedList } from "../lib/windowedList";
 import { FoldRow, SessionCard, StatePill, SubCount, pressKeys, sessionSpoken } from "./AgentSessionCard";
-import { Squares } from "./AgentSquares";
+import { BucketRow, NO_MATCH_COPY, NO_ORCHESTRATOR, Squares } from "./AgentSquares";
 
-export const NO_MATCH_COPY = "No session matches these filters.";
-export const NO_ORCHESTRATOR = "No orchestrator";
+export { BucketRow, NO_MATCH_COPY, NO_ORCHESTRATOR };
 
 export interface LensViewProps {
   model: LensModel;
@@ -263,47 +262,6 @@ export function BoundedBoard(props: BoundedBoardProps) {
         />
       ))}
       {shown.length === 0 && buckets.length === 0 && !group.orch ? <Empty /> : null}
-    </div>
-  );
-}
-
-/** One bucket of folded sessions: its squares, its words and "Show". */
-export function BucketRow({
-  word,
-  sessions,
-  nowMs,
-  onOpen,
-  onPick,
-  max = 24,
-}: {
-  word: string;
-  sessions: readonly LensSession[];
-  nowMs: number;
-  onOpen: () => void;
-  onPick?: (session: LensSession) => void;
-  max?: number;
-}) {
-  return (
-    <div
-      onClick={onOpen}
-      data-agent-bucket=""
-      className="flex h-full min-h-10 w-full cursor-pointer items-center gap-2 overflow-hidden rounded-lg border border-border bg-card px-2.5 py-1 text-xs text-muted-foreground hover:bg-secondary"
-    >
-      <span className="min-w-0 flex-1 overflow-hidden">
-        <Squares sessions={sessions} nowMs={nowMs} max={max} onPick={onPick} />
-      </span>
-      <Button
-        variant="text"
-        size="none"
-        aria-label={`Show ${word}`}
-        onClick={(event) => {
-          event.stopPropagation();
-          onOpen();
-        }}
-        layout="shrink-0 whitespace-nowrap"
-      >
-        {word} · Show
-      </Button>
     </div>
   );
 }
