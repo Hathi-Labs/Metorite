@@ -389,14 +389,16 @@ click-driven path already covers everyone the user cares about.
 ### 6.6 Mark done: a Done that sticks (task 3995)
 
 **Owner ask:** "Some emails in my Follow-up list are actually done. I need a fast way."
-**Status:** 🔨 BUILT on branch `mt-17d83515-email-mark-done`, not merged (2026-11-26).
+**Status:** 🔨 BUILT and merged dark (PR 2917, 2026-11-27). Fix round 5 (task 4057) is on
+branch `mt-d106ee54-mark-done-flip`, not merged.
 No migration. Dark behind `EMAIL_MARK_DONE_ORGS`, which is empty (off) by default.
 
 Fix round 2 closes the ten findings of the verifier (D1 to D10) and the two visual ones.
 Fix round 3 closes F1 to F6 and V1: the lock order, a reopen, a reply before a move back,
 the reminder, and the bar on a phone. Fix round 4 closes N1, N4 and N5. These are a
 click during a learner correction, one provider for the sweep, and the row lock of
-the click.
+the click. Fix round 5 closes F1 and F2. These are the sweep when the provider fails,
+and a write of the member during a learner correction.
 
 **One act, one route.** `POST /email/reply-zero/resolve` stays the only write of Done.
 A bulk act sends one call for each conversation, as a pair of `account_id` and
@@ -435,6 +437,12 @@ one definition. While a thread is held:
   The learner asks the hold once before its corrections, and each correction keeps
   a held row in its own write too (N1). So a click during an earlier correction
   stays Done. The Fix of the member still ends the hold.
+- The same ask reads `classified_at` of each row (`mark_done.owned_and_seen`). Then
+  a member can write the row: a Mark done, a move back, a reopen, a dismiss or the
+  Fix. A correction does not replace such a write (F2). The guard is in the write
+  (`mark_done.member_wrote_since_sql`), and the thread then gets the labels of the
+  member. An automated write, such as the status of new inbound mail, stores
+  another reason. So the learner still works on that row.
 - The follow-up scan, an approval of a proposal and the repair of a failed run each
   ask the hold for each thread (D1, D5). A held proposal or repair becomes
   `SKIPPED`, and History says why.
@@ -495,7 +503,9 @@ A commit ends the `SET LOCAL` tenant of a block. So each short block is a new
 2. **A sweep each sync cycle.** After the follow-up scan, `mark_done.heal_held`
    finds each held thread with an open local label. It puts "Done" back here and
    at the provider, with one provider for the sweep (N4). An import or a folder
-   load gives the learner no delta, so only the sweep heals its label (D9).
+   load gives the learner no delta, so only the sweep heals its label (D9). The
+   sweep tries the provider once. When the provider refuses or fails, the sweep
+   still repairs the local labels of each thread (F1).
 3. **The provider shows the committed rows.** A label job reads the committed
    local labels, sends each message that is not a draft its whole set, and reads
    them again. While the read differs from what it sent, it sends again
@@ -586,6 +596,9 @@ of another surface alone (D10).
 - Known limits: the task-close path (`tasks/email_link.py`) still holds the status
   row across provider I/O, as before this feature. Mark done on a long thread makes
   one provider call for each message.
+- With the flag on, the follow-up scan uses two database connections for each job.
+- The learner guard compares with the rows of its one ask. A reopen or a Fix of the
+  member between the read of the sync and that ask can still lose to the learner.
 
 **Fences.** `tests/unit/test_email_mark_done.py` holds the flag, and the statement with
 the flag off. `tests/unit/test_email_mark_done_r8.py` holds the hold and each race of
@@ -597,7 +610,10 @@ database counted no deadlock. The others are
 `src/app/email/components/markDoneMenu.test.ts` (the menu order).
 
 The N1 tests run the real learner. The click lands during a correction of another
-thread, and during a correction of the same thread.
+thread, and during a correction of the same thread. In the F2 tests, a move back, a
+reopen or a Fix lands during a correction of another thread. New inbound mail lands
+there in one more test. The F1 test runs the sweep with a refused and with a raising
+authenticate.
 
 ### Build-or-kill decisions (each needs a one-line owner call)
 
