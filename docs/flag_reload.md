@@ -20,6 +20,25 @@ the value again on each call.
 `gateway.routes.projects.agent_summary.agents_view_allowed`. A reload applies
 a change. The flip stays OWNER-GATE (`enforcement-flip`).
 
+`AGENT_CLAIM_SCOPE_MODES` sets the scope of an agent claim for each org
+(`agent_coordination.md` SW-45). A mode is `off`, `warn` or `refuse`, and the
+default is `off`. Its one reader is `acb_auth.agent_oauth.claim_scope_mode`.
+The policy store does not read it until SW-46 (`agent_policies.FLAGS_NOT_YET`).
+A reload applies a change. The flip stays OWNER-GATE (`enforcement-flip`).
+
+`AGENT_LENSES_ORGS` opens the new Agents view of Projects
+(`agent_coordination.md` §5.12, AMR-1). For each listed org, the Agents canvas
+draws the Board, Graph and List lenses, and a phone gets one level per screen.
+`*` lists every org, and the default is empty. Empty means the canvas draws the
+map of SW-103. The view reads the map of SW-102, so it also needs
+`AGENTS_VIEW_ORGS` and `AGENT_MAP_ORGS`. Its one reader is
+`gateway.agent_lenses_flag.agent_lenses_allowed`, and each shell read asks it.
+`GET /auth/me/shell` serves the answer as `agent_lenses`, so a tab shows a
+change at its next shell read. AMR-4: the map read asks the same reader on
+each call. For a listed org it also answers `detail=summary` and `session=`
+(`agent_coordination.md` §3.12.9). A reload applies a change. The flip stays
+OWNER-GATE (`enforcement-flip`), after the owner preview.
+
 `AGENT_QUESTIONS_ORGS` changes who may answer an agent's question
 (`external_agent_access.md` §12.8). A reload changes how the flip applies, and
 it does not change who may flip it. The flip stays OWNER-GATE
@@ -31,6 +50,15 @@ writes in 600 s. They are not `*_ORGS` or `*_MODES` keys, so a reload does
 NOT apply them. The gateway counts the writes, and the agent edge names the
 numbers in each write tool. Set both units to the same value. Then restart
 `acb-gateway` and `acb-agent-edge`. A change stays OWNER-GATE
+(`enforcement-flip`).
+
+`AI_TURN_KIND_NOWAIT_ORGS` stops the turn-kind wait of a delegated run
+(`ai_tier_routing.md` §4.3, task 3592). For each listed org, a delegated run
+asks no turn-kind question. It starts at once on the `chat` kind, and it does
+not wait up to 3 s. A `plan`, `analysis` or `code` task then keeps the
+agent's own tier. `*` lists every org, and the default is empty. Its one
+reader is `acb_skills.tier_policy.turn_kind_nowait_on`. Each delegated run asks
+it at its start, so a reload applies to the next run. A flip stays OWNER-GATE
 (`enforcement-flip`).
 
 `API_CONNECTIONS_ORGS` turns on the API connections of the chat
@@ -97,6 +125,25 @@ The check is shadow only, and it never changes the answer (D-HRD-6).
 `acb_skills.answer_claims.claim_check_on`. The injection asks it at the start
 of each run, so a reload applies to the next run. A flip stays OWNER-GATE
 (`enforcement-flip`).
+
+`CHAT_DRAFT_CHOICE_ORGS` turns on the draft choice of the chat (`email_app_master_plan.md`
+§18.13, tasks 3977 and 3978). For each listed org, a trash of a draft in the chat reads
+Drafts first. Each matching draft is a row on the card, and the member picks. The answer
+counts only a trash that the mail provider confirmed, and names each matching draft that
+stays. `*` lists every org, and the default is empty. Empty means the card and the answer of
+before.
+
+The same flag turns on the question of task 3978 (§18.13.1). A member declines the card of
+`edit_draft`, or discards a new-mail card, for a draft that the chat saved. The card then asks
+"Keep the earlier draft, or delete it?". The question also needs `CHAT_CARD_REVISE_ORGS` for
+the org, because only its record knows the chat's draft. The new-mail card also needs
+`EMAIL_EDIT_CARD_ORGS`, which draws that card. With this flag on, each decline of the card of
+`edit_draft` says that the draft is still in Drafts.
+
+Its one reader is `acb_skills.draft_choice.draft_choice_on`. The email tool asks it at
+each trash, before each new-mail card, in each `draft_reply` and in each `edit_draft`, so a
+reload applies at once. A flip stays
+OWNER-GATE (`enforcement-flip`).
 
 `CHAT_FOCUS_ORGS` turns on the item in focus of a chat
 (`chat_failure_modes.md` §6 row HRD-11a). For each listed org, the chat keeps
@@ -177,6 +224,19 @@ the pin routes and `GET /auth/me/shell` ask it on each call. The shell read
 gives the answer to the client as `chat_pin`. So a tab shows a change at its
 next shell read. A reload applies a change. The flip stays OWNER-GATE
 (`enforcement-flip`), after the owner preview.
+
+`CHAT_PIN_TOOL_ORGS` gives the chat of each listed org the tool `pin_chat`
+(`chat_organization.md` §18, CO-11b). The owner gave the tool its own flag on
+2026-11-21 (task 3563). `*` lists every org, and the default is empty. Empty
+means no chat holds the tool, and the tool count does not move. The tool acts
+only for an org on the pin list too, because the pin routes answer 404 with
+the pin off.
+
+Its one reader is `gateway.chat_session_member.pin_tool_allowed`, and it asks
+`pin_allowed` first. The build of the orchestrator asks it at the start of
+each run, so a reload applies to the next run. Any value other than empty is
+OWNER-GATE, and only the owner flips it. The tool joins each request, so the
+flip takes the trade of the tool cap in §18.
 
 `CHAT_PROGRESS_NOTICE_ORGS` turns on the line of a slow tool
 (`chat_run_continuity.md` §4.11, HRD-6). For each listed org, a tool call that
@@ -334,6 +394,18 @@ and each emit asks it. A
 workflow that listens still needs its org on `WORKFLOW_UNATTENDED_ORGS`. A
 reload applies a change, and the flip stays OWNER-GATE (`enforcement-flip`).
 
+`CRM_MIRROR_AGE_ORGS` turns on the age line of the CRM read tools
+(`crm_platform.md` §18.11.2, CRM-Q30c). For each listed org, a read of one
+module or core entity adds one line when its Zoho mirror is held, not
+available in Zoho, or last read 2 hours ago or more. `*` lists every org, and
+the default is empty. Empty keeps each answer byte for byte, and the tools
+send no request for the age.
+
+Its one reader is `gateway.routes.crm.flags.mirror_age_allowed`.
+`GET /crm/sync/mirror-age` asks it, and the tools ask it through
+`crm_tools.mirror_age_on`. A reload applies a change. A name in the list
+spends nothing, so the flip is `enforcement-flip`.
+
 `CRM_MODULE_FIND_ORGS` turns on `q` across a module of the CRM
 (`crm_platform.md` §18.17, CRM-Q34-7). For each listed org, `q` works on a
 module list and on a module total. It finds each word in the record name, a
@@ -344,6 +416,19 @@ matches the record name only, byte for byte.
 Its one reader is `gateway.routes.crm.flags.module_find_allowed`, and each
 module read asks it. A reload applies a change. A name in the list spends
 nothing, so the flip is `enforcement-flip`.
+
+`CRM_MODULE_REREAD_ORGS` turns on the weekly full read of the generic modules
+of the Zoho mirror (`crm_platform.md` §18.7, task 3869). For each listed org,
+the sync reads each module that a cursor reads (Invoices, Quotes, a custom
+module) again in full once in 7 days. Discovery also queues one full read of a
+module whose stored pick-list values left the current options. `*` lists every
+org, and the default is empty. Empty keeps the read of changes only, byte for
+byte.
+
+Its one reader is `gateway.routes.crm.flags.module_reread_allowed`. The re-read
+rule of the engine and the drift check ask it on each run. A reload applies a
+change. A full read spends Zoho API credits inside the budget of the sync run,
+so the flip is `enforcement-flip`.
 
 `FIND_CLAIM_CHECK` turns on the "not found" check of a chat answer
 (`find_engine.md` §5.5, FIND-7). Its values are `off`, `shadow` and `on`, and
@@ -426,6 +511,31 @@ connect routes, the poll and `github.installation_of` ask it, so the lazy
 readers follow the list too. A reload applies a change, and the flip stays
 OWNER-GATE (`enforcement-flip`).
 
+`HOME_TOOLS_ORGS` gives the chat of each listed org the five Home tools
+(`chat_parity.md` §6.4, PAR-8b, task 3903). They read the Home feed, Needs
+you, the brief, the quick find and the Home settings. They change a Home card,
+a Home setting and the default sidebar, and send a test notification. `*`
+lists every org, and the default is empty. Empty means no chat holds the
+tools, and the tool count does not move.
+
+Its one reader is `acb_skills.home_tools.home_tools_on`. The build of the
+orchestrator asks it at the start of each run, so a reload applies to the next
+run. Any value other than empty is OWNER-GATE, and only the owner flips it.
+The five tools join each request, so the flip takes the trade of the tool cap
+in `chat_parity.md`, PAR-8b facts for the owner.
+
+`INTEGRATION_ACCESS_ORGS` opens the two admin routes that set who can use each
+integration (`integrations_console.md` §3.9.4, ACC-1). Off,
+`GET /admin/integration-access` and `PUT /admin/integration-access/{service}`
+answer 404, and the console shows no control. `*` lists every org, and the
+default is empty. The flag gates the routes only. The access read applies a
+stored rule whatever the flag says. So when the flag goes off, no member gets
+an integration back.
+
+Its one reader is `gateway.routes.admin._common.integration_access_allowed`.
+Each request asks it, so a reload applies at once. The flip waits for the
+owner preview, and it stays OWNER-GATE (`enforcement-flip`).
+
 `MCP_IMAGE_UPLOAD_ORGS` lets an outside agent upload an image to a task and
 put images on a question (`external_agent_access.md` §12.9, CIV-14b). Off, the
 upload of a signed agent answers 404 and `attachment_ids` answers 422, and the
@@ -441,11 +551,27 @@ start. So set the same value in the env file of both units, reload
 `acb-gateway`, and restart `acb-agent-edge`. The flip stays OWNER-GATE
 (`enforcement-flip`).
 
+`MCP_MAIL_PRECEDENCE_ORGS` turns on the precedence rule of a connected server
+over a sticky mail pack (`chat_connected_systems.md` §3.4, CSY-4). For each
+listed org, a turn whose words name an attachable MCP server evicts each sticky
+mail pack, so the server attaches. It acts only when the chat's mail mark reads
+set. `*` lists every org, and the default is empty. Empty keeps the choice of
+main.
+
+Its one reader is `acb_skills.egress.mcp_mail_precedence_on`, which
+`tool_packs.choose` and `_tool_injection._with_server_words` ask on each turn,
+on the run's org. A reload applies a change. Any value other than empty is
+owner-only (`work_plan.md` §6 D4), and the §3a window does not open it.
+
 `MY_DAY_LEARN_ORGS` lets the My Day feed of each listed org learn from the
 member (`proactive_loop.md` §7.2, LOOP-4a). The feed reads the kind mutes of
 the member, and it adds the affinity of each kind to the score. A needs card
 goes to Later at worst, and the bell does not change. `*` lists every org, and
 the default is empty. Empty gives the answer of before, byte for byte.
+
+The flag also adds `why_seen` to each card of the feed answer (LOOP-4b). It is
+a list of sentences that code writes, and My Day shows them under "Why am I
+seeing this". A failed state read or learned read gives no `why_seen`.
 
 The reach loop, the briefs and the chat brief read the same learned feed. So
 a kind that the member mutes leaves them too. A muted needs card in Later is
@@ -482,6 +608,12 @@ source ask it on each call, so a reload applies at the next 15-minute bucket.
 It needs `JOB_QUEUE` on, and the deployment key needs `serve`. A flip stays
 OWNER-GATE (`enforcement-flip`).
 
+`SANDBOX_DOOR_ORGS` opens the sandbox door (`agent_sandbox.md` §12.2,
+SBX-2). Empty, each request with a capability gets 401 before any read. `*`
+lists every org, and it is allowed only while self-serve signup is off. Its
+one reader is `acb_auth.sandbox_capabilities.door_orgs`. A reload applies a
+change. The flip stays OWNER-GATE (`enforcement-flip`).
+
 `SEMANTIC_MODEL_ORGS` turns on the semantic kinds of the CRM plan
 (`semantic_model.md` §3.4, SEM-7). For each listed org, the plan checks the
 kinds `measure`, `join` and `query`, and `org_facts` serves the approved
@@ -496,6 +628,14 @@ names `field_filters`, and each other answer stays byte for byte.
 Its one reader is `gateway.routes.crm.flags.semantic_model_allowed`. Each
 plan write, each facts read and each module total ask it. A reload applies a
 change. The flip stays OWNER-GATE (`enforcement-flip`).
+
+`SEQUENCE_MARKS_ORGS` lets an outside agent mark each number that its own run reserved
+`used` or `released` (`mark_number`, `agent_coordination.md` SW-27c1). Off, the
+mark route answers 404 for a signed agent, and the edge hides the tool. Its one
+reader is `acb_auth.agent_oauth.sequence_marks_allowed`. The gateway asks it at
+each call, so a reload applies a change there. The edge reads its flags at
+start, so set the same value for both units and restart the agent edge. Any
+value other than empty is gate `enforcement-flip`.
 
 `STUDIO_CHAT_TOOLS_ORGS` opens the catalog source `tool` of AI Studio
 (`ai_studio.md` §14 TOF-1a). For each listed org, `GET /studio/actions` serves

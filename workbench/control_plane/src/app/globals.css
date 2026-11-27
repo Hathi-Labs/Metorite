@@ -2645,6 +2645,42 @@ html[data-look="glass"] .assistant-panel[data-panel-form="dock"]:not([data-shown
   visibility: hidden;
 }
 
+/* ── A docked side panel (`components/ui/SidePanelMotion.tsx`) ──────────── */
+/* One motion for every panel that docks at the right of a page (task 7,
+   owner 2026-11-22): the Projects task panel, and the record card at its side
+   stop. It is the assistant's dock form on the same tokens. The frame eases
+   its width, so the page reflows as it does for the assistant's spacer. The
+   panel keeps its width and rides the frame's left edge, so its content never
+   reflows. The width is `max-w-sm`'s, the docked width of both panels
+   (`TASK_PANEL_WIDTH`). A card over the page leaves the frame with no box. */
+.side-panel,
+.side-panel > [data-side-panel-body] {
+  display: contents;
+}
+.side-panel:has([data-side-docked]) {
+  display: flex;
+  flex-shrink: 0;
+  width: 0;
+  min-height: 0;
+}
+.side-panel[data-shown]:has([data-side-docked]) {
+  width: var(--container-sm, 24rem);
+}
+/* The frame clips the panel only while it moves, so a menu of an open panel
+   is never cut. */
+.side-panel:not([data-panel-phase="open"]):has([data-side-docked]) {
+  overflow: clip;
+}
+.side-panel:has([data-side-docked]) > [data-side-panel-body] {
+  display: flex;
+  flex-shrink: 0;
+  width: var(--container-sm, 24rem);
+  min-height: 0;
+}
+.side-panel[data-moving] {
+  transition: width var(--panel-duration) var(--panel-easing);
+}
+
 /* The side panel to the full view, and back (`swapPanelForm`). A view
    transition keeps a picture of each form. The panel's box glides between
    the two rects on the panel tokens, and each picture keeps its own size,
@@ -3076,6 +3112,27 @@ html[data-look="glass"] nav[data-more-above][data-more-below] {
 }
 
 /*
+ * A chat row on a touch device (task 3566). The hover strip is hidden there
+ * and the row has its own "More actions" button, so the age and the run dot
+ * stay in place. Without this, a tap that leaves a sticky `:hover` on the row
+ * would blank the age and the dot, and no strip would take their place. The
+ * touch test is the one shared variant `pointer-coarse`, never a second
+ * media query. Fence: `lib/shell/sessionPickerStrip.test.ts`.
+ */
+@variant pointer-coarse {
+  .group[data-session-row][data-has-actions]:hover .rail-row-meta,
+  .group[data-session-row][data-has-actions]:has(:focus-visible) .rail-row-meta {
+    position: static;
+    width: auto;
+    height: auto;
+    margin: 0;
+    overflow: visible;
+    clip-path: none;
+    white-space: normal;
+  }
+}
+
+/*
  * The icon slot of a row that can open. The expand chevron sits over the
  * icon, transparent at rest. On hover or keyboard focus in the row, the
  * chevron shows and the icon gives way. The chevron is a real button the
@@ -3143,6 +3200,11 @@ html[data-look="glass"] nav[data-more-above][data-more-below] {
      `usePanelPhase` and `swapPanelForm` skip the moving phases too. */
   .assistant-spacer[data-moving],
   .assistant-panel[data-moving] {
+    transition: none;
+  }
+  /* A docked side panel shows and goes at once too. `useSidePanelPresence`
+     skips the moving phases. */
+  .side-panel[data-moving] {
     transition: none;
   }
   .sidebar-beacon {

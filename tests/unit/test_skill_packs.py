@@ -63,7 +63,7 @@ def _turn(words: str = "", skills: tuple[Any, ...] = ()) -> tp.PackTurn:
     ("knowledge.get_page", "read_page"),
     ("knowledge.list_spaces", "list_spaces"),
     ("workflow:0f0f0f0f-0000-4000-8000-000000000001", "run_workflow"),
-    ("knowledge.list_pages", None),  # the row plans its tool (KB-5)
+    ("knowledge.list_pages", "list_pages"),  # built by PAR-3b (task 3901)
     ("knowledge.no_such_op", None),
     ("integration:send_sms", None),
     ("object:items.list", "studio_record_list"),

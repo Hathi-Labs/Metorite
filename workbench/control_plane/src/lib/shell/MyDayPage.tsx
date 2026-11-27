@@ -65,11 +65,13 @@ import { useCachedResource } from "@/lib/useCachedResource";
 
 import { ADDRESS_KEY, addressedGreetingLine, fetchAddressName } from "./addressName";
 import AppLauncher from "./AppLauncher";
+import MyDayCapture from "./MyDayCapture";
 import { feedFailedLines, feedNeedsCount, handledClaim } from "./feed";
 import BriefCard from "./BriefCard";
-import { BRIEF_KEY, fetchBrief } from "./briefCard";
+import { BRIEF_KEY, fetchBrief } from "./briefCardModel";
 import { briefCardOn, briefCardOnServer } from "./briefCardFlag";
 import { FeedColumn, useFeed } from "./FeedCard";
+import NowCard from "./NowCard";
 import NeedsYouCard, { useNeedsYou } from "./NeedsYouCard";
 import { cardOrderFor, cardsFor, dateLine, failedLines, seesApprovals, summaryLine } from "./myDay";
 import { myDayFeedOn, myDayFeedOnServer } from "./myDayFlag";
@@ -82,6 +84,7 @@ import { useMyDayPeek } from "./useMyDayPeek";
 import { rereadFeed } from "./feedState";
 import { needsKey } from "./needs";
 import { CARD_PAGE_ATTR, CARD_PAGE_COLUMN_ATTR } from "@/components/CardPanel";
+import SidePanelMotion from "@/components/ui/SidePanelMotion";
 import { invalidate } from "@/lib/dataCache";
 import { MyDayPeekContext } from "./myDayGo";
 import { myDayPeekOn, myDayPeekOnServer } from "./myDayPeekFlag";
@@ -269,11 +272,17 @@ export default function MyDay() {
         </div>
       </div>
 
+      {/* The capture box (CC-1): the door to the one capture flow. */}
+      <MyDayCapture className="mt-4" />
+
       {/* The brief card (BR-2c-2): a component of its own above both
           layouts, outside the feed flag. It draws nothing on a 404. */}
       {briefOn && !accessLoading && !briefPending ? (
         <BriefCard brief={brief.data} error={brief.error} now={now} className="mt-6 -mb-2" />
       ) : null}
+
+      {/* The Now card (CC-4): the running focus session, or one offer to start. */}
+      {!accessLoading ? <NowCard today={today} now={now} className="mt-6 -mb-2" /> : null}
 
       {/* The AI runs that wait on the member (owner, 2026-11-01: Needs you
           folds into My Day). The feed holds it in its column. The cards
@@ -386,7 +395,8 @@ export default function MyDay() {
       />
     </div>
     </div>
-    {peek.panel}
+    {/* A docked card opens and closes with the one side-panel motion (task 7). */}
+    <SidePanelMotion>{peek.panel}</SidePanelMotion>
     </div>
     {peek.reader}
     </div>

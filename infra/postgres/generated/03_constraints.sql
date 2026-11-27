@@ -6,7 +6,7 @@
 --
 -- SET NOT NULL + FK + index. ⚠️ THIS IS THE ACCESS EXCLUSIVE PHASE — it scans each table. Apply in a window, table by table if necessary, and never behind a long-running transaction (see the generator docstring: that is the exact shape of the 14h44m outage).
 --
--- Tables in this phase: 203
+-- Tables in this phase: 204
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -1406,6 +1406,30 @@ ALTER TABLE pm_agent_run_strands ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE pm_agent_run_strands ADD CONSTRAINT pm_agent_run_strands_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS pm_agent_run_strands_org_idx ON pm_agent_run_strands (organization_id);
+
+-- pm_project_sequences
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pm_project_sequences WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: pm_project_sequences still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE pm_project_sequences ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE pm_project_sequences ADD CONSTRAINT pm_project_sequences_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS pm_project_sequences_org_idx ON pm_project_sequences (organization_id);
+
+-- pm_sequence_reservations
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pm_sequence_reservations WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: pm_sequence_reservations still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE pm_sequence_reservations ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE pm_sequence_reservations ADD CONSTRAINT pm_sequence_reservations_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS pm_sequence_reservations_org_idx ON pm_sequence_reservations (organization_id);
 
 -- pm_agent_runs
 DO $$
@@ -3037,3 +3061,15 @@ ALTER TABLE failure_org_days ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE failure_org_days ADD CONSTRAINT failure_org_days_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS failure_org_days_org_idx ON failure_org_days (organization_id);
+
+-- tool_gaps
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM tool_gaps WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: tool_gaps still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE tool_gaps ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE tool_gaps ADD CONSTRAINT tool_gaps_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS tool_gaps_org_idx ON tool_gaps (organization_id);

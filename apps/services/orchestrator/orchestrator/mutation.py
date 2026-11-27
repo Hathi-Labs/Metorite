@@ -38,7 +38,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
-from acb_audit import AuditEvent, record
+from acb_audit import AuditEvent, record, refuse_tenantless
 from acb_common import get_logger, get_settings
 from acb_common.child_env import DOCKER_NAMES, child_env, docker_env, env_values
 
@@ -338,6 +338,17 @@ async def _self_mutation_permitted(
     return True, ""
 
 
+def _audit(event: AuditEvent) -> None:
+    """Record *event*, unless it is a tenant event with no org (task 2221).
+
+    A self-mutation row names a run of one tenant. With no
+    ``organization_id`` and ``ACB_GRAPH_TENANT_BIND`` on,
+    ``refuse_tenantless`` skips it, so it never lands under the operator org.
+    """
+    if not refuse_tenantless(event):
+        record(event)
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -351,6 +362,7 @@ async def attempt_self_mutation(
     agent_dir: str | None = None,
     incompatibility: bool = False,
     organization_id: str | None = None,
+    audit_organization_id: str | None = None,
 ) -> MutationResult:
     """Attempt to fix a failing agent using an isolated Copilot SDK sandbox.
 
@@ -379,6 +391,14 @@ async def attempt_self_mutation(
                           sole organization, which exists only on a
                           single-tenant box — see
                           :func:`_self_mutation_permitted`.
+        audit_organization_id: The tenant of the run, for the two audit rows
+                          only (task 2221). The executor passes the run binding
+                          (``_RUN_ORG``), never a payload field. It does not
+                          feed the first-party gate. With no org here and none
+                          in *organization_id*, and ``ACB_GRAPH_TENANT_BIND``
+                          on, ``refuse_tenantless`` skips the rows, so the
+                          run's error text never lands under the operator org.
+                          Fence: ``tests/unit/test_audit_writers_org_r8.py``.
 
     Returns:
         A :class:`MutationResult` describing what happened.
@@ -463,12 +483,16 @@ async def attempt_self_mutation(
         error=error_text[:200],
     )
 
-    record(
+    # Task 2221: the payload holds the run's error text, so the row takes the
+    # run's tenant. The gate org wins, then the run binding.
+    audit_org = organization_id or audit_organization_id
+    _audit(
         AuditEvent(
             actor="system:mutation",
             action="mutation_start",
             target=f"agent:{agent_name}",
             payload={"run_id": run_id, "error": error_text[:500]},
+            organization_id=audit_org,
         )
     )
 
@@ -521,7 +545,7 @@ async def attempt_self_mutation(
     # pr_url is repurposed to point at the inbox item for backward-compat logging
     pr_url: str | None = f"/inbox?commit={pending_commit_id}" if pending_commit_id else None
 
-    record(
+    _audit(
         AuditEvent(
             actor="system:mutation",
             action=(
@@ -540,6 +564,7 @@ async def attempt_self_mutation(
                 "error_type": type(error).__name__,
                 "conversation_id": conversation_id,
             },
+            organization_id=audit_org,
         )
     )
 

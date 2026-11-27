@@ -44,6 +44,10 @@
 #                                    A conflict in a HIGH path, a workflow file, or
 #                                    infra/postgres/ is always a BACK.
 #   premerge.sh exits 1           -> BACK <pr> premerge: <tail>
+#   the release freeze (task 3415) -> skip, no BACK. The bot runs scripts/release_freeze.sh
+#                                    of its OWN checkout before the gate and again right
+#                                    before the merge, so a PR head with no freeze step
+#                                    waits too. premerge.sh exits 75 -> skip as well.
 #   an auto-revert PR (head auto-revert/...) when the auto-revert pass did not
 #   test the tip of main now      -> skip, before the checks and the gate, and
 #                                    again before the merge. The next auto-revert
@@ -79,6 +83,7 @@
 #     .test_durations time is over it goes BACK with no run.
 #   AUTO_REVERT_STATE [~/.cache/metorite-auto-revert]  read only: open/<pr>.json,
 #     the last tip of main that the auto-revert pass tested for a revert PR.
+#   PREMERGE_NOW, PREMERGE_RUNS_CMD, PREMERGE_FREEZE_OK  read by scripts/release_freeze.sh
 # It reads gh JSON with python3, not with gh --jq.
 # Fence: tests/unit/test_merge_bot.py.
 set -uo pipefail
@@ -484,7 +489,12 @@ gate() {
     git checkout -q -B "$branch" "$sha" 2>/dev/null || { echo "premerge: checkout of ${sha:0:9} failed"; return 1; }
     main_before="$(git rev-parse origin/main)"
     # 9>&-: premerge and its children do not hold the lock of this pass.
-    if ! out="$(bash -c "$PREMERGE_CMD" 9>&- 2>&1)"; then
+    out="$(bash -c "$PREMERGE_CMD" 9>&- 2>&1)"; prc=$?
+    if [ "$prc" = 75 ]; then
+      # The release freeze (task 3415): a wait, never a BACK. The next pass tries again.
+      echo "release freeze: premerge waits for the release run"; return 2
+    fi
+    if [ "$prc" != 0 ]; then
       tail_="$(tail -n 3 <<< "$out" | one_line)"
       echo "premerge: ${tail_:-exit 1}"; return 1
     fi
@@ -548,6 +558,23 @@ revert_tested() {
     return 2
   fi
   return 0
+}
+
+# freeze_open: task 3415. The release freeze of the bot's OWN checkout ($ROOT), never
+# the copy of the PR head: a PR cut before the freeze has no step 00 in its
+# premerge.sh. handle runs it before the gate and again right before the merge, so a
+# gate that passed before 20:20 does not merge at 20:34. Returns 0 when a merge is
+# allowed (an override prints its task). Otherwise it prints the reason and returns 2:
+# the PR waits, and the next pass tries again. Every exit but 0 is a wait (fail closed).
+freeze_open() {
+  local out rc
+  out="$(bash "$ROOT/scripts/release_freeze.sh" 9>&- 2>&1)"; rc=$?
+  if [ "$rc" = 0 ]; then
+    [ -z "$out" ] || say "$(one_line <<< "$out")"
+    return 0
+  fi
+  if [ "$rc" = 75 ]; then echo "$out"; else echo "release freeze: the check failed (exit $rc): $out"; fi
+  return 2
 }
 
 # A gh error that a later pass can get past. "unexpected EOF" is here too: when
@@ -621,6 +648,8 @@ handle() {
       fi
       return ;;
   esac
+  # Task 3415: the freeze of the bot's own checkout, before the gate costs a premerge.
+  reason="$(freeze_open)" || { say "PR $pr: $(one_line <<< "$reason"), next pass"; return; }
   reason="$(gate "$pr" "$sha" "$tier")"; rc=$?
   case "$rc" in
     0) ;;
@@ -637,6 +666,8 @@ handle() {
       *) record "BACK $pr $(one_line <<< "$reason")"; return ;;
     esac
   fi
+  # Task 3415: the clock moved during the gate. Read the freeze again right before the merge.
+  reason="$(freeze_open)" || { say "PR $pr: $(one_line <<< "$reason"), next pass"; return; }
   if [ "$DRY" = 1 ]; then
     say "DRY RUN would: gh pr ready $pr (if draft), gh pr merge $pr --squash --match-head-commit $sha"; return
   fi

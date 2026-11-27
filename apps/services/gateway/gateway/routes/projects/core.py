@@ -49,6 +49,7 @@ from acb_auth import AgentScope, UserContext, require_feature_router
 from acb_auth.agent_oauth import ACTOR_VIA_PATTERN
 from acb_auth.permissions import normalize_grant_subject
 from acb_common import get_logger
+from acb_common.tool_refusals import ARCHIVED_PROJECT_REFUSAL as _ARCHIVED_PROJECT_REFUSAL
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from gateway.db import tenant_session as _tenant_session  # noqa: F401
 
@@ -446,6 +447,54 @@ CLIENT_TASK_SOURCES: tuple[str, ...] = tuple(
 #: invariant (the migration-150 lesson).
 NODE_KINDS: tuple[str, ...] = ("project", "folder")
 
+#: WS-39 SP-3a (`project_management_app.md` §13.1, D195). The five work styles
+#: of the catalogue, in the order of the picker. `pm_projects.work_style` holds
+#: one of them. The migration CHECK holds only the length, so this tuple is the
+#: list. `workbench/.../app/projects/lib/workStyle.ts` keeps the same keys in
+#: the same order, and `tests/unit/test_project_work_style.py` holds the two
+#: equal.
+WORK_STYLES: tuple[str, ...] = ("flow", "sprints", "shape_up", "plan", "personal")
+#: The styles that a member can pick today. The other three show in the picker,
+#: disabled. A style becomes live when its blocks ship (the slices of WM).
+LIVE_WORK_STYLES: tuple[str, ...] = ("flow", "sprints")
+#: The style of a node that nobody set: the column DEFAULT of the migration.
+DEFAULT_WORK_STYLE = "flow"
+
+
+def validate_work_style(values: dict[str, Any]) -> None:
+    """422 on a work style that the picker cannot set, before any SQL runs.
+
+    A no-op when ``work_style`` is not in ``values``. ``null`` is refused: the
+    column is NOT NULL, and a node always has a style. An unknown value and a
+    style that is not live yet are refused with words that name the choices.
+    The message never echoes a long value back.
+    """
+    if "work_style" not in values:
+        return
+    style = values["work_style"]
+    if style is None:
+        raise HTTPException(
+            status_code=422,
+            detail="A node always has a work style. Pick Flow or Sprints.",
+        )
+    if not isinstance(style, str) or style not in WORK_STYLES:
+        shown = str(style)[:40]
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Unknown work style '{shown}'. One of: {list(WORK_STYLES)}."
+            ),
+        )
+    if style not in LIVE_WORK_STYLES:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"The work style '{style}' is not available yet. Pick one of: "
+                f"{list(LIVE_WORK_STYLES)}."
+            ),
+        )
+
+
 #: The depth cap on PROJECT generations: space=1, project=2, subproject=3.
 #: Folders are transparent to this count and never extend it.
 MAX_PROJECT_GENERATIONS = 3
@@ -566,6 +615,71 @@ def assert_not_archived(node: Any, *, then: str) -> None:
             detail=f"{name} is archived. {then} an active project, or "
                    f"unarchive this one first.",
         )
+
+
+#: ARC-2b (spec ``one_projects_app.md`` §9b.6 rule 2). The one sentence that a
+#: task write into an archived project answers, over HTTP 409. Chat and MCP
+#: reach the same routes and so show the same words.
+ARCHIVED_PROJECT_REFUSAL = _ARCHIVED_PROJECT_REFUSAL
+
+
+def assert_project_open_for_writes(project: Any) -> None:
+    """Refuse a task write into a project with ``archived_at`` (ARC-2b).
+
+    ``archive_node`` stamps ``archived_at`` on every project of the subtree,
+    so the project row alone decides. No ancestor walk. Call it AFTER the
+    visibility load, so a caller who cannot see the project gets 404 (R5).
+    It does not live inside ``load_visible_task`` or ``load_visible_project``,
+    because those also serve reads. A member's own overlay
+    (``pm_task_personal``) and the agent-run routes are not project work and
+    never call it. The one exception is the reopen of a closed task
+    (``personal.reopen_if_closed``), because it changes the status. The
+    subtree acts skip or refuse a subtask in an archived project
+    (``cascade.in_archived_project``).
+    """
+    if getattr(project, "archived_at", None) is not None:
+        raise HTTPException(status_code=409, detail=ARCHIVED_PROJECT_REFUSAL)
+
+
+async def project_is_archived(db: Any, project_id: str) -> bool:
+    """True when the project row carries ``archived_at`` (ARC-2b)."""
+    row = (await db.execute(
+        text(
+            "SELECT archived_at FROM pm_projects "
+            "WHERE id = CAST(:project_id AS uuid)"
+        ),
+        {"project_id": str(project_id)},
+    )).fetchone()
+    return row is not None and row.archived_at is not None
+
+
+async def assert_task_id_project_open(db: Any, task_id: str) -> None:
+    """:func:`assert_project_open_for_writes` for the project of a task id.
+
+    For a route that holds a task id and no task row, such as the edit of a
+    comment. The caller has already proved that they may see the task.
+    """
+    row = (await db.execute(
+        text(
+            "SELECT p.archived_at FROM pm_tasks t "
+            "JOIN pm_projects p ON p.id = t.project_id "
+            "WHERE t.id = CAST(:task_id AS uuid)"
+        ),
+        {"task_id": str(task_id)},
+    )).fetchone()
+    if row is not None:
+        assert_project_open_for_writes(row)
+
+
+async def assert_task_project_open(db: Any, task: Any) -> None:
+    """:func:`assert_project_open_for_writes` for the project of *task*.
+
+    *task* is a row that ``load_visible_task`` returned. One extra read of
+    ``archived_at`` on the task's own project, with no visibility clause: the
+    caller already proved they may see the task.
+    """
+    if await project_is_archived(db, str(task.project_id)):
+        raise HTTPException(status_code=409, detail=ARCHIVED_PROJECT_REFUSAL)
 
 
 def assert_holds_tasks(node: Any, *, then: str) -> None:
@@ -834,6 +948,9 @@ class ProjectModel(BaseModel):
     archive_after_months: int | None = None
     close_after_months: int | None = None
     timezone: str = "UTC"
+    #: WS-39 SP-3a (migration 505). How the team of this node works: one of
+    #: :data:`WORK_STYLES`. A row from before the column reads the default.
+    work_style: str = DEFAULT_WORK_STYLE
     created_by: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -842,6 +959,13 @@ class ProjectModel(BaseModel):
     #: when archived directly, an ancestor when swept in with its subtree. It is
     #: what makes unarchive reversible; see the migration header.
     archived_root_id: str | None = None
+
+    @field_validator("work_style", mode="before")
+    @classmethod
+    def _null_style_is_the_default(cls, value: Any) -> str:
+        # `row_to_model` reads a column a row lacks as NULL: a fake row, or a
+        # read that named its columns. The column itself is NOT NULL.
+        return value if value else DEFAULT_WORK_STYLE
 
 
 class ProjectIn(BaseModel):
@@ -863,6 +987,9 @@ class ProjectIn(BaseModel):
     archive_after_months: int | None = None
     close_after_months: int | None = None
     timezone: str | None = None
+    # WS-39 SP-3a — any node, set by hand, no inheritance. The write path
+    # checks it with `validate_work_style` before any SQL runs.
+    work_style: str | None = None
 
 
 class TaskModel(BaseModel):

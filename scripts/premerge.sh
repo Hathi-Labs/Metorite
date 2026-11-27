@@ -37,7 +37,8 @@
 # pr-check tested exactly what lands. Off: PREMERGE_MERGE_TEST=0 or --no-tests.
 #
 # EXIT 0: merge now. EXIT 1: merge origin/main into the branch, fix, push, and
-# wait for pr-check. Fence: tests/unit/test_premerge.py.
+# wait for pr-check. EXIT 75: the release freeze (step 00). Wait, and run it again
+# later. Fence: tests/unit/test_premerge.py.
 # ════════════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -67,6 +68,7 @@ FENCES=(
   tests/unit/test_index_union.py
   tests/unit/test_chat_parity.py
 )
+LEDGER_CHECK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/migration_ledger_check.py"  # before any cd
 BASE="${PREMERGE_BASE:-origin/main}"
 
 say()  { printf 'premerge: %s\n' "$*"; }
@@ -80,6 +82,20 @@ fi
 git rev-parse -q --verify MERGE_HEAD >/dev/null && fail "a merge is already in progress here."
 
 [ "${PREMERGE_SKIP_FETCH:-0}" = 1 ] || git fetch -q origin "${BASE#origin/}"
+
+# ── 00. The release freeze (CIV, task 3415) ────────────────────────────────
+# No merge from 04:20, 12:20 and 20:20 UTC until the release run of that slot
+# starts, or slot + 30 minutes. scripts/release_freeze.sh is the ONE copy of the
+# rule, and merge_bot.sh runs it too. Exit 75 = frozen: wait, it is not a defect
+# of the branch. Override: PREMERGE_FREEZE_OK=<task number>.
+# Fence: tests/unit/test_release_freeze.py.
+freeze_rc=0
+bash "$(dirname "$LEDGER_CHECK")/release_freeze.sh" || freeze_rc=$?
+case "$freeze_rc" in
+  0) ;;
+  75) exit 75 ;;
+  *) fail "the release freeze check failed (exit $freeze_rc)." ;;
+esac
 base="$(git merge-base HEAD "$BASE")"
 
 # ── 0. A reverted patch does not land again unchanged (CIV-31) ─────────────
@@ -103,6 +119,33 @@ if [ -n "$mine" ]; then
     fi
   done < <(git log "$BASE" --since=90.days --format=%B --grep='Auto-Revert: ' \
     | sed -nE 's/^Auto-Revert: ([0-9a-f]{40})[[:space:]]*$/\1/p' | sort -u)
+fi
+
+# ── 0b. Migration numbers against main and the box ledger (SW-PRE-2, R1) ───
+# This runs on EVERY merge, before the early exit. A branch that contains main
+# can still hold a number that the ledger booked for another pull request. The
+# ledger is ~/lanes/migration-numbers.tsv, written only by reserve_migration.sh.
+# WARNING ONLY, by design. The verifier of PR 2816 proved that a hard fail is wrong:
+# a closed predecessor PR of the same task still owns the row, a row with no PR
+# ("-") never matches, and `gh` may give no PR at all. A false fail blocks a good
+# merge, so this step names the next free number and lets step 1 stay the gate.
+# The number at or below main's top is refused by step 1, with its own message.
+# Fence: tests/unit/test_migration_reservation.py.
+ledger="${PREMERGE_LEDGER:-${HOME:-/nonexistent}/lanes/migration-numbers.tsv}"
+pr_no="${PREMERGE_PR:-}"
+if [ -z "$pr_no" ] && command -v gh >/dev/null 2>&1; then
+  pr_no="$(timeout 20 gh pr view --json number --jq .number 2>/dev/null || true)"
+fi
+added_nums="$(git diff --name-only --diff-filter=A "$base" HEAD -- infra/postgres/ \
+  | sed -nE 's#^.*/0*([0-9]+)_[^/]*\.sql$#\1#p' | sort -n | tr '\n' ' ')"
+if [ -n "$added_nums" ]; then
+  top_now="$(git ls-tree --name-only "$BASE" infra/postgres/ \
+    | sed -nE 's#^.*/0*([0-9]+)_[^/]*\.sql$#\1#p' | sort -n | tail -1)"
+  say "R1: migration number(s) ${added_nums}against main's highest ${top_now:-0} and the ledger"
+  # shellcheck disable=SC2086
+  python3 "$LEDGER_CHECK" --main-max "${top_now:-0}" --ledger "$ledger" --ledger-only \
+    ${pr_no:+--pr "$pr_no"} $added_nums >&2 \
+    || say "WARNING: the ledger lists a number of this branch for another pull request. It does NOT block the merge: a closed predecessor PR of the same task shows up here too. Check the lines above."
 fi
 
 behind="$(git rev-list --count "HEAD..$BASE")"
@@ -164,7 +207,8 @@ present=()
 for t in "${FENCES[@]}"; do [ -f "$t" ] && present+=("$t"); done
 say "collision fences on the merge result: ${#present[@]} files"
 if [ "${#present[@]}" -gt 0 ] && ! env -u VIRTUAL_ENV uv run pytest -q -p no:cacheprovider "${present[@]}" > "$logs/fences.log" 2>&1; then
-  { grep -E "^(FAILED|ERROR|E )" "$logs/fences.log" || true; } | head -15 >&2
+  # CIV-15b (task 2187): an INTERNALERROR or "no tests ran" has no FAILED line, so name them too.
+  { grep -E "^(FAILED|ERROR|E |INTERNALERROR)|no tests ran" "$logs/fences.log" || true; } | head -15 >&2
   fail "a collision fence fails once $BASE is merged in. Fix it on the branch, push, and wait for pr-check."
 fi
 

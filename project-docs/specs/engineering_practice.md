@@ -271,8 +271,9 @@ owner sees a missing preview, because no approval arrives.
 #### 1.3.1 The production copy on this PC (LD-8a, LD-8b, LD-8c)
 
 **Status, 2026-10-31:** 🟡 LD-8c is built (PR 1554), and it reaches
-production at the 21:30 UTC release. LD-8a and LD-8b are in build. The
-spec-auditor gave GO-NARROWED and split LD-8 into three slices.
+production at the 21:30 UTC release. LD-8b is built on its branch, and the
+branch is now in a pull request. It was tested on a fake copy only. LD-8a is in
+build. The spec-auditor gave GO-NARROWED and split LD-8 into three slices.
 
 **Owner approval, 2026-10-31, in chat.** Production writes a reduced copy each
 night (`scripts/staging_export.sh`). It holds the organizations in
@@ -353,6 +354,38 @@ no sudo.
 - Fences: new cases in `tests/unit/test_dev_up.py`. R8 on the restored copy:
   `relforcerowsecurity` holds on the tenant tables, `push_subscriptions` has 0
   rows, and `acb_app` reads 0 rows of another organization.
+
+**How LD-8b runs (as built).**
+
+```sh
+bash scripts/dev_up.sh --data prod --as <email>     # the newest copy
+bash scripts/dev_up.sh --data prod --copy <DIR> --as <email>
+bash scripts/dev_up.sh --data prod --db-only        # the database only
+bash scripts/dev_up.sh --reset --data demo          # back to the demo seed
+```
+
+- The copy folders are in `~/.metorite/prod-copy/`. `PROD_COPY_DIR` changes
+  the folder. A run takes the newest folder by name. A name that starts with
+  `.` is a pull that did not finish, so the run ignores it.
+- Before a restore, the script checks that all five files are there, and that
+  `SHA256SUMS` names the four data files. Then it runs `sha256sum -c`.
+- The pg17 container starts with `-c maintenance_work_mem=256MB`, after the
+  image name. An IVFFlat index on a large mailbox needs more than the 64 MB
+  default. A server flag reaches every session. `PGOPTIONS` is not used,
+  because the Supabase session pooler ignores it (measured 2026-10-31).
+- The stack keeps the copy that it restored, and its `flags.env`. A newer copy
+  needs `--reset`.
+- The member check reads the list of active members as `acb`, and matches
+  `--as` in the script. The email never goes into the SQL.
+- `--db-only` builds the database and stops, with no gateway and no web app.
+  The R8 fence uses it.
+- `--check` skips the tenant-isolation check in this mode, because that check
+  reads the demo seed.
+- `--refresh-flags` read the staging box, and the owner retired that box
+  (D144). Now `--refresh-flags` exits 2 and names `--data prod`.
+- R8 fence: `tests/unit/test_dev_up_prod_r8.py`. It builds a fake copy in a
+  private `pgvector/pgvector:pg17` container, from the ladder and the RLS
+  promotion, by the queries of `scripts/staging_export.sh`. It needs Docker.
 
 **Non-goals.** No write to production. No change to the export schedule. The
 copy is never used by CI, never goes into git, a log, a PR or a chat message,
@@ -692,6 +725,337 @@ cannot drift.
   WSL service (one UAC prompt), then Docker Desktop and only its own distro,
   then the containers that were running.
 - Fence: `tests/unit/test_ci_pc.py`.
+
+## 7b. Land before build (owner directive, 2026-11-26)
+
+**Status: ACTIVE spec. No slice is built (verified against code
+2026-11-26).** Each slice ships dark when it is built. Epic: WS-CIV task 1628.
+Spec task: 4040 (LBB-0). Part A, the backlog itself, is task 4019 (lane-land)
+and task 4039 (pc-land-core). `ci_velocity.md` points here.
+
+**Owner directive, 2026-11-26 ~16:10 UTC:** "If work has already been done,
+then we should try and see how to push it to production. There needs to be
+something in our harness that protects us from making this kind of mistake
+and ensures that previously done work is pushed to production."
+
+**Evidence, 2026-11-26 15:52 UTC.** 124 pull requests were open. 94 were older
+than 7 days, 58 conflicted with main, 50 had no CI result and 27 were red. Only
+13 were ready. The lanes built faster than the mergers landed, and a task read
+Done when its PR merged, or even when its PR only opened. Nothing made a lane
+land its old work before it took new work.
+
+**Owner decision, 2026-11-26 ~16:25 UTC:** "yes, turn on the claim gate too"
+(rule 2, the claim gate, is approved, and its flip is approved after
+verification).
+
+### 7b.1 The six rules
+
+Each rule names its fence (R7). Each slice ships dark behind its flag or its
+mode, default off.
+
+**Rule 1. Done means live.** A task is Done only when production runs its
+merge commit. The deployed SHA (`GET /version`, `applied_sha`) must contain
+that commit (`git merge-base --is-ancestor`). Until then the task stays in a
+review status, or in progress when its project has no review status.
+- The merger no longer sets Done at the merge. It posts "merged, not live:
+  <sha>" on the task and leaves the status.
+- `scripts/home_server/live_check.py` runs after each release slot (05:30,
+  13:30, 21:30 UTC). It reads `/version` once, a read only, and lists each task
+  whose merged PR is now live. The merger lane applies `set_task_status` Done
+  from that list, until the box token (task 1819) lets the script write.
+- It also lists each task that is Done with a PR whose merge commit is not
+  live after two release slots. The merger lane moves each one back and says
+  why.
+- Mode: `LIVE_CHECK_MODE=off|dry|on` in the box unit. `dry` prints the list
+  and writes nothing.
+- Fence: `tests/unit/test_live_check.py` (an ancestor is live, a commit after
+  the deployed SHA is not, `/version` with no answer moves nothing).
+
+**Rule 2. Landing comes first (the claim gate).** §7b.2 holds the design.
+- `my_work` lists the open PRs of the caller's agent label that are older
+  than 24 hours, before any new task, with the reason `land_your_pr`.
+- An agent's claim of a new task is refused while its member and agent label
+  hold an open PR older than 48 hours that no merger has queued.
+- Flags: `CLAIM_GATE_SHADOW_ORGS` (log only) and `CLAIM_GATE_ORGS` (refuse).
+- Fences: §7b.2 "Fences".
+
+**Rule 3. The landing sweeper.** A box timer runs every 2 hours over every
+open PR: `scripts/home_server/landing_sweeper.py`.
+- It skips a PR of author `ishaanpilar`, an `ishaan-*` branch, a draft, and a
+  PR that anyone pushed to in the last 24 hours.
+- A PR that is behind main and has no conflict: it merges main into the head
+  branch with `gh api -X PUT repos/<repo>/pulls/<n>/update-branch`. That is a
+  merge commit, never a rebase or a force-push. The new head starts
+  pr-check.
+- A PR whose pr-check is green on a head that holds today's main, and whose
+  own diff has the same `git patch-id --stable` as a head with a
+  `VERIFY: PASS <sha>` line: it hands the PR to the merge bot
+  (`lane_handover.sh --pr`) when its tier is LOW or STANDARD. A HIGH PR gets
+  a `REQUEUE` line for the box merger.
+- A PR older than 48 hours that conflicts or is red: it writes one `LAND`
+  line to `~/lanes/landing.tsv`, once for each head. lane-land files a "Land
+  PR N" task, tag `landing`, for each new line, until the box token lets the
+  sweeper file it.
+- Mode: `LANDING_SWEEPER_MODE=off|dry|on` in the unit. `dry` writes the lines
+  it would act on to `~/lanes/landing-sweeper.log` and changes nothing.
+- Fence: `tests/unit/test_landing_sweeper.py` (each skip rule, update-branch
+  only for a clean behind PR, a hand-over only on a patch-id match, one `LAND`
+  line for each head).
+
+**Rule 4. A fleet closes with zero orphans.** When a lane stops, each open PR
+that it pushed has a disposition.
+- A disposition is one of two. The PR is queued with a live merger: a
+  `hand_over.sh` run or a `REQUEUE` line, after the last push. Or it is
+  handed to a named landing owner: a `release_task` handoff or a `NOTE` that
+  names the PR and the owner lane.
+- "Released for other agents" is not a disposition.
+- `.claude/hooks/stop-disposition.mjs` reads the transcript. It finds each
+  PR that the session pushed or opened, and blocks the Stop once for each PR
+  with no disposition. It names the PR and the two choices. It fails open. Like
+  the rest of this hook, it runs only in a background job
+  (`stop-disposition.mjs`, the `CLAUDE_JOB_DIR` marker).
+- The box wind-down script is `~/lanes/winddown.sh` today, and it is not in
+  the repo. LBB-4 moves it to `scripts/home_server/lanes/winddown.sh`. It then
+  lists each open PR of each lane that it stops, and refuses to stop a lane
+  with an orphan unless `--force-orphans`.
+- Switch: `STOP_DISPOSITION_PRS=off|warn|block`, default `off`. The owner or
+  metorite-78 sets `warn`, then `block`.
+- Fences: `node .claude/hooks/stop-disposition.test.mjs` and
+  `tests/unit/test_winddown.py`.
+
+**Rule 5. Merge capacity follows build capacity.**
+- The merge bot is the default for LOW and STANDARD PRs. A lane hands over
+  with `scripts/hand_over.sh` and never merges by hand.
+- A merge gate trusts a green pr-check on a head that holds today's main. That
+  is the early exit of `premerge.sh` today.
+- A head that is behind main gets the trial merge and the collision fences.
+  It re-runs tests on the merge result only when the union adds a migration or
+  touches an R8 suite (`affected_tests.py --r8`). Otherwise the clean trial
+  merge and a green pr-check on the head decide.
+- HIGH tier: the merge path. The change waits for PR 2407 (one time budget)
+  and PR 2488 (the release freeze) to land first.
+- Switch: `PREMERGE_MERGE_TEST=auto|1|0`, with `auto` the new default only
+  after the owner approves the flip.
+- Fence: `tests/unit/test_premerge.py` (a behind head with no migration and no
+  R8 file runs no merge test, and one with either runs it).
+
+**Rule 6. Visibility.** Built work that is not live is shown, and a breach
+opens a fix task.
+- The weekly delivery review (CIV-10, `.claude/commands/delivery-review.md`)
+  measures `built_not_live`: each open PR over 24 hours, with its age. Its
+  thresholds: more than 30 open PRs, or any PR older than 5 days. Each breach
+  opens one fix task, as the other rows of that table do.
+- My Day shows a "Built, not live" row in its "Needs you" list for a member
+  whose lanes hold such PRs, from `pm_task_refs`. Flag:
+  `BUILT_NOT_LIVE_ORGS`.
+- Fences: `tests/unit/test_delivery_review.py` (the metric and its two
+  thresholds) and `tests/unit/test_built_not_live_r8.py` (the My Day row).
+
+### 7b.2 The claim gate (rule 2)
+
+**What it is, and what it is not.** The gate guides agents that cooperate.
+It is not a security control. It reads `pm_agent_runs.agent_label`, which is
+display data (`agent_coordination.md` §3.7). A lane that changes its label
+escapes the gate. The gate never opens, grants or shows anything. It only
+refuses an agent's own new claim. `agent_coordination.md` §3.7 records this
+reader in a dated amendment, and `tests/unit/test_agent_label_fence.py`
+names `gateway/routes/projects/claim_gate.py` as the one module that may read
+the label for a decision.
+
+**The traps, and the answer to each.**
+
+1. **Every lane pushes as GitHub user vjvarada.** A count by member refuses
+   every lane, because 119 PRs are open. So the gate counts by agent label.
+   A PR belongs to the agent label of the newest run on its task. The newest
+   run is the `pm_agent_runs` row of the task with the highest `created_at`,
+   then the highest `id`, in any status. A NULL label binds the PR to claims
+   that send no label. A lane that adopts a PR claims its task, so the PR is
+   then its own.
+2. **No deadlock.** The gate never refuses these claims:
+   - a claim of a task that holds a `pull_request` reference with `merged_at`
+     NULL and `state` NULL, `open` or `draft`. That covers the task of the old
+     PR, a "Land PR N" task, and a merger's claim.
+   - a claim of a task with the tag `landing`. Tags compare with no case
+     (migration 156).
+   - a claim of a task where the caller already has an open run: the same
+     member, connection and session key, the test of `_OPEN_RUN_SQL`
+     (`agent_runs.py`). That test reads no label.
+   - a claim by a person. A person's claim sends no label and opens no agent
+     run (`agent_runs.py`, the person branch of the claim).
+3. **"Queued" lives on the box.** The gateway never reads a box file. The
+   lane tells the server: after it runs `hand_over.sh` or writes a `REQUEUE`
+   line, it calls `add_task_reference` again on the same PR URL with
+   `landing: "queued"`. LBB-2 makes `hand_over.sh` print that call as its last
+   line. A `queued` mark expires after 24 hours, so a PR that the bot sent
+   BACK counts again by the next day. A lane that re-queues sends the mark
+   again. At each merge, the merger sends `landing: "gone"`. LBB-1 owns that
+step in `scripts/home_server/lanes/lane-merge.md`, because LBB-1 also removes
+the Done at the merge.
+4. **The refusal is for an agent.** It names each PR, its age in hours, its
+   task number and one next step.
+
+**The three doors.** SW-45 checks the claim scope at three doors, and the
+gate runs at the same three, right after `check_claim_scope`:
+- `claim_task` (`gateway/routes/projects/tasks.py`).
+- `set_assignees` when an agent adds itself (`tasks.py`, the call of
+  `check_claim_scope`).
+- `start_agent_run` (`gateway/routes/projects/agent_runs.py`, the call of
+  `check_claim_scope`).
+
+**The record.** One expand-only migration (R6) adds three nullable columns to
+`pm_task_refs`. No new table. The table is already tenant-scoped with FORCE
+row level security (255), so the columns inherit it (R5).
+- `landing_state TEXT NULL`, CHECK `landing_state IN ('queued', 'parked',
+  'gone')`.
+- `landing_at TIMESTAMPTZ NULL` and `landing_by TEXT NULL`.
+- `add_task_reference` (the edge tool and `POST` of
+  `gateway/routes/projects/refs.py`) takes an optional `landing` field.
+  `insert_ref` changes from `ON CONFLICT ... DO NOTHING` to an update of the
+  three columns, only when `landing` is sent. `landing_by` is `actor(user)`.
+  The change writes one `link` activity with `ref_action: landing`.
+- A repeat of the same URL with no `landing` changes nothing, as today.
+- Who may write `landing`: each caller who may add a reference to the task
+  today. No new permission.
+- `gone` means merged or closed, said by the lane or the merger. It never
+  expires. A `parked` mark exempts the PR only while its task's status
+  category is backlog or todo.
+
+**A counted PR.** The gate counts a reference when each of these is true:
+- Its kind is `pull_request`, and its `state` is NULL, `open` or `draft`.
+- Its `merged_at` is NULL.
+- Its task is visible to the caller, not archived, and not in a done or
+  cancelled status. Its project is open. (A PR on a task that the lane cannot
+  write is never counted, because the lane could not clear it.)
+- It is older than 48 hours from `created_at`, or 24 hours for `my_work`.
+- The newest run on its task (trap 1) has the caller's member and the
+  caller's agent label.
+- Its `landing_state` is NULL. Or it is `queued`, with `landing_at` older
+  than 24 hours. Or it is `parked`, on a task that is not in backlog or todo.
+- No run on its task has the status `awaiting` (a run that waits on a
+  person, with an open question).
+
+**The refusal.** A 422 through `_refuse_claim` (`tasks.py`), with
+`detail.error = "land_your_pr"`. `_refuse_claim` gains an optional `prs`
+list for the body. The body lists up to 5 counted PRs, oldest
+first. Each entry has the PR number (parsed from `ref`), the age in hours,
+the task number and a `next` code. It also has the URL, but only when the
+URL matches `^https://github\.com/[^/]+/[^/]+/pull/[0-9]+$`. The edge adds
+`land_your_pr` to its coded claim refusals (`_CLAIM_CODED`, `tools.py`),
+because `coded_statuses=(422, 403)` already carries a 422. It also adds
+`land_your_pr` to `_OUTSIDE_CODED`, which `set_assignees` uses, and 422 to the
+coded statuses of `start_agent_run`. So all three doors show the same text. It renders a fixed
+text from these values, never text that a person wrote. The `next` code:
+- `answer` when `AGENT_RUN_ANSWER_WAITS_SQL` (`filters.py`) finds an
+  answered run on the task. "Answered" is a derived state, not a status: "A person
+  answered on task T. Read the answer and act on it."
+- `land` otherwise: "Merge main into PR N, verify it, and queue it. Then call
+  add_task_reference on task T with landing queued."
+- Each entry also gets one line: "If PR N is merged or closed, call
+  add_task_reference on task T with landing gone."
+
+**The `my_work` row.** `my_work` takes an optional `agent_label`, as
+`claim_task` does, and joins `_TAKES_LABEL` in
+`tests/unit/test_agent_label_fence.py`. With no label, it lists the PRs bound
+to no label.
+- A new gateway read lists the counted PRs over 24 hours for the caller and
+  label: `GET /projects/agent-work/landing` in
+  `gateway/routes/projects/claim_gate.py`. The pair
+  `("GET", "/projects/agent-work/landing")` joins `MCP_ROUTES`
+  (`packages/acb_auth/acb_auth/agent_oauth.py`).
+- The edge adds `land_your_pr` to `MY_WORK_REASONS` (`tools.py`). The row
+  keys gain `pr_number`, `pr_url` (same pattern as above, else null) and
+  `age_hours`.
+- Position: after the waiting runs (`run_queued`, `run_answered`,
+  `run_stopping`), and before `held_by_you`, `check_due`, `assigned` and
+  `own_app_free`.
+- Either flag shows the row.
+
+**Flags.** Two `Settings` fields: `claim_gate_shadow_orgs` and
+`claim_gate_orgs`, in `acb_common/flag_registry.py` when PR 2380 is on main,
+else in `settings.py`. Both are reloadable `*_orgs` lists with `*`, read by
+one reader each in `claim_gate.py`, with entries in `docs/flag_reload.md`.
+- `CLAIM_GATE_SHADOW_ORGS` logs `claim.gate would_refuse` with the PR numbers,
+  and refuses nothing.
+- `CLAIM_GATE_ORGS` refuses, and logs `claim.gate refused`.
+- Neither gates money or a real person.
+
+**Who it binds.** Every member, every lane, and the lanes of each person. The
+PR body of the build tells Ishaan, because his lanes are bound too.
+
+**The flip.** Not by the builder. After the merge and a release, metorite-78
+sets `CLAIM_GATE_SHADOW_ORGS` for Hathi Labs (`02cf1f16`) and reads one day of
+`claim.gate` lines. Then it sets `CLAIM_GATE_ORGS` for Hathi Labs, and after
+one more day, `*`. Each step is gate `enforcement-flip`. The grant of
+`.claude/OWNER_GRANTS.md` ends on 2026-11-30, so a step after that date needs
+a new grant line or the owner's own hand.
+
+**Accepted risk.** Every session with no label shares one bucket. So a
+session with no label can be refused for a PR of another session with no
+label. metorite-78 measures this on the shadow day, before `CLAIM_GATE_ORGS`
+goes on.
+
+**Fences.**
+- `tests/unit/test_claim_gate_r8.py`, on a real database: each rule of "A
+  counted PR", each exemption of trap 2, the three doors, the shadow flag
+  refuses nothing, and the `landing` write.
+- `tests/unit/test_claim_gate_edge.py`: the refusal text for each `next` code
+  at each of the three doors, a URL that fails the pattern is left out, and
+  the `my_work` row and its position.
+- `tests/unit/test_agent_label_fence.py`: `claim_gate.py` is the one allowed
+  decision reader of the label. No SQL constant outside `claim_gate.py` names
+  `agent_label` in a `WHERE` clause.
+- `tests/unit/test_flag_reload.py`: one reader test per flag, in the shape of
+  the `_READERS` table (PR 2380) or of the per-flag tests on main.
+
+**Done when.**
+1. With both flags off, every existing claim, assignee and run-start test
+   passes unchanged, and no claim reads the new query.
+2. With `CLAIM_GATE_ORGS` on, an agent claim of a new task is refused (422
+   `land_your_pr`) for a label that holds a counted PR, and the text names
+   each PR, its age, its task and the next step.
+3. Each exemption of trap 2 passes with the flag on.
+4. `my_work` lists the `land_your_pr` row in its place.
+5. `hand_over.sh` prints the `add_task_reference ... landing queued` line.
+
+**Verify with.**
+
+```
+eval "$(bash scripts/dev_db.sh --export)"
+PYTEST_ADDOPTS="-o timeout_method=thread" uv run pytest -p no:cacheprovider \
+  tests/unit/test_claim_gate_r8.py tests/unit/test_claim_gate_edge.py \
+  tests/unit/test_agent_label_fence.py tests/unit/test_mcp_edge_claim.py \
+  tests/unit/test_agent_claim_scope_r8.py tests/unit/test_task_refs_route.py \
+  tests/unit/test_flag_reload.py tests/unit/test_mcp_edge_coverage.py
+```
+
+**Tier.** HIGH (the claim path is next to auth, and a migration): the
+spec-auditor, an Opus builder, an independent verifier, an Opus diff-review
+and R8 tests on a real database.
+
+### 7b.3 Slices
+
+Each slice row names its anchors and its gate. The build is AGENT-SAFE for
+each slice. Each flip or `on` mode is OWNER-GATE.
+
+| Order | Rung | Slice | Task | Tier | Flag or mode | Anchors | Gate |
+|---|---|---|---|---|---|---|---|
+| 1 | 1 | LBB-2 the claim gate and the `land_your_pr` row | 4041 | HIGH | `CLAIM_GATE_SHADOW_ORGS`, `CLAIM_GATE_ORGS` | §7b.2 | build AGENT-SAFE, flip `enforcement-flip` |
+| 2 | 1 | LBB-4 zero orphans at a stop | 4042 | STANDARD | `STOP_DISPOSITION_PRS` | `.claude/hooks/stop-disposition.mjs`, `~/lanes/winddown.sh` | build AGENT-SAFE, `block` by the owner |
+| 3 | 1 | LBB-3 the landing sweeper | 4043 | HIGH (merge path) | `LANDING_SWEEPER_MODE` | `scripts/home_server/lane_handover.sh`, `merge_bot.sh` | build AGENT-SAFE, `on` and the timer are `deploy` |
+| 4 | 2 | LBB-1 done means live | 4044 | STANDARD | `LIVE_CHECK_MODE` | `GET /version`, the merger steps of `lane-merge.md` | build AGENT-SAFE, `on` is `deploy` |
+| 5 | 2 | LBB-6 built, not live, in My Day and the review | 4045 | STANDARD, UI | `BUILT_NOT_LIVE_ORGS` | `.claude/commands/delivery-review.md`, My Day "Needs you" (WS-58) | build AGENT-SAFE, D145 preview before the flip |
+| 6 | 2 | LBB-5 merge capacity follows build capacity | 4046 | HIGH (merge path) | `PREMERGE_MERGE_TEST=auto` | `scripts/premerge.sh` step 4 | build AGENT-SAFE, the default flip is the owner's |
+
+Rung 1 stops new orphans and lands the old ones. Rung 2 shows the owner what
+is live and makes merges cheaper. The demo of rung 1: on production, a lane
+with a PR older than 48 hours sees `land_your_pr` first in `my_work`, and its
+claim of a new task is refused with the PR named.
+
+Each slice other than LBB-2 gets its own "Done when" and "Verify with" lines
+in this section when its builder starts, and its own spec-auditor run.
+
+**Out of scope.** Closing a PR (the owner closes, from the close list of task
+4019). A change to `TOOL_PACKS`. Any flag flip by a builder.
 
 ## 8. What to fix before customer #1 — in order
 

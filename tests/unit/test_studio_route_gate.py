@@ -100,6 +100,8 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     # F2a, the skill routes.
     ("GET", "/studio/skills"),
     ("POST", "/studio/skills"),
+    # TOF rung 1 (task 3830): does a saved skill match these words.
+    ("POST", "/studio/skills/match"),
     ("GET", "/studio/skills/{skill_id}"),
     ("GET", "/studio/skills/{skill_id}/versions/{version}"),
     ("POST", "/studio/skills/{skill_id}/versions"),
@@ -173,6 +175,8 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/studio/mcp/{server}/refresh"),
     # B1b-3, the approval of the text of one MCP tool.
     ("POST", "/studio/mcp/{server}/tools/{tool}/approve"),
+    # SBX-1a, the gap view of an approver (agent_sandbox.md §9.2).
+    ("GET", "/studio/tool-gaps"),
 )
 
 _PARAMS = {
@@ -238,9 +242,9 @@ def no_store(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
         return _fn
 
-    from gateway.routes.studio import connections, invoke, packages, skills, views
+    from gateway.routes.studio import connections, invoke, packages, skills, tool_gaps, views
 
-    for module in (actions, connections, invoke, packages, skills, views):
+    for module in (actions, connections, invoke, packages, skills, tool_gaps, views):
         if hasattr(module, "_tenant_session"):
             monkeypatch.setattr(module, "_tenant_session", _trip(f"{module.__name__}.session"))
     monkeypatch.setattr(actions, "catalog_rows", _trip("catalog_rows"))

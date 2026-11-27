@@ -6,7 +6,7 @@
 --
 -- ENABLE + FORCE ROW LEVEL SECURITY + the policy. Instant — no scan. ⚠️ AND IT IS A CLIFF: the moment this applies, any connection that has not bound app.tenant_id reads ZERO ROWS. That is the fail-closed property working (§0.1). MT-1c must be deployed AND VERIFIED first, or the product goes dark.
 --
--- Tables in this phase: 203
+-- Tables in this phase: 204
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -835,6 +835,20 @@ ALTER TABLE pm_agent_run_strands ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pm_agent_run_strands FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS pm_agent_run_strands_tenant_isolation ON pm_agent_run_strands;
 CREATE POLICY pm_agent_run_strands_tenant_isolation ON pm_agent_run_strands
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE pm_project_sequences ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_project_sequences FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_project_sequences_tenant_isolation ON pm_project_sequences;
+CREATE POLICY pm_project_sequences_tenant_isolation ON pm_project_sequences
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE pm_sequence_reservations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_sequence_reservations FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_sequence_reservations_tenant_isolation ON pm_sequence_reservations;
+CREATE POLICY pm_sequence_reservations_tenant_isolation ON pm_sequence_reservations
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
@@ -1787,5 +1801,12 @@ ALTER TABLE failure_org_days ENABLE ROW LEVEL SECURITY;
 ALTER TABLE failure_org_days FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS failure_org_days_tenant_isolation ON failure_org_days;
 CREATE POLICY failure_org_days_tenant_isolation ON failure_org_days
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE tool_gaps ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tool_gaps FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tool_gaps_tenant_isolation ON tool_gaps;
+CREATE POLICY tool_gaps_tenant_isolation ON tool_gaps
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);

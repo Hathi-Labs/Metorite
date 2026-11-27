@@ -654,8 +654,9 @@ def _denied_result(reason: str) -> Any:
 
 # ── D85: no shell for a shared agent until the sandbox covers it ─────────────
 # Owner decision, 2026-10-03 (work_plan.md D85, maf_coding_engine.md §7.9).
-# The injection seam withholds the shell TOOLS from a shared agent (a cover
-# may lift that). This half refuses the Copilot CLI's OWN shell, which
+# D129 (2026-10-27) puts a personal agent in scope too. Only the root dev
+# agent stays out. The injection seam withholds the shell TOOLS (a cover may
+# lift that). This half refuses the Copilot CLI's OWN shell, which
 # task-manager and app-builder hold. That shell runs on the HOST, so a cover
 # never lifts it. The run decides it once, at its boundary: the executor binds
 # ``host_shell_refused`` into the artifact context from
@@ -664,7 +665,7 @@ def _denied_result(reason: str) -> Any:
 
 #: The text the model reads when D85 refuses its shell.
 SHELL_WITHHELD_REASON = (
-    "Shell is disabled for shared agents until the sandbox covers them, D85"
+    "Shell is disabled for this agent until the sandbox covers it, D85"
 )
 
 #: Request kinds that run a shell command. The SDK sends every shell, bash and
