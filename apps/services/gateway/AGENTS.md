@@ -852,6 +852,15 @@ and it waits with no database session.
   `X-Sandbox-Ticket`. The sibling takes the ticket once and runs every step
   again. Do not run a held row in another way.
 - Fences: `test_sandbox_door_writes.py` (R8), `test_sandbox_door_identity.py`.
+- SBX-3b adds three internal routes beside the batch: `POST /sandbox/held/card`,
+  `/sandbox/held/act` and `/sandbox/held/results`. Each needs
+  `require_internal_auth` and the member, and each answers 404 for an org
+  that is not in `SANDBOX_DOOR_ORGS`. The card text comes only from the held
+  record (`card_text`), with each value of the code fenced. The act reads the
+  record with `GET`, checks its owner and its thread, takes the answer once,
+  and then calls `decide`. The batch writes the result of each row under
+  `sandbox_held_result`, and the results route spends each one once, for its
+  owner and its run only. Fence: `test_sandbox_held_card.py` (R8).
 
 ### Adding a new endpoint
 1. Create or extend a route file in routes/
