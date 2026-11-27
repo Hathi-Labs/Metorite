@@ -11,10 +11,19 @@
 import Button from "@/components/ui/Button";
 import AppIcon, { themedIcon } from "@/components/Icon";
 import type { ThemedIcon } from "@/components/Icon";
-import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  use,
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import SandboxedHtml from "@/components/SandboxedHtml";
+import RollbackStrip from "../components/RollbackStrip";
 import {
   buildAppSrcDoc,
   extractCcIconNames,
@@ -23,6 +32,7 @@ import {
   type CcToolConfirmDecision,
   type CcToolConfirmRequest,
 } from "../lib/ccBridge";
+import { ROLLBACK_IDLE, rollbackReducer, runRollback } from "../lib/rollback";
 import type { AppMeta, AppUsage, AppVersion } from "../lib/types";
 
 /** A pending `cc.tools.call()` confirm, waiting on the viewer's decision. */
@@ -161,8 +171,7 @@ export default function AppRunPage({
   const infoRef = useRef<HTMLDivElement | null>(null);
 
   // "Make live" (rollback) two-step confirm, editors only.
-  const [confirmVersion, setConfirmVersion] = useState<number | null>(null);
-  const [rollbackBusy, setRollbackBusy] = useState(false);
+  const [rollback, dispatchRollback] = useReducer(rollbackReducer, ROLLBACK_IDLE);
 
   // Fork/remix — duplicate this app's current source as a new app owned by
   // the viewer (works for anyone who can see the app, not just editors).
@@ -347,7 +356,7 @@ export default function AppRunPage({
     const onDown = (e: MouseEvent) => {
       if (infoRef.current && !infoRef.current.contains(e.target as Node)) {
         setShowInfo(false);
-        setConfirmVersion(null);
+        dispatchRollback({ type: "cancel" });
       }
     };
     document.addEventListener("mousedown", onDown);
@@ -356,20 +365,13 @@ export default function AppRunPage({
 
   /** Roll the live pointer back to an older published version. */
   const makeLive = useCallback(
-    async (version: number) => {
-      setRollbackBusy(true);
-      try {
-        const res = await fetch(
-          `/api/apps/${encodeURIComponent(slug)}/rollback`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ version }),
-          }
-        );
-        if (res.ok) {
-          setConfirmVersion(null);
-          // Refetch app meta + live bundle so the badge and frame match.
+    (version: number) =>
+      runRollback({
+        slug,
+        version,
+        dispatch: dispatchRollback,
+        // Refetch app meta + live bundle so the badge and frame match.
+        refresh: async () => {
           const ares = await fetch(`/api/apps/${encodeURIComponent(slug)}`);
           if (ares.ok) {
             const data = (await ares.json()) as AppMeta;
@@ -379,13 +381,8 @@ export default function AppRunPage({
             `/api/apps/${encodeURIComponent(slug)}/bundle?version=live`
           );
           if (bres.ok) setBundle(await bres.text());
-        }
-      } catch {
-        // Best-effort — leave the confirm strip open so the user can retry.
-      } finally {
-        setRollbackBusy(false);
-      }
-    },
+        },
+      }),
     [slug]
   );
 
@@ -526,30 +523,20 @@ export default function AppRunPage({
                             <span className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full text-success bg-success/10 shrink-0">
                               live
                             </span>
-                          ) : canEdit && confirmVersion !== v.version ? (
-                            <Button variant="secondary" size="none" radius="keep" layout="" onClick={() => setConfirmVersion(v.version)} className="text-[10px] rounded-md px-2 py-0.5 shrink-0">
+                          ) : canEdit && rollback.version !== v.version ? (
+                            <Button variant="secondary" size="none" radius="keep" layout="" onClick={() => dispatchRollback({ type: "ask", version: v.version })} className="text-[10px] rounded-md px-2 py-0.5 shrink-0">
                               Make live
                             </Button>
                           ) : null}
                         </div>
-                        {canEdit && !isCurrent && confirmVersion === v.version && (
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-[10px] text-muted-foreground flex-1">
-                              Make v{v.version} live?
-                            </span>
-                            <Button size="none" radius="keep" layout="flex items-center" onClick={() => makeLive(v.version)} disabled={rollbackBusy} className="text-[10px] rounded-md px-2 py-1 gap-1">
-                              {rollbackBusy && (
-                                <AppIcon name="Loader2" className="w-3 h-3 animate-spin" />
-                              )}
-                              Confirm
-                            </Button>
-                            <button
-                              onClick={() => setConfirmVersion(null)}
-                              className="text-[10px] rounded-md border border-border px-2 py-1 text-muted-foreground hover:text-foreground tech-transition"
-                            >
-                              Cancel
-                            </button>
-                          </div>
+                        {canEdit && !isCurrent && rollback.version === v.version && (
+                          <RollbackStrip
+                            version={v.version}
+                            busy={rollback.busy}
+                            error={rollback.error}
+                            onConfirm={() => makeLive(v.version)}
+                            onCancel={() => dispatchRollback({ type: "cancel" })}
+                          />
                         )}
                       </div>
                     );

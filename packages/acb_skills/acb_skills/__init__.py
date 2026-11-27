@@ -1,4 +1,7 @@
 """Skill registry (v1) + Dynamic Agent Loader (v2) + Integration Registry."""
+# TOF-2b: give the built-in tool names to the failure log before any tool runs
+# (tool_failure_log.md §3.2 rule 1).
+from acb_skills import builtin_tools as _builtin_tools  # noqa: F401
 from acb_skills.agent_tools import call_agent, call_agent_background
 from acb_skills.web_tools import fetch_page, web_search
 from acb_skills.write_artifact import (

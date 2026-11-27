@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Split the slice rows of project-docs/specs/ai_studio.md section 14 into one file each.
 
-CIV-33 slice 2 (task 3337, docs/merge_hotspots.md). Two PRs that edit two rows of
+CIV-HS slice 2 (task 3337, docs/merge_hotspots.md). Two PRs that edit two rows of
 the one section 14 table collide, because a row is one long line and rows sit side
 by side. After the split, section 14 holds one short INDEX line for each row, and the
 row text lives in project-docs/specs/ai_studio_rows/<id>.md. Two PRs conflict only

@@ -83,7 +83,8 @@ class _Db:
     def _ns(r: dict[str, Any]) -> Any:
         return types.SimpleNamespace(
             id=r["id"], provider_message_id=r["pmid"], body_text=r["body"],
-            cc_addresses=r["cc"], bcc_addresses=r["bcc"])
+            cc_addresses=r["cc"], bcc_addresses=r["bcc"],
+            internet_message_id=None)  # task 4100: the trash reads it
 
     async def execute(self, stmt: Any, params: dict[str, Any] | None = None) -> Any:
         sql = str(stmt)

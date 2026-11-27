@@ -292,12 +292,16 @@ def test_status_editing_and_template_apply_stay_off():
         assert not row.op and row.off_door == reason, pair
 
 
-def test_goals_and_teams_have_no_route_yet():
-    """§19.16 names them, and the router serves no route of either. When one
-    comes, its row needs a door op, and this test fails as a reminder."""
+def test_goals_and_new_team_routes_are_not_on_the_door():
+    """§19.16 names them. The one team read of T-1 stays off the door until
+    T-6 (task 2537). When another goal or team route comes, its row needs a
+    door decision, and this test fails as a reminder."""
+    teams_read = ("GET", "/projects/teams")
     hits = sorted(pair for pair in _router_routes()
-                  if re.search(r"/goals?\b|/teams?\b", pair[1]))
-    assert not hits, f"give these routes a door op in FIRST_ACTS: {hits}"
+                  if re.search(r"/goals?\b|/teams?\b", pair[1]) and pair != teams_read)
+    assert not hits, f"decide the door op of these routes: {hits}"
+    row = _table()[teams_read]
+    assert not row.op and row.off_door == p.TEAMS_READ
 
 
 # ── 7. The approval path (§19.5) ────────────────────────────────────────────
@@ -314,13 +318,30 @@ def test_each_change_asks_the_member_for_each_call():
             assert door.scope == "projects:write", door.name
 
 
-def test_ad18_each_change_fails_closed_today():
-    """Before MCP-P1b-2 no approval can exist, so the shared rule of
-    availability refuses each change (AD-18)."""
-    for door in am.door_ops(DOOR).values():
-        available, code = agent_oauth.door_available(door)
-        if door.kind == "write":
-            assert (available, code) == (False, agent_oauth.APPROVAL_REQUIRED_CODE), door.name
+def test_ad18_each_change_fails_closed_today(monkeypatch):
+    """MCP-P1b-2 (§19.4) puts the spend in place of the blanket refusal of
+    AD-18. The shared rule now checks the writes flag first, as branch 0
+    does (``deps._door_gate`` step 0), then the approval path. With either
+    flag off, each change is unavailable. With both on, each change reads
+    available, and branch 0 still refuses a call with no approval with 403
+    ``approval_required`` (``test_mcp_edge_app_door.py::
+    test_a_write_with_no_approval_fails_closed``). No Projects op sends, so
+    none gets ``sends_off``. A read is available in each case."""
+    from acb_common import get_settings
+
+    settings = get_settings()
+    cases = (
+        (False, False, agent_oauth.DOOR_WRITES_OFF_CODE),
+        (False, True, agent_oauth.DOOR_WRITES_OFF_CODE),
+        (True, False, agent_oauth.REQUESTS_OFF_CODE),
+        (True, True, None),
+    )
+    for writes, runs, code in cases:
+        monkeypatch.setattr(settings, "agent_access_writes_enabled", writes)
+        monkeypatch.setattr(settings, "agent_runs_enabled", runs)
+        for door in am.door_ops(DOOR).values():
+            want = (code is None, code) if door.kind == "write" else (True, None)
+            assert agent_oauth.door_available(door) == want, (door.name, writes, runs)
 
 
 def test_the_scopes_are_the_two_fixed_projects_scopes():

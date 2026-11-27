@@ -45,6 +45,11 @@
     "convert_lead",
     "crm_update_record",
     "crm_update_task",
+    "crm_mapping_suggestions",
+    "crm_preview_suggestion",
+    "crm_decide_suggestion",
+    "crm_analysis_status",
+    "crm_rerun_analysis",
     "crm_list_records",
     "crm_get_record",
     "crm_list_fields",
@@ -59,6 +64,14 @@
     "crm_get_module_record",
     "crm_search_notes",
     "crm_change_history",
-    "crm_create_pipeline"
+    "crm_create_pipeline",
+    "crm_edit_status",
+    "crm_edit_lost_reason",
+    "crm_field_map",
+    "crm_edit_field_rule",
+    "crm_list_mapping_plans",
+    "crm_draft_mapping_plan",
+    "crm_approve_mapping_plan",
+    "crm_restore_mapping_plan"
   ]
 }

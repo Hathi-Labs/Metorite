@@ -99,6 +99,12 @@ All providers implement the `BaseEmailProvider` abstract interface:
 18. **The HTML hot window.** `html_tier.py` is the one owner of the window and of `EMAIL_HTML_FROM_PROVIDER` and `EMAIL_HTML_HOT_ONLY`. Fence: `test_email_html_tier.py`.
    - No other module reads the two flags or writes the number 90 next to `received_at`. Neither `html_tier.py` nor `import_window.py` imports the other.
    - A new writer of `body_html` uses the same rule and joins `ALLOWED_HTML_WRITERS`. `_html_to_text` is the one text maker, and it runs in linear time. Fence: `test_email_html_hot_only.py`.
+19. **The IMAP trash.** `_trash_inbox_uid` in `providers/imap.py` runs each trash command with INBOX selected. A UID names a mail in one folder only.
+   - It uses UID MOVE, or UID COPY with a STORE and a UID EXPUNGE of that one UID. It never sends a plain EXPUNGE, because that removes mail that another client flagged.
+   - It raises, and removes nothing, with no Trash folder, a UID that is not in INBOX, or a copy that is not OK. Fence: `test_email_imap_trash.py`.
+   - A stored UID can name another mail after a change of UIDVALIDITY. So the trash takes the stored Message-ID as `message_id=`, reads the Message-ID at the UID with `BODY.PEEK`, and compares the two.
+   - A mismatch raises and moves nothing. A missing Message-ID on either side does the same. Fence: `test_email_imap_trash_uidvalidity.py`.
+   - Each caller that has the row calls the trash through `base.trash_checked`. The gateway reads the stored value with `core._trash_message_id` or `core._trash_message_ids`. A call with no `message_id` fails closed on IMAP. Fence: `test_email_imap_trash_uidvalidity_r8.py` (R8).
 
 ## Inbound SMTP Server
 
@@ -129,7 +135,7 @@ persists them directly to `email_messages`. The gateway lifespan starts and stop
   - **The resume (EM-T6f).** A loop cycle resumes an import in the phase `limit` when the meter is under the limit by `storage.resume_margin_bytes()` (20 MB, or 1% of the limit). `storage.import_resumes` is the one rule, and `storage.resume_import` is the one conditional write. Phase (a) calls them under the mailbox lock. `STORAGE_RESUME_GAP_SECS` lets one mailbox resume in each gap.
   - **The meter of an import.** Do not run the full meter after each batch. `storage.ImportMeter` runs it after the first batch and near the limit, at most `IMPORT_FULL_METERS` times in a run. Each other batch adds the growth of its own rows.
   - **The share of a cycle.** `scheduler._cycle_mails` is the one rule. An import that goes on from `import_reached_at` reads at most `RESUME_CYCLE_MAILS` (1,000) in a cycle, so the sweep runs between the shares (Q2). Fences: the `email-storage-t6f-*` set in `test_email_storage_limit.py`.
-- ⚠️ `post_sync.triage_once_per_cycle` is the one reader of `EMAIL_TRIAGE_ONCE_PER_CYCLE`, and `post_sync.status_skips_rule_match` of `EMAIL_STATUS_SKIPS_RULE_MATCH`. Fence: `test_email_triage_once.py`.
+- ⚠️ `post_sync.triage_once_per_cycle` is the one reader of `EMAIL_TRIAGE_ONCE_PER_CYCLE`, and `post_sync.status_skips_rule_match` of `EMAIL_STATUS_SKIPS_RULE_MATCH`. Fence: `test_email_triage_once.py`. `post_sync.classify_one_at_a_time` is the one reader of `EMAIL_CLASSIFY_ONE_AT_A_TIME` (H-285, default off). With it on, a second classify of one mailbox skips while the first runs, in one gateway process. Fence: `test_email_classify_one_at_a_time.py`.
 - Interval: `email_accounts.sync_interval_secs` (default 300s)
 - `refresh_account_sync(account_id, organization_id)` and `remove_account_sync()` serve the CRUD routes. The organization comes from the session or the verified OAuth state, never from request input.
 - ⚠️ **Call `remove_account_sync` with no session open**, because it waits for the loop task. Fence: `test_email_disconnect_order.py`.

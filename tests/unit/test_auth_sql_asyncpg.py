@@ -234,6 +234,15 @@ def _cases() -> list[tuple[str, str, dict]]:
             {"email": WHO, "org": ORG},
         ),
         ("access._ACCESS_IN_ORG_SQL", A._ACCESS_IN_ORG_SQL, {"email": WHO, "org": ORG}),
+        (
+            # ACC-1. Every resolve runs it after the access row, so a bind
+            # fault here would refuse integrations to every member who is not
+            # an admin. Both ids are text, as `read_integration_rules` binds
+            # them from the access row.
+            "access._INTEGRATION_RULES_SQL",
+            A._INTEGRATION_RULES_SQL,
+            {"org": ORG, "uid": UID},
+        ),
         ("access._PARTICIPANT_SQL", A._PARTICIPANT_SQL, {"sid": NOWHERE}),
         (
             "access._GROUP_MEMBER_SQL",

@@ -507,6 +507,42 @@ async def test_the_lookup_read_names_the_org_and_binds_every_value() -> None:
     assert ident not in sql and "org-a" not in sql and "Operators" not in sql
 
 
+async def test_a_lookup_to_a_core_entity_reads_its_core_table() -> None:
+    """CRM-Q34-1: a lookup whose target is a core entity reads the core table
+    of ``modules.KNOWN_TARGETS``, never the module records. The org and the
+    id are bound. A table name never comes from the caller."""
+    from gateway.routes.crm import field_sql as fs
+    from gateway.routes.crm.modules import KNOWN_TARGETS
+
+    ident = "77309599-0000-4000-8000-000000000002"
+    refs = {k: fs.FieldRef(key=k, type="lookup", label=k, lookup_module=m) for k, m in (
+        ("Client", "Contacts"), ("Firm", "Accounts"), ("Lead", "Leads"), ("Deal", "Deals"))}
+    scope = fs.FieldScope(column="fields", owner="module:Bills", fields=refs)
+    pairs = [(k, ident) for k in refs] + [("Client", "x'; DROP TABLE crm_contacts; --")]
+    assert fs.lookup_targets(scope, pairs) == {
+        i: (refs[k].lookup_module, ident) for i, k in enumerate(refs)}
+    seen: list[tuple[str, dict]] = []
+
+    class _Row:
+        def scalar(self) -> str:
+            return "4567000002"
+
+    class _DB:
+        async def execute(self, statement: Any, params: dict) -> _Row:
+            seen.append((str(statement), dict(params)))
+            return _Row()
+
+    found = await fs.lookup_ids(_DB(), "org-a", scope, pairs)
+    assert found == {0: "4567000002", 1: "4567000002", 2: "4567000002", 3: "4567000002"}
+    tables = [KNOWN_TARGETS[str(refs[k].lookup_module)].table for k in refs]
+    assert tables == ["crm_contacts", "crm_companies", "crm_leads", "crm_deals"]
+    for (sql, params), table in zip(seen, tables, strict=True):
+        assert f"FROM {table} WHERE organization_id = CAST(:agf_org AS uuid)" in sql
+        assert "crm_module_records" not in sql
+        assert params == {"agf_org": "org-a", "agf_id": ident}
+        assert ident not in sql and "org-a" not in sql
+
+
 def test_a_read_that_reads_no_field_gets_no_day_set() -> None:
     """Review P2: the day check adds no detoast to a read with no field read
     (a plain count, a count by owner, a fixed month)."""

@@ -36,10 +36,23 @@ MEMORY_TOOLS = set(sf.SKILL_FAMILIES["memory"]["tools"])
 # its owner's own tools, which injection never offers, so it is not here.
 ALL_STATIC_FAMILY_TOOLS = set(sf.injected_tool_names())
 
-#: D85: an agent with no config reads as SHARED and loses the shell tools.
-#: These tests pin the S2 rules over the WHOLE floor, so the fake agent is
-#: personal. The block itself is ``test_shared_agent_shell_tools.py``.
+#: D85 and D129: every agent but the root dev agent loses the shell tools,
+#: a personal one too. These tests pin the S2 rules over the WHOLE floor, so
+#: the fixture below gives the fake agent its shell tools back, as a sandbox
+#: cover does (D130). The block itself is ``test_shared_agent_shell_tools.py``.
 _PERSONAL = {"sharing": {"instancing": "personal"}}
+_REAL_WITHHELD_SHELL_TOOLS = ti._withheld_shell_tools
+
+
+@pytest.fixture(autouse=True)
+def _whole_floor(monkeypatch):
+    """The fake agent holds the whole floor. Every other name keeps D85."""
+    def _withheld(agent_name, agent_config):
+        if agent_name == "fake-maf":
+            return frozenset()
+        return _REAL_WITHHELD_SHELL_TOOLS(agent_name, agent_config)
+
+    monkeypatch.setattr(ti, "_withheld_shell_tools", _withheld)
 
 
 # ── _resolve_injected_scope: the intersection rule ─────────────────────────
@@ -193,6 +206,7 @@ def _injection_env(monkeypatch):
     settings loader."""
     # WS-VOX VOX-3: analyze_image is per org. This suite pins the lit surface.
     monkeypatch.setattr(ti, "_image_withheld", lambda: frozenset())
+    monkeypatch.setattr(ti, "_compute_withheld", lambda: frozenset())  # SBX-19: a lit org
     monkeypatch.setenv("AGENT_PERMISSION_MODE", "approve_all")
     fake_apps = types.ModuleType("orchestrator.app_tools")
     fake_apps.load_app_action_tools = lambda name: []  # type: ignore[attr-defined]

@@ -73,8 +73,10 @@ async def recompute_chat_status(
     account_phone: str | None = None, chat_kind: str | None = None,
 ) -> str | None:
     """Recompute + persist one chat's status. Returns the status, or None if the
-    chat has no messages. Caller owns the transaction. ``chat_kind`` may be passed
-    when the caller already knows it (the sweep does), sparing a per-chat lookup."""
+    chat has no messages. Caller owns the transaction. ``chat_kind`` and
+    ``account_phone`` may be passed when the caller already knows them (the sweep
+    does), sparing a per-chat lookup. When they are absent, this function reads
+    them, so a caller cannot lose a mention by leaving one out."""
     last = (await db.execute(
         text("""SELECT direction, kind, mentions, sent_at, id
                 FROM wa_messages WHERE chat_id = :cid
@@ -93,6 +95,12 @@ async def recompute_chat_status(
     is_group = chat_kind == "group"
 
     mentions = set(last.mentions or [])
+    if account_phone is None and is_group and mentions:
+        acc = (await db.execute(
+            text("SELECT phone_number FROM wa_accounts WHERE id = :aid"),
+            {"aid": account_id},
+        )).fetchone()
+        account_phone = acc.phone_number if acc else None
     mentioned = bool(mentions & _account_wa_ids(account_phone))
 
     status, reason = classify_chat_status(

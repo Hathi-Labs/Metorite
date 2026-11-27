@@ -637,6 +637,7 @@ _FLAG = "email_signature_templates_orgs"
 #: The settings field declares the flag, and the env guard names it. Neither reads it.
 _FLAG_DECLARED = (
     _ROOT / "packages/acb_common/acb_common/settings.py",
+    _ROOT / "packages/acb_common/acb_common/flag_registry.py",
     _ROOT / "packages/acb_common/acb_common/env_guard.py",
 )
 

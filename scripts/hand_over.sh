@@ -41,6 +41,13 @@
 #   HAND_OVER_TIMEOUT [600]  seconds for the hand-over
 #   HAND_OVER_WAIT [120]  minutes for --wait
 #   HAND_OVER_POLL [60]  seconds between two reads of --wait
+#   HAND_OVER_REPO_URL [https://github.com/Hathi-Labs/Metorite]  the repo of the PR URL
+#
+# LBB-2 (engineering_practice.md section 7b.2). After a hand-over with exit 0,
+# the last line says how to mark the PR queued (LBB-2b, section 7b.8):
+#   NEXT: Fill in the task id: call search_tasks with N, then call
+#   add_task_reference with that task_id, the url <PR URL> and landing queued.
+# Make those calls. Without it, the claim gate counts the PR as not queued.
 # Fence: tests/unit/test_hand_over.py.
 set -uo pipefail
 
@@ -173,6 +180,11 @@ esac
 [ $# -ge 4 ] || usage
 PR="$1"; TASK="$2"; TIER="$3"; shift 3; NOTE="$*"
 need_pr "$PR"
+# LBB-2: the task of the landing mark. The box takes a task number only, and
+# the tool takes a task_id. So the last line tells the lane to find the id with
+# search_tasks (LBB-2b, section 7b.8). The script calls no MCP.
+REPO_URL="${HAND_OVER_REPO_URL:-https://github.com/Hathi-Labs/Metorite}"
+TASK_NUM="${TASK//[!0-9]/}"
 LIMIT="${HAND_OVER_TIMEOUT:-600}"
 me="$(printf '%s' "${HOSTNAME:-unknown}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9._-' '-')"
 LANE="${HAND_OVER_LANE:-session@${me:-unknown}}"
@@ -202,7 +214,12 @@ mkdir -p "$STATE_DIR" && printf '%s\n' "$SLOT" > "$STATE_DIR/pr-$PR" \
 run_box "$LIMIT" "$(handover_script)"
 rc=$?
 case "$rc" in
-  0) echo "hand_over: this is hand-over $SLOT of PR $PR. Wait for the bot with: bash scripts/hand_over.sh --wait $PR" ;;
+  0)
+    echo "hand_over: this is hand-over $SLOT of PR $PR. Wait for the bot with: bash scripts/hand_over.sh --wait $PR"
+    # LBB-2 (engineering_practice.md section 7b.2): the server must know that a
+    # merger has the PR, or the claim gate counts it. The last line says what
+    # to fill in and holds no placeholder (LBB-2b, section 7b.8).
+    echo "NEXT: Fill in the task id: call search_tasks with $TASK_NUM, then call add_task_reference with that task_id, the url $REPO_URL/pull/$PR and landing queued." ;;
   1) echo "hand_over: refused. Fix the reason above, push, and run it again." >&2 ;;
   4) echo "hand_over: the bot never takes this PR. Merge it yourself with the full loop (next-ticket.md step 7). Do not change the diff to pass a check." >&2 ;;
   124|255)

@@ -28,7 +28,8 @@ export type FieldType =
   | "duration"
   | "quantity"
   | "percent"
-  | "barcode";
+  | "barcode"
+  | "autonumber";
 
 export type BlockName =
   | "table"
@@ -43,7 +44,8 @@ export type BlockName =
   | "processFlow"
   | "checklist"
   | "map"
-  | "markdown";
+  | "markdown"
+  | "tree";
 
 export type NavIcon =
   | "Home"
@@ -141,6 +143,12 @@ export const MAX_NAV_ROWS = 12;
 /** A rail shows at most this many counts (STU-AF3a). `test_studio_manifest_ts_parity.py` holds it equal to the Python twin. */
 export const MAX_NAV_COUNTS = 8;
 
+/** The tab ids of a record page. `recordPageModel.ts` draws them. */
+export type RecordTabName = "details" | "lines" | "related" | "files";
+
+/** The cap of the tabs of a record page (STU-AF5b). `recordCaps.test.ts` holds it equal to the schema. */
+export const MAX_RECORD_TABS = 6;
+
 export interface FieldDef {
   key: string;
   type: FieldType;
@@ -162,6 +170,14 @@ export interface FieldDef {
   format?: string | null;
   // C13. A lines relation: the field of the object `to` that names this one.
   lines?: string | null;
+  // C15a. The parts of an autonumber: the text before the number, the pad width and `never` or `day`.
+  prefix?: string | null;
+  pad?: number | null;
+  reset?: string | null;
+}
+
+export interface RecordDef {
+  tabs: RecordTabName[];
 }
 
 export interface ObjectDef {
@@ -173,6 +189,8 @@ export interface ObjectDef {
   // C8a. The grant of each role: read "all" or { where: "<person field> = $me" },
   // write "all", and hide. No access means an open object.
   access?: Record<string, unknown>[] | null;
+  // The tabs of the record page of this object (STU-AF5b). No `record` means the defaults of §5.5 rule 3.
+  record?: RecordDef | null;
 }
 
 export interface ActionDef {
@@ -209,6 +227,8 @@ export interface ViewDef {
   sort?: string | null;
   actions?: string[];
   text?: string | null;
+  // STU-LOOK-2: an icon of the icon list before the title of a stat tile. A stat view only.
+  icon?: NavIcon | null;
 }
 
 // STU-D11a: how the views sit on a page. A view stays one block.

@@ -193,10 +193,10 @@ def test_r8_an_unbound_session_sees_no_workflow(world):
 
 ANA = f"ana.{TAG}@stub1c.test"
 BEN = f"ben.{TAG}@stub1c.test"
-#: The class of each object op. STU-D4b adds the aggregate, a read, and
-#: STU-D18-2a adds the tree, a read.
+#: The class of each object op. STU-D4b adds the aggregate, STU-D18-2a the tree
+#: and C4a-2 the history, each a read.
 _VERBS = {"list": "A", "get": "A", "create": "B", "update": "B", "delete": "C", "aggregate": "A",
-          "tree": "A"}
+          "tree": "A", "history": "A"}
 
 
 def _manifest(mid: str, wf_a: str, wf_b: str, objects: list[str]) -> dict:
@@ -333,8 +333,8 @@ def test_r8_a_member_with_no_package_and_org_b_see_none(pworld):
 def test_r8_the_app_filter_narrows_to_one_package(pworld):
     rows = _list(pworld, pworld.a, ANA, app=pworld.p2)
     assert {r["app"] for r in rows} == {pworld.p2}
-    # The five record verbs, the aggregate (STU-D4b) and the tree (STU-D18-2a).
-    assert len([r for r in rows if r["id"].startswith("object:")]) == 7
+    # The five record verbs, the aggregate (STU-D4b), the tree (STU-D18-2a) and the history (C4a-2).
+    assert len([r for r in rows if r["id"].startswith("object:")]) == 8
     # The package of another member and of org B give nothing.
     assert _list(pworld, pworld.a, ANA, app=pworld.p_ben) == []
     assert _list(pworld, pworld.a, ANA, app=pworld.p_b) == []

@@ -93,12 +93,21 @@ lane rules in `scripts/home_server/lanes/lane-rules.md`.
 The start note is the first prompt of the session. Put these parts in one
 plain text file on the PC:
 
-1. The lane's name, its stream and the task numbers, in priority order.
+1. The lane's name, its stream and the task numbers, in priority order. Name
+   the lane as `agent_label`, and the machine as `host`. The lane sends both
+   with each claim (task 3626, SW-105).
 2. A time window, not a hard deadline. A lane refuses a HIGH slice that
    cannot finish before a hard deadline, so it stops early.
 3. The full text of `scripts/home_server/lanes/lane-rules.md`.
 4. For the merge lane only: `scripts/home_server/lanes/lane-merge.md` before
    the lane rules.
+
+When an orchestrator writes the note, its first line names the run id of the
+orchestrator, for example `Dispatched by run <run id>`. The lane passes that id
+as `dispatched_by` on each claim. A server that does not know the input
+refuses the claim, so the lane then claims again without it. The lane keeps
+the line in the note header, so a lane that restarts finds its dispatcher
+(SW-108). A note with no orchestrator carries no such line.
 
 ### 3.3 Start the lane
 
@@ -175,7 +184,8 @@ Its fence is `tests/unit/test_lane_keeper.py`.
 | `~/lanes/keeper-lanes.txt` | The only lanes that may wake, one name per line. Empty file: nothing wakes. |
 | `~/lanes/start/<lane>.txt` | The start note of a listed lane that has no session. With no file, the keeper starts nothing. |
 | `~/lanes/keeper.log` | Each wake and each skip, with its reason. |
-| `~/lanes/keeper-state.json` | The time of the last wake of each lane. |
+| `~/lanes/keeper-state.json` | The time of the last wake of each lane, the network backoff step, and the open stops. |
+| `~/lanes/lane-stops.tsv` | One row for each stop of a fault cause. See "Stop causes" below. |
 
 - To pause all waking, empty `keeper-lanes.txt`. Do not stop the timer.
 - The keeper never wakes `lane-chat` or `lane-bill`, because those lanes
@@ -194,6 +204,35 @@ Its fence is `tests/unit/test_lane_keeper.py`.
   each lane yourself (§3.3). Use the keeper only to wake lanes that already
   run with those flags.
 
+#### Stop causes (CIV-LIVE)
+
+The keeper reads the end of the transcript of each lane and names why its last
+turn ended (task 4060). The keeper log shows the cause on each wake and skip
+line.
+
+| Cause | What the keeper sees | What the keeper does |
+|---|---|---|
+| `network` | An API error record of a lost connection or a 5xx status | Wakes it at the first keeper pass after 2, 5, 15, then 30 minutes. The timer runs every 10 minutes. A good turn sets the wait back to 2 minutes. |
+| `usage` | An API error record of a usage limit | No wake until the reset time plus 2 minutes. With no reset time, it waits 60 minutes. |
+| `signout` | A `/login` error of Claude, or a sign-in error of a Metorite tool in the last turn | No wake. One NOTE line goes to `~/lanes/merge-queue.log`, and it names the kind. For a Claude account, see §5.1: run `hub-add-accounts`, then start fresh lanes. For the Metorite MCP, see §5.2 and §5.3. |
+| `memory` | No end record, and the session has no process | The normal rules |
+| `normal` | Any other end | The normal rules |
+
+- The network wait takes the place of the 10-minute age and the 30-minute cap.
+- An account change wakes a `usage` lane. It never wakes a `signout` lane.
+- `lane-orch` keeps its event wake (§3.10). It gets no wake on a sign-out,
+  and no wake before a usage reset.
+- If the keeper cannot read the tail of a lane, it logs the error and uses
+  `normal` for that lane.
+- `~/lanes/lane-stops.tsv` has one row for each stop of a fault cause:
+  `<start>`, `<end or ->`, `<lane>` and `<cause>`, split by tabs. The times are
+  ISO UTC. A row opens when the keeper first sees the stop. It closes when the
+  lane runs again, or when the lane leaves the list. The keeper removes a
+  closed row after 30 days.
+- The weekly review (CIV-10) shows the hours by cause for each lane. To see
+  the table now, run
+  `python3 ~/.local/lib/metorite/lane_keeper.py --time-lost --days 7`.
+
 ### 3.8 The merge lane and its queue
 
 One lane, `lane-merge`, waits for the GitHub checks of every pull request and
@@ -203,7 +242,7 @@ merges it. The other lanes keep building. Its role is in
 | File on the box | What it holds |
 |---|---|
 | `~/lanes/merge-bot-queue.tsv` | One line for each hand-over: pull request, task, worktree, lane, head SHA, tier, note. Tabs between the fields, under a `#` header line. Only `lane_handover.sh` writes it. A hand-over by PR number writes `-` as the worktree. |
-| `~/lanes/merge-bot.log` | One line for each result: `DONE <pull request> <sha>`, `RESOLVED <pull request> <rules>` or `BACK <pull request> <reason>`. Only the merge bot writes it. The bot also posts each BACK reason on the pull request as a comment. |
+| `~/lanes/merge-bot.log` | One line for each result: `DONE <pull request> <sha>`, `RESOLVED <pull request> <rules>`, `RENUMBERED <pull request> <old>-><new>[, ...]` or `BACK <pull request> <reason>`. Only the merge bot writes it. The bot also posts each BACK reason on the pull request as a comment. |
 | `~/lanes/merge-queue.tsv`, `~/lanes/merge-queue.log` | History of the lane-merge session, with HOLD, RED and NOTE lines that people wrote. Nothing reads them now. |
 
 A lane hands over a pull request only after three steps. The verifier passed,
@@ -322,6 +361,14 @@ It never uses force, and `rerere` stays off.
 The log then gets `RESOLVED <pull request> <rules>`, and the next pass waits
 for the new pr-check. The lane pulls its branch after a `RESOLVED` line.
 
+**Migration numbers** (CIV-RN, `ci_velocity.md` §8.10). lane-merge runs
+`~/lanes/merge-bot-src/scripts/home_server/merge_bot.sh --renumber <pull request> <sha>`
+before premerge. A migration at or below main's highest gets the next number
+of the ledger, and each later migration of the PR moves above it. The bot
+pushes the move with no force, and the log gets
+`RENUMBERED <pull request> <old>-><new>[, ...][ check by hand: <file>:<line>, ...]`.
+The lane pulls its branch after a `RENUMBERED` line.
+
 The log gets `BACK <pull request> conflict: ...` in these cases:
 
 - A file fits no rule, or the conflict is in a HIGH, workflow or schema path.
@@ -429,6 +476,51 @@ the cause, and run the check again. Then delete the folder.
    `bash scripts/worktree.sh remove <slug>`. Before you remove one, push any
    commit that is on no remote.
 
+### 3.10 The orchestrator lane and its watch (CIV-ORCH)
+
+The orchestrator watch ran on the owner's PC, and it stopped when the PC shut
+down. Now the box runs it (task 4058). Two parts do the work:
+
+- `metorite-orch-watch.timer` runs `scripts/home_server/orch_watch.py` every
+  5 minutes. One pass writes one line to `~/lanes/orch-events.log` for each
+  new event. An event is an idle lane, a silent lane-merge, or a new queue
+  line. A queue line is `BACK`, `HOLD` or `RED` in `~/lanes/merge-queue.log`,
+  or `BACK` or `RED` in `~/lanes/merge-bot.log`. The header of the script
+  holds the rules. It uses no model and reads no credential, so the memory
+  floor of lane rule 11 does not apply.
+- The lane keeper (§3.7) wakes `lane-orch` when the log has lines after the
+  cursor `~/.local/state/metorite/orch_events.cursor`. It wakes it one time
+  for each new batch. Only events wake lane-orch. The plain 30-minute wake
+  leaves it out. Its role is `scripts/home_server/lanes/lane-orch.md`.
+
+| File on the box | What it does |
+|---|---|
+| `~/lanes/orch-events.log` | One `EVENT` line for each new event. |
+| `~/lanes/orch_resting.txt` | Lanes that rest on purpose. Each line starts with a lane name or a session id. The watch skips them. |
+| `~/.local/state/metorite/orch_watch.json` | The conditions that the watch reported, so it does not repeat one. |
+| `~/.local/state/metorite/orch_watch.pos` | The place in `merge-queue.log`. |
+| `~/.local/state/metorite/orch_watch_bot.pos` | The place in `merge-bot.log`. |
+| `~/.local/state/metorite/orch_events.cursor` | The count of event lines that lane-orch handled. |
+
+The timer ships DISABLED. After the merge, the owner or lane-devx does these
+steps on the box:
+
+1. Run `bash scripts/home_server/orch_watch.sh install`. It fetches
+   `origin/main` and takes each file from there with `git show`, never from
+   the working tree. It copies `orch_watch.py`, `lane_keeper.py` and
+   `secret_shapes.py` to `~/.local/lib/metorite`, and the units to
+   `~/.config/systemd/user`. It enables nothing. `secret_shapes.py` is the one
+   credential list (task 1272). The watch scrubs each detail with it.
+2. Run `bash scripts/home_server/orch_watch.sh enable`. This is OWNER-GATE
+   `deploy`.
+3. Write the start note `~/lanes/start/lane-orch.txt` from `lane-orch.md` and
+   `lane-rules.md` (§3.2).
+4. Add `lane-orch` to `~/lanes/keeper-lanes.txt`.
+5. Stop the PC loop `~/lanes/orch_watch.sh` on the PC, so that two watches do
+   not run.
+
+To stop the watch, run `bash scripts/home_server/orch_watch.sh disable`.
+
 ---
 
 ## 4. Remote Control and the web UI
@@ -482,9 +574,47 @@ When `claude mcp list` shows `metorite` as "Needs authentication":
 5. Check with `claude mcp list`. Then start fresh lanes (§3.3), not resumes.
 
 The login needs a terminal. A login with no terminal opens no listener. A
-callback address that waits too long expires. The per-box token of task 1819
-(MCP-G17) replaces this procedure when it ships. `docs/box_connect.md` holds
-the box-token steps.
+callback address that waits too long expires.
+
+The per-box token of task 1819 (MCP-G17) replaces this procedure when it
+ships. `docs/box_connect.md` holds the box-token steps. A lane does not load
+`~/.config/metorite/box.env`. The user entry gets its header from the helper
+`~/.local/bin/metorite-box-headers`, so `box.sh start` needs no change. The
+OWNER STEP about the project entry of `.mcp.json` (`docs/box_connect.md` §4)
+still applies.
+
+With a box token, the sign-in ends only through an org switch:
+`scripts/metorite_switch_org.sh` (`docs/box_connect.md` §7).
+
+### 5.3 The sign-in alarm
+
+A timer checks the sign-in of §5.2 every 10 minutes on a dev machine. When
+`metorite` shows "Needs authentication" or is missing, it writes one NOTE
+line to `~/lanes/merge-queue.log`. A repeat sends nothing. A "back" NOTE
+marks the recovery. A failed check (timeout, odd text) changes nothing.
+
+⚠️ The check must never refresh the shared OAuth token. A refresh by the
+alarm can make a lane present a spent refresh token, and then the server
+signs out every lane. So the alarm reads `expiresAt` of the `metorite`
+entry in `~/.claude/.credentials.json` first. It runs the check only when
+the access token has 10 minutes or more left, or when no OAuth entry
+exists (a box token). An expired token does not page, because it can mean
+that nobody called. So with OAuth, the alarm cannot see a dead refresh
+token that no lane retries. The box token of task 1819 has no refresh
+token, and the alarm then checks on each run.
+
+- Install: `bash scripts/home_server/mcp_signin_alarm.sh install`. This
+  enables nothing. Enable with `... enable` (OWNER-GATE `deploy`).
+- Settings: `~/.config/metorite/alarm.env`. `METORITE_ALARM_CHANNEL` is
+  `note` (default) or `gh`. The `gh` channel opens one issue, and it closes
+  the issue on recovery. It needs `METORITE_ALARM_GH_USER`, the login to
+  mention. Without it, nothing is sent. `METORITE_ALARM_GH_REPO` sets the
+  repository (default `Hathi-Labs/Metorite`). A new issue also notifies the
+  watchers of the repository. `METORITE_ALARM_HOST` names the box.
+- Logs: `journalctl --user -u metorite-signin-alarm.service`. State is in
+  `~/.local/state/metorite/signin_alarm.json`.
+- `aroh-dev-1` and the PC's WSL install it the same way. When the checkout
+  is not `~/Metorite`, set `METORITE_REPO=<path>` in `alarm.env`.
 
 ---
 

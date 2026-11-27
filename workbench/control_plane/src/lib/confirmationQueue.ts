@@ -30,15 +30,77 @@
  * environment. Fence: `src/lib/confirmationQueue.test.ts`.
  */
 
+import { ANSWERED_ONCE_TEXT } from "@/lib/respondInput";
+import { archiveUndoText, type ArchiveUndo, type ArchiveUndoState } from "@/lib/archiveUndo";
+import { CARD_OUTCOME_MEMBER_LINES } from "@/lib/cardOutcomes";
 import { unfenced } from "@/lib/fencedText";
 import { sharesTo, tickedOfSent, type PeopleBefore, type SentVersion } from "@/lib/redraftCard";
-import { isNewMail, replyFromEvent, startTicks, type NewMailEdits, type ReplyForm } from "@/lib/replyCard";
+import { DELETE_EARLIER_ANSWER, earlierFromEvent, isNewMail, isNewMailEdits, replyFromEvent, startTicks, type EarlierDraft, type NewMailEdits, type ReplyForm } from "@/lib/replyCard";
 import { classOf, kindOf, sendCanGo, type PersonClass, type SendRowKind } from "@/lib/sendCard";
+import { isTaskCardEdits, isUnchanged, taskEditFromEvent, type TaskCardEdits, type TaskEditForm } from "@/lib/taskEditCard";
 
 /** The event a closed card arrives as. The server owns the name
  *  (`CONFIRMATION_RESOLVED` in `ask_tools.py`), and
  *  `tests/unit/test_chat_hardening.py` checks the two agree. */
 export const CONFIRMATION_RESOLVED = "confirmation_resolved";
+
+/** The event of an approved card that did nothing (task 3827). The server owns
+ *  the name (`CONFIRMATION_NOT_DONE` in `ask_tools.py`). */
+export const CONFIRMATION_NOT_DONE = "confirmation_not_done";
+
+/** SBX-3b (`agent_sandbox.md` §12.5 decision 8): the result of each row of a
+ *  held sandbox card. The server owns the name (`CONFIRMATION_ROW_RESULTS` in
+ *  `ask_tools.py`), and `tests/unit/test_confirmation_rows.py` checks that the
+ *  two agree. The event carries a status and a door code for each row, and no
+ *  body. */
+export const CONFIRMATION_ROW_RESULTS = "confirmation_row_results";
+
+/** The result of one row of a held sandbox card. */
+export interface RowResult {
+  id: string;
+  status: number;
+  code?: string;
+}
+
+/** The most rows one card may carry (`MAX_CARD_ROWS` in `ask_tools.py`). */
+const MAX_RESULT_ROWS = 100;
+
+/** The rows of a `confirmation_row_results` value, or null when it is not one. */
+export function rowResultsFromEvent(value: unknown): { requestId: string; rows: RowResult[] } | null {
+  if (!value || typeof value !== "object") return null;
+  const v = value as Record<string, unknown>;
+  const rid = v.request_id;
+  if (typeof rid !== "string" || !/^[0-9a-f]{32}$/.test(rid)) return null;
+  if (!Array.isArray(v.rows) || v.rows.length === 0 || v.rows.length > MAX_RESULT_ROWS) return null;
+  const rows: RowResult[] = [];
+  for (const raw of v.rows) {
+    if (!raw || typeof raw !== "object") return null;
+    const r = raw as Record<string, unknown>;
+    if (typeof r.id !== "string" || !/^row-[0-9]{1,2}$/.test(r.id)) return null;
+    if (typeof r.status !== "number" || !Number.isInteger(r.status) || r.status < 100 || r.status > 599) return null;
+    rows.push({
+      id: r.id,
+      status: r.status,
+      ...(typeof r.code === "string" && /^sandbox_[a-z_]{1,48}$/.test(r.code) ? { code: r.code } : {}),
+    });
+  }
+  return { requestId: rid, rows };
+}
+
+/** What happened to one row, in a few words. */
+function rowOutcome(r: RowResult): string {
+  if (r.status >= 200 && r.status < 300) return "done";
+  if (r.code === "sandbox_write_refused") return "not done, not approved";
+  if (r.code === "sandbox_approval_timeout") return "not done, the card timed out";
+  if (r.code === "sandbox_not_run") return "not done, the run ended first";
+  return `failed (${r.status})`;
+}
+
+/** The results of a held sandbox card, as one sentence: "Results: row 1 done,
+ *  row 2 not done, not approved." The rows go in card order. */
+export function rowResultsText(rows: readonly RowResult[]): string {
+  return `Results: ${rows.map((r, i) => `row ${i + 1} ${rowOutcome(r)}`).join("; ")}.`;
+}
 
 /**
  * One checkbox of a card with rows (WS-46 P13 one-card). The tool offers the
@@ -75,6 +137,12 @@ export interface PendingConfirmation {
    */
   reply?: ReplyForm | null;
   /**
+   * EAC-2 (`projects_ai_chat.md` §32): the edit form of a `create_task` card
+   * (`lib/taskEditCard.ts`). Only a form the client can read is kept, so a card
+   * with no `edit`, and one with an unknown shape, is the card of before.
+   */
+  edit?: TaskEditForm;
+  /**
    * §18.11: the slot of a new-mail card that a chat message closed as
    * REVISED. "updating" waits for the new draft, and "unchanged" says that
    * the run ended with none. A slot has no buttons and answers nothing.
@@ -98,6 +166,28 @@ export interface PendingConfirmation {
    * client computes the "Changed:" line from it, never from the model.
    */
   before?: { subject: string; body: string; people?: PeopleBefore };
+  /**
+   * Task 3978 (`email_app_master_plan.md` §18.13.1), a plain card only (the
+   * card of `edit_draft`): one line that names a draft that the chat saved.
+   * Reject then asks `EARLIER_QUESTION` on the card. A new-mail card keeps
+   * its line on its form (`ReplyForm.earlier`).
+   */
+  earlier?: string;
+  /** Task 3978: what "Delete it" does at the mailbox's provider, if known. */
+  earlierEffect?: string;
+}
+
+/**
+ * Task 3978: the earlier draft that a card asks about, or null. A new-mail
+ * card reads its form, and a plain card (no rows, no reply form, no edit form)
+ * reads its own keys. Any other card asks nothing.
+ */
+export function earlierOf(card: Pick<PendingConfirmation, "reply" | "rows" | "edit" | "earlier" | "earlierEffect">): EarlierDraft | null {
+  if (isNewMail(card.reply)) {
+    return card.reply?.earlier ? { line: card.reply.earlier, ...(card.reply.earlierEffect ? { effect: card.reply.earlierEffect } : {}) } : null;
+  }
+  if (card.reply !== undefined || card.rows !== undefined || card.edit !== undefined || !card.earlier) return null;
+  return { line: card.earlier, ...(card.earlierEffect ? { effect: card.earlierEffect } : {}) };
 }
 
 /** The answer of a card that a chat message closed. The server owns it
@@ -196,27 +286,39 @@ export function withTicked(
 export type RowTicks = Readonly<Record<string, readonly string[]>>;
 
 /**
- * The member's edits of each new-mail form, by card key. The queue holds them
- * as it holds `RowTicks`, because a change of tab unmounts the form. Without
- * them, an untick came back ticked and Send went to that person.
+ * The member's edits of each form, by card key: a new-mail form (`NewMailEdits`)
+ * or a task card (`TaskCardEdits`, EAC-2). The queue holds them as it holds
+ * `RowTicks`, because a change of tab unmounts the form. Without them, an
+ * untick came back ticked and Send went to that person.
+ *
+ * A reader of one kind asks its guard (`isNewMailEdits`, `isTaskCardEdits`),
+ * and never casts. `redraftCard.ts` reads the `NewMailEdits` kind only.
  */
-export type FormEdits = ReadonlyMap<string, NewMailEdits>;
+export type FormEdit = NewMailEdits | TaskCardEdits;
+export type FormEdits = ReadonlyMap<string, FormEdit>;
 
 export const NO_EDITS: FormEdits = new Map();
 
+/** The keys of the cards that the queue holds: a card on screen, a slot, or a card whose answer is in flight. */
+export function heldKeys(state: Pick<ConfirmationQueueState, "cards" | "answering">): ReadonlySet<string> {
+  return new Set([...state.cards.map((c) => c.key), ...state.answering]);
+}
+
 /**
- * The kept edits of the cards that the queue still holds: a card on screen,
- * a slot, or a card whose answer is in flight. Any other entry goes: an
- * answered card, a slot that a draft took or that ended, and each card of a
- * chat that the member left (`reset`). The same map comes back when
- * nothing goes. Fix round 5: the chat holds the map, because the queue
- * mounts again on each new message.
+ * The kept edits without those of the cards that LEFT the queue between two states: an answered card,
+ * a slot that a draft took or that ended, a `reset`. The same map comes back when no card left.
+ *
+ * Task 1893. This was `liveEdits`, which dropped each entry whose card was not in the queue NOW. A chat
+ * switch resets the queue, so it dropped every edit, and the card then came back from the card log with
+ * the server's form: an untick came back ticked. A card that was never in the queue before (the redraw of
+ * a switch) has no `before` entry, so it never counts as having left. The CHAT must not call this for
+ * the reset of a switch: it holds the edits of each thread in `chatStore`, and a switch only changes
+ * which thread's map it reads.
  */
-export function liveEdits(edits: FormEdits, state: Pick<ConfirmationQueueState, "cards" | "answering">): FormEdits {
-  const keep = new Set([...state.cards.map((c) => c.key), ...state.answering]);
-  let out: Map<string, NewMailEdits> | null = null;
+export function closedEdits(edits: FormEdits, before: ReadonlySet<string>, now: ReadonlySet<string>): FormEdits {
+  let out: Map<string, FormEdit> | null = null;
   for (const key of edits.keys()) {
-    if (keep.has(key)) continue;
+    if (!before.has(key) || now.has(key)) continue;
     out ??= new Map(edits);
     out.delete(key);
   }
@@ -224,11 +326,30 @@ export function liveEdits(edits: FormEdits, state: Pick<ConfirmationQueueState, 
 }
 
 /** Keep the edits of one form. The same values change nothing. */
-export function formEditsReducer(edits: FormEdits, action: { key: string; value: NewMailEdits }): FormEdits {
+export function formEditsReducer(edits: FormEdits, action: { key: string; value: FormEdit }): FormEdits {
   const was = edits.get(action.key);
   const now = action.value;
-  if (was && was.subject === now.subject && was.body === now.body && was.ticks === now.ticks && was.fileTicks === now.fileTicks) return edits;
+  if (was && sameEdits(was, now)) return edits;
   return new Map(edits).set(action.key, now);
+}
+
+/** True when two kept edits of one card are the same values. A new mail and a task card are never the same. */
+function sameEdits(was: FormEdit, now: FormEdit): boolean {
+  if (isNewMailEdits(was) && isNewMailEdits(now)) {
+    return was.subject === now.subject && was.body === now.body && was.ticks === now.ticks && was.fileTicks === now.fileTicks;
+  }
+  if (isTaskCardEdits(was) && isTaskCardEdits(now)) return isUnchanged(was, now);
+  return false;
+}
+
+/** The kept edits as new-mail edits, or undefined for none and for another kind. */
+export function asNewMailEdits(e: FormEdit | undefined): NewMailEdits | undefined {
+  return isNewMailEdits(e) ? e : undefined;
+}
+
+/** The kept edits as task-card edits, or undefined for none and for another kind. */
+export function asTaskEdits(e: FormEdit | undefined): TaskCardEdits | undefined {
+  return isTaskCardEdits(e) ? e : undefined;
 }
 
 export const NO_TICKS: RowTicks = {};
@@ -326,7 +447,7 @@ export interface ConfirmationReceipt {
   key: string;
   /** The card's summary, or its title. */
   label: string;
-  kind: "applying" | "approved" | "rejected" | "refused" | "closed";
+  kind: "applying" | "approved" | "rejected" | "refused" | "closed" | "notDone";
   /** What the member answered. "applying" becomes this once the server took it. */
   intent: "approved" | "rejected";
   /** Why a refused answer did not land. */
@@ -336,6 +457,12 @@ export interface ConfirmationReceipt {
   /** A held Reject (`lib/rejectHold.ts`): the POST has not gone, and the line
    *  offers Undo. `released` clears it once the POST goes. */
   undo?: boolean;
+  /** WT-6a: the archive that this approved card made, and where its Undo is
+   *  (`lib/archiveUndo.ts`). Only the server's `confirmation_undo` sets it. */
+  archive?: ArchiveUndo & { state: ArchiveUndoState };
+  /** SBX-3b: the result of each row of a held sandbox card. Only the server's
+   *  `confirmation_row_results` sets it. */
+  rowResults?: readonly RowResult[];
 }
 
 export interface ConfirmationQueueState {
@@ -379,7 +506,31 @@ export function receiptLabel(card: Pick<PendingConfirmation, "detail" | "title" 
   return card.fenced ? unfenced(text) : text;
 }
 
+/** Task 3978: what the receipt adds when the member answered "Delete it". */
+export const EARLIER_DELETE_RECEIPT = "You asked to delete the draft. The reply says what became of it.";
+
+/**
+ * Task 3978 (§18.13.1): the words of the receipt of one answer. "Delete it" is
+ * a decline, and the receipt says that the member asked for the delete. Only
+ * the reply knows whether the draft went, so the receipt claims no delete.
+ * Each other answer keeps `receiptLabel`.
+ */
+export function answerReceiptLabel(card: Pick<PendingConfirmation, "detail" | "title" | "fenced">, answer: unknown): string {
+  const label = receiptLabel(card);
+  if (answer !== DELETE_EARLIER_ANSWER) return label;
+  return `${label.replace(/\.?\s*$/, ".")} ${EARLIER_DELETE_RECEIPT}`;
+}
+
 export function receiptText(r: ConfirmationReceipt): string {
+  const head = receiptHead(r);
+  // SBX-3b: a held sandbox card says what happened to each row.
+  return r.rowResults?.length ? `${head} ${rowResultsText(r.rowResults)}` : head;
+}
+
+function receiptHead(r: ConfirmationReceipt): string {
+  // WT-6a: an archive line says what its Undo did.
+  const undone = r.archive ? archiveUndoText(r.archive.state, r.label) : null;
+  if (undone) return undone;
   switch (r.kind) {
     case "applying":
       // A held Reject already reads as done, and offers Undo (#916).
@@ -393,6 +544,9 @@ export function receiptText(r: ConfirmationReceipt): string {
       return `Not applied · ${r.label}${r.reason ? `. ${r.reason}` : ""}`;
     case "closed":
       return `Closed · ${r.label}. The assistant has moved on. Its reply says what happened.`;
+    case "notDone":
+      // Task 3827: the card was approved, and the tool refused the write.
+      return `Not done · ${r.label}. ${CARD_OUTCOME_MEMBER_LINES["changed since"]}`;
   }
 }
 
@@ -421,7 +575,14 @@ export type ConfirmationAction =
   /** The server closed a card. `answer` is the closing answer of
    *  `confirmation_resolved`: a new-mail card closed as REVISED stays as a
    *  slot (§18.11). */
-  | { type: "resolved"; requestId: string; answer?: string }
+  | {
+      type: "resolved"; requestId: string; answer?: string;
+      /** RESUME-3a: the card waited parked here, so an answer from another
+       *  tab or device can close it. An Approve then leaves "Approved". */
+      elsewhere?: boolean;
+      /** The message the line of that Approve draws under. */
+      afterId?: string | null;
+    }
   /** §18.11: a chat message carried this version of the card. */
   | { type: "memberVersion"; key: string; version: SentVersion }
   /** §18.11: the slots that read "The draft did not change." close. */
@@ -440,7 +601,18 @@ export type ConfirmationAction =
     }
   /** The hold ended and the REJECT POST goes: the line stops offering Undo. */
   | { type: "released"; key: string }
+  /** WT-6a: the server's `confirmation_undo` for an approved archive card. */
+  | { type: "undoOffered"; requestId: string; undo: ArchiveUndo }
+  /** WT-6a: where the Undo of an archive line is now. */
+  | { type: "undoState"; key: string; state: ArchiveUndoState }
   | { type: "answered"; key: string }
+  /** Task 3827: the tool refused the approved card because the object changed
+   *  after it. `confirmation_not_done` carries the card's `request_id`, so the
+   *  line of that card alone reads "Not done". No receipt of that key: no change. */
+  | { type: "notDone"; requestId: string }
+  /** SBX-3b: the server's `confirmation_row_results` for a held sandbox card.
+   *  Only the line of that card takes it. No line of that key: no change. */
+  | { type: "rowResults"; requestId: string; rows: readonly RowResult[] }
   /** The POST got a 4xx. The card stays gone until a replay shows it again.
    *  `reason` turns its receipt into "Not applied"; none (a resend) drops it. */
   | { type: "dropped"; key: string; reason?: string }
@@ -469,7 +641,20 @@ export function cardFromEvent(value: unknown): PendingConfirmation | null {
     ...(v.rows !== undefined ? { rows: rowsFromEvent(v.rows) ?? [] } : {}),
     ...(v.fenced === true ? { fenced: true } : {}),
     ...(v.reply !== undefined ? { reply: replyFromEvent(v.reply, requestId) } : {}),
+    // EAC-2: a form the client cannot read is no form, and the card is the card of before.
+    ...(taskEditOf(v.edit) ? { edit: taskEditOf(v.edit) } : {}),
+    // Task 3978: a plain card that names a draft of the chat. Reject asks about it.
+    ...(v.rows === undefined && v.reply === undefined && v.edit === undefined ? earlierFromEvent(v) : {}),
   };
+}
+
+/** An answer that approves: a plain `APPROVE`, or an Approve of rows. */
+function isApproveAnswer(answer: string | undefined): boolean {
+  return answer === "APPROVE" || (!!answer && answer.startsWith(ROWS_ANSWER_PREFIX));
+}
+
+function taskEditOf(raw: unknown): TaskEditForm | undefined {
+  return (raw === undefined ? null : taskEditFromEvent(raw)) ?? undefined;
 }
 
 function withAdded(set: ReadonlySet<string>, key: string): Set<string> {
@@ -618,12 +803,25 @@ export function confirmationReducer(
           errors: withoutError(state.errors, key),
         };
       }
+      // RESUME-3a: another tab or device approved a parked card that shows
+      // here, and this tab did not answer it. The card leaves with the same
+      // line as an Approve of this tab (§4.12.4 item 5).
+      const approvedElsewhere = !!shown && action.elsewhere === true && isApproveAnswer(action.answer) &&
+        !state.answering.has(key) && !state.receipts.some((r) => r.key === key);
       return {
         ...state,
         cards: state.cards.filter((c) => c.key !== key),
         resolved: withAdded(state.resolved, key),
         answering: withRemoved(state.answering, key),
         errors: withoutError(state.errors, key),
+        ...(approvedElsewhere && shown
+          ? {
+              receipts: [...state.receipts, {
+                key, label: receiptLabel(shown), kind: "approved" as const, intent: "approved" as const,
+                afterId: action.afterId ?? null,
+              }],
+            }
+          : {}),
         // The server closed it. An answer in flight keeps "Applying" until
         // its own POST says what became of it: the close can be a timeout.
         // Fix round 6: a chat message closed a card with no slot here, so a
@@ -659,6 +857,23 @@ export function confirmationReducer(
         ...state,
         receipts: settleReceipt(state.receipts, action.key, (r) => ({ ...r, undo: undefined })),
       };
+    case "undoOffered":
+      // Only a line of THIS chat that the member approved, and only once. A
+      // request id that no line here holds (another chat) attaches nothing.
+      // A "Not done" line (task 3827) wrote nothing, so it offers no Undo.
+      return {
+        ...state,
+        receipts: settleReceipt(state.receipts, action.requestId, (r) =>
+          r.intent !== "approved" || r.kind === "refused" || r.kind === "notDone" || r.archive
+            ? r
+            : { ...r, archive: { ...action.undo, state: "ready" } }),
+      };
+    case "undoState":
+      return {
+        ...state,
+        receipts: settleReceipt(state.receipts, action.key, (r) =>
+          r.archive ? { ...r, archive: { ...r.archive, state: action.state } } : r),
+      };
     case "answered":
       // The server took the answer. Its `confirmation_resolved` follows, and
       // this keeps a replay that arrives first from reopening the card.
@@ -666,9 +881,24 @@ export function confirmationReducer(
         ...state,
         resolved: withAdded(state.resolved, action.key),
         answering: withRemoved(state.answering, action.key),
-        receipts: settleReceipt(state.receipts, action.key, (r) => ({ ...r, kind: r.intent, undo: undefined })),
+        // A "Not done" line stays: the stream can beat this POST's answer.
+        receipts: settleReceipt(state.receipts, action.key, (r) =>
+          (r.kind === "notDone" ? r : { ...r, kind: r.intent, undo: undefined })),
         // The member answered it, so a `reopened` ask never shows it again.
         ...(state.reopenable?.has(action.key) ? { reopenable: withRemoved(state.reopenable, action.key) } : {}),
+      };
+    case "notDone":
+      return {
+        ...state,
+        receipts: settleReceipt(state.receipts, action.requestId, (r) =>
+          r.intent === "approved" && (r.kind === "applying" || r.kind === "approved")
+            ? { ...r, kind: "notDone", undo: undefined }
+            : r),
+      };
+    case "rowResults":
+      return {
+        ...state,
+        receipts: settleReceipt(state.receipts, action.requestId, (r) => ({ ...r, rowResults: action.rows })),
       };
     case "dropped":
       return {
@@ -722,13 +952,16 @@ export function confirmationReducer(
   }
 }
 
-/** The action for a card once its POST settled (`lib/respondInput.ts`). */
+/** The action for a card once its POST settled (`lib/respondInput.ts`).
+ *  `answered` (HRD-16): someone answered the card first. The card leaves,
+ *  and its line says so. Nothing sends again. */
 export function settleAnswer(
   card: PendingConfirmation,
-  outcome: "ok" | "drop" | "retry",
+  outcome: "ok" | "drop" | "retry" | "answered",
   reason?: string,
 ): ConfirmationAction {
   if (outcome === "retry") return { type: "restore", card, ...(reason ? { reason } : {}) };
+  if (outcome === "answered") return { type: "dropped", key: card.key, reason: reason || ANSWERED_ONCE_TEXT };
   if (outcome === "drop") return { type: "dropped", key: card.key, ...(reason ? { reason } : {}) };
   return { type: "answered", key: card.key };
 }

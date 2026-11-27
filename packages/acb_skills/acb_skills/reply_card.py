@@ -61,6 +61,7 @@ __all__ = [
     "REPLY_ANSWER_KEYS",
     "REPLY_ANSWER_OPTIONAL_KEYS",
     "REPLY_ANSWER_PREFIX",
+    "THREAD_CHANGED",
     "LookalikeWord",
     "NewMailChoice",
     "ReplyChoice",
@@ -108,6 +109,13 @@ REPLY_ACTIONS: frozenset[str] = frozenset({"send", "save"})
 DRAFT_GONE = "draft_gone"
 ALREADY_REPLIED = "already_replied"
 DRAFT_UNCONFIRMED = "draft_unconfirmed"
+
+#: HRD-10d-3 (task 3824): the machine reason of a 409 of ``POST /email/send``
+#: when a newer message came into the thread of the reply after its card
+#: showed. The reply card act passes the same check on. Only a call that
+#: names ``expect_thread`` meets it, and only ``CHAT_CARD_PRECONDITION_ORGS``
+#: makes the tools name it. Nothing was sent.
+THREAD_CHANGED = "thread_changed"
 
 #: The keys of ``answer.reply``, exactly. ``to`` and ``cc`` are the people
 #: that the member TICKED on the card (owner, 2026-10-24). The gateway
@@ -830,17 +838,33 @@ def looks_like_send_answer(answer: Any) -> bool:
             and all(isinstance(i, str) and 0 < len(i) <= 64 for i in ids))
 
 
-def _recordable(answer: Any) -> bool:
+def _recordable(answer: Any, organization_id: str | None = None) -> bool:
     """True when respond-input records *answer*: a reply answer, a new-mail
-    answer (§18.10), and, only while ``EMAIL_HELD_CARD_SEND`` is on, the
-    answer of a held send card."""
+    answer (§18.10), and the answer of a held send card in two cases. One is
+    while ``EMAIL_HELD_CARD_SEND`` is on. The other is when the org of the
+    call is in ``SANDBOX_DOOR_ORGS`` (SBX-3b, ``agent_sandbox.md`` §12.5
+    decision 7): the card of a held sandbox batch is a send card too.
+
+    The org check is the check of the door (``deps.py`` step 4). Each flag
+    keeps its own meaning, and each act route keeps its own flag check."""
     if looks_like_reply_answer(answer) or looks_like_new_mail_answer(answer):
         return True
     if not looks_like_send_answer(answer):
         return False
     from acb_skills.held_card import held_card_send_enabled
 
-    return held_card_send_enabled()
+    if held_card_send_enabled():
+        return True
+    org = str(organization_id or "").strip().lower()
+    if not org:
+        return False
+    try:
+        from acb_auth.sandbox_capabilities import door_orgs
+
+        orgs = door_orgs()
+    except Exception:  # a fault reads as off
+        return False
+    return "*" in orgs or org in orgs
 
 
 def reply_answer_digest(
@@ -882,11 +906,12 @@ async def record_reply_answer(
 
     With ``EMAIL_HELD_CARD_SEND`` on, the answer of a held send card is
     recorded too, with the same key, the same ``SET NX`` and the same digest
-    (``email_app_master_plan.md`` §21.4 item 3).
+    (``email_app_master_plan.md`` §21.4 item 3). So is the answer of the card
+    of a held sandbox batch, for an org in ``SANDBOX_DOOR_ORGS`` (SBX-3b).
     """
     if not (organization_id and request_id and responder and thread_id):
         return False
-    if not _recordable(answer):
+    if not _recordable(answer, organization_id):
         return False
     digest = reply_answer_digest(request_id, responder, answer, thread_id)
     try:

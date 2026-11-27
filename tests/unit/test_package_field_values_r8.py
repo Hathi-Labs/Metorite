@@ -37,6 +37,11 @@ h. ``set_value`` after a removal raises ``InstallNotFound``. A value None
    deletes the row. A read leaves out a value whose stored type differs from
    the current declaration.
 i. A write and a removal at once raise no foreign key error, in either order.
+j. The viewer filter (PKG-14a). A read answers only the installs of the set,
+   and a write to an install outside the set writes nothing. An install past
+   its ``ends_at`` and an install of an archived app read and take no value,
+   also when the set names them. Org B reads none of org A, also when the set
+   names the install of org A.
 """
 
 from __future__ import annotations
@@ -157,24 +162,36 @@ def _install(world: Any, app: str, claims: list[Contribution], *, org: str = "a"
 
 
 def _set(world: Any, install: str, field_key: str, value: Any, *, org: str = "a",
-         record: str, kind: str = DEAL) -> Any:
-    """One ``set_value`` as the app role. Answers the result or the refusal."""
+         record: str, kind: str = DEAL, ids: Any = None) -> Any:
+    """One ``set_value`` as the app role. Answers the result or the refusal.
+    The set of the viewer is *ids*, or the install alone."""
 
     async def go() -> Any:
         try:
             async with tenant_session(_org(world, org)) as db:
                 return await fv.set_value(db, install_id=install, record_kind=kind,
-                                          record_id=record, field_key=field_key, value=value)
+                                          record_id=record, field_key=field_key, value=value,
+                                          install_ids=[install] if ids is None else ids)
         except (InstallError, FieldError) as exc:
             return exc
 
     return _go(world, go)
 
 
-def _get(world: Any, record: str, *, org: str = "a", kind: str = DEAL) -> list[fv.FieldValue]:
+def _all_installs(world: Any) -> list[str]:
+    """Each install of both orgs, read as the superuser."""
+    return [str(r[0]) for r in _admin(world, "SELECT id FROM package_install")]
+
+
+def _get(world: Any, record: str, *, org: str = "a", kind: str = DEAL,
+         ids: Any = None) -> list[fv.FieldValue]:
+    """One ``get_values`` as the app role. The set is *ids*, or each install
+    of both orgs, so only the other checks of the store decide."""
+    want = _all_installs(world) if ids is None else ids
+
     async def go() -> list[fv.FieldValue]:
         async with tenant_session(_org(world, org)) as db:
-            return await fv.get_values(db, record_kind=kind, record_id=record)
+            return await fv.get_values(db, record_kind=kind, record_id=record, install_ids=want)
 
     return _go(world, go)
 
@@ -276,8 +293,10 @@ def test_r8_an_unbound_session_reads_and_writes_none(world) -> None:
         out = SimpleNamespace(raised=[], read=None, write=None)
         calls = (
             lambda db: fv.set_value(db, install_id=s.install, record_kind=DEAL,
-                                    record_id=s.record, field_key=s.key, value="2030-01-01"),
-            lambda db: fv.get_values(db, record_kind=DEAL, record_id=s.record),
+                                    record_id=s.record, field_key=s.key, value="2030-01-01",
+                                    install_ids=[s.install]),
+            lambda db: fv.get_values(db, record_kind=DEAL, record_id=s.record,
+                                     install_ids=[s.install]),
             lambda db: fv.delete_values(db, record_kind=DEAL, record_id=s.record),
         )
         for call in calls:
@@ -512,7 +531,8 @@ def test_r8_a_removal_waits_for_a_write_and_then_deletes_its_value(world) -> Non
 
     async def write(db: Any) -> Any:
         return await fv.set_value(db, install_id=s.install, record_kind=DEAL,
-                                  record_id=record, field_key=s.key, value="2029-09-09")
+                                  record_id=record, field_key=s.key, value="2029-09-09",
+                                  install_ids=[s.install])
 
     async def remove(db: Any) -> Any:
         return await store.remove_install(db, install_id=s.install)
@@ -536,7 +556,8 @@ def test_r8_a_write_after_an_open_removal_is_install_not_found(world) -> None:
 
     async def write(db: Any) -> Any:
         return await fv.set_value(db, install_id=s.install, record_kind=DEAL,
-                                  record_id=record, field_key=s.key, value="2029-09-09")
+                                  record_id=record, field_key=s.key, value="2029-09-09",
+                                  install_ids=[s.install])
 
     out = _go(world, lambda: _hold_then_race(world, remove, write))
     assert out.state == "waited", "the write did not wait for the removal"
@@ -544,3 +565,69 @@ def test_r8_a_write_after_an_open_removal_is_install_not_found(world) -> None:
     assert not isinstance(out.two, IntegrityError), out.two
     assert isinstance(out.two, InstallNotFound), out.two
     assert _values_of(world, s.install) == []
+
+
+# ── j. The viewer filter (PKG-14a) ─────────────────────────────────────────
+
+
+def test_r8_a_read_answers_only_the_installs_of_the_set(world) -> None:
+    s = _seeded(world, "j1")
+    key2 = _key("j2")
+    other = _install(world, "a2", [_field(key2, {"type": "checkbox"})])
+    assert _set(world, other, key2, True, record=s.record) is True
+    both = {(v.install_id, v.field_key) for v in _get(world, s.record)}
+    assert both == {(s.install, s.key), (other, key2)}
+    assert [(v.install_id, v.field_key) for v in _get(world, s.record, ids=[other])] == [
+        (other, key2)]
+    assert _get(world, s.record, ids=[]) == []
+    assert _get(world, s.record, ids=[str(uuid.uuid4())]) == []
+
+
+def test_r8_a_write_to_an_install_outside_the_set_writes_nothing(world) -> None:
+    s = _seeded(world, "j3")
+    before = _values_of(world, s.install)
+    for value in ("2030-01-01", None):
+        for ids in ([], [str(uuid.uuid4())]):
+            got = _set(world, s.install, s.key, value, record=s.record, ids=ids)
+            assert isinstance(got, InstallNotFound), (value, ids, got)
+            assert got.status == 404
+    assert _set(world, s.install, s.key, "2030-01-01", record=str(uuid.uuid4()),
+                ids=[]).code == "install_not_found"
+    assert _values_of(world, s.install) == before
+
+
+def test_r8_an_ended_install_and_an_archived_app_read_and_take_no_value(world) -> None:
+    """Known gap 2 of §8.3: the store checked the state only. The set names
+    each install here, so only the predicates of the resolve decide."""
+    ended = _seeded(world, "j4")
+    gone = SimpleNamespace(key=_key("j5"), record=str(uuid.uuid4()))
+    gone.install = _install(world, "a3", [_field(gone.key, {"type": "date"})])
+    assert _set(world, gone.install, gone.key, "2027-01-31", record=gone.record) == "2027-01-31"
+    with world.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE package_install SET ends_at = now() - interval '1 minute' "
+                       "WHERE id = CAST(:i AS uuid)"), {"i": ended.install})
+        c.execute(text("UPDATE apps SET status = 'archived' WHERE id = CAST(:a AS uuid)"),
+                  {"a": world.apps["a3"]})
+    for s in (ended, gone):
+        before = _values_of(world, s.install)
+        assert len(before) == 1
+        assert _get(world, s.record, ids=[s.install]) == []
+        for value in ("2030-01-01", None):
+            got = _set(world, s.install, s.key, value, record=s.record)
+            assert isinstance(got, InstallNotFound), (s.key, value, got)
+        assert _set(world, s.install, s.key, "2030-01-01",
+                    record=str(uuid.uuid4())).code == "install_not_found"
+        assert _values_of(world, s.install) == before
+    # A later end date shows the value again: the predicate is the clock.
+    with world.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE package_install SET ends_at = now() + interval '1 day' "
+                       "WHERE id = CAST(:i AS uuid)"), {"i": ended.install})
+    assert [v.value for v in _get(world, ended.record, ids=[ended.install])] == ["2027-01-31"]
+
+
+def test_r8_org_b_reads_none_of_org_a_also_when_the_set_names_it(world) -> None:
+    s = _seeded(world, "j6")
+    assert _get(world, s.record, org="b", ids=[s.install]) == []
+    got = _set(world, s.install, s.key, "2030-01-01", org="b", record=s.record)
+    assert isinstance(got, InstallNotFound), got
+    assert [v.value for v in _get(world, s.record, ids=[s.install])] == ["2027-01-31"]

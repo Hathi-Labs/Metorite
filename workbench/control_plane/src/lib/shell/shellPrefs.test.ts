@@ -31,6 +31,12 @@ import {
   __newShellPageForTests,
   asLayout,
   bodyFor,
+  chatPinAllowed,
+  agentLensesAllowed,
+  agentLensesOn,
+  chatPinOn,
+  chatTopicsAllowed,
+  chatTopicsOn,
   guideOn,
   markChatFirstMessage,
   markTourSeen,
@@ -40,6 +46,8 @@ import {
   nudgeShows,
   readShellPrefs,
   saveShellPrefs,
+  skillOfferAllowed,
+  skillOfferOn,
 } from "./shellPrefs";
 
 const SRC = fileURLToPath(new URL("../..", import.meta.url));
@@ -252,7 +260,16 @@ describe("GD-5a: the tour mark and the guide's switch", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   /** A gateway that merges a key-only write and stamps the tour with ITS time, as `me.py` does. */
-  const server = (layout: StoredShell & { guide?: boolean; module_runs?: boolean }) =>
+  const server = (
+    layout: StoredShell & {
+      guide?: boolean;
+      module_runs?: boolean;
+      skill_offer?: boolean;
+      chat_pin?: boolean;
+      chat_topics?: boolean;
+      agent_lenses?: boolean;
+    },
+  ) =>
     vi.fn(async (_url: string, init?: RequestInit) => {
       const method = (init?.method ?? "GET").toUpperCase();
       const body = init?.body ? JSON.parse(String(init.body)) : undefined;
@@ -329,8 +346,93 @@ describe("GD-5a: the tour mark and the guide's switch", () => {
     expect(moduleRunsAllowed()).toBe(false);
   });
 
+  it("skillOfferOn: only `skill_offer: true` is on, and a missing field is off (TOF-1d)", () => {
+    expect(skillOfferOn({ ...NEVER, skill_offer: true })).toBe(true);
+    expect(skillOfferOn({ ...NEVER, skill_offer: false })).toBe(false);
+    expect(skillOfferOn({ ...NEVER })).toBe(false);
+    expect(skillOfferOn({ ...NEVER, skill_offer: "true" })).toBe(false);
+    expect(skillOfferOn(null)).toBe(false);
+  });
+
+  it("the read sets the skill offer switch, and a new member resets it to off", async () => {
+    vi.stubGlobal("fetch", server({ ...NEVER, skill_offer: true }));
+    await readShellPrefs();
+    expect(skillOfferAllowed()).toBe(true);
+    clearAll();
+    expect(skillOfferAllowed()).toBe(false);
+    vi.stubGlobal("fetch", server({ ...NEVER, skill_offer: true }));
+    await readShellPrefs();
+    vi.stubGlobal("fetch", server({ ...NEVER }));
+    await readShellPrefs();
+    expect(skillOfferAllowed()).toBe(false);
+  });
+
+  it("the skill offer switch is never part of the stored layout", () => {
+    expect(asLayout({ ...NEVER, skill_offer: true })).not.toHaveProperty("skill_offer");
+  });
+
   it("the switch is never part of the stored layout", () => {
     expect(asLayout({ ...NEVER, module_runs: true })).not.toHaveProperty("module_runs");
+  });
+
+  it("chatPinOn: only `chat_pin: true` is on, and a missing field is off (CO-11)", () => {
+    expect(chatPinOn({ ...NEVER, chat_pin: true })).toBe(true);
+    expect(chatPinOn({ ...NEVER, chat_pin: false })).toBe(false);
+    expect(chatPinOn({ ...NEVER })).toBe(false);
+    expect(chatPinOn({ ...NEVER, chat_pin: "true" })).toBe(false);
+    expect(chatPinOn(null)).toBe(false);
+  });
+
+  it("the read sets the chat pin switch, and a new member resets it to off (CO-11)", async () => {
+    vi.stubGlobal("fetch", server({ ...NEVER, chat_pin: true }));
+    await readShellPrefs();
+    expect(chatPinAllowed()).toBe(true);
+    clearAll();
+    expect(chatPinAllowed()).toBe(false);
+    vi.stubGlobal("fetch", server({ ...NEVER, chat_pin: true }));
+    await readShellPrefs();
+    vi.stubGlobal("fetch", server({ ...NEVER }));
+    await readShellPrefs();
+    expect(chatPinAllowed()).toBe(false);
+    expect(asLayout({ ...NEVER, chat_pin: true })).not.toHaveProperty("chat_pin");
+  });
+
+  // Mutation: let the read set the topic switch from `chat_pin` -> red.
+  it("chatTopicsOn: only `chat_topics: true` is on, and a missing field is off (CO-2b)", () => {
+    expect(chatTopicsOn({ ...NEVER, chat_topics: true })).toBe(true);
+    expect(chatTopicsOn({ ...NEVER, chat_topics: false })).toBe(false);
+    expect(chatTopicsOn({ ...NEVER })).toBe(false);
+    expect(chatTopicsOn({ ...NEVER, chat_topics: "true" })).toBe(false);
+    // The pin switch is not the topic switch.
+    expect(chatTopicsOn({ ...NEVER, chat_pin: true })).toBe(false);
+    expect(chatTopicsOn(null)).toBe(false);
+  });
+
+  it("the read sets the chat topics switch, and a new member resets it to off (CO-2b)", async () => {
+    vi.stubGlobal("fetch", server({ ...NEVER, chat_topics: true }));
+    await readShellPrefs();
+    expect(chatTopicsAllowed()).toBe(true);
+    clearAll();
+    expect(chatTopicsAllowed()).toBe(false);
+    vi.stubGlobal("fetch", server({ ...NEVER, chat_topics: true }));
+    await readShellPrefs();
+    vi.stubGlobal("fetch", server({ ...NEVER }));
+    await readShellPrefs();
+    expect(chatTopicsAllowed()).toBe(false);
+    expect(asLayout({ ...NEVER, chat_topics: true })).not.toHaveProperty("chat_topics");
+  });
+
+  it("the read sets the Agents lenses switch, and a new member resets it (AMR-1)", async () => {
+    expect(agentLensesOn({ ...NEVER, agent_lenses: true })).toBe(true);
+    expect(agentLensesOn({ ...NEVER, agent_lenses: "true" })).toBe(false);
+    expect(agentLensesOn({ ...NEVER, chat_topics: true })).toBe(false);
+    expect(agentLensesOn(null)).toBe(false);
+    vi.stubGlobal("fetch", server({ ...NEVER, agent_lenses: true }));
+    await readShellPrefs();
+    expect(agentLensesAllowed()).toBe(true);
+    clearAll();
+    expect(agentLensesAllowed()).toBe(false);
+    expect(asLayout({ ...NEVER, agent_lenses: true })).not.toHaveProperty("agent_lenses");
   });
 
   it("the read passes the switch to the guide, and a new member resets it", async () => {

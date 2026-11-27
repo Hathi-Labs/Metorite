@@ -4,7 +4,7 @@
  *
  * It composes the builders that exist. A table uses `tableBlock`, a board uses
  * `objectBoardBlock`, and a chart or a stat uses `chartViewBlock` and `statViewBlock` of D4c.
- * A form and a detail are components, so the mapper gives the fields and the action, and the
+ * A form, a detail and a calendar are components, so the mapper gives the fields and the action, and the
  * app frame draws them. A view of another kind gives `null`, and `StudioPage` then shows the
  * "not built yet" card (D11b). The mapper adds no block and no node type.
  *
@@ -20,6 +20,7 @@ import {
   detailFields, fieldSpecs, formFields, noBoardReason, objectBoardBlock, tableFields,
 } from "./packagePreview";
 import { viewObjectName } from "./pageModel";
+import { hierarchyField, MAX_TREE_NODES } from "./treeModel";
 import { resolveMe } from "./meToken";
 import {
   NOT_DECLARED_SENTENCE, READ_ONLY_SENTENCE, verbMap, type DeclaredAction, type ObjectRow,
@@ -74,6 +75,23 @@ export interface ViewDetail {
   source: { action: string; args: Record<string, unknown> };
 }
 
+export interface ViewCalendar {
+  kind: "calendar";
+  object: string;
+  /** The date or datetime field that places a record. */
+  start: string;
+  startType: "date" | "datetime";
+  /** The field that ends a record, or null. */
+  end: string | null;
+  /** The field that names a record: `card.title`, else the first text field, else `id`. */
+  titleField: string;
+  /** The `list` of the object. The block adds the date window to its `filter`. */
+  source: { action: string; args: Record<string, unknown> };
+  /** The start of the record link, or null when the app declares no get. */
+  openBase: string | null;
+  title: string;
+}
+
 /** The page waits for the session email, so it does not read yet. It shows a loading state, not an error. */
 export interface ViewLoading {
   kind: "loading";
@@ -85,7 +103,32 @@ export interface ViewProblem {
   reason: string;
 }
 
-export type ViewModel = ViewNode | ViewForm | ViewDetail | ViewProblem | ViewLoading;
+/**
+ * The Tree block (D18-2b). It reads the `tree` door op of one object with a hierarchy rule, and
+ * draws the nodes as an expandable tree. A drag to a new parent calls the update action.
+ */
+export interface ViewTree {
+  kind: "tree";
+  title: string;
+  object: string;
+  /** The parent field of the first `hierarchy` rule of the object. */
+  field: string;
+  /** The text field that gives the label of a node, or null (the label is then the id). */
+  labelField: string | null;
+  /** Up to two more fields, drawn as muted words after the label. */
+  metaFields: FieldSpec[];
+  /** The tree read: `object:<name>.tree` with the cap of one read. */
+  source: { action: string; args: Record<string, unknown> };
+  /** True when the app declares the update and the member may write. A viewer sees no drag. */
+  canMove: boolean;
+  /** The update action of a move, or null when `canMove` is false. */
+  update: string | null;
+}
+
+export type ViewModel = ViewNode | ViewForm | ViewDetail | ViewCalendar | ViewProblem | ViewLoading | ViewTree;
+
+/** What a tree view says when its object has no hierarchy rule. */
+export const TREE_RULE_SENTENCE = "This tree needs an object with a hierarchy rule.";
 
 type ListFields = readonly { key: string; type: string }[];
 
@@ -131,6 +174,8 @@ export function waitsForEmail(
 export const MAX_FILTERS = 8;
 
 const problem = (reason: string): ViewProblem => ({ kind: "problem", reason });
+/** The sentence for a calendar with no usable start field. */
+export const CALENDAR_START_SENTENCE = "This calendar needs a start field that is a date or datetime.";
 const WRITE_CREATE = /^object:[a-z][a-z0-9_]{0,47}\.create$/;
 
 /**
@@ -141,7 +186,7 @@ export function mapView(view: ViewDef, ctx: ViewMapContext): ViewModel | null {
   // The layout switch moves the same rows between a table and a board.
   const block = lens?.layout ?? view.block;
   const label = view.title?.trim() || view.id;
-  const kinds = ["table", "board", "chart", "stat", "form", "detail"];
+  const kinds = ["table", "board", "chart", "stat", "form", "detail", "calendar", "tree"];
   if (!kinds.includes(view.block)) return null;
 
   // The door guard: a source that names an undeclared action is refused, and no read is made.
@@ -166,6 +211,25 @@ export function mapView(view: ViewDef, ctx: ViewMapContext): ViewModel | null {
   const named = view.fields?.length ? view.fields.map((k) => specs.find((f) => f.key === k)).filter((f): f is FieldSpec => !!f) : specs;
   const shown = named.length ? named : specs;
   const verbs = verbMap(ctx.actions);
+  if (view.block === "tree") {
+    // The tree read takes no filter: the door op takes `root_id`, `depth` and `limit` only. So a
+    // `filter` of the view (and its `me` token) is ignored here, and the email is never awaited.
+    const rule = hierarchyField(object);
+    if (!rule) return problem(TREE_RULE_SENTENCE);
+    const action = `object:${name}.tree`;
+    if (verbs[action] === undefined) return problem(NOT_DECLARED_SENTENCE);
+    // The first text field of the view's order is the label. Up to two more fields are meta.
+    const labelSpec = shown.find((f) => f.type === "text" && !f.many && f.key !== rule.field);
+    const meta = shown
+      .filter((f) => f !== labelSpec && f.key !== rule.field && f.type !== "longText" && f.type !== "richText")
+      .slice(0, 2);
+    const update = `object:${name}.update`;
+    const canMove = ctx.owner && verbs[update] !== undefined;
+    return {
+      kind: "tree", title: view.title ?? object.label ?? object.name, object: name, field: rule.field, labelField: labelSpec?.key ?? null, metaFields: meta,
+      source: { action, args: { limit: MAX_TREE_NODES } }, canMove, update: canMove ? update : null,
+    };
+  }
   // The view's own filter and sort come first. The list bar adds its filter to it, and its sort wins.
   const listed = view.block === "table" || view.block === "board";
   if (listed && waitsForEmail(view, object.fields, ctx.email)) return { kind: "loading" };
@@ -198,6 +262,27 @@ export function mapView(view: ViewDef, ctx: ViewMapContext): ViewModel | null {
     }
     case "detail":
       return { kind: "detail", fields: detailFields(shown), source: list };
+    case "calendar": {
+      const startField = specs.find((f) => f.key === view.start);
+      if (!startField || (startField.type !== "date" && startField.type !== "datetime") || startField.many) {
+        return problem(CALENDAR_START_SENTENCE);
+      }
+      const endField = specs.find((f) => f.key === view.end);
+      const end = endField && (endField.type === "date" || endField.type === "datetime") && !endField.many ? endField.key : null;
+      // The title: `card.title` when it names a field, else the first text field, else the id.
+      const named = specs.find((f) => f.key === view.card?.title);
+      const titleField = named?.key ?? specs.find((f) => f.type === "text" && !f.many)?.key ?? "id";
+      // A `me` view waits for the session email. The door refuses a literal `me`.
+      if (waitsForEmail(view, object.fields, ctx.email)) return { kind: "loading" };
+      // The own filter of the view comes first, with `me` resolved. The block adds the window after it.
+      // A calendar ignores the sort of the view.
+      const own = ownListArgs(view, object.fields, ctx.email).filter ?? [];
+      return {
+        kind: "calendar", object: name, start: startField.key, startType: startField.type, end, titleField,
+        source: { action: list.action, args: { limit: VIEW_LIMIT, ...(own.length ? { filter: own } : {}) } },
+        openBase: ctx.recordBase?.(name) ?? null, title: view.title ?? object.label ?? object.name,
+      };
+    }
     case "form": {
       if (!ctx.owner) return problem(READ_ONLY_SENTENCE);
       const submit = view.submit ? ctx.actions.find((a) => a.id === view.submit)?.uses : `object:${name}.create`;

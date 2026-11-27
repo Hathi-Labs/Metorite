@@ -275,16 +275,20 @@ def _rel(path: Path) -> str:
 def test_the_direct_set_is_create_update_delete_only() -> None:
     assert {("object", "create"), ("object", "update"),
             ("object", "delete")} == invoke.DIRECT_EXECUTORS
-    # STU-D4b adds the aggregate, STU-D18-2a the tree, and B2b-2b the door op,
-    # to the open set.
+    # STU-D4b adds the aggregate, STU-D18-2a the tree, B2b-2b the door op and
+    # C4a-2 the history, to the open set.
     assert {("object", "get"), ("object", "list"), ("object", "aggregate"),
-            ("object", "tree"), invoke.DOOR_OP} == invoke.OPEN_EXECUTORS
+            ("object", "tree"), ("object", "history"), invoke.DOOR_OP} == invoke.OPEN_EXECUTORS
     assert not invoke.DIRECT_EXECUTORS & invoke.OPEN_EXECUTORS
 
 
 def test_only_the_proof_module_and_settings_read_the_direct_key() -> None:
     allowed = {"packages/acb_auth/acb_auth/direct_proof.py",
-               "packages/acb_common/acb_common/settings.py"}
+               "packages/acb_common/acb_common/settings.py",
+               # Task 574: OPTIONAL names the key with a reason and reads no
+               # value. Pin: test_secret_startup_check.py
+               # test_the_check_reads_no_optional_secret.
+               "packages/acb_auth/acb_auth/secret_check.py"}
     pattern = re.compile(r"studio_direct_key|STUDIO_DIRECT_KEY", re.I)
     readers = {_rel(p) for p in _sources(".py") if pattern.search(p.read_text(encoding="utf-8"))}
     assert readers <= allowed, sorted(readers - allowed)
