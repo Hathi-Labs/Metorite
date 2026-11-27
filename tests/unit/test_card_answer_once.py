@@ -121,6 +121,18 @@ def test_route_checks_the_mark_before_the_restart_path():
     assert calls.get("mark_answered")
 
 
+def test_route_reads_the_mark_in_one_place():
+    """ONE check of the mark, the one that raises ``answered_once``.
+
+    A merge of HRD-17a once kept a second, older block after the late-decline
+    branch, and that block raised the plain 409. A second ``was_answered``
+    call in the route goes red here.
+    """
+    calls = _route_calls()
+    assert len(calls.get("was_answered", [])) == 1, calls.get("was_answered")
+    assert len(calls.get("_answered_once_409", [])) == 1
+
+
 # ── The route, called for real: a repeat names itself and starts nothing ─────
 #
 # Owner decision 2026-11-23: "Distinct 409 detail, client does not resend".

@@ -322,6 +322,17 @@ Its one reader is
 `gateway.retrieval.find.chat_search_named`, and each search asks it. A reload
 applies a change. The flip waits for the owner's preview (task 3225).
 
+`CHAT_SEND_ONCE_ORGS` turns on one run for each send
+(`chat_failure_modes.md` §6 row HRD-17a). For each listed org, a send that
+the browser sends again with the same `user_message_id` starts no second
+run. The repeat replays the first run, or it answers that the run is final.
+The same id with other words gets 409 `send_id_reused`.
+
+`*` lists every org, and the default is empty. Empty makes no Redis call for
+it. Its one reader is `orchestrator.send_once.send_once_on`. The run route
+asks it at each send, so a reload applies to the next send. A flip stays
+OWNER-GATE (`enforcement-flip`).
+
 `CHAT_TOPICS_ORGS` turns on the topics of the chat list
 (`chat_organization.md` §6, CO-2a). For each listed org, `/chat/topics`
 lists the company topics and the member's own topics. A member makes a
