@@ -6462,7 +6462,8 @@ The second press then hit an approval's Send or Approve in the thread. An
 answer from another tab or a run end just before a tap did the same.
 
 **The rule.** Nothing moves under the pointer. The fix is in the dock. No
-control of the thread gets a guard of its own.
+control of the thread gets a guard of its own. Where F2 says that an item
+leaves the dock at once, and K6 says that the dock goes, this hold wins.
 
 1. **Hold the height.** When an item leaves the dock for any reason, the dock
    keeps its height. In the place of the item it shows an inert line: "Answer
@@ -6487,12 +6488,14 @@ control of the thread gets a guard of its own.
 
 **Fences.** `src/lib/waitingDock.test.ts` holds the numbers of rule 2
 (`collapseWait`), the three lines (`LEFT_WORDS`) and the pointer label
-(`openApproval`). `e2e/chat-waiting-dock.spec.ts` holds 16 rows, at 390 and
-1280, with a mouse and a finger. The rows are a double press on Submit, a
-double press on Not now, a press 300 ms after a run end, and a double press on
+(`openApproval`). `e2e/chat-waiting-dock.spec.ts` holds 20 rows, at 390 and
+1280, with a mouse and a finger. The rows are a double press on Submit, on
+Not now and on Fold, a press 300 ms after a run end, and a double press on
 the first question while a second one waits. Each row watches the point of
-the press on each frame, and checks that no approval or message went. All 16
-rows failed before the fix.
+the press on each frame, and the top of the dock. It also checks that no
+approval or message went. On the old dock, the watch fails in all 20 rows.
+The wire check fails in at least 11 of them. At 1280 the pointer row came under the
+point after Submit or Not now, so the press hit Review, which sends nothing.
 
 **The problem, in the owner's words (2026-11-27).**
 
