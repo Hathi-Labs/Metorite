@@ -35,7 +35,6 @@ if TYPE_CHECKING:  # import-cycle-free: the runtime import is function-local
 
 from acb_auth import (
     UserContext,
-    UserRole,
     assert_can_run_agent_in_session,
     get_current_user,
     require_internal_auth,
@@ -1015,6 +1014,16 @@ _PACK_OWNER_AGENTS: list[dict] = [
         "integrations": [],
         "optional_integrations": [],
     },
+    # PAR-2a (chat_parity.md section 6.3, task 3102): the member tools of the
+    # Members tab. The admin routes decide each right.
+    {
+        "name": "org-admin",
+        "description": "Owns the org-admin tool pack. It never runs as an agent.",
+        "agent_runtime": "maf",
+        "local_path": "apps/agents/agent-org-admin",
+        "integrations": [],
+        "optional_integrations": [],
+    },
 ]
 
 
@@ -1399,23 +1408,49 @@ def _resolve_room(thread_id: str, email: str, organization_id: str | None):
 
 async def _prepare_if_new_thread(
     room: Any, thread_id: str | None, organization_id: str | None,
+    user: Any, agent_name: str,
 ) -> None:
-    """A run on a thread with no row makes a NEW chat, so prepare the id first.
+    """A run on a thread with no row makes a NEW chat, so open it first.
 
-    H-227, fix round 3 of PR #616. The run's mint inserts the chat row, so
-    the run doors do what ``POST /chat/sessions`` does before a new row
-    (``chat.prepare_new_session``): refuse a run's id, then purge what the
-    id left. A room that exists, or that the lookup could not resolve, is
-    not new.
+    H-227, fix round 3 of PR #616: the run doors do what ``POST
+    /chat/sessions`` does before a new row. They refuse a run's id, then
+    purge what the id left. A room that exists, or that the lookup could not
+    resolve, is not new.
+
+    H-242 (``projects_ai_chat.md`` §22.9):
+
+    * **Step 1.** A room of ``None`` is "not new" ONLY for the internal
+      service caller (``workspace._is_service_caller``). ``_resolve_room``
+      gives ``None`` to a caller with no email, and when the lookup raises.
+      Such a caller still goes through the step, and the step itself checks
+      for the row under its lock, so a chat that exists loses nothing.
+    * **Step 3.** The step makes the row too (``chat.open_new_session``), in
+      the transaction that purges. So the run never writes with no row, and a
+      late ``POST /chat/sessions`` finds the row and purges nothing. A failed
+      insert answers 503, and the run does not start. The mint then finds the
+      row, and changes nothing of it.
     """
-    if (
-        room is None or not thread_id or not getattr(room, "unknown_session", False)
-        or getattr(room, "resolve_failed", False)
-    ):
-        return
-    from gateway.routes.chat import prepare_new_session
+    from gateway.routes import chat as chat_routes
+    from gateway.routes.workspace import _is_service_caller
 
-    await prepare_new_session(thread_id, organization_id)
+    if not thread_id:
+        return
+    if room is None:
+        if _is_service_caller(user):
+            return
+    elif not getattr(room, "unknown_session", False) or getattr(room, "resolve_failed", False):
+        return
+    # The row as the mint makes it: the member as the session names it.
+    member = (getattr(user, "email", "") or "").strip()
+
+    def _insert(s: Any) -> None:
+        chat_routes._ensure_session_rows(s, thread_id, member, agent_name)
+
+    try:
+        await chat_routes.open_new_session(thread_id, organization_id, insert=_insert)
+    except chat_routes.SessionOfAnotherTenant:
+        # The same answer as a session that does not exist for this caller.
+        raise HTTPException(status_code=404, detail="Session not found") from None
 
 
 def _shadow_join_first_message(
@@ -1458,7 +1493,9 @@ def _shadow_join_first_message(
         _log.warning("chat_join_shadow.not_started", error=type(exc).__name__)
 
 
-async def _guard_run_thread(user: UserContext, thread_id: str | None) -> None:
+async def _guard_run_thread(
+    user: UserContext, thread_id: str | None, agent_name: str = "",
+) -> None:
     """The room check and the new-chat step of the two run doors with no stream.
 
     H-227, fix round 3 of PR #616. ``POST /agent/run`` and ``/agent/run/async``
@@ -1466,12 +1503,16 @@ async def _guard_run_thread(user: UserContext, thread_id: str | None) -> None:
     of another member's chat ran a shared agent in it and read that thread's
     folders. They now refuse a caller who may not send in the room, as the
     stream door does. The internal service principal has no room to check.
+    These doors have no mint, so before H-242 a new thread got its row only
+    at the fold. *agent_name* is the run's agent, for the row of a new chat.
     """
     import asyncio
 
+    from gateway.routes.workspace import _is_service_caller
+
     if not thread_id:
         return
-    if user.role is UserRole.AGENT and user.has_permission("*"):
+    if _is_service_caller(user):
         return
     org = getattr(user, "organization_id", None)
     room = await asyncio.to_thread(
@@ -1479,7 +1520,7 @@ async def _guard_run_thread(user: UserContext, thread_id: str | None) -> None:
     )
     if room is not None and not room.can_send:
         raise HTTPException(status_code=room.refusal_status, detail=room.denied("send messages"))
-    await _prepare_if_new_thread(room, thread_id, org)
+    await _prepare_if_new_thread(room, thread_id, org, user, agent_name)
 
 
 def _room_agents(
@@ -2231,7 +2272,13 @@ async def register_agent(
     # registered ``worker`` would share ``cache_root/worker`` with the spawn child.
     # STU-G1: the name of a pack-only owner is reserved too, so no registered
     # agent shows in a list under the name of an owner that never runs.
+    # SBX-4b1 (agent_sandbox.md §12.4 decision 11): the broker names
+    # `user-tool` and `compute` are reserved too, because a registered agent
+    # with either name would share the container key of a broker step.
+    from acb_skills.agent_paths import BROKER_AGENT_NAMES
+
     reserved = {a["name"] for a in (*_INTERNAL_AGENTS, *_PACK_OWNER_AGENTS)}
+    reserved |= BROKER_AGENT_NAMES
     if req.name.strip().lower() in reserved:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -3077,7 +3124,7 @@ async def run_agent_stream_endpoint(
     # endpoint is the boundary of record — a hand-crafted request naming an
     # agent the member cannot run is refused here, not in the UI.
     await assert_can_run_agent_in_session(user, agent_name, req.thread_id)
-    await _prepare_if_new_thread(room, req.thread_id, _room_org)
+    await _prepare_if_new_thread(room, req.thread_id, _room_org, user, agent_name)
 
     # ── An edited message SUPERSEDES the last one (owner, 2026-10-09) ────────
     # Step 1 of 3, and it changes no row. Refuse an edit the rules forbid,
@@ -3964,6 +4011,23 @@ def _plain_409() -> HTTPException:
     )
 
 
+#: HRD-16: the 409 detail of an answer that a run already took. The browser
+#: reads it (``respondInput.ts`` ``answeredOnceOf``), says that someone
+#: answered the card, and sends nothing again. Owner decision 2026-11-23.
+ANSWERED_ONCE = "answered_once"
+
+
+def _answered_once_409() -> HTTPException:
+    """The 409 of a repeat answer or decline that a run already took."""
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "error": ANSWERED_ONCE,
+            "message": "Someone already answered this card.",
+        },
+    )
+
+
 async def _resumable_row(
     req: UserInputResponseRequest, user: UserContext,
 ) -> tuple[str, str, dict[str, Any], dict[str, Any]] | None:
@@ -4602,10 +4666,11 @@ async def respond_user_input(
 
         if await was_answered(_org_id, req.thread_id, req.request_id):
             _log.info("agent.user_input_repeat", request_id=req.request_id[:12])
-            # The plain 409, so the second device reads "not applied: someone
+            # A 409 that names the repeat, so the second device reads "someone
             # answered it" and never a false success (chat_run_continuity.md
-            # scenario 6). It skips the restart path, so nothing acts twice.
-            raise _plain_409()
+            # scenario 6). The browser sends nothing again on it, and the route
+            # skips the restart path, so nothing acts twice.
+            raise _answered_once_409()
     if not delivered and req.declined:
         # RESUME-4a-2 (D-RES-9): a late decline of a parked plain card with a
         # stored call starts a short continuation that runs no tool, so the
@@ -5063,7 +5128,7 @@ async def run_agent_sync(
     await assert_can_run_agent_in_session(user, agent, req.thread_id)
     # H-227 fix round 3: the room check of the stream route, and the new-chat
     # step before the run's first row.
-    await _guard_run_thread(user, req.thread_id)
+    await _guard_run_thread(user, req.thread_id, agent)
     # H-201 part 3: the same live-run guard as the stream route. The thread id
     # is client input, and a run on it must not supersede another person's.
     if req.thread_id:
@@ -5133,7 +5198,7 @@ async def run_agent_async(
     await assert_can_run_agent_in_session(user, agent, req.thread_id)
     # H-227 fix round 3: the room check of the stream route, and the new-chat
     # step before the run's first row.
-    await _guard_run_thread(user, req.thread_id)
+    await _guard_run_thread(user, req.thread_id, agent)
     # H-201 part 3: the same live-run guard as the stream route. The thread id
     # is client input, and a run on it must not supersede another person's.
     if req.thread_id:

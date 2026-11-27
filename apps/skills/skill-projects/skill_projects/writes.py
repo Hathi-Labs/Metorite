@@ -442,9 +442,38 @@ async def _named(
         return row
 
 
-async def _resolve_status(project_id: str, status: str) -> dict[str, Any]:
-    """The one status row a spoken name means, or a refusal that lists them."""
-    return await _named(await _statuses_of(project_id), status, "status", "statuses")
+async def _lanes_of_task(project_id: str, task_id: str) -> list[dict[str, Any]]:
+    """The lanes a task can be in. The project read first, and the task's own
+    lanes read when the project is not visible (Task 3865).
+
+    A member who holds a task by assignment alone cannot see its project, so
+    ``/nodes/{id}/statuses`` answers 404. ``/my/tasks/{id}/lanes`` is behind
+    the task, and it returns the lanes with no counts and no names of the
+    project. Only a 404 falls back, and a refusal of the task read raises the
+    first refusal, so the member sees one answer.
+    """
+    try:
+        return await _statuses_of(project_id)
+    except GatewayRefusal as first:
+        if first.status != 404 or not str(task_id or "").strip():
+            raise
+        tid = uuid_of(str(task_id), "task_id")
+        try:
+            return ((await get(f"/projects/my/tasks/{tid}/lanes")) or {}).get("rows") or []
+        except GatewayRefusal:
+            raise first from None
+
+
+async def _resolve_status(
+    project_id: str, status: str, task_id: str = "",
+) -> dict[str, Any]:
+    """The one status row a spoken name means, or a refusal that lists them.
+
+    *task_id* names the task being changed. It lets an assignee who cannot see
+    the project resolve the name through the task's own lanes.
+    """
+    rows = await _lanes_of_task(project_id, task_id) if task_id else await _statuses_of(project_id)
+    return await _named(rows, status, "status", "statuses")
 
 
 #: H-236: the refusal of an agent assignee in a run that may not send. Such a
@@ -523,11 +552,27 @@ async def _resolve_assignee(value: str, *, dispatch: bool = True, exact: bool = 
     return _refuse_agent_assignee(resolved)
 
 
+#: One address: one ``@``, a local part and a domain, with no space, no second
+#: ``@`` and no fence mark. It does not prove that the person exists: the card
+#: warns about an unknown address (:func:`_unknown_addresses`).
+_ADDRESS_SHAPE = re.compile(r"[^\s@«»,;<>()]+@[^\s@«»,;<>()]+")
+
+
 async def _resolve_assignee_name(value: str, *, exact: bool = False) -> str:
     raw = str(value or "").strip()
     if not raw:
         raise GatewayRefusal("An assignee needs a value.")
-    if "@" in raw or raw.lower().startswith("agent:"):
+    if raw.lower().startswith("agent:"):
+        return raw.lower()
+    if "@" in raw:
+        # H-162 (task 487): an address passes through, but only in the shape of
+        # one. A broken one ("anitha@", "a b@c.io", "a@b@c") would reach the
+        # route as a bare string, so it is refused here, before any card.
+        if not _ADDRESS_SHAPE.fullmatch(raw):
+            raise GatewayRefusal(
+                f"{data(raw)} is not a valid email address. Pass one address, like "
+                "name@company.com, or the person's name."
+            )
         return raw.lower()
     payload = await get("/projects/assignees", {"q": raw})
     people = (payload or {}).get("people") or []
@@ -560,22 +605,80 @@ async def _resolve_assignee_name(value: str, *, exact: bool = False) -> str:
     )
 
 
-async def _unknown_addresses(who: list[str]) -> list[str]:
-    """The addresses among ``who`` that the people directory does not know.
+async def _names_known(addresses: list[str]) -> set[str]:
+    """The lower-case addresses of *addresses* that the people directory names.
+    One exact lookup (`/people/names`), not the picker: the picker matches by
+    substring and only among active people (S6 review)."""
+    payload = (await get("/projects/people/names", {"emails": ",".join(addresses)})) or {}
+    return {str(k).lower() for k in (payload.get("names") or {})}
+
+
+async def _cannot_open(addresses: list[str]) -> list[str]:
+    """The addresses of *addresses* (known to the directory) whose person cannot
+    open a task given to them: not active, or no login (task 3636). One read of
+    ``/people/reach``, none for an empty list. A failed read raises, so no card
+    shows with a warning missing."""
+    if not addresses:
+        return []
+    reach = (await get("/projects/people/reach", {"emails": ",".join(addresses)})) or {}
+    listed = {str(a).lower() for a in reach.get("not_reachable") or []}
+    return [a for a in addresses if a.lower() in listed]
+
+
+async def _address_check(who: list[str]) -> tuple[list[str], list[str]]:
+    """The addresses among ``who`` that the people directory does not know
+    (strangers), and the known ones whose person cannot open a task given to
+    them (task 3636).
 
     An assignee is a bare string the route accepts whatever it is (D-PM-4),
     so an address passes through ``_resolve_assignee`` unchecked. The card
     names the ones the picker cannot find, so a typo is seen before it is
     signed (H-162). Agents are not addresses and are skipped.
+    ``/people/names`` answers the strangers, and ``/people/reach`` (only when
+    someone is known) answers the rest.
     """
     addresses = [a for a in who if "@" in a]
     if not addresses:
+        return [], []
+    known = await _names_known(addresses)
+    strangers = [a for a in addresses if a.lower() not in known]
+    return strangers, await _cannot_open([a for a in addresses if a.lower() in known])
+
+
+async def _unknown_addresses(who: list[str]) -> list[str]:
+    """The addresses among ``who`` that the people directory does not know
+    (H-162). The names read only: a card that asks for the strangers alone
+    does not pay for the reach read."""
+    addresses = [a for a in who if "@" in a]
+    if not addresses:
         return []
-    # One exact lookup (`/people/names`), not the picker: the picker matches
-    # by substring and only among active people (S6 review).
-    payload = (await get("/projects/people/names", {"emails": ",".join(addresses)})) or {}
-    known = {str(k).lower() for k in (payload.get("names") or {})}
+    known = await _names_known(addresses)
     return [a for a in addresses if a.lower() not in known]
+
+
+#: The card's key for a known person who cannot open the task, and the client
+#: label of it (``cardFields.ts``). One key and no reason: see
+#: ``people.core.not_reachable``.
+CANNOT_OPEN_KEY = "cannot open the task"
+
+
+def _reach_rows(cannot: list[str]) -> dict[str, str]:
+    """The card row for the known people who cannot open the task: one comma
+    list, each address once. Empty when nobody is listed."""
+    return {CANNOT_OPEN_KEY: data(", ".join(dict.fromkeys(cannot)))} if cannot else {}
+
+
+async def _assignee_rows(who: list[str]) -> dict[str, str]:
+    """All the warning rows of a card for the people in ``who``: the
+    strangers (``not in the directory``) and the known people who cannot open
+    the task (``cannot open the task``). Empty when every address is a person
+    who can. One names read, and one reach read when someone is known."""
+    strangers, cannot = await _address_check(who)
+    rows: dict[str, str] = {}
+    if strangers:
+        rows["not in the directory"] = data(", ".join(dict.fromkeys(strangers)))
+    rows.update(_reach_rows(cannot))
+    return rows
 
 
 def _split(csv: str) -> list[str]:
@@ -774,9 +877,18 @@ def ask_about_subtasks(
     )
 
 
-#: The most ``/relations`` reads one subtree count makes. Past it the card
-#: says "at least", so a huge tree costs a bounded number of reads.
+#: The most pages one subtree count reads. Past it the card says "at least",
+#: so a huge tree costs a bounded number of reads. A tree of up to
+#: ``SUBTREE_PAGE_SIZE`` tasks costs exactly one read.
 SUBTREE_READS = 100
+
+#: The rows of one page of the subtree read. The gateway allows 500 with
+#: ``compact``, and this read does not need the heavy row parts.
+SUBTREE_PAGE_SIZE = 500
+
+#: The deepest level the gateway's ``include_descendants`` walk reaches
+#: (``DESCENDANTS_MAX_DEPTH``). A row at this depth may have more below it.
+SUBTREE_MAX_DEPTH = 10
 
 _CLOSED_CATEGORIES = ("done", "cancelled")
 
@@ -787,7 +899,8 @@ class SubtreeCount:
     ``total`` is every visible descendant that is not archived, which is the
     set ``cascade.archive_subtree`` shelves. ``open`` is the part of it that
     is not closed, which is the set ``cascade.complete_subtree`` completes.
-    ``capped`` says the walk stopped at :data:`SUBTREE_READS`.
+    ``capped`` says the read stopped at :data:`SUBTREE_READS` pages, or reached
+    level :data:`SUBTREE_MAX_DEPTH`, so the true count may be higher.
     """
 
     def __init__(self, total: int = 0, open_: int = 0, capped: bool = False) -> None:
@@ -797,33 +910,51 @@ class SubtreeCount:
 
 
 async def _subtask_counts(task_id: str) -> SubtreeCount:
-    """Every level below *task_id*, through ``/relations``, top down.
+    """Every level below *task_id*, in ONE gateway read.
 
-    ``/relations`` lists the direct children that the member can see and
-    that are not archived. A walk of it reaches the descendants the
-    gateway's cascade acts on (``cascade.load_subtree``). One read per task
-    in the tree, to :data:`SUBTREE_READS`.
+    ``GET /projects/tasks`` with ``parent_task_id`` and ``include_descendants``
+    lists the visible, non-archived descendants at every level, each once, with
+    its ``status_category``. A subtree of up to :data:`SUBTREE_PAGE_SIZE` tasks
+    costs one read. A larger one pages, to :data:`SUBTREE_READS` pages.
+    ``include_triage`` keeps a parked task in, as the cascade acts on it too.
     """
     out = SubtreeCount()
-    queue = [task_id]
-    seen = {str(task_id)}
-    reads = 0
-    while queue:
-        if reads >= SUBTREE_READS:
+    tid = uuid_of(task_id, "task_id")
+    seen = {str(tid)}
+    total = 0
+    page = 1
+    while True:
+        got = (
+            await get(
+                "/projects/tasks",
+                {
+                    "parent_task_id": tid,
+                    "include_descendants": "true",
+                    "include_triage": "true",
+                    "compact": "true",
+                    "page": page,
+                    "page_size": SUBTREE_PAGE_SIZE,
+                },
+            )
+        ) or {}
+        rows = got.get("rows") or []
+        total = int(got.get("total") or 0)
+        for row in rows:
+            rid = str(row.get("id") or "")
+            if not rid or rid in seen:
+                continue
+            seen.add(rid)
+            out.total += 1
+            if row.get("status_category") not in _CLOSED_CATEGORIES:
+                out.open += 1
+            if (row.get("depth") or 0) >= SUBTREE_MAX_DEPTH:
+                out.capped = True
+        if not rows or page * SUBTREE_PAGE_SIZE >= total:
+            break
+        if page >= SUBTREE_READS:
             out.capped = True
             break
-        tid = uuid_of(queue.pop(0), "task_id")
-        relations = (await get(f"/projects/tasks/{tid}/relations")) or {}
-        reads += 1
-        for child in relations.get("subtasks") or []:
-            cid = str(child.get("id") or "")
-            if not cid or cid in seen:
-                continue
-            seen.add(cid)
-            out.total += 1
-            if child.get("category") not in _CLOSED_CATEGORIES:
-                out.open += 1
-            queue.append(cid)
+        page += 1
     return out
 
 
@@ -1899,9 +2030,7 @@ async def _assignee_card_lines(who: list[str]) -> dict[str, Any]:
     if not who:
         return {}
     lines = {"assignees": ", ".join(who)}
-    strangers = await _unknown_addresses(who)
-    if strangers:
-        lines["not in the directory"] = ", ".join(strangers)
+    lines.update(await _assignee_rows(who))
     return lines
 
 
@@ -2315,7 +2444,9 @@ async def _plan_task_edit(
         before["description"] = (task.get("description") or "")[:200]
     lane: dict[str, Any] | None = None
     if status.strip():
-        lane = await _resolve_status(str(task.get("project_id")), status)
+        lane = await _resolve_status(
+            str(task.get("project_id")), status, str(task.get("id") or ""),
+        )
         payload["status_id"] = str(lane.get("id"))
     if due.strip():
         payload["due_at"] = due.strip()
@@ -7380,7 +7511,7 @@ _OVERLAY_CLEAR = {
 #: object is refused by name for a key the single tool does not take.
 OVERLAY_ARGUMENTS = (
     "disposition", "context", "energy", "next_action", "two_minute",
-    *_OVERLAY_TIMES, *_OVERLAY_FLAGS, "waiting_on", "expected_by", "clear",
+    *_OVERLAY_TIMES, *_OVERLAY_FLAGS, "waiting_on", "expected_by", "todays_focus", "clear",
 )
 _NAIVE_TIME = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?$")
 
@@ -7471,8 +7602,37 @@ async def _overlay_values(args: dict[str, Any], mine: dict[str, Any]) -> dict[st
             )
     if given.get("expected_by"):
         values["expected_by"] = _expected_by(given["expected_by"])
+    # WS-MDC CC-2 (D-MD-3): today's focus is the member's own today, from the
+    # same read as every other day this tool guesses. The route holds the cap.
+    # The same read says if the org has today's focus, so an org without it
+    # gets a refusal here, before any card. The route refuses a clear too.
+    todays_focus = _yes_no(given.get("todays_focus", ""), "todays_focus")
+    if todays_focus is not None:
+        day = await _focus_day()
+        if day is None:
+            return TODAYS_FOCUS_OFF
+        values["focus_on"] = day.isoformat() if todays_focus else None
     refusal = _clear_into(values, given.get("clear", ""), _OVERLAY_CLEAR)
     return refusal or _block_refusal(values, mine) or values
+
+
+#: The answer while ``TODAY_RULE_ORGS`` does not hold the org. The tool makes
+#: no card. The words follow the route's 403 (``today_rule.FOCUS_OFF_MESSAGE``).
+TODAYS_FOCUS_OFF = (
+    "Today's focus is not on for your organization yet. Nothing was changed. Put a "
+    "block for the task on your calendar to plan it for today."
+)
+
+
+async def _focus_day() -> date | None:
+    """The member's today for a focus mark, or ``None`` when the org has no
+    today's focus. The tool never reads the flag. ``GET /projects/my/today``
+    says ``today_rule``, and only an explicit ``True`` counts, so an older
+    gateway means "off". A failed read is raised, and no card shows."""
+    row = await get("/projects/my/today")
+    if not isinstance(row, dict) or row.get("today_rule") is not True:
+        return None
+    return clock_of(row)[0] or _today()
 
 
 def _same_chase(person: dict[str, Any], mine: dict[str, Any]) -> bool:
@@ -7540,6 +7700,7 @@ async def set_my_overlay(
     waiting_on: str = "",
     waiting_since: str = "",
     expected_by: str = "",
+    todays_focus: str = "",
     clear: str = "",
 ) -> str:
     """Set the member's OWN triage of a task: disposition (INBOX, NEXT,
@@ -7559,7 +7720,9 @@ async def set_my_overlay(
     member waits on. waiting_since is when the wait began, and it is now
     when not given. expected_by (YYYY-MM-DD) is the date that person
     promised. clear also takes block, actual, flexible, hard_date, deep_work,
-    waiting_on and expected_by."""
+    waiting_on and expected_by. todays_focus (yes or no) marks the task as one of
+    today's focus tasks, or removes the mark. A day holds a few marks, and a
+    full day refuses a new one until the member removes a mark."""
     tid, task = await _task(task_id)
     unread = ""
     try:
@@ -7583,7 +7746,7 @@ async def set_my_overlay(
         "block_end": block_end, "flexible": flexible, "hard_date": hard_date,
         "actual_start": actual_start, "actual_end": actual_end, "deep_work": deep_work,
         "waiting_on": waiting_on, "waiting_since": waiting_since, "expected_by": expected_by,
-        "clear": clear,
+        "todays_focus": todays_focus, "clear": clear,
     }
     payload = await _overlay_values(given, mine if isinstance(mine, dict) else {})
     if isinstance(payload, str):

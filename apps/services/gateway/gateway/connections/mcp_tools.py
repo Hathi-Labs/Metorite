@@ -783,17 +783,46 @@ async def catalog_tools(org: str) -> tuple[list[dict[str, Any]], bool]:
         return [], True
     tools: dict[str, list[dict[str, Any]]] = {}
     now = _now()
-    stale = False
-    for server, raw in zip(servers, values, strict=True):
-        decoded = _decode(raw)
-        if decoded is None or decoded[2] != _identity(server):
-            stale = True
-            continue
-        tools[server.name], fetched, _ = decoded
+    served = _lists_of_now(servers, values)
+    stale = len(served) < len(servers)
+    for name, (listed, fetched) in served.items():
+        tools[name] = listed
         if now - fetched > FRESH_S:
             stale = True
     approved = await _approvals_or_none(org) if tools else {}
     return mcp_actions.mcp_rows(servers, tools, approved=approved), stale
+
+
+def _lists_of_now(servers: Sequence[Any], values: Sequence[Any],
+                  ) -> dict[str, tuple[list[dict[str, Any]], float]]:
+    """The cached list and ``fetched_at`` of each server of *servers*, when
+    the list is of the ``_identity`` of the server of now. *values* are the
+    raw cache values, in the order of *servers*. THE one rule of
+    :func:`catalog_tools` and :func:`skill_tools`."""
+    out: dict[str, tuple[list[dict[str, Any]], float]] = {}
+    for server, raw in zip(servers, values, strict=True):
+        decoded = _decode(raw)
+        if decoded is None or decoded[2] != _identity(server):
+            continue
+        out[server.name] = (decoded[0], decoded[1])
+    return out
+
+
+async def skill_tools(org: str, servers: Sequence[Any]) -> dict[str, list[dict[str, Any]]]:
+    """TOF-5a-1. The cached tools of each server of *servers*, for a skill.
+
+    *org* is the bound tenant of the run, and *servers* are rows of
+    ``mcp.enabled_meta(org)`` that the run's lookahead passed. It reads the
+    cache only, and NEVER a server. A list of another identity gives no
+    entry, as in :func:`catalog_tools`. A list of any age up to
+    :data:`LIST_TTL_S` serves, because the approval hash covers its text. A
+    Redis fault reaches the caller, and the caller fails closed."""
+    if not servers:
+        return {}
+    client = _redis()
+    with _scope(org):
+        values = await client.mget([_key("tools", s.name) for s in servers])
+    return {name: listed for name, (listed, _f) in _lists_of_now(servers, values).items()}
 
 
 # ── The live read of one class A tool (STU-I11a) ────────────────────────────

@@ -6,7 +6,19 @@ project "Personalization & Memory System".
 
 **LOOP-4a is BUILT, 2026-11-16** (task 3444, no migration). The pins of §7.2
 hold in the code. It ships dark behind `MY_DAY_LEARN_ORGS`, default empty.
-`my_day_feed.md` records it under MD-9. Every other slice of §10 is not built.
+`my_day_feed.md` records it under MD-9.
+
+**LOOP-4b is BUILT, 2026-11-26** (task 4006, no migration). The pins W1 to W5
+of §7.2 hold in the code. "Why am I seeing this" is dark behind the same flag,
+`MY_DAY_LEARN_ORGS`. The flip waits for the owner preview (D218).
+
+**LOOP-19 is BUILT, 2026-11-22** (task 3572, migration 496). A search of the
+sent mail takes a recipient and a file name. **LOOP-7 is BUILT** (task 3447,
+`finding_contract.py`). **LOOP-9 is BUILT, dark** (task 3449, §7.6), and its
+records table is task 4004.
+
+**LOOP-18 is BUILT** (task 3571, `write_check.py`), and nothing calls it before
+LOOP-20. Every other slice of §10 is not built.
 
 The owner decides LOOP-Q1 to LOOP-Q13 (§12). The defaults hold until the owner
 answers. This spec takes no D-number.
@@ -807,6 +819,118 @@ The count read must add the bound-org predicate to `_HABITS_SQL`
 the change is `apply_state` and `join` in `state.py`. `state.py` imports
 `feed_decide` inside the function, because `feed_decide` imports `feed`.
 
+**The pins of LOOP-4b ("Why am I seeing this", 2026-11-26, task 4006).** An
+audit on the same day checked each pin against the code. LOOP-4b is built, and
+`routes/shell/feed_why.py` and `lib/shell/FeedCard.tsx` hold it.
+
+- **W1, the field.** The feed read adds `why_seen` to each card of its answer,
+  only for an org in `MY_DAY_LEARN_ORGS`. It is a list of sentences, in the
+  order of W3. With the org off, no card has the key (P5). The same holds when
+  `Applied.ok` or `Learned.ok` is False. On a Redis fault a muted needs card can
+  sit in Later with no sentence.
+- **W2, the function.** `explain(card, taught, acted, now)` in the new module
+  `routes/shell/feed_why.py` returns the list. It imports `feed_decide` inside
+  the function, because `feed_decide` imports `feed`. No new query runs.
+- **W2, the caller.** `feed.feed_answer` calls it after `feed_rank.order`, for
+  the cards of the answer only. `now` is `FeedRun.now`. It calls it only when
+  `joined.ok` is True and `joined.taught` is a read with `ok` True. It makes a
+  new dict for each card, and it changes no card of `fr.cards`.
+- **W2, the join.** `state.Applied` gains `taught: Learned | None = None` and
+  `acted: frozenset[str] = frozenset()`, after `cacheable`. `apply_state` fills
+  `acted` from the rows in state `acted`. `join` does not change.
+- **W2, who sees it.** `feed_cards` adds no key. So the reach loop, the briefs
+  and the chat brief see no `why_seen`. The chat tool `home_read` reads
+  `GET /shell/feed`, so it receives the key. `_read_feed` adds no such key to
+  its rows. Fence: `tests/unit/test_home_tools.py`.
+- **W3, the sentences.** Code writes each one. None holds a title, a name or
+  other text from a record. Each one shows only when its rule is true.
+
+| # | Rule | Sentence |
+|---|---|---|
+| 1a | Group `now` | "It is in Now, because a time on it is close or has passed, or it overlaps today." |
+| 1b | Group `needs_you` | "It is in Needs you, because it asks you to act." |
+| 1c | Group `ready` | "It is in Ready for you, because a task that blocked it closed." |
+| 1d | Group `fyi` | "It is in For your information, which comes after the cards that need you." |
+| 1e | Group `later`, a muted needs card (P3) | "It is in Later because you muted this kind. It needs you, so it stays in the feed." |
+| 1f | Group `later`, any other card | "It is in Later, because you saw it 3 times in one day." |
+| 2a | `overdue` is the main or a folded kind, and `days_late` is 1 or more | "It is 1 day late." or "It is N days late." |
+| 2b | Else the main kind is not `block_overlap`, and `urgent_at` is now or past | "Its start or due time has passed." |
+| 2c | Else the main kind is not `block_overlap`, and `urgent_at` is after now, and 2 hours away or less (`feed_rank.SOON`) | "Its start or due time is 2 hours away or less." |
+| 2d | Else the main kind is `block_overlap`, and `urgent_at` (the start of the overlap) is now or past | "An overlap on it has started." |
+| 2e | Else the main kind is `block_overlap`, and `urgent_at` is after now, and 2 hours away or less | "An overlap on it starts in 2 hours or less." |
+| 3 | `facts.priority` is a cell whose level is above 0 | "Its priority is <the label of the cell in `CELL_META`>." |
+| 4 | `promise_due` is the main or a folded kind | "It holds a promise that you made." |
+| 5a | The affinity of the main kind is above 0 | "In today's count of the last 30 days, you acted on this kind more than you marked it \"Not useful\", so it ranks higher." |
+| 5b | The affinity is below 0, and the card is no needs card | "In today's count of the last 30 days, you marked this kind \"Not useful\" more than you acted on it, so it ranks lower." |
+| 5c | The affinity is below 0, and the card is a needs card | "In today's count, your \"Not useful\" marks on this kind outnumber your acts. This card needs you, so they do not lower it." |
+| 6 | `visits` is 1 or more, and the id is not in `acted` | "You saw it 1 time today, so it ranks a little lower." or "N times" |
+
+The affinity is the day value of P6, so the sentences of rows 5a, 5b and 5c name today's count.
+
+- **W4, the read.** `lib/shell/feed.ts` reads `why_seen` into `FeedCard`
+  (`readCard`). It keeps strings only, and it leaves the key out when the list
+  is empty. `visitCards` keeps the group of the visit. When it changes the group
+  of a card, it drops the first sentence of `why_seen`. It drops an empty list.
+  `carryCards` drops `why_seen` from a card that it carries from a failed
+  source, because a time or visit sentence can then be old.
+- **W4, the menu.** `cardMenuItems` and `phoneMenuItems` take an optional
+  `onWhy`, and `PhoneRowMenu` and both `ContextMenu` sites pass it. The item
+  "Why am I seeing this" is last, after a separator, with the icon `Info`. It is
+  no row of `MENU_CHOICES`. A card with no `why_seen` has no such item. The item
+  calls no server.
+- **W4, the box.** The component `WhyBox` shows one sentence for each line, and
+  a "Hide" `Button`. "Hide" returns the focus to the control that opened the
+  menu. When the card loses its sentences, the box closes. It opens again only
+  from the menu. In the card layout the box follows the why line. In the row
+  layout the why line sits in a truncated paragraph, so the box is a
+  `basis-full` block at the end of the section. It uses the tokens of the design
+  system.
+- **W5, not in this slice.** The score as a number. The judged group and weight
+  of MD-9, because the judged path changes no live card. "Tell My Day why",
+  "Stop showing <kind>" and the undo of a lowered class (L9). A menu item on a
+  reminder card, because the Reminders band draws those cards with no feed menu.
+  The sentence about the brief for a lowered kind: it needs LOOP-5, and
+  task 4008 (LOOP-4c) holds it.
+
+**Done when.**
+
+- (a) With the org off, the body of `GET /shell/feed` keeps its bytes, and no
+  card has `why_seen`.
+- (b) For a listed org, with both reads sound, each card of the answer has a
+  `why_seen` whose first sentence is rule 1.
+- (c) Five cards of a kind shown and three "Not useful" give rule 5b, and rule
+  5c on a needs card.
+- (d) No card of `feed_cards` has `why_seen`.
+- (e) A static render tests the menu item and `WhyBox`. One Playwright case in
+  `e2e/my-day-feed.spec.ts` opens and hides the box.
+- (f) The visual review passes in light mode, at compact density, under a
+  changed accent and at phone width.
+- (g) An overlap later today gives 1a. A `waiting_quiet` card gives 1b. A
+  `doc_needs_review` card gives 1d. A card with an act and then a sighting
+  claims nothing about acts.
+- (h) A card that the visit holds in another group shows no group sentence.
+- (i) `home_read` of the feed returns no `why_seen`. A failed state read and a
+  failed learned read give no key.
+
+`tests/unit/test_feed_why.py` (new) holds one pass case and one fail case for
+each row of W3. `docs/flag_reload.md` and `work_plan.md` §6 say that the flag
+also adds `why_seen`. Verify with:
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+timeout 1200 uv run pytest tests/unit/test_feed_why.py tests/unit/test_my_day_state.py \
+  tests/unit/test_my_day_state_r8.py tests/unit/test_my_day_cache.py \
+  tests/unit/test_my_day_cache_r8.py tests/unit/test_shell_feed.py \
+  tests/unit/test_shell_feed_r8.py tests/unit/test_feed_decide.py \
+  tests/unit/test_reach_loop.py tests/unit/test_home_tools.py -q
+uv run ruff check apps/services/gateway tests/unit/test_feed_why.py
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/shell
+npx playwright test e2e/my-day-feed.spec.ts
+```
+
+**Tier.** STANDARD. Dark behind `MY_DAY_LEARN_ORGS`, so it merges on green
+(D218). The flip stays an `enforcement-flip` act of the owner.
+
 ### 7.3 A threshold for each kind
 
 **One member's dislike of a kind moves it from the interrupt to the digest.**
@@ -926,6 +1050,19 @@ often a finding of the kind matched an act by the member within 24 hours. The
 owner of the kind writes the gate number in its spec before the shadow week. A
 kind that spends credits needs the owner to flip it (CLAUDE.md §3a rule 3).
 LOOP-9 builds this.
+
+**LOOP-9 is BUILT, 2026-11-17** (task 3449, no migration, dark). The mode of a
+kind is `kind_mode(kind, org)` in `finding_contract.py`. It reads
+`PROACTIVE_KIND_MODES` (`kind=mode` pairs) and `PROACTIVE_KIND_ORGS`, and every
+doubt gives `off`. `deliver` gives a finding only for a kind in `on`.
+`shadowed` gives what delivery would have sent, for a kind in `shadow`, and it
+shows that to nobody. `finding_shadow.precision` matches each record to an act
+of the same member on the same record inside 24 hours, for each kind and each
+org, and it names no member. Fewer than 5 members is `too_few`. The gate number
+is `KindDeclaration.gate`, and a kind with no number never passes
+(`gate_passes`). Not built: the table that keeps the shadow records, and the
+job that calls `shadowed`. They are the next slice, and the flip to `on`
+stays the owner's.
 
 ### 7.7 Measures
 
@@ -1058,7 +1195,8 @@ rung. Each LOOP row names its board task, under task 3439.
 | **LOOP-2** (task 3442) | 1 | The brief in the app for HathiLabs: `BRIEF_ENABLED`, `BRIEF_ORGS` (the org id), `BRIEF_IN_APP`, and `NEXT_PUBLIC_BRIEF_CARD` in a release. The slice first reads `JOB_QUEUE` and `UNATTENDED_LEDGER` on the box | `core_brief.md` §10 rows 2 and 5 | LOOP-Q4 | `GET /brief/today` answers the owner's run. The `brief_runs` row reads `delivered`. My Day shows the card. The task holds the box, the flags and the log line | STANDARD · AGENT-SAFE after the owner preview, under the `enforcement-flip` grant to 2026-11-30. After that date, OWNER-GATE |
 | **LOOP-3** (task 3443) | 1 | `CORE_EVENTS_ORGS` for HathiLabs. It gives a week of event evidence before rung 4 adds emit sites | `ai_studio.md` E12 | LOOP-Q4 | One person edit logs one `people.person.updated` event. The reload line is in the task | LOW · AGENT-SAFE under the `enforcement-flip` grant to 2026-11-30. After that date, OWNER-GATE |
 | **LOOP-4a** (task 3444) | 2 | MD-9, part 1, the server half: the flag `MY_DAY_LEARN_ORGS`, `affinity` from the one count read, and the `mutes` key on the feed. Dark | `my_day_feed.md` MD-9, §6.6, §7. The pins of §7.2 | None | The pins P1 to P6 of §7.2. Five cards of a kind shown and three "Not useful" give the affinity −12. A needs card never leaves the feed. A mute changes the feed and not the bell. One module reads the counts | STANDARD · AGENT-SAFE. The flip is `enforcement-flip` |
-| **LOOP-4b** | 2 | "Why am I seeing this": the card field, the clauses, the menu item and the panel | `my_day_feed.md` MD-9 | LOOP-4a | NOT DISPATCHABLE. The spec must name the field, the template of each clause, when each clause shows, the client files and a done-when | STANDARD · waits for a spec edit |
+| **LOOP-4b** (task 4006), BUILT 2026-11-26, dark | 2 | "Why am I seeing this": the card field, the sentences, the menu item and the box | `my_day_feed.md` MD-9. The pins of §7.2 | LOOP-4a | The pins W1 to W5 and their done-when | STANDARD · AGENT-SAFE, dark |
+| **LOOP-4c** (task 4008) | 2 | The sentence of "Why am I seeing this" for a lowered kind | This spec §7.2 W5, §7.3 | LOOP-4b, LOOP-5 | The sentence is true under L3 and L4 | STANDARD · AGENT-SAFE, dark |
 | **LOOP-5** (task 3445) | 2 | The class that the learner lowers for one member (§7.3, pins L1 to L10): the step down in `classes.py`, a `lowered` argument of `plan.interrupt_candidates`, `Learned.lowered`, `Applied.lowered` and `loop.Snapshot.lowered`, and the set in `loop.member_pass` and `routes.reach_preview` | `proactive_reach.md` §4.2, §5.1. This spec §7.3 | LOOP-4a | The pins L1 to L10. A member with 3 "Not useful" on a kind in 30 days gets the kind one class lower, and `GET /reach/preview` shows no interrupt of it. Another member of the org keeps the class. No path raises a class. With the flag off, reach plans as before. `TestTheLearnerLowers` in `tests/unit/test_reach_plan.py` holds five cases. The step never raises a class, and it moves one place. The kinds of L3 never move. Both branches of L4 apply the step. `pair` does not change. Two members with the same cards get different plans. An R8 case in `tests/unit/test_my_day_state_r8.py` lowers the kind for one member only | STANDARD · AGENT-SAFE, dark behind `MY_DAY_LEARN_ORGS`. The flip is `enforcement-flip` |
 | **MM-1** | 3 | The act record (task 2878), with the acts of §5.3 | `personalization.md` §19.4 | None | The fences of §19.10, and each new act has its seam | HIGH · AGENT-SAFE, dark |
 | **MM-2**, **PZ-15**, **MM-5** | 3 | Habits (2879), proposals with Undo (309), a habit to a kept habit (2882) | `personalization.md` §12, §19 | MM-1 | Their own rows | Their own tiers · AGENT-SAFE |
@@ -1068,7 +1206,7 @@ rung. Each LOOP row names its board task, under task 3439.
 | **LOOP-7** (task 3447) | 4 | The fields of §6.1, the declaration of §6.2, the rules of §6.4 and the fixture test | This spec §6, `my_day_feed.md` §4.1 | HX-0 | `test_finding_contract.py` passes. An R8 test shows that a recipient outside `visibility_scope` gets nothing | HIGH · AGENT-SAFE |
 | **ALN-7**, **ALN-8**, **ALN-9** | 4 | The checker (1381), the eval gate (1382), the person's card (1383) | `project_alignment.md` §6, §10 | Their own rows | Their own rows | HIGH, STD, STD. ALN-8 is OWNER-GATE above USD 0.50 |
 | **LOOP-8** (task 3448) | 4 | An email as a subject of the checker, heard by the owner of the mailbox only | `project_alignment.md` | LOOP-Q6, ALN-7 | Its row, written by its owner spec | HIGH · AGENT-SAFE |
-| **LOOP-9** (task 3449) | 4 | The shadow gate for a new kind (§7.6) | `my_day_feed.md` MD-6a-3, this spec §7.6 | LOOP-7 | A kind in shadow reaches no member. The measure gives its precision | STANDARD · AGENT-SAFE |
+| **LOOP-9** (task 3449) | 4 | The shadow gate for a new kind (§7.6) | `my_day_feed.md` MD-6a-3, this spec §7.6 | LOOP-7 | A kind in shadow reaches no member. The measure gives its precision | STANDARD · AGENT-SAFE · BUILT 2026-11-17, records table open |
 | **LOOP-10** (task 3450) | 5 | `metric_moved` from number baselines, with the driver as evidence | `my_day_feed.md` MD-9, `number_sense.md` | LOOP-7, the NUM baselines | Its row | STANDARD · AGENT-SAFE |
 | **LOOP-11** (task 3451) | 5 | A forecast that slips past the plan, as a commitment finding | `projects_reports.md` §6.8, this spec §4.2 | LOOP-7 | Its row | STANDARD · AGENT-SAFE |
 | **LOOP-12** (task 3452) | 6 | A connection declares its kinds in the `nudges` and `insights` points | `package_host.md`, this spec §6.2 | LOOP-7 | Its row | STANDARD · AGENT-SAFE |

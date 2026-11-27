@@ -927,7 +927,12 @@ async def _create_deal(
         "probability": getattr(status, "probability", None),
         "expected_close_date": wanted.expected_close_date,
         "next_step": wanted.next_step,
-        "description": wanted.description,
+        # Task 2490: the lead's own description goes to the deal when the
+        # caller passes none, so a 300-character equipment note is not lost.
+        "description": (
+            wanted.description if wanted.description is not None
+            else getattr(lead, "description", None)
+        ),
         # Provenance (§3.4) — this is what lets the deal's timeline union the
         # lead's history instead of losing everything said before conversion.
         "lead_id": str(lead.id),

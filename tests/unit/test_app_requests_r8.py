@@ -209,8 +209,12 @@ TEST_APP = base.App(
 
 #: A statement that reads the runs table.
 _READS_RUNS = re.compile(r"\b(?:FROM|JOIN)\s+pm_agent_runs\b")
-#: The three marks of a subject. One of them is in each statement.
-SUBJECT_MARKS: tuple[str, ...] = ("task_id IS NOT NULL", "app IS NULL", "app IS NOT NULL")
+#: The three marks of a subject. One of them is in each statement. SW-39
+#: (migration ``agent_run_child``) adds a third subject: a child run has no
+#: task and no app. So ``app IS NULL`` alone no longer names the task subject,
+#: because a child passes it too, and it left the marks. The child subject is
+#: ``kind = 'child'``, which only the child reads of ``agent_runs`` name.
+SUBJECT_MARKS: tuple[str, ...] = ("task_id IS NOT NULL", "app IS NOT NULL", "kind = 'child'")
 
 #: The statements that read the runs table with no mark, each with its
 #: reason. ``(path, owner)``: the owner is the module-level name or the
@@ -299,8 +303,8 @@ def _sources() -> list[Path]:
 
 def test_every_pm_agent_runs_query_names_its_subject() -> None:
     """AD-16. Each SQL text in ``apps/`` and ``packages/`` that reads
-    ``pm_agent_runs`` holds ``task_id IS NOT NULL``, ``app IS NULL`` or
-    ``app IS NOT NULL``, or sits on :data:`SUBJECT_ALLOWED` with a reason.
+    ``pm_agent_runs`` holds ``task_id IS NOT NULL``, ``app IS NOT NULL`` or
+    ``kind = 'child'`` (SW-39), or sits on :data:`SUBJECT_ALLOWED` with a reason.
     So no app run shows in the runs list, the pill, the board, ``my_work``,
     Needs attention, the analytics or the sweep. Mutation M10 turns it red."""
     missing, used = [], set()
@@ -616,7 +620,7 @@ def test_the_org_flag_has_one_reader_and_ships_empty() -> None:
                if "tests" not in p.parts and ".venv" not in p.parts
                and "app_requests_orgs" in p.read_text(encoding="utf-8")]
     assert sorted(readers) == ["apps/services/gateway/gateway/app_requests.py",
-                               "packages/acb_common/acb_common/settings.py"], readers
+                               "packages/acb_common/acb_common/flag_registry.py"], readers
     assert app_requests.requests_allowed(None) is False
 
 
@@ -624,8 +628,12 @@ def test_the_org_flag_has_one_reader_and_ships_empty() -> None:
 
 
 def _migration() -> Path:
+    # SW-39 (migration ``agent_run_child``) widens the same CHECK, so the
+    # finder also asks for the change that only this file makes.
     found = [p for p in sorted(_MIGRATIONS.glob("*.sql"))
-             if "pm_agent_runs_one_subject" in p.read_text(encoding="utf-8")]
+             if "pm_agent_runs_one_subject" in p.read_text(encoding="utf-8")
+             and "ALTER TABLE pm_agent_runs ALTER COLUMN task_id DROP NOT NULL"
+             in p.read_text(encoding="utf-8")]
     assert len(found) == 1, [p.name for p in found]
     return found[0]
 

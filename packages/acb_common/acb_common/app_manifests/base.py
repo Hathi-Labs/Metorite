@@ -209,6 +209,10 @@ class Route:
     #: has no chat tool, so the chat rules do not run. An :class:`App`
     #: refuses it.
     api: bool = False
+    #: SBX-2 (``agent_sandbox.md`` §12.2 decision 2): the sandbox door reads
+    #: this row. Off by default, so a row joins only by an edit to its own
+    #: line. Only a GET row of class A may set it.
+    sandbox: bool = False
 
     def __post_init__(self) -> None:
         where = f"{self.method} {self.path}"
@@ -216,6 +220,8 @@ class Route:
             raise ValueError(f"{where}: the method is not one of {METHODS}")
         if self.cls not in CLASSES:
             raise ValueError(f"{where}: class {self.cls!r} is not one of {CLASSES}")
+        if self.sandbox and (self.cls != "A" or self.method != "GET"):
+            raise ValueError(f"{where}: the sandbox door reads a GET row of class A only")
         if self.api:
             self._check_api(where)
         else:
@@ -483,9 +489,13 @@ def tools(app: App) -> set[str]:
 
 
 def tool_class(app: App, name: str) -> str | None:
-    """The class a chat tool acts at, or ``None`` for a tool no row names."""
+    """The class a chat tool acts at, or ``None`` for a tool no row names.
+
+    A tool on more than one row acts at the strongest class of them. A write
+    that reads a list first (PAR-3, ``create_page``) is a write, not a read.
+    """
     classes = {r.cls for r in app.routes if name and name in (r.tool, *r.also)}
-    return sorted(classes)[0] if classes else None
+    return sorted(classes)[-1] if classes else None
 
 
 @functools.lru_cache(maxsize=32)

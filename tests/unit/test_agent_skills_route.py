@@ -99,10 +99,9 @@ class _FakeDB:
 def db(monkeypatch) -> _FakeDB:
     fake = _FakeDB()
 
-    async def _get_db() -> _FakeDB:
-        return fake
-
-    monkeypatch.setattr(sk, "_get_db", _get_db)
+    # H2 (task 566): the route opens a tenant-bound session, which commits on
+    # exit. The fake is its own async context manager.
+    monkeypatch.setattr(sk, "_tenant_session", lambda: fake)
     monkeypatch.setattr(sk, "_known_agent_names", lambda: {AGENT, "sales"})
     fake.audit: list[tuple] = []  # type: ignore[attr-defined]
     monkeypatch.setattr(
@@ -227,7 +226,9 @@ async def test_put_writes_reason_and_set_by(db):
     assert row["enabled"] is False
     assert row["reason"] == "context budget"
     assert row["set_by"] == "admin@fracktal.in"
-    assert db.committed == 1
+    # The tenant-bound block commits on exit. A `commit()` inside it would end
+    # the transaction and drop the bind before the answer is read.
+    assert db.committed == 0
     assert out["disabled_families"] == ["memory"]
     # Audit carries the settings themselves (who lost memory and why).
     actor, action, target, payload = db.audit[0]

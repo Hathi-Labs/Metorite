@@ -470,6 +470,43 @@ def plan_order_allowed(organization_id: object) -> bool:
     return ALL_ORGS in orgs or org in orgs
 
 
+#: SW-45. The modes of ``AGENT_CLAIM_SCOPE_MODES``, from the weakest.
+CLAIM_SCOPE_MODES: tuple[str, ...] = ("off", "warn", "refuse")
+
+
+def _parse_claim_scope(raw: str) -> dict[str, str]:
+    """The ``org=mode`` pairs of *raw*. A pair with an organization that is
+    not ``*`` and not a canonical UUID, or with an unknown mode, is dropped.
+    The last pair of one organization wins."""
+    found: dict[str, str] = {}
+    for part in raw.split(","):
+        key, sep, value = part.partition("=")
+        entry, mode = key.strip().lower(), value.strip().lower()
+        if not sep or mode not in CLAIM_SCOPE_MODES:
+            continue
+        org = ALL_ORGS if entry == ALL_ORGS else _canonical_org(entry)
+        if org is not None:
+            found[org] = mode
+    return found
+
+
+def claim_scope_mode(organization_id: object) -> str:
+    """The claim scope of *organization_id*: ``off``, ``warn`` or ``refuse``.
+
+    SW-45 (``agent_coordination.md`` §3.10.1). The ONE reader of
+    ``agent_claim_scope_modes``. An exact id wins over ``*``. An organization
+    that the value does not name reads as ``off``, and so does a value that is
+    not an id. It reads the settings at each call, so a SIGHUP reload of the
+    gateway applies a change. The caller passes the organization of the
+    session, never request input.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return "off"
+    modes = _parse_claim_scope(str(get_settings().agent_claim_scope_modes or ""))
+    return modes.get(org) or modes.get(ALL_ORGS) or "off"
+
+
 def org_allowed(organization_id: object) -> bool:
     """True when ``agent_access_orgs`` allows *organization_id*.
 
@@ -543,6 +580,35 @@ def image_upload_allowed(organization_id: object) -> bool:
         return False
     orgs = _parse_orgs(str(get_settings().mcp_image_upload_orgs or ""))
     return ALL_ORGS in orgs or org in orgs
+
+
+def sequence_marks_allowed(organization_id: object) -> bool:
+    """True when ``sequence_marks_orgs`` allows *organization_id* (SW-27c1).
+
+    The ONE reader of the flag. It keeps ``mark_number`` dark: the edge hides
+    the tool for an organization that it refuses, and the mark route answers
+    404 with :data:`SEQUENCE_MARKS_OFF` for a signed agent of that
+    organization. The shape and the parser are those of
+    ``mcp_image_upload_orgs``, and the default is empty. The caller passes the
+    organization of the session or of the token row, never request input.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return False
+    orgs = _parse_orgs(str(get_settings().sequence_marks_orgs or ""))
+    return ALL_ORGS in orgs or org in orgs
+
+
+#: SW-27c1. The ``detail`` of the 404 of the mark route while
+#: :func:`sequence_marks_allowed` is false. The edge maps it to a fixed text.
+SEQUENCE_MARKS_OFF = "sequence_marks_off"
+
+#: SW-27c1. The fixed ``detail`` of each refusal of the sequence routes that
+#: the edge maps to its own text. ONE copy: the gateway sends it, and the edge
+#: matches it, so a 403 or 409 of another cause keeps its own text.
+SEQUENCE_NOT_YOUR_RUN = "This number is not a number of your run."
+SEQUENCE_RUN_NOT_YOURS = "The run is not your own run on this task."
+SEQUENCE_MARK_FINAL = "The number is already used or released. It cannot change."
 
 
 #: CIV-14b. The code of the refusal while :func:`image_upload_allowed` is
@@ -1053,6 +1119,11 @@ REQUEST_READ_ROUTE: tuple[str, str] = ("GET", "/agent-access/requests/{request_i
 #: Fence: ``tests/unit/test_task_check_r8.py`` and the coverage fence.
 #: MCP-P1b-2 (spec §19.5) adds the ask of ``app_write``,
 #: :data:`REQUEST_ASK_ROUTE`. It opens a request and runs nothing.
+#: WS-MCP SW-114 adds the POST of the children of a run, the route of
+#: ``report_subagent``. It writes or ends one child run under an open run of
+#: the caller's member and connection, at most 20 open children for each run.
+#: The GET of the children stays OFF both sets. Fence:
+#: ``tests/unit/test_agent_child_runs_r8.py`` and the coverage fence.
 #: CIV-14b (spec §12.9) adds the upload of a file to a task, the route of
 #: ``upload_task_image``. For a signed agent the route takes only a png,
 #: jpeg, gif or webp image of at most :data:`AGENT_IMAGE_MAX_BYTES`, and only
@@ -1091,6 +1162,13 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/projects/agent-runs/{run_id}/release"),
     # MCP-G15: the decision a member made outside Metorite.
     ("POST", "/projects/agent-runs/{run_id}/outside-decision"),
+    # WS-MCP SW-114: `report_subagent`. A start or a stop of one sub-agent
+    # under an open run of the same member and connection. Class X in the
+    # chat manifest: only a signed agent sends it, and a person gets 422.
+    ("POST", "/projects/agent-runs/{run_id}/children"),
+    # WS-MCP SW-32: `set_run_plan`. It replaces the plan of the agent's own
+    # run, and it writes one `action` activity as a heartbeat.
+    ("PUT", "/projects/agent-runs/{run_id}/plan"),
     ("POST", "/projects/tasks/{task_id}/archive-request"),
     ("POST", "/projects/tasks/{task_id}/agent-delete"),
     # WS-39 LP-1a: `post_project_update`. The route needs the right of a task
@@ -1100,6 +1178,15 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # WS-MCP SW-23: `report_check`. A pass closes the task only when the
     # caller may move it. It answers 404 while the Check flag is off.
     ("POST", "/projects/tasks/{task_id}/check-result"),
+    # WS-MCP SW-27b: `reserve_number`. One atomic statement gives the next
+    # number of a project sequence (SW-27a). The route reads the agent's
+    # reach through `resolve_visibility`, so a pinned connection reserves only
+    # in its pins. Each call burns a number, so the write cap counts it.
+    ("POST", "/projects/nodes/{project_id}/sequences/{name}/reserve"),
+    # WS-MCP SW-27c1: `mark_number`. The agent marks a number of its OWN run
+    # `used` or `released` (`checks.own_run`). Dark behind
+    # `sequence_marks_orgs` (`sequence_marks_allowed`).
+    ("POST", "/projects/reservations/{reservation_id}/mark"),
     # MCP-P1b-2 (spec §19.5, AD-4): the ask of `app_write`. It opens one
     # request for the member and runs nothing. Branch 0 takes any `<app>:write`
     # here (`request_write_scope`), and the route checks the app of its path.
@@ -1134,6 +1221,13 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # `labels`: the number and title of the VISIBLE blockers, for the chat. The
     # edge ignores `labels`, and a hidden blocker is never named.
     ("GET", "/projects/plan/order"),
+    # SW-45: the free tasks of the member's own apps, for `my_work`. A read. It
+    # answers no rows while `AGENT_CLAIM_SCOPE_MODES` is off for the org.
+    ("GET", "/projects/my/own-app-free"),
+    # LBB-2 (engineering_practice.md §7b.2): the open PRs to land of the
+    # caller, for the `land_your_pr` rows of `my_work`. A read. It answers no
+    # rows while both claim gate flags are off for the org.
+    ("GET", "/projects/agent-work/landing"),
     # MCP-G21: the members that `set_assignees` would accept, for `list_members`.
     ("GET", "/projects/assignable-members"),
     # SP-12: the order of work under one goal, epic or project, for `get_plan`.
@@ -1175,6 +1269,11 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # WS-39 TPL-1a: `list_templates`. It answers 404 while
     # `PROJECTS_TEMPLATES_ORGS` does not hold the org.
     ("GET", "/projects/templates"),
+    # WS-MCP SW-113 (agent_coordination.md §3.12.7 rule 12): `get_agent_map`.
+    # The edge sends `shape=map` only. The route answers 404 while
+    # `AGENTS_VIEW_ORGS` or `AGENT_MAP_ORGS` does not hold the org, and for a
+    # project that the member cannot see.
+    ("GET", "/projects/agents/overview"),
     *MCP_WRITE_ROUTES,
 })
 
@@ -1185,6 +1284,11 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
 #: first. The edge sends a stand-in name for a stored name of another shape.
 ATTACHMENT_FILENAME_PATTERN = r"(?!.*\.\.)[A-Za-z0-9_-][A-Za-z0-9._ -]{0,119}"
 
+#: SW-27b. The name of a project sequence in the reserve path. The same rule
+#: as the CHECK of migration 477 and ``NAME_RE`` of the route: a lowercase
+#: letter, then up to 39 lowercase letters, digits, ``_`` or ``-``.
+SEQUENCE_NAME_PATTERN = r"[a-z][a-z0-9_-]{0,39}"
+
 #: The path parameters of a pair of :data:`MCP_ROUTES` that are not ids, each
 #: with its pattern (MCP-P1a). The edge client refuses every other value.
 MCP_PATH_SHAPES: Mapping[tuple[str, str], Mapping[str, str]] = MappingProxyType({
@@ -1193,6 +1297,8 @@ MCP_PATH_SHAPES: Mapping[tuple[str, str], Mapping[str, str]] = MappingProxyType(
     REQUEST_ASK_ROUTE: MappingProxyType({"app": app_manifests.APP_ID_PATTERN}),
     ("GET", "/projects/attachments/{attachment_id}/{filename}"): MappingProxyType(
         {"filename": ATTACHMENT_FILENAME_PATTERN}),
+    ("POST", "/projects/nodes/{project_id}/sequences/{name}/reserve"): MappingProxyType(
+        {"name": SEQUENCE_NAME_PATTERN}),
 })
 
 # ── The app door (MCP-P1a, spec §19.3 to §19.7) ─────────────────────────────
@@ -1333,6 +1439,27 @@ def write_window_s() -> int:
     ``agent_write_window_s``, or :data:`WRITE_WINDOW_S` for a value below 1.
     """
     return _positive(get_settings().agent_write_window_s, WRITE_WINDOW_S)
+
+
+#: MCP-G17f (spec §5.5, task 4032). The longest grace window of a refresh
+#: token, in seconds. A longer window lets a stolen refresh token live too
+#: long after its own client spent it. The recorded collisions were 2 s
+#: apart, so 60 s covers them with room to spare.
+REFRESH_REUSE_GRACE_MAX_S = 60
+
+
+def refresh_reuse_grace_s() -> int:
+    """The grace window of a spent refresh token, in seconds (MCP-G17f).
+
+    The ONE reader of ``agent_refresh_reuse_grace_s``. A value that is not a
+    whole number, or is below 1, gives 0, and 0 turns the window off. A value
+    above :data:`REFRESH_REUSE_GRACE_MAX_S` gives that cap. The token store
+    reads it at each rotation (``agent_tokens`` rule 5).
+    """
+    value = get_settings().agent_refresh_reuse_grace_s
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return 0
+    return min(value, REFRESH_REUSE_GRACE_MAX_S)
 
 
 #: EA-13a (spec §12.2 item 1, EA3-47). The longest ``<slug>`` of a client
@@ -1578,6 +1705,10 @@ __all__ = [
     "RESOURCE_SCOPES",
     "S256",
     "SENDS_OFF_CODE",
+    "SEQUENCE_MARKS_OFF",
+    "SEQUENCE_MARK_FINAL",
+    "SEQUENCE_NOT_YOUR_RUN",
+    "SEQUENCE_RUN_NOT_YOURS",
     "SUPPORTED_SCOPES",
     "WRITES_DISABLED_CODE",
     "WRITE_CAP",
@@ -1631,6 +1762,7 @@ __all__ = [
     "s256",
     "scope_holds",
     "scope_string",
+    "sequence_marks_allowed",
     "task_checks_enabled",
     "token_endpoint",
     "write_cap",

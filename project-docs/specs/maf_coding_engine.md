@@ -37,6 +37,12 @@ root agent also compares the member's org with the run's org (§15.4).
 **H-232b (task 1712) is built (2026-11-07).** The root-agent gate and the
 push gate of agent code read the membership and the access in the run's
 org (§15.4).
+**H-245 (task 618) is built (2026-11-22).** It closes the four P3 edges of
+the skill rule that the review of PR #635 left (§16.3), with the review
+repairs of 2026-11-22. The orphan rule and the store ask bind every shared
+dir, and each refusal has its own text. A personal dir is exempt from both,
+for a read and for a write. Three gaps stay open in a team dir, and task 3892
+carries them (§16.3). No team-instanced agent ships today.
 
 Owner decisions, 2026-10-03. The owner kept delegation in a covered run on
 2026-10-03, so §16.3 no longer says that no data leaves the platform. The
@@ -775,6 +781,9 @@ card counts as a refusal.
   measured the recreate at 1.27 s.
 - `HTTP_PROXY` and `HTTPS_PROXY` in the container point at the proxy and carry
   the grant token.
+- The broker writes these settings to a file of mode 0600 in a folder of mode
+  0700, and passes it with `docker run --env-file`. It removes the file when
+  the run starts. So the token never shows in a process list.
 - Two organizations never share an egress network. So one tenant's container
   cannot reach another tenant's container.
 - At the run's end, `revoke_egress()` removes the grant and recreates the
@@ -787,7 +796,9 @@ So the host needs a rule that drops every packet from a sandbox bridge to a
 host address. WS-43g writes the rule as
 `apps/services/orchestrator/sandbox/host_firewall.sh`, with a test. To install
 it on the box is WS43-G1. Until the rule is on the box, `sandbox_egress_enabled`
-stays off there.
+stays off there. `host_firewall.sh --check` also refuses a Docker daemon that
+CVE-2024-29018 affects. Before 26.0.0, 25.0.5 and 23.0.11, the embedded DNS
+of an `--internal` network sends outside names out. The 24.x line has no fix.
 
 **The proxy.**
 
@@ -798,6 +809,21 @@ stays off there.
   holds no credential.
 - It reads the grants from a file that only the broker writes. The file lies
   outside every sandbox mount, and the proxy mounts it read-only.
+- It runs with `net.ipv4.ip_forward=0` and `net.ipv6.conf.all.forwarding=0`,
+  so it never routes a packet between its networks.
+- Its limits (review round 1, 2026-11-26):
+  - The whole request head must arrive in 10 s (`HEAD_DEADLINE_S`).
+  - One peer address holds at most 4 connections that have not passed the
+    token check (`MAX_PREAUTH_PER_PEER`). The proxy checks this before it
+    takes a slot of `MAX_CLIENTS`. A fifth gets 503 and one log line.
+  - One grant token holds at most 8 requests at a time (`MAX_PER_GRANT`).
+    The proxy holds at most 32 in all (`MAX_CLIENTS`).
+  - A tunnel closes after 300 s with no byte (`TUNNEL_IDLE_S`).
+  - A tunnel closes after 1800 s in any case (`TUNNEL_MAX_S`). That is the
+    longest grant.
+- It refuses a request head with a control byte other than tab, a C1 byte
+  (`0x80` to `0x9f`), or a CR outside a CRLF. So one header line cannot
+  hide a second header.
 
 **What the proxy refuses:**
 
@@ -809,7 +835,8 @@ stays off there.
 3. A port other than 80 and 443.
 4. A host with any resolved address for which Python's `ipaddress` gives
    `is_global == False`. The proxy also refuses `64:ff9b::/96` (NAT64),
-   `2002::/16` (6to4) and the IPv4-mapped forms. Each of them carries an
+   `2002::/16` (6to4), the IPv4-mapped forms, the IPv4-compatible
+   `::/96` and the IPv4-translated `::ffff:0:0:0/96`. Each of them carries an
    IPv4 address inside.
 5. A second DNS answer. The proxy resolves once, checks the addresses, and
    connects to the address it checked. A DNS rebind cannot change the target.
@@ -828,6 +855,32 @@ method field reads `CONNECT`.
 `pypi.org,files.pythonhosted.org`. These two exact hosts serve `pip install`.
 `upload.pypi.org` is not on the list. The production list reaches third
 parties, so the owner sets it (WS43-G4).
+
+**The door forward (WS-43g1, task 4009).** The door client of
+`agent_sandbox.md` §12.3 calls `http://metorite-api.sandbox`. The proxy
+forwards that one name to the gateway.
+
+- The door name is a host on the grant's list, like any other host. Rules 1,
+  2 and 3 apply to it.
+- The proxy forwards a plain HTTP request for the exact name
+  `metorite-api.sandbox`, on port 80, to the address in
+  `sandbox_egress_door_upstream`. That value is an IP address and a port.
+- The proxy does no DNS lookup for the door. So rules 4 and 5 do not apply to
+  it. Only the broker sets its private address, and no request can name one.
+- The proxy refuses the door when the setting is empty or holds a name, for a
+  `CONNECT`, and for a request with no `X-Sandbox-Capability` header.
+- The proxy adds no header and holds no key. It removes
+  `Proxy-Authorization` and the hop-by-hop headers. It sets
+  `Connection: close`, so each connection carries one request.
+
+**The settings.** Each default keeps egress off.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `sandbox_egress_enabled` | `False` | Off: the broker refuses each grant, and makes no proxy and no egress network |
+| `sandbox_egress_allow_hosts` | `pypi.org,files.pythonhosted.org` | The hosts that a grant may name. A grant names an entry exactly |
+| `sandbox_egress_door_upstream` | empty | The IP address and port of the door upstream. Empty refuses the door |
+| `sandbox_egress_grant_ttl_seconds` | 1800 | The longest life of a grant. The run's end revokes it first |
 
 ### 7.4 The tools
 
@@ -2389,11 +2442,70 @@ These facts change or add to the text above:
   another member runs it. And the container cannot write a shared folder,
   so a script has no place to put another member's data where its author
   can read it.
-- **Skill privacy holds while the org is covered** (a named residual for the
-  switch-on). A covered run does not hold `recall_notes` or `save_note`, and
-  those tools check no skill owner. So if `MAF_CODING_SCOPE` stops covering
-  an org, a run of that org can read another member's skill with
-  `recall_notes`. This stays open until HANDOFF H-245 step 3 closes.
+- **H-245 closed the four P3 edges of the skill rule** (task 618,
+  2026-11-22). It made four changes:
+  - In a shared dir, the file store of a covered run hides a skill folder
+    that holds files and no marker. A rehydrate that fails part way can bring
+    back a member's files with no marker. No run reads that folder, the
+    author's run too, because `claim_skill` lets no member take it.
+  - The orphan rule and the store ask bind every shared dir: a tenant dir
+    (`o:<org>`) and a team dir (`t:<team>`). A personal dir (`u:<email>`)
+    is exempt from both, for a read and for a write (task 618 review, F1).
+    The Files routes save a skill in a personal dir with no marker. So there
+    the member's run reads that folder, and its first write claims the
+    folder and writes the member's marker. `agent_paths.is_shared_instance`
+    tells the two kinds apart.
+    The store reads the dir kind from the broker's binding, never from the
+    `.cc-instance` marker.
+  - In a shared dir, `claim_skill` asks the blob store before it takes a
+    name. A row under the folder in the store refuses the claim, so a later
+    rehydrate never puts one member's files in a folder that another member
+    owns. The ask reads the keys that a rehydrate of the dir restores
+    (`agent_paths.store_ask_instances`). A tenant dir reads its own key and
+    the older shared rows (`instance=''`). A team dir reads its own key
+    only. A route passes the key `o:<org>` from the session. The file store
+    passes the key of the broker's binding. `claim_skill` takes the key as
+    a required keyword, so a caller that leaves it out fails at once (F3).
+    When the store cannot answer, the claim is refused.
+  - Each refusal of `claim_skill` carries a reason
+    (`agent_paths.SkillClaimRefusal`), and each reason has its own text
+    (`SKILL_REFUSAL_TEXT`). The Files routes answer with these statuses:
+
+    | Reason | Status | Text |
+    |---|---|---|
+    | Another member's marker, or a lost race | 403 | That skill belongs to another member. |
+    | Files and no marker, or rows in the store | 409 | That skill name is in use. Pick another name. |
+    | The store does not answer | 503 | This server cannot check that skill name right now, so nothing was saved. Try again in a minute. |
+
+    The 409 tells the member that another name works. The 503 tells the
+    member to try again. The file store gives the same text to the model,
+    after `Refused:`.
+  - In a shared agent's tenant dir, `recall_notes` and `save_note` refuse
+    each skill folder that is not the member's own. In every other dir, the
+    two tools work as before. The file store writes a marker in every dir,
+    so a personal dir can hold a marker too.
+  - The tree of the Files routes leaves out each path that
+    `_odd_name_form` refuses, so the tree never names a file that GET
+    answers 404 for.
+- **Three gaps of the skill rule stay open in a team dir.** Task 3892 carries
+  the fix of each. No team-instanced agent ships today.
+  - The file-store rules bind a team dir. But a `code_task` container
+    mounts the whole dir read-write. `code_session.py` refuses only a tenant
+    key, and `_build_mounts` gives `code_task` no skill cover. So
+    `run_command` can still read the skill of another member there.
+  - The Files routes save a skill in a team dir with no marker. The file
+    store then hides that folder from every run, the author's run too. This
+    fails closed.
+  - `recall_notes` and `save_note` check the skill owner in a tenant dir
+    only (`note_tools.py` gates on `is_tenant_instance`). In a team dir they
+    can read the skill of another member.
+- **The residual of the skill rule, named.** The disk can lose a skill
+  folder while the store still holds it. Until the marker comes back, a
+  covered run of the author cannot write into that folder. The rehydrate at
+  the next agent load brings the marker back. So does the author's next GET
+  of a file of the folder. When the store holds files of the folder and no
+  marker row, no member can take that name again. Nothing leaks, because
+  each lock fails closed.
 - **The partition marker is read-only in the container.** The `projects`
   target covers `.cc-instance` with a read-only mount of itself, because the
   gateway's write-through and fault-in read it. The route rule never reads
@@ -2548,7 +2660,7 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
 
 **Gate.** AGENT-SAFE. It ships dark.
 
-### WS-43g — Egress: the proxy, the approved grant and the host firewall 🔲
+### WS-43g — Egress: the proxy, the approved grant and the host firewall 🔲 · 🔨 **WS-43g1 built 2026-11-26, dark, on branch `mt-abaa42b0-ws43g1-egress` (task 4009)**
 
 **Scope.**
 
@@ -2576,6 +2688,49 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
    back on `--network none`.
 8. With the firewall script applied in CI, a sandbox cannot connect to the
    bridge gateway address on port 8080.
+9. The proxy forwards only the exact name `metorite-api.sandbox`, to the
+   address in `sandbox_egress_door_upstream`. It does no DNS lookup for it,
+   and it adds no header. With the setting empty, it refuses that name.
+
+**WS-43g1, the first slice (task 4009).** The audit of 2026-11-26 narrowed
+WS-43g to an agent-safe first slice. It ships dark.
+
+- In:
+  - `sandbox/egress_proxy.py`, with the five rules of §7.3, the door forward
+    and one JSON log line per request.
+  - The proxy container. It runs as uid 65534, with `--cap-drop ALL` and no
+    `-p`.
+  - A per-organization `--internal` network, and the grants file under
+    `sandbox_state_dir`.
+  - `grant_egress()` and `revoke_egress()`. Each recreates the container
+    through `mount_list`. The run's end revokes. `sweep()` removes the proxy
+    and the networks.
+  - The four settings of §7.3. Each default keeps egress off.
+  - `sandbox/host_firewall.sh`, written and tested. Nothing applies it.
+  - `grant_egress()` refuses on `docker-remote`.
+- Out:
+  - WS-43g2: the live `request_network_access`, the `timeout_s` parameter
+    and the approval card (done-when 4 to 6).
+  - WS-43g3: the firewall script applied in CI (done-when 8).
+  - The proxy baked into the image, and egress on `docker-remote`.
+  - Each flag flip and each act on a box.
+- Fences: WS43-F5 and WS43-F9 are new. WS43-F2 gains the egress flags.
+- Done-when 1, 2, 3 and 9 hold for WS-43g1. Done-when 7 holds for the grant
+  and the network. Its card half waits for WS-43g2.
+
+**Open item for the owner (review round 1, 2026-11-26).** Two members of one
+organization share one egress bridge. So the container of one member can
+reach the container of the other member on that network. The fix needs an
+owner decision between two options:
+
+1. A network per run, or per member, in place of a network per organization.
+2. An iptables rule on `mtr-eg-+` that allows only traffic between a sandbox
+   and the proxy.
+
+WS-43g1 keeps the network per organization until the owner decides.
+
+**Status, 2026-11-26.** WS-43g1 is built dark on branch
+`mt-abaa42b0-ws43g1-egress` (task 4009). WS-43g2 and WS-43g3 are not built.
 
 **Verification.**
 
@@ -4509,7 +4664,7 @@ An agent refuses each of these by name:
 
 | # | Act |
 |---|---|
-| WS43-G1 | Change Docker access on the box, such as adding the gateway user to the `docker` group. Or install the host firewall rule of §7.3. The broker's own unit is `box_hardening.md` BH-3 (WS-49) |
+| WS43-G1 | Change Docker access on the box, such as adding the gateway user to the `docker` group. Or install the host firewall rule of §7.3. Before egress turns on, `host_firewall.sh --check` must pass on the box. It checks the rule and a Docker daemon of 26.0.0 or later, 25.0.5 or later in 25.x, or 23.0.11 or later in 23.x (CVE-2024-29018). The broker's own unit is `box_hardening.md` BH-3 (WS-49) |
 | WS43-G2 | Build or load the sandbox image on the box, or write the deploy step under `deploy/` |
 | WS43-G3 | Set `MAF_CODING_SCOPE` on production, for any organization. First, the owner confirms that the caps of §7.1 rule 8 fit the box's memory |
 | WS43-G4 | Set `SANDBOX_EGRESS_ENABLED` on production, or set the production allowlist |
@@ -4544,11 +4699,13 @@ WS43-G3. The owner answers WS43-Q7 before WS43-G3 for the `email` target.
 ## 14. Side findings
 
 The spec work found three defects outside WS-43, and the review found one
-gap in the guard. `HANDOFF.md` carries each one with a Check:
+gap in the guard. `HANDOFF.md` carried each one with a Check. H-211 left it
+when task 560 closed its root half (2026-11-21):
 
-- **H-211.** The root `metorite` agent (`agents.py:102-122`) and the external
-  `agent-sales-assistant` set `PermissionHandler.approve_all`, so they bypass
-  the B6 policy.
+- **H-211.** The root `metorite` agent (`agents.py`) and the external
+  `agent-sales-assistant` set `PermissionHandler.approve_all`, so they
+  bypassed the B6 policy. Task 560 removed it from the root agent. The
+  external agent keeps it until WS43-G11.
 - **H-212.** `agent-sales-assistant` imports `copilot.types`, which SDK
   1.0.11 removed. Its factory raises `ImportError`.
 - **H-213.** WS-3a and WS-3b are not in the code: no
@@ -4560,8 +4717,11 @@ gap in the guard. `HANDOFF.md` carries each one with a Check:
 - **H-218.** The loader writes the GitHub token into each clone's remote URL
   (`loader.py:78`). The mutation container mounts the clone and has a network,
   so code in it can read the token (§15.3).
-- **H-211's root half** closes with WS-43m. Its external half and H-212 close
-  with the change in the sales-assistant repo (WS43-G11).
+- **H-211's root half** closed with task 560 (2026-11-21). The root factory
+  sets no permission handler, and
+  `tests/unit/test_no_first_party_approve_all.py` fails if one comes back.
+  Its external half and H-212 close with the change in the sales-assistant
+  repo (WS43-G11).
 
 ## 15. D84 — the GitHub Copilot SDK leaves the platform
 
@@ -4663,10 +4823,17 @@ H-218 is fixed.
 
 ### 15.4 The root `metorite` agent
 
-Today it is a `GitHubCopilotAgent` with `approve_all` (root
-`agents.py:102-122`), and its working dir is the platform checkout. So the
-model can run any shell command and write any file there, in every
-permission mode (H-211).
+Today it is a `GitHubCopilotAgent` (root `agents.py`). Until task 560
+(2026-11-21) its factory set `approve_all`, so the model could run any shell
+command and write any file, in every permission mode (H-211). Now the
+executor gives it the B6 handler of `AGENT_PERMISSION_MODE`. In `enforce` it
+keeps its shell. The denylist and the workspace bounds of
+`permission_policy.decide()` also apply to it.
+
+Its run workspace is the tenant state dir (H-201), so in `enforce` its CLI
+file tools do not reach the platform checkout. Its shell does, and only the
+denylist limits a shell command. That is a known limit until the target below
+or the sandbox.
 
 **The target.** A MAF harness agent with these tools only:
 
@@ -5966,7 +6133,7 @@ The order is: CA-1 first. Then CA-2 and CA-3. Then the rest, as each
 - **Risk.** HIGH (code execution). The sandbox stays the boundary (D130).
   Blocked by CA-1.
 
-#### CA-4 (task 1032) — Network: egress proxy, web fetch, web search, package install. This is WS-43g.
+#### CA-4 (task 1032, live task 4009) — Network: egress proxy, web fetch, web search, package install. This is WS-43g.
 
 **Since D148, the web service has its own owner.** `web_research.md` owns the fetch guard, the readers and the search providers. CA-4 owns the coding session's egress proxy and its profiles, and its `web_fetch` and `web_search` call that one service.
 

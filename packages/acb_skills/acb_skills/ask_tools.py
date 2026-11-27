@@ -759,6 +759,58 @@ CONFIRMATION_ANSWERS: frozenset[str] = frozenset(
     {"APPROVE", "REJECT", "TIMEOUT", "CANCELLED"}
 )
 
+#: The event that gives the receipt of an approved card its Undo
+#: (one_assistant_context.md §9.4 WT-6a). The value names the card's
+#: ``request_id``, the kind and the id of the row, and the row's version after
+#: the write. The browser then calls the unarchive route itself, under the
+#: member's own session, with that version as ``If-Match``. The event carries
+#: no token. ``workbench/control_plane/src/lib/archiveUndo.ts`` reads it.
+CONFIRMATION_UNDO = "confirmation_undo"
+#: The kinds of row that a receipt can restore, each with its unarchive route.
+UNDO_KINDS: frozenset[str] = frozenset({"task", "project"})
+_UUID_RE = _re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def undo_value(kind: str, row_id: str, version: str | None) -> dict[str, Any] | None:
+    """The value of a :data:`CONFIRMATION_UNDO` event, or None.
+
+    *kind* is one of :data:`UNDO_KINDS`, *row_id* a UUID and *version* the
+    row's ``updated_at`` with a UTC offset. The Undo sends that version as
+    ``If-Match``, so a missing one gives None too. Any other value gives None,
+    so no line offers an Undo that cannot work."""
+    rid = str(row_id or "").strip().lower()
+    if kind not in UNDO_KINDS or not _UUID_RE.fullmatch(rid):
+        return None
+    stamp = str(version or "").strip()
+    if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}T[0-9:.]+(Z|[+-]\d{2}:?\d{2})", stamp):
+        return None
+    return {"kind": kind, "id": rid, "version": stamp}
+
+
+async def publish_card_undo(kind: str, row_id: str, version: str | None) -> bool:
+    """Offer Undo on the receipt of the card that the member just approved.
+
+    WT-6a. A tool calls it after the write that its card approved. It sends
+    one :data:`CONFIRMATION_UNDO` event on the channel that carried the card,
+    keyed by that card's ``request_id``. The tool names no card: the id comes
+    from :data:`_APPROVED_CARD`. True when the event went out. A frame with no
+    approved card, a value that :func:`undo_value` refuses, or a fault gives
+    False, and the receipt then offers no Undo. It never raises."""
+    card = _APPROVED_CARD.get()
+    # One card gives one Undo. A second call names no card.
+    _APPROVED_CARD.set(None)
+    value = undo_value(kind, row_id, version)
+    if card is None or value is None:
+        return False
+    request_id, publish = card
+    try:
+        await publish({"type": "CUSTOM", "name": CONFIRMATION_UNDO,
+                       "value": {"request_id": request_id, **value}})
+    except Exception:  # the receipt then offers no Undo
+        return False
+    return True
+
 
 #: A confirmation card with ROWS (WS-46 P13 one-card). The member ticks the
 #: rows the act covers, and the answer names them:
@@ -1068,6 +1120,10 @@ def _clean_new_mail_form(form: dict) -> dict:
     # says so. Each is a person of the card that starts unticked, or no card shows.
     if "unticked" in form:
         out["unticked"] = _new_mail_unticked(form["unticked"], people, out.get("ticked"))
+    # Task 3978 (§18.13.1): the draft of this email that the chat saved
+    # earlier. Discard then asks "Keep the earlier draft, or delete it?" on
+    # this card. The tool sets it only with CHAT_DRAFT_CHOICE_ORGS on.
+    out.update(clean_earlier(form))
     out.update(_new_mail_redraft(form))
     return out
 
@@ -1571,6 +1627,9 @@ CARD_NOT_DONE_LEADS: tuple[str, ...] = tuple(
 #: publisher of its stream. Only :func:`request_confirmation` writes it, and
 #: only on an APPROVE. :func:`card_outcome_head` reads it once, for a
 #: "Changed since the card" text. The default is None, never a mutable object.
+#: WT-6a: :func:`publish_card_undo` reads it once too, after the write that
+#: the card approved. So one card gives a "Changed since" text or an Undo,
+#: never both. A ContextVar, so two tools that run at once each read their own.
 _APPROVED_CARD: _contextvars.ContextVar[Any] = _contextvars.ContextVar(
     "acb_approved_card", default=None)
 
@@ -1654,6 +1713,78 @@ def last_card_outcome() -> str | None:
     the card raised. The bool or the sentinel of the card stays its answer.
     This only says WHY a card did nothing."""
     return _LAST_OUTCOME.get()
+
+
+#: Task 3978 (``email_app_master_plan.md`` §18.13.1): the answer of a card
+#: that names an ``earlier`` draft (a new-mail form, or the plain card of
+#: ``edit_draft``), when the member pressed Discard or Reject and then
+#: "Delete it". It is a decline: the card sends and saves nothing.
+#: :func:`earlier_draft_choice` then says "delete", and the tool trashes that
+#: one draft. Each other answer keeps the draft.
+DELETE_EARLIER_ANSWER = 'REJECT {"earlier":"delete"}'
+#: The choice of the last card of this frame: "delete:<responder>", or "".
+_EARLIER_CHOICE: _contextvars.ContextVar[str] = _contextvars.ContextVar(
+    "acb_earlier_draft_choice", default="")
+#: The longest line that names the earlier draft on a card.
+EARLIER_LINE_MAX = 300
+
+
+def clean_earlier(src: Any) -> dict:
+    """The keys of the earlier-draft question of a card, checked: the ONE
+    cleaner of a new-mail form and of a plain card.
+
+    ``earlier`` is one line that names the draft, at most
+    :data:`EARLIER_LINE_MAX` characters. ``earlier_effect`` is what "Delete
+    it" does at the mailbox's provider, and it is kept only when it is one
+    sentence of ``draft_choice.DELETE_EFFECTS``. So the card never draws an
+    effect that the server did not choose. With no line, the answer is {}
+    and the card asks nothing."""
+    if not isinstance(src, dict) or not isinstance(src.get("earlier"), str):
+        return {}
+    line = _clip_line(src["earlier"], EARLIER_LINE_MAX)
+    if not line:
+        return {}
+    from acb_skills.draft_choice import DELETE_EFFECTS
+
+    effect = src.get("earlier_effect")
+    return {"earlier": line,
+            **({"earlier_effect": effect} if effect in DELETE_EFFECTS else {})}
+
+
+#: Task 3978: the text of a card that the member declined and then answered
+#: "Delete it". Its lead is the lead of :data:`CARD_DECLINED`, so each chat
+#: card still reads the act of the card as declined. What happened says only
+#: what is true for each case: nothing was sent or saved. The act sentence
+#: then says what became of the draft. It is not a row of
+#: :data:`CARD_OUTCOMES`: the outcome stays "declined".
+#: ``src/lib/cardOutcomes.ts`` holds the same words (``DECLINED_DRAFT``).
+DECLINED_DRAFT = CardOutcome(
+    CARD_OUTCOMES[CARD_DECLINED].lead,
+    "the member said no on the card, so nothing was sent or saved. The card "
+    "is closed, and no decision is open.",
+    "Tell the member what became of the draft, as the line before this step "
+    "says. Do not say that the draft did not change. Show the card again "
+    "only if the member asks for it.")
+
+
+def card_declined_draft_text(act: str) -> str:
+    """The text of :data:`DECLINED_DRAFT` with *act*: one plain sentence for
+    the member that says what became of the draft. The chat draws the head
+    and *act* as the member's line (``memberLineOf``)."""
+    act = " ".join(str(act or "").split())
+    o = DECLINED_DRAFT
+    return f"{o.lead}: {o.happened} {act} {o.next}" if act else f"{o.lead}: {o.happened} {o.next}"
+
+
+def earlier_draft_choice(member: str) -> str:
+    """"delete" when *member* answered the last card of this frame with
+    :data:`DELETE_EARLIER_ANSWER`, on a card that names an earlier draft.
+    The responder is the gateway's session member, never a field of the
+    answer. Else "": a Keep, a plain Discard, a timeout, a close, an answer
+    of another member, or no member. "" keeps the draft, so each fault
+    keeps it."""
+    me = str(member or "").strip().lower()
+    return "delete" if me and _EARLIER_CHOICE.get() == f"delete:{me}" else ""
 
 
 def clear_card_outcome() -> None:
@@ -2644,6 +2775,13 @@ def reply_card_channel_open() -> bool:
     return confirmation_channel_open() and not _whatsapp_run()
 
 
+def rows_card_channel_open() -> bool:
+    """True when this run can draw a card with checkbox rows that the member
+    ticks (task 3977): a card channel (:func:`confirmation_channel_open`) and
+    no WhatsApp run, whose reply code approves no rows card of ``manage_inbox``."""
+    return confirmation_channel_open() and not _whatsapp_run()
+
+
 def edit_card_channel_open() -> bool:
     """True when this run can show a card that the member EDITS (§18.10):
     ``EMAIL_EDIT_CARD_ORGS`` names the run's organization
@@ -2768,6 +2906,7 @@ async def request_confirmation(
     with_answer: bool = False,
     responder: str | None = None,
     edit: dict | None = None,
+    earlier: dict | None = None,
 ) -> bool | frozenset[str] | ReplyAnswer | RowsAnswer | TaskEdit | _Revised | None:
     """Emit a HITL confirmation card and BLOCK until the user approves/rejects.
 
@@ -2834,6 +2973,13 @@ async def request_confirmation(
             any other shape is a REJECT. With ``PROJECT_EDIT_CARD_ORGS`` off,
             in a WhatsApp run, with no channel and with no ``responder``, the
             form is dropped, and the card is the card of before.
+        earlier: task 3978 (§18.13.1), a plain card only: ``{"earlier":
+            line, "earlier_effect": sentence}`` (:func:`clean_earlier`). The
+            card's Reject then asks "Keep the earlier draft, or delete it?"
+            on the same card. :data:`DELETE_EARLIER_ANSWER` is a decline, and
+            :func:`earlier_draft_choice` then says "delete". A card with
+            rows, a reply form, an edit form or a held send id drops it.
+            ``None`` is the card of before.
 
     Returns:
         With no ``rows``: ``True`` if the user approved, ``False`` if they
@@ -2874,6 +3020,10 @@ async def request_confirmation(
         answered. A raise (a park, a stop) records no outcome.
     """
     _LAST_OUTCOME.set(None)
+    # Task 3978: the choice of an earlier card is never the choice of this one.
+    _EARLIER_CHOICE.set("")
+    # WT-6a: a card of an earlier call is never the card of this one. A path
+    # with no chat card (WhatsApp, no channel) leaves this None.
     _APPROVED_CARD.set(None)
     # CO-17: a new card ends the hold on the link slot of an earlier one.
     _LAST_APPROVED.set(None)
@@ -2896,6 +3046,10 @@ async def request_confirmation(
     #: EAC-1: the edit form of a new task, or None for the card of before.
     _edit = _task_edit_form(edit, _rows, _reply, _with_answer, request_id,
                             str(responder or "").strip().lower())
+    #: Task 3978: the earlier-draft question of a plain card, or {}.
+    _earlier = (clean_earlier(earlier) if earlier is not None and _rows is None
+                and _reply is None and _edit is None and not _with_answer
+                and request_id is None else {})
     if _no_person_present():
         # AUTO-7a: before every path, the WhatsApp paths too. A run with no
         # person cannot ask anyone, and no argument of a tool changes that.
@@ -2972,6 +3126,7 @@ async def request_confirmation(
             value["reply"] = _reply
         if _edit is not None:
             value["edit"] = _edit
+        value.update(_earlier)
         if fenced is not None:
             value["fenced"] = bool(fenced)
         return {"type": "CUSTOM", "name": "confirmation_requested", "value": value}
@@ -3012,6 +3167,13 @@ async def request_confirmation(
             choice = (parse_new_mail_answer(raw) if _reply.get("kind") == "new"
                       else parse_reply_answer(raw))
             if choice is None:
+                # Task 3978: Discard, then "Delete it", on a form that names
+                # an earlier draft. Only this exact text. The responder goes
+                # with it, and earlier_draft_choice counts only the run's
+                # own member. It stays a decline.
+                if _reply.get("earlier") and raw == DELETE_EARLIER_ANSWER:
+                    _EARLIER_CHOICE.set(
+                        f"delete:{str(result.get('responder') or '').strip().lower()}")
                 return "REJECT", None
             _replied.append(ReplyAnswer(rid, raw, choice,
                                         str(result.get("responder") or ""),
@@ -3030,6 +3192,11 @@ async def request_confirmation(
             _edited.append(edited)
             return "APPROVE", None
         if _rows is None:
+            # Task 3978: Reject, then "Delete it", on a plain card that names
+            # an earlier draft. Only this exact text. It stays a decline.
+            if _earlier and str(result.get("answer", "")) == DELETE_EARLIER_ANSWER:
+                _EARLIER_CHOICE.set(
+                    f"delete:{str(result.get('responder') or '').strip().lower()}")
             return ("APPROVE" if said.upper() == "APPROVE" else "REJECT"), None
         ticked = ticked_rows(said, _offered)
         if ticked and _with_answer:
@@ -3115,6 +3282,7 @@ async def request_confirmation(
             else CARD_OTHER_MEMBER if _other_member
             else CARD_DECLINED)
         # Task 3827: the id of this card, for a "Changed since" text that follows.
+        # WT-6a: only an APPROVE of this card lets a later Undo name it.
         _APPROVED_CARD.set(
             (_rid, _publish) if _answer == "APPROVE" and not _other_member else None)
         if _answer == "APPROVE":

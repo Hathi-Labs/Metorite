@@ -954,17 +954,25 @@ class _ProfileMarkHold:
     leaves, so the relay never gets a mark that the stream did not send.
     Fence: ``tests/unit/test_profile_used_event.py``."""
 
-    __slots__ = ("_event",)
+    __slots__ = ("_event", "_more")
 
     def __init__(self, event: dict[str, Any] | None = None) -> None:
         self._event = event
+        self._more: list[dict[str, Any]] = []
+
+    def add(self, event: dict[str, Any] | None) -> None:
+        """Hold one more event for the same release (WT-4: the pack switch)."""
+        if event is not None:
+            self._more.append(event)
 
     def after(self, event: Any) -> tuple[str, ...]:
-        """The SSE line of the mark when *event* is the first output, else ()."""
-        if self._event is None or not _is_answer_event(event):
+        """The SSE lines of the held events when *event* is the first output,
+        else ()."""
+        if (self._event is None and not self._more) or not _is_answer_event(event):
             return ()
-        mark, self._event = self._event, None
-        return (_sse(mark),)
+        marks = ([self._event] if self._event is not None else []) + self._more
+        self._event, self._more = None, []
+        return tuple(_sse(mark) for mark in marks)
 
 
 def _member_profile_block(agent_name: str) -> str:
@@ -1386,8 +1394,9 @@ def _chat_focus_block(agent_name: str) -> str:
         member = _email_ctx_member()
         if not org or not member or not chat_focus.focus_on(org):
             return ""
+        ctx = artifact_context()
         return chat_focus.orchestrator_block(
-            chat_focus.bound_focus(artifact_context(), member))
+            chat_focus.bound_focus(ctx, member), chat_focus.bound_list(ctx, member))
     except Exception:
         return ""
 
@@ -2264,6 +2273,40 @@ async def _apply_pack_turn(
         return None
 
 
+async def _pack_switch_event(
+    task: asyncio.Future[Any] | None, applied: Any, run_ctx: dict[str, Any],
+    *, agent_name: str,
+) -> dict[str, Any] | None:
+    """The CUSTOM event ``chat_pack_switched`` for this turn, or None (WT-4,
+    ``one_assistant_context.md`` §9.4).
+
+    It is a signal beside layer (a), not a router: it compares the sticky set
+    that ``begin_turn`` read with the packs that the apply loaded
+    (``tool_packs.pack_switch_label``). The flag off gives no task, so None.
+    A held chat gets None. The hold is READ through ``_tool_injection._pack_held``
+    and never written, cleared or re-keyed, and a Redis fault reads as held
+    (it fails closed). The org is the bound tenant, never request input (R5).
+    The event rides ``_ProfileMarkHold``, so a turn that never answers sends
+    none. It never raises."""
+    if task is None or applied is None or not task.done() or task.cancelled():
+        return None
+    try:
+        turn, _allowed = task.result()
+        from acb_skills import tool_packs
+
+        label = tool_packs.pack_switch_label(turn, applied.record.slugs)
+        if label is None:
+            return None
+        from orchestrator._tool_injection import _pack_held
+
+        if await _pack_held(agent_name, run_ctx):
+            return None
+        return {"type": "CUSTOM", "name": tool_packs.PACK_SWITCH_EVENT,
+                "value": {"label": label}}
+    except Exception:  # a line never costs the turn
+        return None
+
+
 def _pack_loader(agent: Any) -> Any | None:
     """The ``LoadSkillTools`` of the run's view of *agent*, or None."""
     try:
@@ -2613,9 +2656,10 @@ class _EarlyReads:
 
 
 def _start_focus_read(slot: tuple[str, str, str] | None) -> asyncio.Future[Any] | None:
-    """The read of the stored item in focus of *slot* (HRD-11a), or None.
+    """The read of the stored item in focus of *slot* (HRD-11a), with the
+    last list of the chat (HRD-11b), or None.
 
-    ``chat_focus.read_focus`` never raises, and it reads nothing when its org
+    ``chat_focus.read_record`` never raises, and it reads nothing when its org
     is not the bound tenant of the run."""
     if slot is None:
         return None
@@ -2623,7 +2667,7 @@ def _start_focus_read(slot: tuple[str, str, str] | None) -> asyncio.Future[Any] 
         from acb_skills import chat_focus
     except ImportError:  # no item, never the turn
         return None
-    return asyncio.ensure_future(chat_focus.read_focus(*slot))
+    return asyncio.ensure_future(chat_focus.read_record(*slot))
 
 
 def _crm_questions_on(org: Any) -> bool:
@@ -8023,6 +8067,8 @@ async def run_agent_stream(
     # PZ-20b: the "used your profile" mark, held until the first output. The
     # Tier 1 path fills it after its compose step, and Tier 2 keeps it.
     _mark = _ProfileMarkHold()
+    # WT-4: the pack-switch event, held with the profile mark (see below).
+    _pack_switch: dict[str, Any] | None = None
 
     try:
         # WS-67 OA-7c: the read of layer (a) runs beside the load, and the
@@ -8131,12 +8177,12 @@ async def run_agent_stream(
             # the injection gates none twice. The build reads the server's
             # run context: the bound tenant, the chat, the member and the H-236
             # answer. Each run builds its packs again (condition 1).
+            _pack_ctx = {**dict(_ctx_now()), "run_id": run_id,
+                         "session_id": thread_id or run_id, "agent_name": agent_name,
+                         "member": _corr_user, "batch_thread": _batch_thread,
+                         "no_egress": _stream_no_egress}
             _pack_apply = await _apply_pack_turn(
-                _pack_task, agents,
-                {**dict(_ctx_now()), "run_id": run_id,
-                 "session_id": thread_id or run_id, "agent_name": agent_name,
-                 "member": _corr_user, "batch_thread": _batch_thread,
-                 "no_egress": _stream_no_egress},
+                _pack_task, agents, _pack_ctx,
                 agent_name=agent_name,
                 tool_scope=_merged_tool_scope(
                     loaded.config.get("tool_scope") or None, _agent_md_spec,
@@ -8144,6 +8190,9 @@ async def run_agent_stream(
                 agent_config=loaded.config,
                 is_authorized=_authorizer,
             )
+            # WT-4: the switch line, read-only on the hold mark.
+            _pack_switch = await _pack_switch_event(
+                _pack_task, _pack_apply, _pack_ctx, agent_name=agent_name)
             _laps.lap("packs")
             _apply_own_tool_scope(
                 agents, loaded.config.get("own_tool_scope") or None,
@@ -8199,6 +8248,12 @@ async def run_agent_stream(
                     member_present=_authorizer is not None and not _batch_thread
                     and bool(_verified_run_member()),
                 )
+            if _pack_apply is not None and agents:
+                # TOF-5a-1: a skill whose MCP server did not attach is a log
+                # line. TOF-5a-2 closes the gap.
+                from orchestrator._tool_injection import _log_skill_mcp_unattached
+
+                _log_skill_mcp_unattached(_pack_apply, agents[0])
             _laps.lap("mcp")
 
             # Per-session workspace override (Custom Apps builder sessions):
@@ -8768,6 +8823,7 @@ async def run_agent_stream(
                 # serves the mark. After the access check, so a refused run
                 # has none. The hold sends it with the first output only.
                 _mark = _ProfileMarkHold(_profile_used_event(agent_name))
+                _mark.add(_pack_switch)  # WT-4: one line, with the first output
                 # Chat speed SPD-1: the steps of a native run's setup, logged
                 # once, just before its stream opens.
                 _laps.log(agent_name, run_id)
@@ -10328,26 +10384,34 @@ async def run_agent_stream(
 
             run_task = asyncio.create_task(_run_task())
 
-            # Drain the queue until the task finishes.
-            while True:
-                try:
-                    ev = await asyncio.wait_for(queue.get(), timeout=0.1)
-                    if ev is None:
-                        break
-                    if _relayable(ev):
-                        yield _sse(ev)
-                        for _ml in _mark.after(ev):
-                            yield _ml
-                except asyncio.TimeoutError:
-                    if run_task.done():
-                        # Drain any remaining events
-                        while not queue.empty():
-                            ev = queue.get_nowait()
-                            if _relayable(ev):
-                                yield _sse(ev)
-                                for _ml in _mark.after(ev):
-                                    yield _ml
-                        break
+            # Drain the queue until the task finishes. Task 851: when the
+            # reader goes away (the generator closes, or the request is
+            # cancelled), the Tier-2 run stops with it. Before, it kept
+            # calling the model and its tools for a reader that was gone.
+            try:
+                while True:
+                    try:
+                        ev = await asyncio.wait_for(queue.get(), timeout=0.1)
+                        if ev is None:
+                            break
+                        if _relayable(ev):
+                            yield _sse(ev)
+                            for _ml in _mark.after(ev):
+                                yield _ml
+                    except asyncio.TimeoutError:
+                        if run_task.done():
+                            # Drain any remaining events
+                            while not queue.empty():
+                                ev = queue.get_nowait()
+                                if _relayable(ev):
+                                    yield _sse(ev)
+                                    for _ml in _mark.after(ev):
+                                        yield _ml
+                            break
+            except BaseException:
+                if not run_task.done():
+                    run_task.cancel()
+                raise
 
             _active_run_queue.reset(_t2_token)  # restore after drain
 

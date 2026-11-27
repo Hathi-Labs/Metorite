@@ -30,10 +30,12 @@
  * environment. Fence: `src/lib/confirmationQueue.test.ts`.
  */
 
+import { ANSWERED_ONCE_TEXT } from "@/lib/respondInput";
+import { archiveUndoText, type ArchiveUndo, type ArchiveUndoState } from "@/lib/archiveUndo";
 import { CARD_OUTCOME_MEMBER_LINES } from "@/lib/cardOutcomes";
 import { unfenced } from "@/lib/fencedText";
 import { sharesTo, tickedOfSent, type PeopleBefore, type SentVersion } from "@/lib/redraftCard";
-import { isNewMail, isNewMailEdits, replyFromEvent, startTicks, type NewMailEdits, type ReplyForm } from "@/lib/replyCard";
+import { DELETE_EARLIER_ANSWER, earlierFromEvent, isNewMail, isNewMailEdits, replyFromEvent, startTicks, type EarlierDraft, type NewMailEdits, type ReplyForm } from "@/lib/replyCard";
 import { classOf, kindOf, sendCanGo, type PersonClass, type SendRowKind } from "@/lib/sendCard";
 import { isTaskCardEdits, isUnchanged, taskEditFromEvent, type TaskCardEdits, type TaskEditForm } from "@/lib/taskEditCard";
 
@@ -110,6 +112,28 @@ export interface PendingConfirmation {
    * client computes the "Changed:" line from it, never from the model.
    */
   before?: { subject: string; body: string; people?: PeopleBefore };
+  /**
+   * Task 3978 (`email_app_master_plan.md` §18.13.1), a plain card only (the
+   * card of `edit_draft`): one line that names a draft that the chat saved.
+   * Reject then asks `EARLIER_QUESTION` on the card. A new-mail card keeps
+   * its line on its form (`ReplyForm.earlier`).
+   */
+  earlier?: string;
+  /** Task 3978: what "Delete it" does at the mailbox's provider, if known. */
+  earlierEffect?: string;
+}
+
+/**
+ * Task 3978: the earlier draft that a card asks about, or null. A new-mail
+ * card reads its form, and a plain card (no rows, no reply form, no edit form)
+ * reads its own keys. Any other card asks nothing.
+ */
+export function earlierOf(card: Pick<PendingConfirmation, "reply" | "rows" | "edit" | "earlier" | "earlierEffect">): EarlierDraft | null {
+  if (isNewMail(card.reply)) {
+    return card.reply?.earlier ? { line: card.reply.earlier, ...(card.reply.earlierEffect ? { effect: card.reply.earlierEffect } : {}) } : null;
+  }
+  if (card.reply !== undefined || card.rows !== undefined || card.edit !== undefined || !card.earlier) return null;
+  return { line: card.earlier, ...(card.earlierEffect ? { effect: card.earlierEffect } : {}) };
 }
 
 /** The answer of a card that a chat message closed. The server owns it
@@ -379,6 +403,9 @@ export interface ConfirmationReceipt {
   /** A held Reject (`lib/rejectHold.ts`): the POST has not gone, and the line
    *  offers Undo. `released` clears it once the POST goes. */
   undo?: boolean;
+  /** WT-6a: the archive that this approved card made, and where its Undo is
+   *  (`lib/archiveUndo.ts`). Only the server's `confirmation_undo` sets it. */
+  archive?: ArchiveUndo & { state: ArchiveUndoState };
 }
 
 export interface ConfirmationQueueState {
@@ -422,7 +449,25 @@ export function receiptLabel(card: Pick<PendingConfirmation, "detail" | "title" 
   return card.fenced ? unfenced(text) : text;
 }
 
+/** Task 3978: what the receipt adds when the member answered "Delete it". */
+export const EARLIER_DELETE_RECEIPT = "You asked to delete the draft. The reply says what became of it.";
+
+/**
+ * Task 3978 (§18.13.1): the words of the receipt of one answer. "Delete it" is
+ * a decline, and the receipt says that the member asked for the delete. Only
+ * the reply knows whether the draft went, so the receipt claims no delete.
+ * Each other answer keeps `receiptLabel`.
+ */
+export function answerReceiptLabel(card: Pick<PendingConfirmation, "detail" | "title" | "fenced">, answer: unknown): string {
+  const label = receiptLabel(card);
+  if (answer !== DELETE_EARLIER_ANSWER) return label;
+  return `${label.replace(/\.?\s*$/, ".")} ${EARLIER_DELETE_RECEIPT}`;
+}
+
 export function receiptText(r: ConfirmationReceipt): string {
+  // WT-6a: an archive line says what its Undo did.
+  const undone = r.archive ? archiveUndoText(r.archive.state, r.label) : null;
+  if (undone) return undone;
   switch (r.kind) {
     case "applying":
       // A held Reject already reads as done, and offers Undo (#916).
@@ -493,6 +538,10 @@ export type ConfirmationAction =
     }
   /** The hold ended and the REJECT POST goes: the line stops offering Undo. */
   | { type: "released"; key: string }
+  /** WT-6a: the server's `confirmation_undo` for an approved archive card. */
+  | { type: "undoOffered"; requestId: string; undo: ArchiveUndo }
+  /** WT-6a: where the Undo of an archive line is now. */
+  | { type: "undoState"; key: string; state: ArchiveUndoState }
   | { type: "answered"; key: string }
   /** Task 3827: the tool refused the approved card because the object changed
    *  after it. `confirmation_not_done` carries the card's `request_id`, so the
@@ -528,6 +577,8 @@ export function cardFromEvent(value: unknown): PendingConfirmation | null {
     ...(v.reply !== undefined ? { reply: replyFromEvent(v.reply, requestId) } : {}),
     // EAC-2: a form the client cannot read is no form, and the card is the card of before.
     ...(taskEditOf(v.edit) ? { edit: taskEditOf(v.edit) } : {}),
+    // Task 3978: a plain card that names a draft of the chat. Reject asks about it.
+    ...(v.rows === undefined && v.reply === undefined && v.edit === undefined ? earlierFromEvent(v) : {}),
   };
 }
 
@@ -740,6 +791,23 @@ export function confirmationReducer(
         ...state,
         receipts: settleReceipt(state.receipts, action.key, (r) => ({ ...r, undo: undefined })),
       };
+    case "undoOffered":
+      // Only a line of THIS chat that the member approved, and only once. A
+      // request id that no line here holds (another chat) attaches nothing.
+      // A "Not done" line (task 3827) wrote nothing, so it offers no Undo.
+      return {
+        ...state,
+        receipts: settleReceipt(state.receipts, action.requestId, (r) =>
+          r.intent !== "approved" || r.kind === "refused" || r.kind === "notDone" || r.archive
+            ? r
+            : { ...r, archive: { ...action.undo, state: "ready" } }),
+      };
+    case "undoState":
+      return {
+        ...state,
+        receipts: settleReceipt(state.receipts, action.key, (r) =>
+          r.archive ? { ...r, archive: { ...r.archive, state: action.state } } : r),
+      };
     case "answered":
       // The server took the answer. Its `confirmation_resolved` follows, and
       // this keeps a replay that arrives first from reopening the card.
@@ -813,13 +881,16 @@ export function confirmationReducer(
   }
 }
 
-/** The action for a card once its POST settled (`lib/respondInput.ts`). */
+/** The action for a card once its POST settled (`lib/respondInput.ts`).
+ *  `answered` (HRD-16): someone answered the card first. The card leaves,
+ *  and its line says so. Nothing sends again. */
 export function settleAnswer(
   card: PendingConfirmation,
-  outcome: "ok" | "drop" | "retry",
+  outcome: "ok" | "drop" | "retry" | "answered",
   reason?: string,
 ): ConfirmationAction {
   if (outcome === "retry") return { type: "restore", card, ...(reason ? { reason } : {}) };
+  if (outcome === "answered") return { type: "dropped", key: card.key, reason: reason || ANSWERED_ONCE_TEXT };
   if (outcome === "drop") return { type: "dropped", key: card.key, ...(reason ? { reason } : {}) };
   return { type: "answered", key: card.key };
 }

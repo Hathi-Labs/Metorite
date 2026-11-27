@@ -152,9 +152,11 @@ class TestThePullRequestChip:
 
     async def test_p3_a_reference_of_another_organization_never_reaches_the_row(self, w):
         t = _task(w)
-        # The row of organization B points at the task of organization A. No
-        # key forbids it, so only the row level security keeps it out.
-        b.ref(w.p, w.p.org_b, t, 7, "open", updated="now()", title="Not yours")
+        # The row of organization B points at the task of organization A.
+        # Since task 3846 a guard refuses such a row, so the admin plants it
+        # with the triggers off. Then only the row level security keeps it out.
+        b.ref(w.p, w.p.org_b, t, 7, "open", updated="now()", title="Not yours",
+              triggers_off=True)
         b.ref(w.p, w.p.org_a, t, 8, "merged", updated="now() - interval '1 day'",
               merged="now() - interval '1 day'")
         pr = (await _rows(w, t))[t]["pr"]

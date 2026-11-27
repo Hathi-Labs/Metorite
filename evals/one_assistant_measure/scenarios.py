@@ -182,6 +182,11 @@ class Turn:
     words: str
     checks: tuple[Check, ...]
     plan: Plan
+    #: Task 2874. How the member answers a card of this turn: ``approve`` (the default: a
+    #: reply card saves, a rows card ticks every row), ``send`` (a reply card sends), or
+    #: ``discard`` (the answer ``REJECT``, as the Discard button posts it). See
+    #: ``run.Member`` for the grammar and its source.
+    card: str = "approve"
 
 
 @dataclass(frozen=True)
@@ -416,9 +421,25 @@ def scenario(sid: str) -> Scenario:
 
 def all_scenarios() -> tuple[Scenario, ...]:
     """The email chats, then the CRM, Projects, mixed and fan-out chats, then the
-    Studio chats (TS-5a). The Studio chats are in no work set: the delegation arm
-    never runs them."""
+    Studio chats (TS-5a), the chats of task 2874, the connected-systems chats (CSY-3) and
+    the held-out chats. The Studio chats are in no work set: the delegation arm never runs
+    them."""
+    from evals.one_assistant_measure.scenarios_2874 import SCENARIOS_2874
+    from evals.one_assistant_measure.scenarios_mcp import MCP_SCENARIOS
     from evals.one_assistant_measure.scenarios_studio import STUDIO_SCENARIOS
     from evals.one_assistant_measure.scenarios_work import WORK_SCENARIOS
 
-    return (*SCENARIOS, *WORK_SCENARIOS, *STUDIO_SCENARIOS)
+    return (*SCENARIOS, *WORK_SCENARIOS, *STUDIO_SCENARIOS, *SCENARIOS_2874, *MCP_SCENARIOS,
+            *_held_out())
+
+
+def _held_out() -> tuple[Scenario, ...]:
+    """The held-out chats (task 3649): ``HOLDOUT_SCENARIOS`` of ``scenarios_holdout.py``,
+    each tagged ``holdout``. The file may not exist yet, and then there are none."""
+    try:
+        from evals.one_assistant_measure.scenarios_holdout import HOLDOUT_SCENARIOS
+    except ModuleNotFoundError as exc:
+        if exc.name != "evals.one_assistant_measure.scenarios_holdout":
+            raise
+        return ()
+    return tuple(HOLDOUT_SCENARIOS)

@@ -37,6 +37,7 @@ import type { ElicitationAnswers, ElicitationQuestion } from "@/lib/elicitationA
 import type { AttachmentRow } from "./api";
 import { attachmentImageUrl } from "./inlineUploads";
 import { previewKind } from "./preview";
+import type { TaskHeldBy } from "./agentHolder";
 
 
 /* ── The wire types ──────────────────────────────────────────────────────── */
@@ -196,6 +197,15 @@ export interface AgentRun {
    * nothing. `withAgentLabel` puts it beside the client name.
    */
   agent_label?: string | null;
+  /**
+   * WS-MCP SW-104 and SW-106. The machine, its kind and the model that the
+   * agent reported for its session, or that its box token proved. Display
+   * data only: the agent chose the text, and it grants nothing. `null` or
+   * absent reads "Not reported" (`agentPlaceLine` of `agentCardLook.ts`).
+   */
+  agent_host?: string | null;
+  agent_host_kind?: string | null;
+  agent_model?: string | null;
   /** EA-14a. The display name of the run's member, for "Held by <name>". */
   member_name?: string | null;
   /**
@@ -240,6 +250,120 @@ export interface AgentRun {
    * `waiting`, else null. A gateway before 1045a does not send it.
    */
   waiting?: AgentWaiting | null;
+  /**
+   * Task 1045c. The open strand of the run (`stranded` of the runs wire,
+   * SW-10a), else null. The sweep nudged the member and no word came since.
+   */
+  stranded?: AgentStranded | null;
+  /**
+   * SW-32 (task 1049). The checklist that the agent keeps on its run, or
+   * null. Each `set_run_plan` call replaces the whole list. The text of a
+   * step is the agent's own: draw it as text and nothing else.
+   */
+  plan?: AgentPlanStep[] | null;
+}
+
+/** The four statuses of a plan step (`agent_runs.PLAN_STATUSES`). */
+export type AgentPlanStatus = "pending" | "inProgress" | "completed" | "canceled";
+
+export interface AgentPlanStep {
+  content: string;
+  status: AgentPlanStatus;
+}
+
+/**
+ * SW-32. What a task row says about a plan: the closed steps (`completed` and
+ * `canceled`), all steps, and the step in progress. `agent_plan` of the row.
+ */
+export interface AgentPlanSummary {
+  done: number;
+  total: number;
+  step: string | null;
+}
+
+/** "3 of 7", or null for no plan. A plan of no step reads as no plan. */
+export function planProgressText(plan?: Pick<AgentPlanSummary, "done" | "total"> | null): string | null {
+  if (!plan || !Number.isInteger(plan.total) || plan.total < 1) return null;
+  const done = Math.min(Math.max(Math.trunc(plan.done) || 0, 0), plan.total);
+  return `${done} of ${plan.total}`;
+}
+
+/** The summary of a plan that the run wire carries, as the gateway makes it. */
+export function planSummary(plan?: AgentPlanStep[] | null): AgentPlanSummary | null {
+  if (!plan || plan.length === 0) return null;
+  const current = plan.find((s) => s.status === "inProgress");
+  return {
+    done: plan.filter((s) => s.status === "completed" || s.status === "canceled").length,
+    total: plan.length,
+    step: current?.content.trim() || null,
+  };
+}
+
+/** `stranded` of the runs wire (`_stranded_out` in the gateway). */
+export interface AgentStranded {
+  reason?: string | null;
+  nudged_at?: string | null;
+  recovered_at?: string | null;
+  /** Seconds since the last activity, when the gateway measured it. */
+  idle_s?: number | null;
+  /**
+   * Client only. The time of the last word, in ms since the epoch.
+   * `stampStrands` sets it once, when the reply arrives.
+   */
+  last_word_ms?: number | null;
+}
+
+/** The facts of a strand that a task row or the panel draws. */
+export type AgentStrandFacts = Pick<AgentStranded, "nudged_at" | "idle_s" | "last_word_ms">;
+
+/** The keys that carry a strand: the runs wire, and the task row (1045d). */
+const STRAND_KEYS: ReadonlySet<string> = new Set(["stranded", "agent_stranded"]);
+
+/**
+ * Task 1045c. `idle_s` is true only at the moment of the read. So fix the time
+ * of the last word when the reply arrives: `arrivedMs` minus `idle_s`. This
+ * walks a reply and writes `last_word_ms` on each strand, in place. The one
+ * request seam (`call` in `api.ts`) runs it, so a cached row keeps its time.
+ */
+export function stampStrands(body: unknown, arrivedMs: number): void {
+  if (Array.isArray(body)) {
+    for (const item of body) stampStrands(item, arrivedMs);
+    return;
+  }
+  if (!body || typeof body !== "object") return;
+  for (const [key, value] of Object.entries(body)) {
+    if (STRAND_KEYS.has(key) && value && typeof value === "object") {
+      const strand = value as AgentStranded;
+      if (typeof strand.idle_s === "number" && Number.isFinite(strand.idle_s)) {
+        strand.last_word_ms = arrivedMs - strand.idle_s * 1000;
+      }
+    } else {
+      stampStrands(value, arrivedMs);
+    }
+  }
+}
+
+/**
+ * Task 1045c. "No word since 14:31" for a stranded run. The time is the last
+ * word (`last_word_ms`, from `stampStrands`), else the time of the nudge. It
+ * never reads the clock, so the line does not move as the row ages. Local
+ * time, HH:MM. Null for no strand.
+ */
+export function strandedLine(
+  stranded: AgentStrandFacts | null | undefined,
+): string | null {
+  if (!stranded) return null;
+  let at: number | null = null;
+  if (typeof stranded.last_word_ms === "number" && Number.isFinite(stranded.last_word_ms)) {
+    at = stranded.last_word_ms;
+  } else if (stranded.nudged_at) {
+    const t = Date.parse(stranded.nudged_at);
+    at = Number.isNaN(t) ? null : t;
+  }
+  if (at === null) return "No word for a while";
+  const d = new Date(at);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `No word since ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 /**
@@ -554,6 +678,10 @@ export interface AgentPillFacts {
   labels?: ReadonlyMap<string, string>;
   /** Task 1045a. The wait of a `waiting` run: `agent_waiting` of the row. */
   waiting?: Pick<AgentWaiting, "on" | "until"> | null;
+  /** Task 1045c. `agent_stranded` of the row: the open strand of the run. */
+  stranded?: AgentStrandFacts | null;
+  /** SW-32. The plan of the run, as `agent_plan` of the row. */
+  plan?: AgentPlanSummary | null;
   /** The clock for the minutes of a wait. Tests pass it. */
   nowMs?: number;
 }
@@ -712,7 +840,11 @@ export function newestEphemeralActivity(
   for (let i = activities.length - 1; i >= 0; i -= 1) {
     const a = activities[i];
     if (a.type === "thought" && a.content.body?.trim()) return a;
-    if (a.type === "action" && (a.content.action?.trim() || a.content.body?.trim())) return a;
+    if (a.type === "action") {
+      // SW-32: a plan write is a heartbeat, not a line to read.
+      if (a.content.action?.trim() === "set_run_plan") continue;
+      if (a.content.action?.trim() || a.content.body?.trim()) return a;
+    }
   }
   return null;
 }
@@ -1022,6 +1154,8 @@ export interface AgentRowFacts {
   agent_member_email?: string | null;
   /** SW-7b. The label of the run's agent session, display data only. */
   agent_label?: string | null;
+  /** SW-5. Who holds the task, from the gateway's `held_by`. Null for a free task. */
+  held_by?: TaskHeldBy | null;
   assignees?: string[];
 }
 
@@ -1138,6 +1272,41 @@ export function stripVisible(summary?: AgentSummary | null): boolean {
   return Boolean(summary) && AGENT_STRIP.some((item) => (summary?.[item.field] ?? 0) > 0);
 }
 
+/**
+ * SW-5: the two hold filters of the board. They ride the same `agent_focus`
+ * parameter, so the server takes one of them, or one strip focus, at a time.
+ * `held`: an AI session holds the task now. `free`: none does, and the
+ * server reads the `unheld` rule of the lease (`filters.unheld_clause`).
+ */
+export type HoldFocus = "held" | "free";
+
+export const HOLD_FILTERS: readonly { focus: HoldFocus; label: string; icon: string; title: string }[] = [
+  {
+    focus: "held",
+    label: "Held by an agent",
+    icon: "Bot",
+    title: "Tasks that an AI session holds now",
+  },
+  {
+    focus: "free",
+    label: "Free",
+    icon: "CircleDashed",
+    title: "Tasks that no AI session holds. An agent may claim them.",
+  },
+];
+
+/** The one focus the page and the server take: a strip focus or a hold filter. */
+export type AnyAgentFocus = AgentFocus | HoldFocus;
+
+export function isHoldFocus(focus: AnyAgentFocus | null | undefined): focus is HoldFocus {
+  return focus === "held" || focus === "free";
+}
+
+/** Does an AI session hold the task now? A held task whose lease ended is free. */
+export function isHeldByAgent(task: AgentRowFacts): boolean {
+  return Boolean(task.held_by) && task.held_by?.stale !== true;
+}
+
 /** The states that read as "working" on the strip and on the filter. */
 const WORKING_AGENT_STATES: readonly string[] = ["working", "answered", "stale", "waiting"];
 
@@ -1166,11 +1335,15 @@ export function isAgentWork(task: AgentOversightFacts): boolean {
  */
 export function matchesAgentFocus(
   task: AgentOversightFacts,
-  focus: AgentFocus,
+  focus: AnyAgentFocus,
   me: string,
   nowMs: number = Date.now(),
 ): boolean {
   switch (focus) {
+    case "held":
+      return isHeldByAgent(task);
+    case "free":
+      return !isHeldByAgent(task);
     case "waiting":
       return isWaitingOnMe(task, me);
     case "queued":
@@ -1198,6 +1371,12 @@ export const AGENT_LANES: readonly { key: string; label: string }[] = [
   { key: "failed", label: "Failed" },
   { key: "none", label: "No agent" },
 ];
+
+/**
+ * AMR-4: the word of an ended state that the Agents view draws. It is not a
+ * lane of `AGENT_LANES`, so the "Agent work" board gets no new column.
+ */
+export const AGENT_ENDED_WORDS: Record<string, string> = { completed: "Done" };
 
 /** The lane key of a task row: its state, or `none`. An unknown state is `none`. */
 export function agentLaneKey(state?: string | null): string {

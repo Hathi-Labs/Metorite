@@ -84,12 +84,58 @@ def test_exemptions_are_deliberate_and_few() -> None:
     failure store holds the counts of platform code faults in three platform
     tables with no organization id and no tenant text. Only SECURITY DEFINER
     functions reach them. ``test_the_failure_store_tables_are_placed`` pins
-    each entry and its reason."""
+    each entry and its reason.
+
+    Raised 19 → 20 by WS-TO SBX-2 (``agent_sandbox.md`` §12.2 decision 5,
+    migration 503). The sandbox door looks a capability up by its token hash
+    before it knows the tenant, as the edge does for ``agent_token``.
+    ``test_the_sandbox_capability_table_is_exempt_with_its_reason`` pins the
+    entry and its reason."""
     gen = _generator()
-    assert len(gen.EXEMPT) <= 19, (
+    assert len(gen.EXEMPT) <= 20, (
         f"{len(gen.EXEMPT)} exempt tables. Each one is a table with no tenant "
         "isolation. Justify the growth explicitly."
     )
+
+
+def test_the_sandbox_capability_table_is_exempt_with_its_reason() -> None:
+    """WS-TO SBX-2 (``agent_sandbox.md`` §12.2 decision 5). The door reads a
+    capability before it knows the tenant, so the table is RLS-EXEMPT, with
+    the reason of ``agent_token``. The row keeps ``organization_id`` with a
+    foreign key to the tenant, the hash is the key, and no column holds the
+    token. The migration revokes PUBLIC and the Supabase roles, because a
+    table with no policy is open to any role with a grant."""
+    gen = _generator()
+    assert "sandbox_capabilities" in gen.discover_tables()
+    assert gen.EXEMPT.get("sandbox_capabilities") == (
+        "looked up by token hash before the tenant is known; returns "
+        "organization_id so the door can bind it"
+    )
+    assert "sandbox_capabilities" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "sandbox_capabilities" not in policies
+    [migration] = [
+        p for p in (_REPO / "infra" / "postgres").glob("[0-9]*_*.sql")
+        if "CREATE TABLE IF NOT EXISTS sandbox_capabilities"
+        in p.read_text(encoding="utf-8")
+    ]
+    body = migration.read_text(encoding="utf-8")
+    create = body.split("CREATE TABLE IF NOT EXISTS sandbox_capabilities", 1)[1]
+    columns = create.split(");", 1)[0]
+    assert re.search(r"organization_id\s+UUID\s+NOT NULL REFERENCES organization \(id\) "
+                     r"ON DELETE CASCADE", columns)
+    assert re.search(r"token_sha256\s+TEXT\s+PRIMARY KEY", columns)
+    assert "CHECK (token_sha256 ~ '^[0-9a-f]{64}$')" in columns
+    assert "CHECK (expires_at <= created_at + interval '15 minutes')" in columns
+    assert "CHECK (phase <> 'smoke' OR cardinality(write_scopes) = 0)" in columns
+    assert not re.search(r"\btoken\s+TEXT", columns), "the table never holds the token"
+    assert "ROW LEVEL SECURITY" not in body
+    assert "REVOKE ALL ON TABLE sandbox_capabilities FROM PUBLIC;" in body
+    assert "ARRAY['anon', 'authenticated', 'service_role']" in body
+    assert "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE sandbox_capabilities TO acb_app;" \
+        in body
 
 
 def test_the_detached_purge_table_is_exempt_with_its_reason() -> None:
@@ -248,6 +294,38 @@ def test_the_studio_skill_runs_table_is_tenant_scoped() -> None:
     assert "ALTER TABLE studio_skill_runs FORCE  ROW LEVEL SECURITY" in policies
 
 
+def test_the_tool_gaps_table_is_tenant_scoped() -> None:
+    """SBX-1a (``agent_sandbox.md`` §7.4, task 3800). ``tool_gaps`` holds the
+    need of a member of an org, so it must never be exempt, and the committed
+    phases must carry it (R5). Mutation: remove the table from
+    ``generated/04``, and this fails."""
+    gen = _generator()
+    assert "tool_gaps" in gen.discover_tables()
+    assert "tool_gaps" not in gen.EXEMPT
+    assert "tool_gaps" not in gen.HOMONYM_BLOCKED
+    generated = _REPO / "infra" / "postgres" / "generated"
+    add = (generated / "01_add_columns.sql").read_text(encoding="utf-8")
+    policies = (generated / "04_policies.sql").read_text(encoding="utf-8")
+    assert "ALTER TABLE tool_gaps\n    ADD COLUMN IF NOT EXISTS" in add
+    assert "ALTER TABLE tool_gaps FORCE  ROW LEVEL SECURITY" in policies
+
+
+def test_the_user_tool_runs_table_is_tenant_scoped() -> None:
+    """SBX-4b1 (``agent_sandbox.md`` §7.3, §12.4 decision 10, task 3986).
+    ``user_tool_runs`` holds the steps of a member of an org, so it must never
+    be exempt, and the committed phases must carry it (R5). Mutation: remove
+    the table from ``generated/04``, and this fails."""
+    gen = _generator()
+    assert "user_tool_runs" in gen.discover_tables()
+    assert "user_tool_runs" not in gen.EXEMPT
+    assert "user_tool_runs" not in gen.HOMONYM_BLOCKED
+    generated = _REPO / "infra" / "postgres" / "generated"
+    add = (generated / "01_add_columns.sql").read_text(encoding="utf-8")
+    policies = (generated / "04_policies.sql").read_text(encoding="utf-8")
+    assert "ALTER TABLE user_tool_runs\n    ADD COLUMN IF NOT EXISTS" in add
+    assert "ALTER TABLE user_tool_runs FORCE  ROW LEVEL SECURITY" in policies
+
+
 def test_the_crm_settings_table_is_tenant_scoped() -> None:
     """WS-53 CRM-T5 (``crm_platform.md`` §3.1, §16 Q3). ``crm_settings`` holds
     the CRM mode of an organization and who in it may open the CRM. It must
@@ -326,12 +404,14 @@ def test_the_task_refs_table_is_tenant_scoped() -> None:
 
 
 @pytest.mark.parametrize("table", ["pm_agent_runs", "pm_agent_run_activities",
-                                   "pm_agent_run_strands"])
+                                   "pm_agent_run_strands", "pm_project_sequences",
+                                   "pm_sequence_reservations"])
 def test_the_agent_run_tables_are_tenant_scoped(table: str) -> None:
     """WS-55 EA-12a (``external_agent_access.md`` §12.1, EA12-1). The runs of
     an outside agent and their activities hold one organization's work. Neither
     may be exempt, and the committed policy phase must carry each (R5). SW-10a
-    (§12.6) adds the strands of a run: a nudge and a recovery record."""
+    (§12.6) adds the strands of a run: a nudge and a recovery record. SW-27a
+    (task 861) adds the project sequences and their reservations."""
     gen = _generator()
     assert table in gen.discover_tables()
     assert table not in gen.EXEMPT
@@ -340,6 +420,28 @@ def test_the_agent_run_tables_are_tenant_scoped(table: str) -> None:
         encoding="utf-8",
     )
     assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
+def test_a_child_run_is_a_row_of_the_tenant_scoped_runs_table() -> None:
+    """WS-MCP SW-39 (``agent_coordination.md`` §3.11.9). A child run is a row
+    of ``pm_agent_runs``, so the policy of that table holds it (R5). The
+    migration adds no table, no policy and no exemption. A child takes the
+    ``organization_id`` default of the bound tenant, as every run insert
+    does, and its one writer never names the column."""
+    gen = _generator()
+    assert "pm_agent_runs" in gen.discover_tables()
+    assert "pm_agent_runs" not in gen.EXEMPT
+    found = [p for p in (_REPO / "infra" / "postgres").glob("[0-9]*_*.sql")
+             if "ADD COLUMN IF NOT EXISTS parent_run_id" in p.read_text(encoding="utf-8")]
+    assert len(found) == 1, found
+    body = "\n".join(line for line in found[0].read_text(encoding="utf-8").splitlines()
+                     if not line.startswith("--"))
+    for word in ("CREATE TABLE", "POLICY", "ROW LEVEL SECURITY", "organization_id ="):
+        assert word not in body, word
+    from gateway.routes.projects import agent_runs
+
+    assert "organization_id" not in agent_runs._INSERT_CHILD_SQL
+    assert "bound_org" in agent_runs._CHILDREN_SQL
 
 
 def test_the_my_day_card_state_table_is_tenant_scoped() -> None:
@@ -462,6 +564,21 @@ def test_the_shared_mailbox_tables_are_tenant_scoped(table: str) -> None:
         encoding="utf-8",
     )
     assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
+def test_the_focus_sessions_table_is_tenant_scoped() -> None:
+    """WS-MDC CC-5a (``my_day_command_centre.md`` §9.3, D-MD-5). A focus
+    session holds the minutes of one member of one organization. It may not
+    be exempt, and the committed policy phase must carry it (R5). RLS covers
+    the org, and the routes add the member."""
+    gen = _generator()
+    assert "focus_sessions" in gen.discover_tables()
+    assert "focus_sessions" not in gen.EXEMPT
+    assert "focus_sessions" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE focus_sessions FORCE  ROW LEVEL SECURITY" in policies
 
 
 def test_the_signature_image_table_is_tenant_scoped() -> None:

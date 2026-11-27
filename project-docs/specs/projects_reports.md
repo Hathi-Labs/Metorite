@@ -6,6 +6,7 @@ catalogue, `config.template`, the gallery and "Your reports"). **R2b BUILT
 2026-09-24** (the visual report body: each section draws its Analytics panel,
 with its table folded under it). **R3a BUILT 2026-09-25** (the `outlook`
 section, the ageing bands in `stuck`, and T5 live).
+**H-184 and H-202 BUILT 2026-11-23** (the email marks the running week "so far" and honours `maxRows`, a folded table opens on find-in-page, and the Reports UX test titles and the scope fallback are repaired).
 
 **R3b BUILT 2026-09-25** (the `rebalance` section and `RebalancePanel`, read
 only). **R3c BUILT 2026-09-26** (the `hygiene` section, `HygienePanel`, and

@@ -20,6 +20,11 @@ in-memory tenant Redis of the harness.
    before it (``find_tasks``) sets nothing.
 3. The flag off: the same chat holds no block, and Redis sees no read and no
    write of the item.
+4. "The next one" (HRD-11b, task 3480), three turns. Turn 1 lists three
+   tasks (``list_tasks``). Turn 2: "Mark the first one done." The request
+   names the first task on its ``next:`` line, and the sub-run completes it.
+   Turn 3: "The next one." The request holds the first task as the item, and
+   the second task on the ``next:`` line, as "2 of 3".
 """
 from __future__ import annotations
 
@@ -182,3 +187,73 @@ def test_the_flag_off_shows_nothing_and_touches_no_item(harness) -> None:
     _turn(harness, "Reply to it.", first.thread_id)
     assert not any(cf.BLOCK_HEAD in _request(orch, i) for i in range(len(orch.bodies)))
     assert _focus_calls(harness) == []
+
+
+#: The three tasks of the list in case 4 (HRD-11b).
+LIST = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222",
+        "33333333-3333-4333-8333-333333333333"]
+
+
+def test_the_next_one_names_the_item_after_the_act(flag, harness, monkeypatch) -> None:
+    """HRD-11b. Mutation: put the cursor at the last call and not the act,
+    wrap at the end, or read a title into the block."""
+    from skill_projects import reads, writes
+
+    rows = [{"id": tid, "task_number": n, "title": f"Quote step {n}"}
+            for n, tid in enumerate(LIST, 1)]
+
+    async def reads_get(path: str, params: dict | None = None) -> Any:
+        if path == "/projects/tasks":
+            return {"rows": rows, "total": len(rows)}
+        return {}
+
+    async def writes_get(path: str, params: dict | None = None) -> Any:
+        for row in rows:
+            if path == f"/projects/tasks/{row['id']}":
+                return dict(row)
+        return {}
+
+    async def writes_post(path: str, *_a: Any, **_k: Any) -> Any:
+        return {"completed_at": "2026-11-17T10:00:00Z"}
+
+    async def approve(*_a: Any, **_k: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(reads, "get", reads_get)
+    monkeypatch.setattr(writes, "get", writes_get)
+    monkeypatch.setattr(writes, "post", writes_post)
+    monkeypatch.setattr(writes, "_confirm", approve)
+    monkeypatch.setenv("AGENT_PERMISSION_MODE", "approve_all")
+    orch = ReplyModel([
+        tool_turn(specialist_tool(PA), {"task": "List the quote tasks."}),
+        text_turn("Three quote tasks are open."),
+        tool_turn(specialist_tool(PA), {"task": f"Mark task {LIST[0]} done."},
+                  call_id="call_o2"),
+        text_turn("Task #1 is done."),
+        text_turn("The next one is task #2."),
+    ])
+    harness.models = {
+        ORCHESTRATOR: orch,
+        PA: ReplyModel([
+            tool_turn("list_tasks", {}),
+            text_turn("Three quote tasks are open."),
+            tool_turn("complete", {"task_id": LIST[0], "include_subtasks": "no"},
+                      call_id="call_p2"),
+            text_turn("Task #1 is done."),
+        ]),
+    }
+    first = _turn(harness, "List my quote tasks.", None)
+    assert cf.LIST_HEAD not in _request(orch, 0), "no list before the read"
+    _turn(harness, "Mark the first one done.", first.thread_id)
+    second = _request(orch, 2)
+    assert cf.LIST_HEAD in second, second
+    assert "- position: before the first item" in second
+    assert f"- next: 1 of 3, task_id {LIST[0]}" in second
+    _turn(harness, "The next one.", first.thread_id)
+    third = _request(orch, 4)
+    assert f"- task_id: {LIST[0]}" in third, "the act set the item"
+    assert "- position: 1 of 3" in third
+    assert f"- next: 2 of 3, task_id {LIST[1]}, in-app link /projects?task={LIST[1]}" in third
+    assert "Quote step" not in third.split(cf.BLOCK_HEAD)[1].split("## Current")[0], \
+        "the block holds no title"
+    assert harness.sent == []

@@ -219,7 +219,8 @@ def _copilot_cli_in_broker_sandbox(agent_name: str, organization_id: str) -> boo
 
 #: Agents that D85 leaves as they are, by name. ``metorite`` is the root dev
 #: agent (repo-root ``agents.py``). It edits platform code and runs the tests
-#: through its Copilot CLI shell, with its own ``approve_all`` (H-211). Its root
+#: through its Copilot CLI shell, under the B6 handler of the run's mode (its
+#: factory sets no handler since task 560, H-211). Its root
 #: ``config.json`` has no ``sharing`` block, so D85 would read it as shared.
 #: The owner decided on 2026-10-03 (``maf_coding_engine.md`` §15.4): only an
 #: admin of the first-party organization may run it, through any path, and it
@@ -4091,8 +4092,11 @@ def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") ->
        check and the record, so a hand-off in the same model step sees it.
        G2 (task 3494): before it, a tool that is not read-only refuses in a
        run with a read-only record (``tool_packs.batch_write_refusal``).
-    3. It marks the chat session for an owner of :data:`UNTRUSTED_INPUT_AGENTS`,
-       BEFORE the tool body runs (EM-G11f3, as before an email sub-run).
+    3. It marks the chat session BEFORE the tool body runs (EM-G11f3, as
+       before an email sub-run), for a call that ``tool_packs.marks_chat``
+       names: a tool of an owner of :data:`UNTRUSTED_INPUT_AGENTS` whose
+       answer can bring outside text (``tool_packs.PACK_OUTSIDE_TEXT``, task
+       2492). A send that reads nothing leaves the chat clear.
     4. It runs the gated tool inside ``tool_packs.owner_scope``. The gate reads
        the owner, so an owner's write asks its own card and never the
        untrusted card too.
@@ -4135,6 +4139,7 @@ def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") ->
         PACK_RUN_KEY,
         PACK_SLUG_ATTR,
         batch_write_refusal,
+        marks_chat,
         note_used,
         owner_scope,
         pack_tool_runs,
@@ -4168,7 +4173,9 @@ def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") ->
         if twice is not None:
             return twice
         pack_tool_runs(slug, ctx)  # RX-1, before any await: its pack stays
-        await _mark_pack_session(owner, ctx)
+        call_args = _call_args(fn, args, kwargs)
+        if marks_chat(owner, name, call_args):  # task 2492: only a call that can bring outside text
+            await _mark_pack_session(owner, ctx)
         # TOF-3a F12b: a tool of a loaded skill notes its outcome on the run.
         notes = _skill_notes_of(ctx, run_key, name)
         _clear_card_outcome(notes)
@@ -4181,7 +4188,7 @@ def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") ->
         finally:
             _close_pack_profile_writes()
         _note_skill_call(notes, name, fn, args, kwargs, result=result)
-        await _record_pack_call(owner, ctx, name, _call_args(fn, args, kwargs), result)
+        await _record_pack_call(owner, ctx, name, call_args, result)
         if slug:
             await note_used(slug, ctx)
         return result
@@ -4219,7 +4226,9 @@ async def _mark_pack_session(owner: str, ctx: Any) -> None:
 
     The executor's own helper, which marks before an email sub-run starts.
     It marks only for an owner of :data:`UNTRUSTED_INPUT_AGENTS`, keys on the
-    bound tenant and the session of *ctx*, and never raises."""
+    bound tenant and the session of *ctx*, and never raises. The pack call
+    asks ``tool_packs.marks_chat`` first, so only a call that can read
+    outside text comes here (task 2492)."""
     from orchestrator.executor import _mark_untrusted_session
 
     await _mark_untrusted_session(owner, ctx)
@@ -4320,6 +4329,10 @@ class PackApply:
     #: The value that keys the run check of each pack call. The server mints
     #: it for each run (condition 3).
     run_key: str
+    #: TOF-5a-1: the skill packs that the run kept, in load order. The
+    #: executor reads their MCP tools after the attach
+    #: (:func:`_log_skill_mcp_unattached`).
+    skills: tuple[Any, ...] = ()
     #: TOF-3a F12b: the notes of the skills of this run
     #: (:class:`SkillRunNotes`), or None. Only an org on
     #: ``STUDIO_SKILL_REPAIR_ORGS`` with a loaded skill gets notes.
@@ -4572,12 +4585,21 @@ async def _apply_tool_packs(
     # WhatsApp turn loads none.
     # TOF-3a F12b: the facts of each skill that the turn reads, for the record
     # of its run. ``_turn_with_skills`` fills them only for an org on the flag.
+    # TOF-5a-1: *reach* holds the facts of the MCP lookahead of this run, for
+    # an ``mcp:`` action of a skill. The member's grant is the run's own check.
     facts_token = _SKILL_FACTS.set({})
     try:
-        turn = turn if read_only else await _turn_with_skills(turn)
+        turn = turn if read_only else await _turn_with_skills(turn, reach=McpReach(
+            agent=agent, agent_name=agent_name, no_egress=bool(run_ctx.get("no_egress")),
+            is_authorized=is_authorized))
         facts = _SKILL_FACTS.get() or {}
     finally:
         _SKILL_FACTS.reset(facts_token)
+    # CSY-4 (chat_connected_systems.md §3.4): the words of the servers that may
+    # attach, and the mail mark, read once before ``choose``. Dark behind
+    # MCP_MAIL_PRECEDENCE_ORGS. G2: a WhatsApp turn keeps the choice of main.
+    turn = await _with_server_words(turn, agent, agent_name, run_ctx, is_authorized,
+                                    read_only=read_only)
     base = _pack_base_count(agent, agent_name=agent_name, tool_scope=tool_scope,
                             agent_config=agent_config, disabled=disabled)
     _COMPUTE_ROOM.set(base + 1 <= tool_packs.MAX_REQUEST_TOOLS)  # a no-pack exit keeps it
@@ -4617,9 +4639,11 @@ async def _apply_tool_packs(
             skill_packs=skill_map)
     _log_skills_refused(choice.skills_refused)
     await tool_packs.drop_sticky(turn, choice.evicted)
+    # CSY-4: the reason of an eviction rides on the log line only.
+    reason = _server_named_field(choice)
     if not choice.slugs:
         _log.info("executor.packs_chosen", packs=[], evicted=list(choice.evicted),
-                  skipped=list(choice.skipped), base_tools=base)
+                  skipped=list(choice.skipped), base_tools=base, **reason)
         if not offer_loader and not choice.skills:
             return None
     run_key = secrets.token_urlsafe(24)
@@ -4635,14 +4659,17 @@ async def _apply_tool_packs(
             continue
         builds.append(build)
         holds |= {_tool_name(t) for t in build.tools}
+    # TOF-5a-1 (OA-7b): a run that holds an email pack attaches no MCP server.
+    mail_base = _holds_untrusted_pack(agent)
     skills = _skills_present(
         choice.skills, holds, agent, agent_name=agent_name, tool_scope=tool_scope,
-        agent_config=agent_config, disabled=disabled)
+        agent_config=agent_config, disabled=disabled,
+        mail_held=mail_base or _builds_read_mail(builds))
     # TOF-1b: a skill that failed here leaves the run as it was without it.
     builds, skills, holds = _keep_skill_packs(
         builds, skills, holds, skill_map=skill_map, layers=choice.layers, pool=pool,
         agent=agent, agent_name=agent_name, tool_scope=tool_scope,
-        agent_config=agent_config, disabled=disabled)
+        agent_config=agent_config, disabled=disabled, mail_base=mail_base)
     choice = await _evict_unheld_skill_packs(turn, choice, builds)
     if not builds and not offer_loader and not skills:
         return None
@@ -4732,7 +4759,7 @@ async def _apply_tool_packs(
             held=dict(record.held), replaced=sorted(replaced), via_loader=sorted(via),
             refused=sorted(record.refusals),
             evicted=list(choice.evicted), skipped=list(choice.skipped),
-            base_tools=base, pack_tools=sum(len(b.tools) for b in builds),
+            base_tools=base, pack_tools=sum(len(b.tools) for b in builds), **reason,
         )
     _log.info(
         "executor.pack_plan", offered=list(plan.offered), via_loader=sorted(via),
@@ -4742,6 +4769,7 @@ async def _apply_tool_packs(
     _log_skills_loaded(skills, choice.skills_skipped)
     _note_dry_run_loaded(skill_slugs)  # WS-STU F4b
     applied = PackApply(builds=tuple(builds), record=record, run_key=run_key,
+                        skills=tuple(skills),
                         skill_notes=_skill_run_notes(
                             facts, skills, run_ctx, run_key,
                             words=str(getattr(turn, "words", "") or ""),
@@ -4771,7 +4799,21 @@ async def _apply_tool_packs(
 # ``STUDIO_CHAT_TOOLS_ORGS`` names the org.
 
 
-async def _turn_with_skills(turn: Any) -> Any:
+@dataclasses.dataclass(frozen=True)
+class McpReach:
+    """TOF-5a-1. The facts of a run that the MCP lookahead of a skill reads
+    (:func:`_mcp_reach_rows`). The caller is :func:`_apply_tool_packs`, which
+    takes each one from the run: the agent, its name, ``no_egress`` of the
+    server-side run context, and the run's grant check. None of them comes
+    from request input (R5)."""
+
+    agent: Any
+    agent_name: str
+    no_egress: bool
+    is_authorized: Any
+
+
+async def _turn_with_skills(turn: Any, *, reach: McpReach | None = None) -> Any:
     """*turn* with the published skills that its words name, or *turn* as it
     was. Never raises: a fault loads no skill.
 
@@ -4791,8 +4833,17 @@ async def _turn_with_skills(turn: Any) -> Any:
     never a word of the text. The description adds nothing to the prompt:
     ``skill_packs.build`` makes the same pack as for a match by name.
 
+    TOF-5a-1: when a skill to build names an ``mcp:`` action, the read
+    computes the MCP map of the turn ONCE (:func:`_skill_mcp_map`). It does
+    so only with ``STUDIO_CHAT_TOOLS_ORGS`` and ``MAF_MCP_ORGS`` on for the
+    org. The approvals come in the same tenant session
+    (:func:`_skill_mcp_approvals`). The lookahead reads *reach*, and with no
+    *reach* no server is reachable. Each refusal is a log line, never text
+    for the model.
+
     WS-STU F4b: in a skill test, the turn holds the forced pack of the test
-    and only that pack. The words choose nothing, and no store read runs."""
+    and only that pack. The words choose nothing, and no store read runs.
+    The MCP lookahead does not run either."""
     from acb_common.db import current_tenant
     from acb_skills import skill_packs, tool_packs, tool_search
     from acb_skills.skill_dry_run import current_dry_run
@@ -4829,6 +4880,16 @@ async def _turn_with_skills(turn: Any) -> Any:
                     _log.info("executor.skill_matched", skill=found[0], hits=found[1])
             pairs = (await skills_store.loadable_versions(
                 db, member, named[:tool_packs.MAX_PACKS]) if named else [])
+            # TOF-5a-1: the flags, then the approvals in THIS session, only
+            # for a turn whose skills name an ``mcp:`` action.
+            mcp_ids = _skill_mcp_ids(pairs)
+            mcp_open = False
+            approved: dict[tuple[str, str], str] | None = None
+            if mcp_ids:
+                flag = flag if flag is not None else _chat_tools_open()
+                mcp_open = flag and _skill_mcp_flag_open(org)
+                if mcp_open:
+                    approved = await _skill_mcp_approvals(db)
     except Exception as exc:  # the class only: a DB message can echo a value
         _log.warning("executor.skills_unread", error_type=type(exc).__name__)
         return turn
@@ -4837,11 +4898,17 @@ async def _turn_with_skills(turn: Any) -> Any:
     # TOF-1b: one read of the flag a turn, and only for a turn with a skill to
     # build. TOF-1c: the description pass may have read it already.
     chat_tools = (flag if flag is not None else _chat_tools_open()) if pairs else False
+    mcp_tools: Mapping[str, str] | None = None
+    unapproved: frozenset[str] = frozenset()
+    reserved: frozenset[str] = frozenset()
+    if mcp_open:
+        mcp_tools, unapproved, reserved = await _skill_mcp_map(org, mcp_ids, approved, reach)
     for skill, version in pairs:
         built = skill_packs.build(
             skill.id, skill.name, skill.description, version.version,
             version.content_hash, version.body, max_tools=tool_packs.MAX_PACK_TOOLS,
-            chat_tools=chat_tools)
+            chat_tools=chat_tools, mcp_tools=mcp_tools, mcp_unapproved=unapproved,
+            mcp_reserved=reserved)
         if isinstance(built, str):
             _log.info("executor.skill_refused", skill=skill.id, version=version.version,
                       reason=built)
@@ -4850,6 +4917,136 @@ async def _turn_with_skills(turn: Any) -> Any:
         bodies.append((built, version.body))
     _note_skill_facts(bodies)  # TOF-3a F12b
     return dataclasses.replace(turn, skills=tuple(packs)) if packs else turn
+
+
+def _skill_mcp_ids(pairs: Sequence[Any]) -> tuple[str, ...]:
+    """TOF-5a-1. Each ``mcp:`` id that the bodies of *pairs* name, once, in
+    order. A body with no list of actions names none."""
+    from acb_skills import skill_packs
+    from acb_skills.hidden_text import strip_hidden
+
+    found: list[str] = []
+    for _skill, version in pairs:
+        body = getattr(version, "body", None)
+        actions = body.get("actions") if isinstance(body, Mapping) else None
+        for action in actions if isinstance(actions, list) else []:
+            uses = strip_hidden(str(action)).strip()
+            if uses.startswith(skill_packs.MCP_PREFIX) and uses not in found:
+                found.append(uses)
+    return tuple(found)
+
+
+def _skill_mcp_flag_open(org: str) -> bool:
+    """TOF-5a-1. True when ``MAF_MCP_ORGS`` holds *org*, the bound tenant.
+    It fails closed: an error reads as closed."""
+    try:
+        from orchestrator import _maf_mcp
+
+        return bool(_maf_mcp.maf_mcp_org_allowed(org))
+    except Exception as exc:  # fail closed
+        _log.info("executor.skill_mcp_flag_unread", error_type=type(exc).__name__)
+        return False
+
+
+async def _skill_mcp_approvals(db: Any) -> dict[tuple[str, str], str] | None:
+    """TOF-5a-1. The approved hashes of the bound org, read in the tenant
+    session *db* of the turn (``mcp_approvals.approved_hashes``), or None.
+
+    The read runs in a SAVEPOINT, so a failed statement leaves the session
+    of the turn usable. A fault gives None, and None serves no ``mcp:``
+    action (fail closed). The log line names the class of the fault only."""
+    try:
+        from gateway.studio import mcp_approvals
+
+        async with db.begin_nested():
+            return await mcp_approvals.approved_hashes(db)
+    except Exception as exc:  # the class only: a DB message can echo a value
+        _log.warning("executor.skill_mcp_approvals_unread", error_type=type(exc).__name__)
+        return None
+
+
+async def _skill_mcp_map(
+    org: str, ids: Sequence[str], approved: Mapping[tuple[str, str], str] | None,
+    reach: McpReach | None,
+) -> tuple[dict[str, str], frozenset[str], frozenset[str]]:
+    """TOF-5a-1. The MCP map of one turn: ``(served, unapproved, reserved)``.
+
+    ONE lookahead (:func:`_mcp_reach_rows`) gives the servers that the run can
+    attach for this member. A run with no grant check reaches no server, so
+    the member's grant always counts. Then ONE read of the cache gives the
+    lists of those servers (``mcp_tools.skill_tools``), and
+    ``mcp_actions.skill_tool_map`` makes the map. A server that the member
+    cannot reach gives no entry, so its skill fails with ``action_unserved``.
+
+    Each fault gives an empty map: an approvals read that failed (*approved*
+    None), a lookahead fault and a cache fault. Each refusal writes one
+    ``executor.skill_mcp_refused`` line with the server name and the reason,
+    and nothing else: no argument, no header, no url and no tool text.
+
+    Review P1: *reserved* holds each id whose local name equals a
+    first-party tool name: CSY-10's ``_reserved_tool_names`` of the agent and
+    ``skill_packs.reserved_names``. Such an id never serves, and the build
+    gives ``mcp_name_reserved``. Else MAF would drop the whole server for the
+    clash, and the rules of the skill would send the model to the
+    first-party tool."""
+    servers = sorted({_mcp_server_of(i) for i in ids} - {""})
+    if approved is None:
+        for name in servers:
+            _log.info("executor.skill_mcp_refused", server=name, reason="approvals_unread")
+        return {}, frozenset(), frozenset()
+    rows: list[Any] | None = []
+    if reach is not None and reach.is_authorized is not None:
+        rows = await _mcp_reach_rows(
+            reach.agent, reach.agent_name, no_egress=reach.no_egress,
+            is_authorized=reach.is_authorized, held_untrusted=False)
+    if rows is None:
+        for name in servers:
+            _log.info("executor.skill_mcp_refused", server=name, reason="lookahead_failed")
+        return {}, frozenset(), frozenset()
+    reachable = [r for r in rows if str(r.name) in servers]
+    names = {str(r.name) for r in reachable}
+    for name in servers:
+        if name not in names:
+            _log.info("executor.skill_mcp_refused", server=name, reason="mcp_unreachable")
+    try:
+        from gateway.connections import mcp_tools as mcp_lists
+        from gateway.studio import mcp_actions
+
+        lists = await mcp_lists.skill_tools(org, reachable)
+        served, unapproved = mcp_actions.skill_tool_map(ids, lists, approved=approved)
+    except Exception as exc:  # the class only: a cache message can echo a value
+        _log.warning("executor.skill_mcp_tools_unread", error_type=type(exc).__name__)
+        return {}, frozenset(), frozenset()
+    # Review P1: a local name of a first-party tool of this run never serves.
+    from acb_skills import skill_packs
+
+    taken = _reserved_tool_names(reach.agent if reach is not None else None)
+    taken |= skill_packs.reserved_names()
+    reserved = frozenset(i for i in {*served, *unapproved} if skill_packs.is_reserved_local(
+        (skill_packs.mcp_local_name(i) or ("", ""))[1], taken,
+        (skill_packs.mcp_local_name(i) or ("", ""))[0]))
+    served = {i: n for i, n in served.items() if i not in reserved}
+    unapproved = frozenset(unapproved - reserved)
+    for name in sorted({_mcp_server_of(i) for i in reserved}):
+        _log.info("executor.skill_mcp_refused", server=name, reason="mcp_name_reserved")
+    for name in sorted({_mcp_server_of(i) for i in unapproved}):
+        _log.info("executor.skill_mcp_refused", server=name, reason="mcp_not_approved")
+    return served, unapproved, reserved
+
+
+def _mcp_server_of(action_id: str) -> str:
+    """The server name of the ``mcp:`` id *action_id*, or ``""``."""
+    from acb_skills import skill_packs
+
+    found = skill_packs.mcp_local_name(action_id)
+    return found[0] if found is not None else ""
+
+
+def _builds_read_mail(builds: Sequence[Any]) -> bool:
+    """TOF-5a-1. True when a pack of *builds* has an owner that reads stranger
+    text (:data:`UNTRUSTED_INPUT_AGENTS`). Then :func:`_inject_mcp_servers`
+    attaches no server to the run (OA-7b)."""
+    return any(getattr(b, "owner", None) in UNTRUSTED_INPUT_AGENTS for b in builds)
 
 
 # ── The record of skill runs (WS-TOF TOF-3a F12b) ───────────────────────────
@@ -5198,7 +5395,7 @@ def schedule_skill_runs(applied: Any) -> asyncio.Task[Any] | None:
 def _skills_present(
     skills: Sequence[Any], holds: Iterable[str], agent: Any, *, agent_name: str | None,
     tool_scope: list[str] | None, agent_config: dict[str, Any] | None,
-    disabled: frozenset[str],
+    disabled: frozenset[str], mail_held: bool = False,
 ) -> tuple[Any, ...]:
     """The skill packs of *skills* whose every tool the run holds.
 
@@ -5207,7 +5404,14 @@ def _skills_present(
     (:func:`_pack_base_names`), or the tools of a code pack of this turn
     (*holds*). TOF-1b: a code pack that a skill brings is one of them. A
     skill that names a tool the run does not hold fails to load, so Mira
-    gets no rule for a tool that she cannot call."""
+    gets no rule for a tool that she cannot call.
+
+    TOF-5a-1: an MCP tool of a skill (``SkillPack.mcp_tools``) attaches after
+    the packs, and the lookahead of :func:`_turn_with_skills` passed it, so
+    it counts as held. With *mail_held* (the run holds a pack whose owner
+    reads stranger text), no server attaches (OA-7b). So a skill with an MCP
+    tool never runs there, and the log line gives ``mail_and_mcp`` with the
+    server names only."""
     if not skills:
         return ()
     present = set(holds) | _pack_base_names(
@@ -5215,7 +5419,13 @@ def _skills_present(
         agent_config=agent_config, disabled=disabled)
     kept: list[Any] = []
     for found in skills:
-        missing = sorted(set(found.tools) - present)
+        mcp = tuple(getattr(found, "mcp_tools", ()) or ())
+        if mcp and mail_held:
+            _log.info("executor.skill_refused", skill=found.skill_id,
+                      version=found.version, reason="mail_and_mcp",
+                      servers=sorted({server for server, _name in mcp}))
+            continue
+        missing = sorted(set(found.tools) - present - {name for _server, name in mcp})
         if missing:
             _log.info("executor.skill_refused", skill=found.skill_id,
                       version=found.version, reason="tool_absent", tools=missing)
@@ -5247,7 +5457,7 @@ def _keep_skill_packs(
     skill_map: Mapping[str, Sequence[str]], layers: Mapping[str, str],
     pool: Sequence[Any], agent: Any, agent_name: str | None,
     tool_scope: list[str] | None, agent_config: dict[str, Any] | None,
-    disabled: frozenset[str],
+    disabled: frozenset[str], mail_base: bool = False,
 ) -> tuple[list[PackBuild], tuple[Any, ...], set[str]]:
     """TOF-1b. The builds, the kept skills and the held names, less each build
     of the layer "skill" (``Choice.layers``) that no kept skill needs.
@@ -5269,7 +5479,8 @@ def _keep_skill_packs(
             _tool_name(t) for b in builds for t in b.tools}
         skills = _skills_present(
             skills, holds, agent, agent_name=agent_name, tool_scope=tool_scope,
-            agent_config=agent_config, disabled=disabled)
+            agent_config=agent_config, disabled=disabled,
+            mail_held=mail_base or _builds_read_mail(builds))
     return builds, skills, holds
 
 
@@ -5323,6 +5534,44 @@ def _log_skills_refused(refused: Sequence[tuple[Any, str, Sequence[str]]]) -> No
                   packs=list(packs))
 
 
+def _log_skill_mcp_unattached(applied: Any, agent: Any) -> None:
+    """TOF-5a-1. One ``executor.skill_mcp_unattached`` line for each kept skill
+    whose MCP tool the run does not hold after :func:`_inject_mcp_servers`.
+
+    The lookahead passed, and then the connect failed, a name clashed, or the
+    server cap left the server out. The turn keeps the rules of the skill for
+    a tool that the run lacks. TOF-5a-1 accepts that gap, and TOF-5a-2
+    closes it. The line names the skill, the version and the server, and
+    never a url, a header or a text. It never raises."""
+    try:
+        found = [s for s in getattr(applied, "skills", ()) or () if getattr(s, "mcp_tools", ())]
+        if not found:
+            return
+        # Review P1: only a function of ``agent.mcp_tools`` counts. A
+        # first-party tool of the same name is not the MCP tool.
+        held = _mcp_function_names(agent)
+        for skill in found:
+            lost = sorted({server for server, name in skill.mcp_tools if name not in held})
+            if lost:
+                _log.warning("executor.skill_mcp_unattached", skill=skill.skill_id,
+                             version=skill.version, servers=lost)
+    except Exception as exc:  # a log line never fails the run
+        _log.info("executor.skill_mcp_unattached_unread", error_type=type(exc).__name__)
+
+
+def _mcp_function_names(agent: Any) -> set[str]:
+    """TOF-5a-1 review P1. The names of the functions of the MCP tools of
+    *agent* (``agent.mcp_tools``), the shown ones and the ones that the
+    loaders hide. No other tool of the run counts."""
+    from acb_skills.tool_guard import tool_name
+
+    names: set[str] = set()
+    for tool in getattr(agent, "mcp_tools", None) or []:
+        for attr in ("functions", "_functions"):
+            names |= {tool_name(f) for f in getattr(tool, attr, None) or []}
+    return {n for n in names if n}
+
+
 def _loader_agent_ok(agent: Any) -> bool:
     """True when *agent* is a native MAF ``Agent``, the only shape that
     :func:`_offer_pack_loader` serves."""
@@ -5341,34 +5590,176 @@ async def _mcp_may_attach(
     loader asks first. The same early exits, then the registry rows, listed
     with no token refresh and no header read (``enabled_meta``). A row that the run could use counts, so the answer
     errs toward True. A fault reads as True (fail closed): then the
-    specialist of a mail owner stays, as it did before OA-7i."""
+    specialist of a mail owner stays, as it did before OA-7i. The rows and
+    their filter are those of :func:`_attachable_rows`, and the row rule runs
+    inside the ``try``, so a fault of the rule (a grant that raises) also
+    reads as True. It reads the whole list: the grant is a pure test, and
+    the answer is the answer of a stop at the first row."""
     from acb_common.db import current_tenant
-
-    from orchestrator import _maf_mcp
 
     if no_egress or held_untrusted or agent_name in UNTRUSTED_INPUT_AGENTS:
         return False
-    org = current_tenant()
-    if not org or not _maf_mcp.is_native_maf_agent(agent):
-        return False
-    if not _maf_mcp.maf_mcp_org_allowed(org):
-        return False
     try:
-        from gateway.connections import mcp as mcp_registry
-
-        rows = await mcp_registry.enabled_meta(str(org))
+        rows = await _attachable_rows(agent, agent_name, current_tenant(), is_authorized)
     except Exception as exc:  # the class only: a DB message can echo a value
         _log.warning("executor.pack_mcp_lookahead_failed", error=type(exc).__name__)
         return True
-    for srv in rows:
-        if not srv.enabled or not _in_scope(list(srv.agent_scope), agent_name):
-            continue
-        if srv.transport not in _MAF_HTTP_TRANSPORTS or not srv.url:
-            continue
-        if is_authorized is not None and not is_authorized(_maf_mcp.mcp_service(str(srv.name))):
-            continue
-        return True
-    return False
+    return bool(rows)
+
+
+async def _mcp_reach_rows(
+    agent: Any, agent_name: str, *, no_egress: bool, is_authorized: Any, held_untrusted: bool,
+) -> list[Any] | None:
+    """TOF-5a-1. The rows that :func:`_inject_mcp_servers` can attach to this
+    run, for the skill map (:func:`_skill_mcp_map`), or None on a fault.
+
+    It has the early exits of :func:`_mcp_may_attach` (``no_egress``, a held
+    pack that reads stranger text, an agent of
+    :data:`UNTRUSTED_INPUT_AGENTS`), and each gives ``[]``. Then
+    :func:`_attachable_rows`, the one row rule (:func:`_row_may_attach`). It
+    reads no header and refreshes no token. A fault of the read or of the row
+    rule gives None. :func:`_mcp_may_attach` reads a fault as True, and the
+    skill map reads None as no server. Each caller fails closed for its own
+    use."""
+    from acb_common.db import current_tenant
+
+    if no_egress or held_untrusted or agent_name in UNTRUSTED_INPUT_AGENTS:
+        return []
+    try:
+        return await _attachable_rows(agent, agent_name, current_tenant(), is_authorized)
+    except Exception as exc:  # the class only: a DB message can echo a value
+        _log.warning("executor.pack_mcp_lookahead_failed", error=type(exc).__name__)
+        return None
+
+
+def _row_may_attach(srv: Any, agent_name: str, is_authorized: Any, *,
+                    log_stdio: bool = False, parked: bool = False) -> bool:
+    """THE one row rule of a lookahead on the registry metadata (CSY-4 §3.4,
+    HRD-1d, task 3866): a row that is enabled, in scope for *agent_name*, not
+    stdio (D85), on an HTTP transport with a URL, and that the run's grant
+    allows. It is the filter that :func:`_inject_mcp_servers` applies through
+    :func:`_keep_mcp_server` and :func:`_maf_servers`. Each ``enabled_meta``
+    lookahead reads it through :func:`_attachable_rows`, and
+    :func:`_reconnect_rows` reads it with *parked*. No other code repeats it.
+    With *log_stdio* the scope and the stdio test go through
+    :func:`_keep_mcp_server`, which logs ``mcp.stdio_refused``. It logs
+    nothing else.
+
+    A falsy ``enabled`` refuses the row, as both rules before the merge did
+    for ``False``. A row with no ``enabled`` field counts as enabled, because
+    ``StoredServer`` always carries the field. *parked* is a row of
+    ``needs_reconnect_meta``: its ``enabled`` is False by construction
+    (``StoredServer.enabled`` is ``status == connected``), and it is named,
+    never attached. So *parked* skips the ``enabled`` test, and every other
+    test applies."""
+    from orchestrator import _maf_mcp
+
+    if not parked and not getattr(srv, "enabled", True):
+        return False
+    if log_stdio:
+        if not _keep_mcp_server(srv, agent_name):
+            return False
+    elif not _in_scope(list(srv.agent_scope), agent_name) or srv.transport == "stdio":
+        return False
+    if srv.transport not in _MAF_HTTP_TRANSPORTS or not srv.url:
+        return False
+    return is_authorized is None or bool(is_authorized(_maf_mcp.mcp_service(str(srv.name))))
+
+
+async def _attachable_rows(agent: Any, agent_name: str, org: Any, is_authorized: Any, *,
+                           log_stdio: bool = False) -> list[Any]:
+    """THE one lookahead of the registry rows that may attach to this run.
+
+    The early exits of :func:`_inject_mcp_servers` (no org, not a native MAF
+    agent, ``MAF_MCP_ORGS`` off) give an empty list and read nothing. Else
+    one ``enabled_meta`` read (no header, no token refresh, inside
+    ``tenant_session(org)``), less each row that :func:`_row_may_attach`
+    refuses. It raises on a read fault, so each caller picks its own fail
+    side. Five callers: the OA-7i lookahead (:func:`_mcp_may_attach`), the
+    HRD-1d held-back servers (:func:`_note_withheld_servers`), the CSY-5
+    ``mail`` line (:func:`_note_mail_skipped`), the CSY-4 server words
+    (:func:`_with_server_words`) and the TOF-5a-1 skill map
+    (:func:`_mcp_reach_rows`). The lookahead, the server words and the skill
+    map check their own exits first: ``no_egress``, an agent that reads
+    stranger text, a held mail pack. The two notes run only at the skip of a held mail pack,
+    and they attach nothing."""
+    from orchestrator import _maf_mcp
+
+    if not org or not _maf_mcp.is_native_maf_agent(agent):
+        return []
+    if not _maf_mcp.maf_mcp_org_allowed(org):
+        return []
+    from gateway.connections import mcp as mcp_registry
+
+    rows = await mcp_registry.enabled_meta(str(org))
+    return [srv for srv in rows
+            if _row_may_attach(srv, agent_name, is_authorized, log_stdio=log_stdio)]
+
+
+async def _mail_mark_set(run_ctx: Mapping[str, Any]) -> bool:
+    """CSY-4: True only when the chat's mail mark reads ``MARK_MARKED``.
+
+    The eviction FAILS CLOSED on the mark: clear, unknown (a Redis fault) and
+    any raise read False, and then no pack leaves. So it reads
+    ``session_mark_state`` and compares to ``MARK_MARKED``. Never use a reader
+    that counts unknown as marked here: such a reader fails OPEN for an
+    eviction. *run_ctx* is the server-bound run context (R5)."""
+    try:
+        return await session_mark_state(run_ctx, fail_closed=True) == MARK_MARKED
+    except Exception as exc:  # the class only
+        _log.warning("executor.pack_mail_mark_unread", error=type(exc).__name__)
+        return False
+
+
+def _server_named_field(choice: Any) -> dict[str, list[str]]:
+    """CSY-4: the log field of ``Choice.server_named``, or no field when it is
+    empty, so a line of a run with no such eviction keeps its bytes."""
+    named = list(getattr(choice, "server_named", ()) or ())
+    return {"server_named": named} if named else {}
+
+
+async def _with_server_words(
+    turn: Any, agent: Any, agent_name: str, run_ctx: Mapping[str, Any], is_authorized: Any,
+    *, read_only: bool = False,
+) -> Any:
+    """*turn* with the words of the servers that may attach and the mail mark
+    (CSY-4, ``chat_connected_systems.md`` §3.4), or *turn* as it was.
+
+    It acts only while ``MCP_MAIL_PRECEDENCE_ORGS`` names the bound tenant,
+    the turn holds a sticky pack of an owner that reads stranger text, and
+    the run could get a server at all (not ``no_egress``, not an agent that
+    reads stranger text, no mail tool held). Then ONE read of the attachable
+    rows (:func:`_attachable_rows`), and, only when the words of the turn
+    name one of them, ONE read of the mark (:func:`_mail_mark_set`). A fault
+    of the read gives *turn* as it was. ``tool_packs.choose`` applies the
+    rule. With the flag off it awaits nothing. *read_only* is the WhatsApp
+    turn (G2), which keeps the choice of main."""
+    from acb_common.db import current_tenant
+    from acb_skills import server_match, tool_packs
+    from acb_skills.egress import mcp_mail_precedence_on
+
+    org = current_tenant()
+    if read_only or not org or not mcp_mail_precedence_on(org):
+        return turn
+    if (bool(run_ctx.get("no_egress")) or agent_name in UNTRUSTED_INPUT_AGENTS
+            or _holds_untrusted_pack(agent)):
+        return turn
+    if not any(str(tool_packs.SKILL_FAMILIES.get(str(getattr(e, "slug", "")), {}).get("owner"))
+               in UNTRUSTED_INPUT_AGENTS for e in getattr(turn, "sticky", ()) or ()):
+        return turn
+    try:
+        rows = await _attachable_rows(agent, agent_name, org, is_authorized)
+    except Exception as exc:  # the class only: a DB message can echo a value
+        _log.warning("executor.pack_server_words_failed", error=type(exc).__name__)
+        return turn
+    servers = tuple(sorted(
+        (str(srv.name), words) for srv in rows
+        if (words := server_match.server_words(str(getattr(srv, "label", "") or ""),
+                                               str(srv.name)))))
+    if not servers or not server_match.named_servers(getattr(turn, "words", ""), dict(servers)):
+        return turn
+    return dataclasses.replace(turn, servers=servers,
+                               mail_marked=await _mail_mark_set(run_ctx))
 
 
 async def _pack_available(
@@ -5450,7 +5841,7 @@ async def _plan_pack_loader(
     if len(held) < tool_packs.MAX_PACKS and reads_mail:
         mcp = await _mcp_may_attach(
             agent, agent_name, no_egress=no_egress, is_authorized=is_authorized,
-            held_untrusted=any(b.owner in UNTRUSTED_INPUT_AGENTS for b in builds))
+            held_untrusted=_builds_read_mail(builds))
     if available is None:
         available = await _pack_available(allow, persona=persona, bullets=bullets)
     return tool_packs.plan_loader(
@@ -5536,14 +5927,20 @@ def _make_finder(applied: PackApply, candidates: Any) -> Any:
     """THE ``FindTools`` of one run (TS-2a). Its record is the record of the
     apply, the same ``PackRun`` that the loader holds, so the two share
     ``PackRun.lock``. Its builder is the guarded builder of layer (a), and
-    its measure is ``_maf_mcp.schema_tokens``."""
+    its measure is ``_maf_mcp.schema_tokens``.
+
+    SBX-1a (``agent_sandbox.md`` §6.1): its ``on_gap`` is
+    ``tool_gap_path.make_gap_hook()``, the hook of the no-match path. With
+    ``user_tool_find_enabled`` off it is None, and the finder is as before.
+    The import is lazy, because ``tool_gap_path`` imports this module."""
     from acb_skills import tool_packs
 
-    from orchestrator import _maf_mcp
+    from orchestrator import _maf_mcp, tool_gap_path
 
     return tool_packs.FindTools(
         candidates=candidates, run_key=applied.run_key, record=applied.record,
         build=_build_pack_for_load, measure=_maf_mcp.schema_tokens,
+        on_gap=tool_gap_path.make_gap_hook(),
     )
 
 
@@ -5742,6 +6139,10 @@ async def _inject_mcp_servers(
         # in its own run, so it gets no server either. Packs load before
         # this step (OA-7c).
         _log.info("mcp.untrusted_pack_skipped", agent=agent_name)
+        # HRD-1d: the model can still call a tool of such a server from the
+        # history of the chat. Its answer then says why the tool did not run.
+        await _note_withheld_servers(
+            agent, agent_name, organization_id=organization_id, is_authorized=is_authorized)
         # CSY-5: the model learns WHY the system is off (reason `mail`).
         await _note_mail_skipped(agent, agent_name, organization_id, is_authorized)
         return
@@ -5770,6 +6171,9 @@ async def _inject_mcp_servers(
     servers = [srv for srv in stored if _keep_mcp_server(srv, agent_name)]
     if native:
         maf_servers = _maf_servers(servers, is_authorized)
+        attached: Any = []
+        reasons: dict[str, str] = {}
+        tools: Any = getattr(agent, "mcp_tools", None)
         if maf_servers:
             reserved = _reserved_tool_names(agent)
             failures: dict[str, str] = {}
@@ -5777,14 +6181,26 @@ async def _inject_mcp_servers(
                 agent, maf_servers, opened if opened is not None else [],
                 member_present=member_present,
                 on_unauthorized=_mark_unauthorized_for(str(org)),
+                on_needs_signin=_mark_needs_signin_for(str(org)),
                 failures=failures,
+                # Task 3924, review P2: a first-party name never autoloads a server tool.
+                reserved=reserved,
             )
             # CSY-10: only a server that attached (after the grant check and
             # the connect) gets a label, so a refused one never shows.
             _note_mcp_labels(servers, attached, reserved)
             tools = getattr(agent, "mcp_tools", None)
             reasons = await _mcp_reasons(str(org), maf_servers, attached, failures, tools, member_present)
-            _note_mcp_briefs(servers, attached, tools, reasons)
+        # Task 3866: a row in needs_reconnect is not read for a run, so it is
+        # named from a metadata read. Its tools never attach.
+        held_names = {str(srv.name) for srv in servers}
+        # A row that this read held was named by the connect (``failures``).
+        parked = [p for p in await _reconnect_rows(str(org), agent_name, is_authorized)
+                  if str(p.name) not in held_names]
+        for srv in parked:
+            reasons.setdefault(str(srv.name), "reconnect")
+        if maf_servers or parked:
+            _note_mcp_briefs([*servers, *parked], attached, tools, reasons)
             await _count_left_out(str(org), reasons)
         return
 
@@ -5792,8 +6208,55 @@ async def _inject_mcp_servers(
         _log.info("mcp.copilot_registry_skipped", name=srv.name)
 
 
-#: Tools of the platform that no MCP server may take the look of.
-_FIRST_PARTY_LOADERS = frozenset({"load_skill_tools", "find_tools"})
+async def _note_withheld_servers(
+    agent: Any, agent_name: str, *, organization_id: str | None, is_authorized: Any,
+) -> None:
+    """HRD-1d (task 3719): tell the unknown-tool answer of this run which MCP
+    servers the run held back, because it holds a pack that reads mail from
+    outside senders (OA-7b).
+
+    The servers are the ones that the injection would try without that pack:
+    :func:`_attachable_rows`, which has the same org, flag and native check as
+    :func:`_inject_mcp_servers`, then :func:`_row_may_attach`, the one row
+    rule. The org is the run's server-side stamp, never a tool argument or
+    the member's text. The read is ``enabled_meta``: no header and no OAuth
+    refresh. The value goes to
+    ``unknown_tool.note_withheld`` as the tool-name prefix of each server
+    (``_maf_mcp.tool_prefix``).
+
+    It reads only when the view holds a chat provider
+    (``unknown_tool.reads_withheld``), so a step and a later agent of the run
+    read nothing. Never raises. A fault leaves no value, and the answer stays
+    the answer of HRD-1c."""
+    try:
+        from acb_skills import unknown_tool
+
+        from orchestrator import _maf_mcp
+
+        if not unknown_tool.reads_withheld(agent):
+            return
+        org = organization_id or _run_org_or_none()
+        # No org, no native agent or the flag off: an empty list, and no read.
+        # An empty list then changes nothing (``note_withheld`` keeps no value).
+        rows = await _attachable_rows(agent, agent_name, org, is_authorized)
+        names = [str(srv.name) for srv in rows]
+        if unknown_tool.note_withheld(
+                agent, [_maf_mcp.tool_prefix(n) for n in names],
+                reason=unknown_tool.WITHHELD_MAIL_REASON):
+            _log.info("mcp.withheld_noted", agent=agent_name, servers=len(names))
+    except Exception as exc:  # the class only: a DB message can echo a value
+        _log.warning("mcp.withheld_unavailable", error=type(exc).__name__)
+
+
+#: Tools of the platform that no MCP server may take the look of. The one
+#: list is ``skill_packs.LOADER_TOOLS`` (TOF-5a-1 re-review).
+def _first_party_loaders() -> frozenset[str]:
+    from acb_skills.skill_packs import LOADER_TOOLS
+
+    return LOADER_TOOLS
+
+
+_FIRST_PARTY_LOADERS = _first_party_loaders()
 
 
 def _reserved_tool_names(agent: Any) -> frozenset[str]:
@@ -5806,13 +6269,13 @@ def _reserved_tool_names(agent: Any) -> frozenset[str]:
         held = _maf_mcp._names_held(agent)
     except Exception:  # a fault gives the platform surface alone
         held = set()
-    packs: set[str] = set()
+    packs: frozenset[str] = frozenset()
     try:
-        from acb_skills.skill_families import SKILL_FAMILIES
+        from acb_skills.skill_packs import family_tool_names
 
-        packs = {n for fam in SKILL_FAMILIES.values() for n in fam["tools"]}
+        packs = family_tool_names()
     except Exception:  # the platform surface alone
-        packs = set()
+        packs = frozenset()
     return frozenset(held | _registered_platform_surface() | packs | _FIRST_PARTY_LOADERS)
 
 
@@ -5833,22 +6296,35 @@ async def _note_mail_skipped(agent: Any, agent_name: str, organization_id: str |
                 or not _maf_mcp.maf_mcp_org_allowed(org)
                 or not _maf_mcp.connected_systems_org_allowed(org)):
             return
-        from gateway.connections import mcp as mcp_registry
-
-        rows = await mcp_registry.enabled_meta(str(org))
+        rows = await _attachable_rows(agent, agent_name, org, is_authorized, log_stdio=True)
         notes = []
         for srv in rows:
-            if not _keep_mcp_server(srv, agent_name):
-                continue
-            if srv.transport not in _MAF_HTTP_TRANSPORTS or not srv.url:
-                continue
-            if is_authorized is not None and not is_authorized(_maf_mcp.mcp_service(str(srv.name))):
-                continue
             notes.append((str(srv.name), server_brief.reason_line(str(srv.label or srv.name), str(srv.name), "mail")))
         server_brief.set_attached([], notes)
         await _count_left_out(str(org), {n: "mail" for n, _ in notes})
     except Exception as exc:
         _log.warning("mcp.mail_notes_unavailable", error=type(exc).__name__)
+
+
+async def _reconnect_rows(org: str, agent_name: str, is_authorized: Any) -> list[Any]:
+    """Task 3866, CSY-5: the servers of *org* in ``needs_reconnect`` that this
+    run may name, as metadata only. The row rule is :func:`_row_may_attach`
+    with *parked* (such a row reads ``enabled`` False) and *log_stdio*, as
+    :func:`_note_mail_skipped` reads it. Only an org with
+    ``CONNECTED_SYSTEMS_ORGS`` on. Never attached. A fault gives none and
+    never blocks the run."""
+    try:
+        from orchestrator import _maf_mcp
+
+        if not _maf_mcp.connected_systems_org_allowed(org):
+            return []
+        from gateway.connections import mcp as mcp_registry
+
+        return [srv for srv in await mcp_registry.needs_reconnect_meta(org)
+                if _row_may_attach(srv, agent_name, is_authorized, log_stdio=True, parked=True)]
+    except Exception as exc:  # the class only
+        _log.warning("mcp.reconnect_notes_unavailable", error=type(exc).__name__)
+        return []
 
 
 async def _count_left_out(org: str, reasons: dict[str, str]) -> None:
@@ -5996,6 +6472,19 @@ def _mark_unauthorized_for(org: str) -> Any:
             org, str(server.name), dict(server.headers),
             refreshed=getattr(server, "oauth_refreshed", False) is True,
         )
+
+    return _mark
+
+
+def _mark_needs_signin_for(org: str) -> Any:
+    """Task 3866: the callback for a 401 or 403 with an OAuth challenge on the
+    connect of a row with no sign-in. It marks the row of *org*, the run
+    binding, never request input (``integrations_console.md`` §3.6.7)."""
+
+    async def _mark(server: Any) -> None:
+        from gateway.connections import mcp as mcp_registry
+
+        await mcp_registry.mark_needs_signin(org, str(server.name), str(server.url))
 
     return _mark
 

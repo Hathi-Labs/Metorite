@@ -104,6 +104,8 @@ const PANEL_HIDDEN_EVENTS = new Set([
   "confirmation_resolved",
   // A refused approve (task 3827): saved on the message like the one above.
   "confirmation_not_done",
+  // WT-6a: the Undo of an archive receipt. The receipt line draws it.
+  "confirmation_undo",
   "generative_ui",
   // A dispatched browser action (H-164): a side effect with nothing to show.
   "frontend_tool",
@@ -127,6 +129,9 @@ const PANEL_HIDDEN_EVENTS = new Set([
   // The offer of the pill "Continue in a fresh chat" (WT-2). The chat draws
   // the pill, and the fold must not show the event as data.
   "chat_continue_offer",
+  // The switch line of a turn that loaded another tool pack (WT-4). The
+  // chat draws one line, and the fold must not show the event as data.
+  "chat_pack_switched",
 ]);
 
 /** A typed renderer for a specific custom-event `name`, returning the card body

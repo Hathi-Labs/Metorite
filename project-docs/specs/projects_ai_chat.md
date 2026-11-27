@@ -137,7 +137,7 @@ tool class in §5.2, so the ceremony a member sees follows from this table.
 | "Show me open tasks due this week for Ayush" | `list_tasks` | `GET /projects/tasks` with the filter set the app uses |
 | "Tell me about #142" | `task_detail` | `GET /projects/tasks/{id}` + `/timeline` + `/relations` |
 | "What is mine?" | `my_work` | `GET /projects/assigned-to-me`, `GET /projects/my/inbox` |
-| "Who could take this?" | `people_for` | `GET /projects/assignees`, `GET /projects/people/names` |
+| "Who could take this?" | `people_for` | `GET /projects/assignees`, `GET /projects/people/names`, `GET /projects/people/reach` (a card reads it, task 3636) |
 | "What statuses does this project use?" | `vocabulary` | `GET /nodes/{id}/statuses`, `/types`, `/tags`, `/fields` |
 | "Where is work stuck?" | `analytics_stuck` | `GET /projects/analytics/stuck` |
 | "Who is overloaded?" | `analytics_load` | `GET /projects/analytics/load` |
@@ -802,6 +802,7 @@ Each slice is one pull request. Each one is useful alone.
 | **S14 · No forged agent rows** — ✅ **BUILT 2026-09-28** | The server mints the agent row of a run when the run starts · no client inserts an agent row or a system row · an empty minted row stays hidden · a creator owns only a room with no rows, and migration 221 backfills every creator's owner row (§20) | AGENT-SAFE. D-PM-39 decided by the owner 2026-09-28 |
 | **S15 · Chat is saved on production** — ✅ **BUILT 2026-09-29** | A JSON body to the gateway names its content type, so a save gets no 422 · each chat, room, fold, mint, run-trace and blob write binds the tenant · `_load_room` binds it too, so no member owns a room that they cannot see · an empty server answer keeps the browser cache · an R8 suite, a smoke check and an alarm (§21) | AGENT-SAFE. A live defect, audited by the diagnosis of 2026-09-29 |
 | **H-229 · Chat attachments** — ✅ **BUILT 2026-10-04** | `read_attachment` reads the text of a `.docx`, PDF, `.txt`, `.md` or `.csv` file attached in this chat, by pure parsing · an upload to a shared agent lands in its thread's own folder · an older flat upload reads only in the thread that the blob history names (§22) | AGENT-SAFE. Restores the flow that D85 stopped |
+| **CIV-SMOKE-TURN · The smoke runs a real turn** — ✅ **BUILT 2026-11-27, dark** (task 4061) | The release smoke runs one short model turn with tools on, in the smoke org. The stream ends with `done`, the saved answer has text, and no gateway line of the turn holds a Traceback (red with `LOG_FORMAT=json` only, and a warning today). `SMOKE_CHAT_TURN` and `SMOKE_CHAT_TURN_CAP_USD` in the box `.env`, both unset. Two cap guards: the smoke's own count of turns, and the metered spend. `deploy/smoke_chat.sh --turn-only` (§21.10) | HIGH: the deploy path. The owner sets the cap before the switch goes on |
 | **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-11-30 (`.claude/OWNER_GRANTS.md`, PR #487) |
 | **Delete** | `delete_project`, `delete_task` from class X to C | Blocked on WS-40 |
 
@@ -3984,10 +3985,10 @@ Then it runs `scripts/smoke_chat_persist.py`.
 
 - Exit 1 (a step failed) and exit 2 (the environment is wrong) make the run
   red at once, with no retry. An ssh blip retries, 3 tries in total.
-- The script has a time bound of 935 s, and its header gives the sum. The
-  job gives one ssh 990 s. A session that goes past that is a timeout, with
+- The script has a time bound of 1175 s, and its header gives the sum. The
+  job gives one ssh 1230 s. A session that goes past that is a timeout, with
   its own message and no retry, and the job gives a warning. The job
-  timeout is 60 min.
+  timeout is 72 min.
 - Only a smoke that ran and failed is red. When ssh cannot reach the box for
   the whole connect budget, or drops on all 3 tries, the job gives a
   warning and stays green. That keeps the H-142 contract for the pull path:
@@ -4024,6 +4025,58 @@ Then it runs `scripts/smoke_chat_persist.py`.
   not fail the smoke.
 - The fence is `tests/unit/test_deploy_smoke_wiring.py`.
 
+**The smoke can run one real model turn (CIV-SMOKE-TURN, task 4061, built
+2026-11-27, dark).** On 2026-11-26, 25 flags went on, and no real turn tested
+them for hours. So the persist run can also run one short turn of the
+orchestrator, with its tools on, in the smoke session. The module is
+`scripts/smoke_chat_turn.py`, and its lines start with `T`.
+
+- The operator sets `SMOKE_CHAT_TURN=1` and `SMOKE_CHAT_TURN_CAP_USD` in
+  `/opt/acb/app/.env`. The script reads both on each run, so a change needs no
+  restart. Both are unset, so the turn is off. The owner has not set the cap.
+- On with no cap is `REFUSED`, exit 2, and the smoke writes nothing.
+- T1 has two guards, and either one skips the turn. A skip prints a
+  `WARNING T1` line, the smoke stays green, and `deploy.yml` shows a
+  `Model turn skipped` warning.
+- The count guard does not need Redis. The smoke keeps its own count of this
+  UTC month's turns in `/var/lib/acb/smoke-chat-turn.json`. It writes the
+  count + 1 before the turn, so a crash still counts the turn. It skips when
+  the count times `SMOKE_CHAT_TURN_EST_USD` (default 0.25) is at or over the
+  cap. A corrupt file, a file it cannot write, or a lock that another smoke
+  holds skips the turn.
+- The metering guard reads the smoke org's cost rollup of this UTC month
+  through `GET /api/observability/cost`. The rollup is in Redis, and a model
+  with no price writes no cost, so it is a second guard and not the cap. An
+  empty rollup is unknown. Zeros with no calls are also unknown after a
+  counted turn of this month.
+- T2 needs the `done` event, and T3 needs an assistant row with text. Each
+  failure is exit 1, with no PASS line.
+- T4 reads `journalctl -u acb-gateway -o json` from the turn start to now. A
+  Traceback on a line with the thread id of this turn is red. That works
+  with `LOG_FORMAT=json`, where the executor binds `thread_id` to each line
+  of the run. Any other Traceback, or a log that acb cannot read, is a
+  `WARNING T4` line. Another tenant can own that line. T4 prints the count
+  and the times of the hits only, and never the log text.
+- Before the flip, the owner runs `journalctl -u acb-gateway -n 1` as acb.
+  If acb cannot read it, add acb to the `systemd-journal` group. Without
+  that, T4 cannot check the log.
+- T4 can be red only with `LOG_FORMAT=json` in the gateway environment.
+  The box used the console format on 2026-11-27. Then a Traceback spans
+  many journal lines, its line holds no thread id, and T4 only warns.
+- After the first turn, the owner checks that the cost rollup of the smoke
+  org shows `calls > 0`. A model with no price writes no calls. Then each
+  later turn of the month skips with a warning.
+- The cap needs about 7 turns a day times `SMOKE_CHAT_TURN_EST_USD` (0.25)
+  for a month, which is about 53 USD. A lower cap stops the turn early in
+  the month, with a warning on each deploy.
+- A retry of the smoke after an ssh drop can run up to 3 turns in one
+  release. The count guard counts each one.
+- The turn takes at most 227 s of `SMOKE_TURN_S` (240 s).
+- `bash deploy/smoke_chat.sh --turn-only` runs the turn alone. A later
+  `flag_flip.sh` calls it after a flip.
+- The fence is `tests/unit/test_smoke_chat_turn.py`, with the wiring in
+  `tests/unit/test_deploy_smoke_wiring.py`.
+
 **The alarm stays manual.** `alarm_chat_persist.sh` counts write failures in
 the last 10 minutes of the gateway journal. After a deploy, that window holds
 the failures of the old code too. So a deploy gate on it can go red for a
@@ -4056,8 +4109,9 @@ The first production run PASSED on 2026-09-29, all four steps, on
 
 **Status: BUILT 2026-09-30, part 1 of H-201, with fix rounds 1 and 2. The
 observability, debug, skills and plugin rows BUILT 2026-11-05 (task 612).
-The expand half of the `agent_avatars` key BUILT 2026-11-07 (H-201d, task
-1719, migration 354). The contract half is OPEN (HANDOFF H-443).** This part binds the readers
+The expand half of the `agent_avatars` key MERGED 2026-11-07 (H-201d, task
+1719, migration 354). The contract half BUILT 2026-11-22 (migration 474), and
+it merges only after 354 is in the production ledger from an earlier release.** This part binds the readers
 that are nearest to chat. It also adds the room check on the answer path.
 H-201 in `HANDOFF.md` lists the work that is still open.
 
@@ -4090,8 +4144,9 @@ migrations before it restarts the services.
    the old key. `_save_avatar` names the new index in `ON CONFLICT`. A
    same-org save updates the row. A save of a name that another org holds
    still fails, on `agent_avatars_pkey`, and never reaches the other row.
-2. **Contract, a later release (open, HANDOFF H-443).** It drops
-   `agent_avatars_pkey`. Then each org keeps its own avatar for one name.
+2. **Contract, migration 474 (built 2026-11-22, a later release than 354).** It
+   re-points the primary key from `agent_name` alone to `(organization_id,
+   agent_name)`. Then each org keeps its own avatar for one name.
    It cannot ship with 354. The old gateway runs on the new schema until the
    restart, and its `ON CONFLICT (agent_name)` needs a unique rule on
    exactly `(agent_name)`.
@@ -4099,8 +4154,9 @@ migrations before it restarts the services.
 Production holds no row with a NULL `organization_id`, because tenancy
 phase 3 sets the column NOT NULL. A unique index treats each NULL as
 distinct, so on a database without the tenancy phases it does not constrain
-a NULL row. `tests/unit/test_agent_avatars_key_per_tenant_r8.py` proves both
-states as the app role under FORCE RLS.
+a NULL row, and 474 refuses to run while one exists.
+`tests/unit/test_agent_avatars_key_per_tenant_r8.py` proves the contract state
+as the app role under FORCE RLS.
 
 **The rules.**
 
@@ -5298,8 +5354,9 @@ sandbox suite.
 
 ### 22.9 H-227 — the uploads and the documents of one thread
 
-**Status: BUILT 2026-10-04, in review.** HANDOFF H-227. It is a
-prerequisite of the owner flip WS-43w (`maf_coding_engine.md` §16.3).
+**Status: BUILT 2026-10-04. Fix round 4 (HANDOFF H-242, task 689) built
+2026-11-22, in review.** HANDOFF H-227. It is a prerequisite of the owner
+flip WS-43w (`maf_coding_engine.md` §16.3).
 
 **The gap.** Every session of projects-assistant in one organization opens
 the same tenant dir (§21.15). After H-229, two gaps in D12 stayed open.
@@ -5595,14 +5652,18 @@ mutation of one layer alone stays green. The table shows those too.
    none of these doors. An existing row keeps its id.
 3. **An older batch document is the organization's again.** Rule 8 and the
    who-loses-what line above. `workspace._is_batch_row` and
-   `blob_store._RUN_ROW` are the one rule in Python and in SQL. The tree,
-   the purge and `session_paths` use it.
+   `blob_store._RUN_ROW` are the one rule in Python and in SQL. The tree and
+   `session_paths` use it. The purge deletes each row at a path that the chat
+   began, a batch row too. A new batch run cannot add such a row.
+   `write_artifact._take_batch_name` skips each name that `_path_has_history`
+   finds written. So this touches legacy rows only.
 4. **The run doors with no stream check the room.** `POST /agent/run` and
    `/agent/run/async` took a client thread id with no room check. So a
    member who knew the id of another member's chat ran a shared agent in it
    and read its folders. They now refuse a caller who may not send in the
    room, as the stream door does (`agent._guard_run_thread`).
-5. **The purge keeps a file that another session rewrote.** Main let any
+5. **The purge keeps a file that another session rewrote.** ⚠️ Fix round 4
+   replaces this item: the purge now deletes such a file. Main let any
    session change a loose file. When the newest write of a loose file that
    the chat began is another session's, the purge keeps the file and its
    other rows. It deletes only the rows of the chat. Then the oldest
@@ -5627,10 +5688,80 @@ mutation of one layer alone stays green. The table shows those too.
 | the SQL rule knows only the actor `batch` | 1 |
 | the purge deletes an older batch row | 1 |
 | the tree finds a batch file by the actor alone | 1 |
-| the purge deletes a file that another session rewrote | 1 |
+| the purge deletes a file that another session rewrote (fix round 4 made this the rule) | 1 |
 | the containment check runs first (Windows only) | 1 |
 | the run doors with no stream drop the room check | 1 |
 | the run doors with no stream skip the guard | 2 |
+
+**Fix round 4 (HANDOFF H-242, task 689, 2026-11-22).** The round 3 review
+of PR #616 found three edges of the new-chat step. Seven R8 tests failed
+on the box at `9d0ea8444`: the tests alone, on main `66766ecf9`. The box went offline before the run
+after the fix, so pr-check must show them green. The hermetic fences pass.
+
+1. **A room of `None` no longer skips the step** (residual 8). A run door
+   read a room of `None` as "not new". `_resolve_room` gives `None` to a
+   caller with no email, and when the lookup raises. Now only the internal
+   service caller skips the step (`workspace._is_service_caller`). Each
+   other caller goes through it, and the step checks for the row under its
+   lock. So the step purges a new id, and removes nothing of a chat that
+   exists.
+2. **The purge deletes a file that the chat began** (residual 9). The lead
+   of task 689 decided it on 2026-11-22, in review by the owner through the
+   PR. The decision: delete, and do not keep the file with no owner. Another
+   session's newest bytes can still hold the chat's text, as a `save_note`
+   append of main did. To keep the file with no owner, a row must name the
+   chat as the first writer. A new chat can take that id, so such a row
+   gives the file back to it. A tombstone is a new mechanism. The delete
+   needs none, and it cannot hand one chat's text to another session. The
+   cost: the other session loses its later bytes at that path. Fix round 3
+   item 5 is gone (`workspace._last_write`).
+3. **The check, the purge and the new row are one step** (residual 6).
+   `chat.open_new_session` does all of it in one transaction. It takes
+   `pg_advisory_xact_lock(hashtextextended('chat_new:' || id, 0))`, and it checks again that
+   the tenant has no row. Then it purges and inserts the row.
+   `POST /chat/sessions` and the three run doors call it. A door that comes
+   second waits on the lock, then finds the row, and purges nothing. A run
+   door now makes the row before the run, so no run writes with no row. A
+   failed purge or insert answers 503, and the run does not start. The
+   mint then finds the row and changes nothing.
+4. **One connection for the step.** The sync pool holds 2 + 1 connections
+   by default. So the purge runs in the session of the step, and takes no
+   second connection. `purge_thread_files`, `session_paths`, `file_history`
+   and `purge_files` take that session as `db=`. The step runs its
+   transaction inside one `with` block in one worker thread, so a cancelled
+   request never leaves the lock held. The store calls go through
+   `asyncio.to_thread`. So
+   the one session crosses threads, one call after another and never at the
+   same time. No code may run two calls on the session at once, for example
+   with `asyncio.gather`. A wait for the lock of more than 10 s answers 503.
+   Advisory: no test fences the 10 s wait.
+
+Each mutation below turned the hermetic fences of
+`tests/unit/test_h227_thread_scope.py` red on the PC, on 2026-11-22. The
+home box went offline after the red run on main. So the R8 tests have no
+mutation count yet, and pr-check runs them.
+
+| Mutation | Hermetic tests that fail |
+|---|---|
+| a room of `None` skips the step for every caller again | 1 |
+| the purge keeps a file that another session rewrote again | 1 |
+| the step takes no advisory lock | 1 |
+| the step does not check again for the row under the lock | 2 |
+| the purge runs in a session of its own | 1 |
+| a failed insert only logs, and the run goes on | 1 |
+| the store commits the caller's session | 1 |
+
+A pause hook holds door A in the purge. The
+test starts door B only then. The hook is a monkeypatch of the test, and
+not product code. So the order is fixed, and the test does not
+depend on timing.
+
+A second agent did these checks again on the PC on 2026-11-22, after
+the merge of main. Each mutation of the table gave the same count. On the
+product files of main `66766ecf9`, the hermetic fence of step 2 fails on its
+assert. The fences of steps 1 and 3 fail there on a name that main does not
+have. So for steps 1 and 3, the mutations and the R8 tests give the red that
+counts. The R8 race test is the only fence of the lock on Postgres.
 
 **Residuals, named.**
 
@@ -5654,21 +5785,35 @@ mutation of one layer alone stays green. The table shows those too.
    So on a Windows dev box, `OUTPUTS/<thread slug>/x` names the folder of
    that thread, and it passes the rules. Production runs on Linux. There
    that path names another folder, and no route lists it.
-6. **A slow mint and a late create.** A run door purges a new id, and then
-   the run's mint makes the row. When the mint times out, the run goes on
-   with no row. A `POST /chat/sessions` that arrives then sees no row, and
-   its purge can remove the first files of that run. HANDOFF H-242 step 3.
+6. **Closed by fix round 4 (item 3).** A run door makes the row in the
+   step that purges. So no create purges the first files of a run.
 7. **The stream door with no thread id** mints the thread `<agent>:<run
    id>` from a run id that the client may choose. It makes no batch run.
    Its documents go in its own thread folder, never in a loose file, so it
-   cannot forge an older batch row. The purge never deletes one.
-8. **A null room skips the purge.** A run door reads a room of `None` as
-   "not new". `_resolve_room` gives `None` on an exception, or when the
-   caller has no email. HANDOFF H-242 step 1.
-9. **The next writer can own the deleted chat's text** (fix round 3 item
-   5). The bytes that another session wrote can still hold the text of the
-   chat that began the file. HANDOFF H-242 step 2 decides: delete such a
-   file, or keep it with no owner.
+   cannot forge an older batch row.
+8. **Closed by fix round 4 (item 1).** A room of `None` skips the step only
+   for the internal service caller.
+9. **Closed by fix round 4 (item 2).** The purge deletes a file that the
+   chat began.
+10. **A room of `None` checks no room** (older than H-242). The run doors
+    skip the room check when `_resolve_room` gives `None`. So a caller with
+    no email, or a run while the room layer raises, can run in a chat that
+    exists. The step purges nothing of it. A fix refuses such a run.
+11. **The second pass of the delete route** runs after the row is gone, with
+    no row check and no lock. A new chat with the same id that starts in
+    that moment can lose its first files. The pass only logs.
+12. **A run with no row.** The internal service caller makes no row, so a
+    run of its own on a chat id has none. A run that started before this
+    change has none either. A new chat with that id purges its files.
+13. **A refused run leaves a row.** The step runs before the run cap and
+    the live-run refusal of the stream door. So a refused first run of a
+    new chat leaves an empty chat row. The browser makes that row first in
+    most cases (`sessions.ts`).
+14. **The continue route keeps the two-step form.** The server mints its id
+    (`uuid4`), so no client can race it.
+15. **Two writers have no new-chat step.** `/copilot/chat` (`main.py`) and the
+    upsert of `_store_session_id` in the executor still write chat rows with
+    no new-chat step. The web shell no longer calls `/copilot/chat`.
 
 **Verification.**
 
@@ -7048,6 +7193,10 @@ follows PST-4 (pull request 1834), because both change `writes.py`. IMG-4 is rep
 
 **Status.** VOX-1 to VOX-5 BUILT 2026-11-08, dark (§31.9). VOX-5 waits for its
 first live run (task 2265).
+
+**VOX-7 status.** BUILT 2026-11-09 on branch `mt-ae7b5305-wave`. It waits for
+its pull request.
+
 Epic: Metorite task 2240. The owner decided the four calls of §31.6 on
 2026-11-08. No migration.
 VOX-3 takes over IMG-4 (§30.4, task 1598).
@@ -7470,6 +7619,87 @@ the metered door. A Sonnet builder, because Opus was rate-limited until 2026-11-
 - **Fence (R7):** `tests/unit/test_customer_console_stt_assemblyai.py` (R8),
   `test_operator_console_invocations.py` and `providerGuides.test.ts`.
 
+**VOX-7 (task 2501). The layered wave.** STANDARD. A front-end slice with no
+migration, no flag and no new route. BUILT 2026-11-09 on branch
+`mt-ae7b5305-wave`, and it waits for the pull request.
+
+- **Why:** the owner asked for a better recording state than a bar, on
+  2026-11-09: "can you think of a better animation for the voice input mode
+  instead of just a bar? Maybe like a sound wave … do something a little bit
+  more tasteful with fun UI/UX for sound input. Since the main way to stop
+  talking is just by clicking on the mic button again, ensure that the UI/UX is
+  clean and clear to indicate that the mic button has to be pressed to stop the
+  voice input." The owner then chose variant B: "i prefer the layered wave as
+  the audio input animation." The owner also set one rule for the box: "ensure
+  that I'm able to append to previously transcribed sections. For example, I
+  might turn on audio transcription, say something, and then turn it off. Then
+  type something manually … and then do auto transcription again. The system
+  should allow me to do that."
+- **Files:** `components/VoiceInputButton.tsx`, a new `components/VoiceWave.tsx`,
+  a new `lib/voiceWave.ts`, and `hooks/useVoiceDictation.ts`.
+- **Do:**
+  - Draw three sine lines in a band of the bar row, between the timer and the
+    pickers. The lines stroke `currentColor` in a `text-primary` box, with
+    three opacities and three weights. No status token and no hex literal.
+  - Keep the level in a ref (`levelRef`). A `requestAnimationFrame` loop reads it
+    and writes the `d` of each path. No React state changes on an audio block.
+    The loop stops when the recording ends or the chat unmounts.
+  - While it records, the mic is a filled round Stop button in the accent
+    colour, named "Stop recording". A ring follows the voice and takes no click. The first
+    recording of a browser shows "Tap ■ to finish" for 4.5 s. The mark is in
+    `localStorage`.
+  - Show a mono timer. In the last 15 s it turns to the warning token and shows
+    "N s left". A cross, "Discard recording", calls the cancel. Enter finishes,
+    and Esc discards.
+  - Keep the box mounted and visible. The wave never covers the draft, and the
+    composer keeps its height in every phase. The words go in at the caret, as
+    in VOX-1.
+  - With `prefers-reduced-motion`, the lines do not move. A static meter of 10
+    segments shows the level.
+- **Done when:** a draft of text stays in view while the mic records, and a
+  second dictation lands at the caret after a typed edit.
+- **Fence (R7):** `src/lib/voiceWave.test.ts` and
+  `src/lib/voiceDictation.test.ts`.
+  - `voiceWave.test.ts` tests the lines, the timer rule and the hint.
+  - It tests reduced motion, the colour fence and the box kept mounted.
+  - It tests the order of "hello", "world" and "again" at the caret.
+  - `voiceDictation.test.ts` tests the label of the Stop button.
+  - `src/lib/theme/conformance.test.ts` holds the colour rules.
+
+**VOX-8 (task 2505). The mic hears the languages the member speaks.** HIGH,
+because it changes the metered door. Design: `personalization.md` §5.3a.
+Needs PZ-52 for the list. **DEFERRED by the owner on 2026-11-09.** It opens
+only when Sarvam, now first on `tier-stt`, shows a wrong-language guess.
+
+- **Why:** the owner said on 2026-11-09: "just because our preference is
+  English doesn't mean that it should not understand Hindi as input."
+- **Files:** `chat_transcribe.py`, `acb_auth/console_resolve.py`
+  (`transcribe_on_console`), and in the Console `main.py`
+  (`audio_transcriptions`), `router.py`, `stt_sarvam.py` and
+  `stt_assemblyai.py`.
+- **Do:**
+  - The gateway loads `style.languages` of the proven member on the server. It
+    sends them as the form field `language_hints`: lowercase base tags
+    joined by commas, at most 6 and 64 characters. It never reads a language
+    from the request (R5).
+  - The door accepts the optional field `language_hints`. It drops a tag that
+    is not well formed. It ignores a field that is too long or too big. It
+    never answers 4xx because of it.
+  - Sarvam sends no `language_code`, so the vendor detects the language.
+  - AssemblyAI: a model id that names languages wins. Otherwise it sends the
+    supported tags as `language_codes`, `en` first when present. It sends
+    nothing when fewer than two tags are supported.
+  - The usage row is the same with or without a hint. Billing reads the
+    seconds of the WAV, as in VOX-6.
+- **Done when:** a clip on `tier-stt` with the list `en,hi,kn` makes the
+  AssemblyAI request carry `language_codes: ["en","hi"]` and the Sarvam
+  request carry no `language_code`. A client field `language_hints` on the
+  gateway route changes nothing.
+- **Fence (R7):** `tests/unit/test_customer_console_stt_language_hints.py`
+  (R8) pins both request bodies, the drop of `kn` and of a bad tag, the model
+  id that wins, and equal usage rows. `tests/unit/test_chat_transcribe_hints.py`
+  pins that the gateway reads the profile and ignores the client.
+
 ### 31.6 Owner calls
 
 **The owner accepted all four recommendations on 2026-11-08 at 08:42 UTC**, on
@@ -7489,7 +7719,7 @@ Deepgram, OpenAI or Groq on `tier-stt`. VOX-2 follows, for Sarvam. VOX-3 goes
 in parallel with VOX-1, because the two touch different code. VOX-5 follows
 VOX-3.
 VOX-6 follows VOX-2, because it copies the same handler pattern. It serves
-the chat mic (VOX-1) and the operator Try box (VOX-4).
+the chat mic (VOX-1) and the operator Try box (VOX-4). VOX-8 follows PZ-52 (`personalization.md` §5.3a), because it reads the list that PZ-52 stores.
 
 ### 31.8 What §31 does not do
 
