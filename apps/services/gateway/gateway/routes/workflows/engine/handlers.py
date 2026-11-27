@@ -40,8 +40,10 @@ NODE_TIMEOUTS: dict[str, float] = {
     # An internal DB write — nothing here crosses the network.
     "pm_task": 30.0,
     # The lifecycle sweep walks every root project with a policy (WS-27z).
-    # Internal DB work like pm_task, but N projects × M stale tasks of it.
+    # Internal DB work like pm_task, but N projects x M stale tasks of it.
     "pm_lifecycle": 300.0,
+    # One Studio record write in one transaction (STU-B2c-2d).
+    "studio_write": 30.0,
 }
 DEFAULT_NODE_TIMEOUT = 60.0
 
@@ -81,6 +83,13 @@ class NodeServices:
     #: sweeps differently from what each project's settings say. The wiring
     #: binds the workflow's identity, same as ``update_task``.
     run_lifecycle_sweep: Callable[[], Awaitable[dict[str, Any]]] | None = None
+    #: ``studio_write(node_id, config)`` → what the write did (STU-B2c-2d).
+    #: The wiring (``service._studio_writer``) binds the run, its org, its
+    #: kind and its parked decision. The engine passes the node id and the
+    #: literal config only, so no node input names an org or a member.
+    studio_write: Callable[
+        [str, dict[str, Any]], Awaitable[dict[str, Any]]
+    ] | None = None
     actor: str = "workflow"
     #: Extra context merged into agent messages' metadata (reserved).
     context: dict[str, Any] = field(default_factory=dict)
@@ -212,16 +221,10 @@ async def execute_node(
             await asyncio.sleep(seconds)
         return {"waited_seconds": seconds}
 
-    if ntype == "pm_task":
-        return await _execute_pm_task(config, state, services)
-
-    if ntype == "pm_lifecycle":
-        # Config-free by design (WS-27z): the node is an instruction to apply
-        # whatever each root project's stored policy says, so there is nothing
-        # to resolve and nothing a graph could override.
-        if services.run_lifecycle_sweep is None:
-            raise NodeExecutionError("the Projects app is not available")
-        return await services.run_lifecycle_sweep()
+    internal = _INTERNAL_HANDLERS.get(ntype)
+    if internal is not None:
+        # The nodes that act on an internal app: Projects and Studio.
+        return await internal(block, state, services)
 
     if ntype == "output":
         value = resolve_value(config.get("value"), state)
@@ -303,3 +306,52 @@ async def _execute_pm_task(
     if not isinstance(fields, dict) or not fields:
         raise NodeExecutionError("task node needs at least one field to set")
     return await services.update_task(task_id, fields)
+
+
+async def _execute_pm_task_block(
+    block: dict[str, Any], state: dict[str, Any], services: NodeServices,
+) -> dict[str, Any]:
+    return await _execute_pm_task(block.get("config") or {}, state, services)
+
+
+async def _execute_pm_lifecycle(
+    block: dict[str, Any], state: dict[str, Any], services: NodeServices,
+) -> dict[str, Any]:
+    """Config-free by design (WS-27z): the node is an instruction to apply
+    whatever each root project's stored policy says, so there is nothing to
+    resolve and nothing a graph could override."""
+    if services.run_lifecycle_sweep is None:
+        raise NodeExecutionError("the Projects app is not available")
+    return await services.run_lifecycle_sweep()
+
+
+async def _execute_studio_write(
+    block: dict[str, Any], state: dict[str, Any], services: NodeServices,
+) -> dict[str, Any]:
+    """The Studio write node (STU-B2c-2d). Its config is literal, so nothing
+    resolves here. The seam decides whether the write may run at all."""
+    if services.studio_write is None:
+        raise NodeExecutionError("a Studio write cannot run in this run")
+    config = block.get("config") if isinstance(block.get("config"), dict) else {}
+    return await services.studio_write(str(block.get("id") or ""), dict(config))
+
+
+async def _execute_human_step(
+    block: dict[str, Any], state: dict[str, Any], services: NodeServices,
+) -> dict[str, Any]:
+    """The human step node (STU-E4). The runner pauses the node until its task
+    is done, and it reaches this handler only when the scan cleared it. So the
+    handler makes nothing and calls no seam. The runner adds the ``task_id``."""
+    return {"completed": True}
+
+
+#: The handlers of the nodes that act on an internal app. One table keeps
+#: ``execute_node`` under the complexity ceiling as the set grows.
+_INTERNAL_HANDLERS: dict[
+    str, Callable[[dict[str, Any], dict[str, Any], NodeServices], Awaitable[dict[str, Any]]]
+] = {
+    "pm_task": _execute_pm_task_block,
+    "pm_lifecycle": _execute_pm_lifecycle,
+    "studio_write": _execute_studio_write,
+    "human_step": _execute_human_step,
+}

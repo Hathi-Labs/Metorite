@@ -17,6 +17,12 @@ import { questionsApi } from "../lib/api";
 
 export interface QuestionsBadge {
   on: boolean | null;
+  /**
+   * The last read failed with anything but a 404 (500, a timeout, no network)
+   * and no read has answered yet. `on` stays null: only a 404 means "off". The
+   * next tick reads again, and the page may keep its older list meanwhile.
+   */
+  failed: boolean;
   count: number | undefined;
   refresh: () => void;
 }
@@ -24,6 +30,7 @@ export interface QuestionsBadge {
 export function useQuestionsBadge(): QuestionsBadge {
   const [on, setOn] = useState<boolean | null>(null);
   const [count, setCount] = useState<number | undefined>(undefined);
+  const [failed, setFailed] = useState(false);
   const offRef = useRef(false);
 
   const read = useCallback(async () => {
@@ -37,9 +44,11 @@ export function useQuestionsBadge(): QuestionsBadge {
         return;
       }
       setOn(true);
+      setFailed(false);
       setCount(badgeCount(page));
     } catch {
       // A failed read keeps the last count. The next tick reads again.
+      setFailed(true);
     }
   }, []);
 
@@ -52,5 +61,5 @@ export function useQuestionsBadge(): QuestionsBadge {
     return () => window.clearInterval(timer);
   }, [read]);
 
-  return { on, count, refresh: () => void read() };
+  return { on, failed, count, refresh: () => void read() };
 }

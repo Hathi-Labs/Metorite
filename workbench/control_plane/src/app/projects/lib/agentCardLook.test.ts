@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { agentCardLook } from "./agentCardLook";
+import { agentCardLook, agentPlaceLine, splitPlanProgress } from "./agentCardLook";
 
 const css = readFileSync(
   fileURLToPath(new URL("../../globals.css", import.meta.url)),
@@ -187,5 +187,109 @@ describe("the board applies the look", () => {
     expect(src).toMatch(/agentCardLook\(/);
     expect(src).toMatch(/data-agent-edge=\{/);
     expect(src).toMatch(/data-agent-line/);
+  });
+});
+
+describe("agentPlaceLine (SW-106)", () => {
+  it("reads the machine with its kind, then the model", () => {
+    expect(
+      agentPlaceLine({ agent_host: "VJ laptop", agent_host_kind: "computer", agent_model: "Sonnet 5.5" }),
+    ).toEqual({
+      icon: "Laptop",
+      machine: "VJ laptop (Computer)",
+      model: "Sonnet 5.5",
+      line: "Machine: VJ laptop (Computer) \u00b7 Model: Sonnet 5.5",
+      none: false,
+    });
+  });
+  it("picks the icon of each kind", () => {
+    const icon = (kind: string) => agentPlaceLine({ agent_host: "x", agent_host_kind: kind }).icon;
+    expect([icon("computer"), icon("server"), icon("cloud"), icon("laptop")]).toEqual([
+      "Laptop",
+      "Server",
+      "Cloud",
+      "CircleHelp",
+    ]);
+  });
+  it("reads Not reported for each fact that the agent did not send", () => {
+    expect(agentPlaceLine({}).line).toBe("Machine: Not reported \u00b7 Model: Not reported");
+    expect(agentPlaceLine({}).none).toBe(true);
+    expect(agentPlaceLine({ agent_host: null, agent_host_kind: null, agent_model: "" }).none).toBe(true);
+    expect(agentPlaceLine({ agent_model: "Opus 5.5" }).line).toBe("Machine: Not reported \u00b7 Model: Opus 5.5");
+    expect(agentPlaceLine({ agent_host: "box" }).line).toBe("Machine: box \u00b7 Model: Not reported");
+  });
+  it("drops a bad value, and cleans control characters", () => {
+    const look = agentPlaceLine({ agent_host: "a\u0007  b", agent_host_kind: "tablet", agent_model: 5 });
+    expect(look.line).toBe("Machine: a b \u00b7 Model: Not reported");
+    expect(look.icon).toBe("CircleHelp");
+  });
+  it("makes no claim of a box check, because the run read has no proof", () => {
+    expect(agentPlaceLine({ agent_host: "box", agent_host_kind: "server" }).line).not.toMatch(/checked/i);
+  });
+  it("shows no place line for a run with no place, and one line for a run with a value", () => {
+    expect(agentPlaceLine({ agent_host: null, agent_host_kind: null, agent_model: null }).none).toBe(true);
+    for (const facts of [{ agent_host: "box" }, { agent_host_kind: "cloud" }, { agent_model: "Opus 5.5" }]) {
+      expect(agentPlaceLine(facts).none).toBe(false);
+    }
+  });
+  it("draws the place line in the run panel only when a value exists", () => {
+    const panel = readFileSync(fileURLToPath(new URL("../components/AgentRunPanel.tsx", import.meta.url)), "utf-8");
+    const at = panel.indexOf("data-agent-place");
+    expect(at).toBeGreaterThan(0);
+    expect(panel.slice(Math.max(0, at - 400), at)).toContain("placeLook.none ? null");
+  });
+});
+
+describe("a plan on the live line (SW-32)", () => {
+  it("shows the step in progress and the count", () => {
+    expect(
+      agentCardLook("working", {
+        clientVia: via,
+        note: "old thought",
+        plan: { done: 3, total: 7, step: "Write the tests" },
+      }),
+    ).toEqual({ edge: "live", line: "Claude Code · Write the tests · 3 of 7" });
+  });
+
+  it("falls back to the note when no step is in progress, and keeps the count", () => {
+    expect(
+      agentCardLook("working", {
+        clientVia: via,
+        note: "thinking",
+        plan: { done: 0, total: 2, step: null },
+      }).line,
+    ).toBe("Claude Code · thinking · 0 of 2");
+    expect(
+      agentCardLook("answered", { clientVia: via, plan: { done: 2, total: 2, step: null } }).line,
+    ).toBe("Claude Code · 2 of 2");
+  });
+
+  it("a plan of no step or no plan changes nothing", () => {
+    for (const plan of [null, undefined, { done: 0, total: 0, step: null }]) {
+      expect(agentCardLook("working", { clientVia: via, note: "n", plan }).line).toBe(
+        "Claude Code · n",
+      );
+    }
+  });
+
+  it("only a live run shows the plan: a waiting run keeps its wait", () => {
+    expect(
+      agentCardLook("waiting", {
+        waiting: { on: "ci", until: null },
+        plan: { done: 1, total: 3, step: "x" },
+      }).line,
+    ).toBe("Waiting on CI");
+  });
+});
+
+describe("the count of a plan stays apart from the step (SW-32)", () => {
+  it("splits the head and the count, and leaves other lines whole", () => {
+    expect(
+      splitPlanProgress("Claude Code (lane-invites) · Pull the invite list · 0 of 2", { done: 0, total: 2 }),
+    ).toEqual({ head: "Claude Code (lane-invites) · Pull the invite list", tail: "· 0 of 2" });
+    expect(splitPlanProgress("Claude Code working", { done: 0, total: 2 })).toBeNull();
+    expect(splitPlanProgress("Claude Code · n", null)).toBeNull();
+    expect(splitPlanProgress(null, { done: 1, total: 3 })).toBeNull();
+    expect(splitPlanProgress(" · 1 of 3", { done: 1, total: 3 })).toBeNull();
   });
 });

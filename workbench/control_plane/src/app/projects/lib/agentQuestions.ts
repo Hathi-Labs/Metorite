@@ -14,7 +14,12 @@
  *
  * Fence: `agentQuestions.test.ts`.
  */
-import { ARCHIVE_REQUEST_KIND, type AgentActivity, type AgentOption } from "./agentRuns";
+import {
+  ARCHIVE_REQUEST_KIND,
+  type AgentActivity,
+  type AgentImage,
+  type AgentOption,
+} from "./agentRuns";
 
 /** The sidebar entry, as `?app=questions` opens it. */
 export const QUESTIONS_APP_ID = "questions";
@@ -48,6 +53,8 @@ export interface QuestionBody {
   allow_multiple: boolean;
   /** A typed archive request only: when it expires. The card draws the expired state from it. */
   expires_at?: string | null;
+  /** CIV-14b. The images that the agent put on the question. Absent when it put none. */
+  attachments?: AgentImage[];
 }
 
 /** One row of `GET /projects/agent-questions`. */
@@ -104,6 +111,7 @@ function row(raw: QuestionRow): QuestionRow {
       options: Array.isArray(q.options) ? q.options : [],
       allow_multiple: q.allow_multiple === true,
       ...(typeof q.expires_at === "string" ? { expires_at: q.expires_at } : {}),
+      ...(Array.isArray(q.attachments) ? { attachments: q.attachments } : {}),
     },
     can_answer: raw.can_answer === true,
     why: WHY_VALUES.includes(String(raw.why)) ? (raw.why as QuestionWhy) : null,
@@ -148,6 +156,10 @@ export function questionsQuery(opts: {
 
 export const QUESTIONS_COPY = {
   title: "Questions",
+  /** AMR-4: the pager of the phone view of Agents. */
+  pagerWord: "Question",
+  previous: "Previous question",
+  next: "Next question",
   allProjects: "All projects",
   projectFilter: "Project",
   sortOldest: "Oldest first",
@@ -324,7 +336,7 @@ export function questionActivity(r: QuestionRow): AgentActivity {
     id: r.activity_id,
     seq: 0,
     type: "elicitation",
-    content: { body: r.question.body },
+    content: { body: r.question.body, attachments: r.question.attachments ?? null },
     signal: "select",
     signal_metadata: { options: r.question.options, allow_multiple: r.question.allow_multiple },
     // A typed request carries the server's expiry, so the card reads it as the panel does.

@@ -62,6 +62,7 @@ from gateway.package_host import store as host_store
 from gateway.routes.studio import packages
 from sqlalchemy import text
 
+from tests.unit._studio_approval import approve_live
 from tests.unit._tenant_ladder import tenant_engine_scope
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
@@ -312,6 +313,8 @@ def test_r8_f_a_member_of_org_b_gets_404(world, monkeypatch) -> None:
 
 def test_r8_g_an_owner_with_only_an_org_install_gets_200_null(world) -> None:
     pid = _run(world, lambda: _app(world.a, OWEN))
+    # WS-STU J2b-1 (path A): an org install needs the live version approved.
+    _run(world, lambda: approve_live(world.a, OWEN, pid, BEN))
     status, got = _run(world, lambda: _call(
         "install_package", world.a, OWEN, pid, payload={"scope": "org"}, grants=PUBLISHER))
     assert status == 200, got

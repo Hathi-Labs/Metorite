@@ -76,6 +76,7 @@ from gateway.routes.studio import packages
 from sqlalchemy import text
 from starlette.requests import Request
 
+from tests.unit._studio_approval import approve_live
 from tests.unit._tenant_ladder import tenant_engine_scope
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
@@ -91,6 +92,8 @@ ANA = f"ana.{TAG}@pkg8e.test"
 BEN = f"ben.{TAG}@pkg8e.test"
 CAT = f"cat.{TAG}@pkg8e.test"
 ZED = f"zed.{TAG}@pkg8e.test"
+#: The approver of an org install (WS-STU J2b-1, path A): not the owner.
+APPROVER = f"approver.{TAG}@pkg8e.test"
 OPS = f"group:ops{TAG}"
 ENG = f"group:eng{TAG}"
 _EMAIL_LIKE = f"%.{TAG}@pkg8e.test"
@@ -168,6 +171,9 @@ async def _live(org: str, email: str, name: str = "Site visits") -> str:
 
 
 async def _install(org: str, email: str, pid: str, scope: Any) -> tuple[int, Any]:
+    if scope == "org":
+        # WS-STU J2b-1 (path A): an org install needs the live version approved.
+        await approve_live(org, email, pid, APPROVER)
     return await _call("install_package", org, email, pid, payload={"scope": scope},
                        grants=PUBLISHER)
 

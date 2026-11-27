@@ -924,7 +924,7 @@ async def _add_tools(
     store = TenantFileStore(
         workspace=binding.workspace, outputs_rel=binding.outputs_rel,
         run_data=binding.run_data, guard=guard, member=member,
-        inputs_rel=binding.inputs_rel,
+        inputs_rel=binding.inputs_rel, instance=binding.instance,
     )
     files = FileAccessProvider(
         store,
@@ -1048,7 +1048,9 @@ def code_task_session_parts(binding: Any) -> tuple[Any, Any, list[Any]]:
     broker = sb.get_broker()
     member = str(artifact_context().get("member") or "")
     guard = _WorkspaceGuard(broker, binding.workspace)
-    store = WorkspaceFileStore(workspace=binding.workspace, guard=guard, member=member)
+    store = WorkspaceFileStore(
+        workspace=binding.workspace, guard=guard, member=member, instance=binding.instance,
+    )
     skills = SkillsProvider(
         LockedSkillsSource(binding.workspace, guard, member, run=run_code_task_command),
         source_id=f"{SOURCE_ID}-code-task-skills",
@@ -1116,8 +1118,19 @@ async def _sweep_app_links(binding: Any, *, since: float) -> list[str]:
     from acb_skills import safe_open
 
     del since
-    links = await asyncio.to_thread(safe_open.remove_links, binding.workspace)
-    repos = await asyncio.to_thread(safe_open.remove_nested_git, binding.workspace)
+
+    def _remove_both(workspace: Any) -> tuple[list[str], list[str]]:
+        # ONE thread call for both removals (task 2465). A thread cannot be
+        # cancelled. When the 30 s timeout of `_sweep_after` cancels the await,
+        # this function still ends, so a nested `.git` is never left behind
+        # because the link sweep was slow. Two `to_thread` calls would let the
+        # cancel land between them, and the second would never start.
+        return (
+            safe_open.remove_links(workspace),
+            safe_open.remove_nested_git(workspace),
+        )
+
+    links, repos = await asyncio.to_thread(_remove_both, binding.workspace)
     if links or repos:
         _log.warning(
             "sandbox_tools.app_dir_swept", links=len(links), nested_git=len(repos),

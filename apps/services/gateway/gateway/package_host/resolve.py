@@ -43,6 +43,17 @@ PKG-5b row of §10. The route is ``GET /shell/manifest`` in
    of a sub-app (§8.2, PKG-15a) is one more package need. A host that is
    missing, paused, not text or the sub-app itself leaves the need unmet.
    Each entry of an install with ``extends`` carries ``"extends": <host>``.
+   WS-STU I1a: while ``STUDIO_CONNECTION_GATE_ORGS`` holds the bound org
+   (``acb_common.studio_flags.connection_gate_on``), each name of the
+   manifest's ``connections`` is one more need (:func:`connections_met`).
+   WS-STU I9a: a need has an account, ``org`` or ``member`` (``as``). A
+   ``member`` need is met only by a ``connected`` member row of THIS viewer.
+   An ``org`` need is met only by a ``connected`` org row AND an ``approved``
+   version of an ORG install (:func:`org_install_approved`). A private
+   install, a group install and a draft fail closed. A ``connections`` value
+   of a wrong shape fails closed. With the
+   org off the list, ``connections`` makes no need, as before I1a. ``needs``
+   holds no connection need (``NEED_KINDS``).
 5. The arrangement of §9 is not in PKG-5b.
 
 **One app.** A viewer can see one app at two scopes (§4 lets them both
@@ -82,9 +93,12 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from functools import cache
-from typing import Any
+from typing import Any, NamedTuple
 
 from acb_common.app_manifests.shell_manifest import SystemContribution, load_contributes
+from acb_common.db import current_tenant
+from acb_common.studio_flags import connection_gate_on
+from acb_common.studio_manifest import connection_item
 from sqlalchemy import text
 
 from gateway.package_host.sharing import SHARE_ROW
@@ -123,6 +137,12 @@ class InstallRow:
     created_at: datetime
     manifest: Any
     version: int | None = None
+    #: WS-STU I9a. The ``review_status`` of the installed version
+    #: (``app_versions``), or None for a draft. An org need reads it.
+    review_status: str | None = None
+    #: WS-STU I9a. The owner of the app. The door runs the DRAFT for the owner,
+    #: so an `org` need never counts an install for them (:func:`owns`).
+    owner_email: str | None = None
 
 
 @dataclass(frozen=True)
@@ -190,17 +210,102 @@ def host_met(manifest: Mapping[str, Any], packages: frozenset[str] | set[str]) -
     return host is not None and host != manifest_id(manifest) and host in packages
 
 
-def needs_met(manifest: Any, can_use: CanUse, packages: frozenset[str] | set[str]) -> bool:
+def connection_names(manifest: Any) -> tuple[str, ...] | None:
+    """The names in the ``connections`` of *manifest*, in order (WS-STU I1a).
+
+    No key, or a manifest that is not an object, gives ``()``. An item is a
+    text, or an object with a text ``name`` (I9a). A value that is not a list
+    of these gives None, and each caller treats None as unmet. Pure, so IN-10
+    ("used by") can read the same names."""
+    if not isinstance(manifest, Mapping) or "connections" not in manifest:
+        return ()
+    items = manifest["connections"]
+    if not isinstance(items, list):
+        return None
+    found = [connection_item(i) for i in items]
+    if any(f is None for f in found):
+        return None
+    return tuple(f[0] for f in found if f is not None)
+
+
+class Met(NamedTuple):
+    """The connections that a viewer may use (WS-STU I9a): ``org`` holds each
+    provider with a ``connected`` org row, and ``member`` each provider with a
+    ``connected`` row of the viewer. The two never mix."""
+
+    org: frozenset[str] = frozenset()
+    member: frozenset[str] = frozenset()
+
+
+def org_install_approved(scope_kind: str | None, review_status: str | None) -> bool:
+    """True when an install is an ORG install of an ``approved`` version
+    (WS-STU I9a, J2b-1). THE one test that an admin approved the version that
+    runs. A private install, a group install, a draft and a preview give
+    False, so an ``org`` need fails closed there until I9b."""
+    return scope_kind == "org" and review_status == "approved"
+
+
+def owns(install: InstallRow, viewer: str | None) -> bool:
+    """True when *viewer* owns the app of *install* (WS-STU I9a). The action
+    door runs the owner's draft, which is no install, so the sidebar must treat
+    an `org` need of the owner as the door does: never approved."""
+    return bool(viewer and install.owner_email
+                and install.owner_email == viewer.strip().lower())
+
+
+def first_unmet_connection(manifest: Any, met: Met, org_approved: bool = False,
+                           ) -> tuple[str | None, str | None] | None:
+    """The first connection need of *manifest* that is not met, as
+    ``(provider, as)``, or None when each is met (WS-STU I9a).
+
+    THE one rule of a connection need. A ``member`` need is met only by a
+    member row of the viewer (``met.member``), never by an org row. An ``org``
+    need is met only by an org row (``met.org``) AND when *org_approved*
+    (:func:`org_install_approved`). A ``connections`` value of a wrong shape
+    gives ``(None, None)``: it fails closed with no name. Pure."""
+    items = manifest.get("connections", []) if isinstance(manifest, Mapping) else []
+    if not isinstance(items, list):
+        return None, None
+    for raw in items:
+        item = connection_item(raw)
+        if item is None:
+            return None, None
+        name, whose = item
+        if whose == "member":
+            if name not in met.member:
+                return name, whose
+        elif not (org_approved and name in met.org):
+            return name, whose
+    return None
+
+
+def connections_met(manifest: Any, met: Met, org_approved: bool = False) -> bool:
+    """True when each connection that *manifest* names is met (WS-STU I1a,
+    I9a): :func:`first_unmet_connection` finds none. :func:`needs_met` and the
+    action door (``routes/studio/invoke.py``) both call it. *met* is the answer
+    of :func:`met_connections` for the viewer."""
+    return first_unmet_connection(manifest, met, org_approved) is None
+
+
+def needs_met(manifest: Any, can_use: CanUse, packages: frozenset[str] | set[str],
+              met: Met | None = None, org_approved: bool = False) -> bool:
     """True when each need of *manifest* is met (§5.2 step 4).
 
     A manifest that is not an object, a ``needs`` that is not a list, and a
     need of any other shape are unmet. A need is an object with one key,
     ``feature`` or ``package``, and a text value that is not empty. The
     ``extends`` of the manifest adds one package need (:func:`host_met`).
+    WS-STU I1a: when *met* is a set, each name of ``connections`` adds one
+    connection need, and *met* holds the connections of the viewer
+    (:func:`connections_met`). *org_approved* is :func:`org_install_approved`
+    of the install (I9a). None, the default, is the gate off:
+    ``connections`` then makes no need, as before I1a.
     """
     if not isinstance(manifest, Mapping):
         return False
     if not host_met(manifest, packages):
+        return False
+    if met is not None and not connections_met(manifest, met, org_approved):
         return False
     needs = manifest.get("needs", [])
     if not isinstance(needs, list):
@@ -250,17 +355,24 @@ def resolve(
     installs: Iterable[InstallRow],
     claims: Iterable[ClaimRow],
     can_use: CanUse,
+    met: Met | None = None,
+    viewer: str | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """The entries of each point for one viewer, in order (§5.2 steps 1 to 4).
 
     *installs* are the installs that the viewer sees. *claims* are their
-    claims. *can_use* is ``user.can_use_feature`` of the viewer.
+    claims. *can_use* is ``user.can_use_feature`` of the viewer. *met* holds
+    the connections of the viewer (WS-STU I1a, :func:`met_connections`), or
+    None while the gate is off for the org (:func:`needs_met`).
     """
     kept = widest_per_app(installs)
     by_id = {i.id: i for i in kept}
     packages = system_package_ids(system, can_use) | {
         mid for i in kept if (mid := manifest_id(i.manifest)) is not None}
-    setup = {i.id: not needs_met(i.manifest, can_use, packages) for i in kept}
+    setup = {i.id: not needs_met(i.manifest, can_use, packages, met,
+                                 org_install_approved(i.scope_kind, i.review_status)
+                                 and not owns(i, viewer))
+             for i in kept}
 
     out: dict[str, list[dict[str, Any]]] = {}
     held: set[tuple[str, str]] = set()
@@ -389,7 +501,7 @@ INSTALLS_SQL = (
     " package_install.scope_kind, package_install.scope_subject,"
     " package_install.created_at,"
     " CASE WHEN package_install.version IS NULL THEN a.manifest ELSE v.manifest END,"
-    " package_install.version"
+    " package_install.version, v.review_status, lower(a.owner_email)"
     " FROM package_install"
     " JOIN apps AS a ON a.organization_id = package_install.organization_id"
     " AND a.id = package_install.app_id"
@@ -409,6 +521,9 @@ INSTALLS_SQL = (
     " OR EXISTS (SELECT 1 FROM app_grants AS g"
     f" WHERE {SHARE_ROW} AND lower(g.subject) = :viewer))))"
 )
+
+#: The bound org of the session, as the text of its uuid, or NULL (WS-STU I1a).
+BOUND_ORG_SQL = f"SELECT CAST({_BOUND_ORG} AS text)"
 
 #: The claims of the installs that the resolve keeps.
 CLAIMS_SQL = (
@@ -431,7 +546,9 @@ async def read_installs(db: Any, viewer: str, groups: Sequence[str]) -> list[Ins
         "viewer": viewer, "groups": list(groups)})).all()
     return [InstallRow(id=str(r[0]), app_id=str(r[1]), scope_kind=str(r[2]),
                        scope_subject=str(r[3]), created_at=r[4], manifest=r[5],
-                       version=None if r[6] is None else int(r[6]))
+                       version=None if r[6] is None else int(r[6]),
+                       review_status=None if r[7] is None else str(r[7]),
+                       owner_email=None if r[8] is None else str(r[8]))
             for r in rows]
 
 
@@ -460,13 +577,76 @@ async def visible_installs(db: Any, *, viewer: str) -> list[InstallRow]:
     return widest_per_app(await read_installs(db, member, groups))
 
 
+async def install_seen_by(db: Any, *, viewer: str, install_id: str) -> InstallRow | None:
+    """The install *install_id* when *viewer* sees it now, else None (WS-STU
+    B6a, ``ai_studio.md`` B6a).
+
+    The member of a run with no viewer reads through ONE install: the install
+    of the run. So this read keeps the install of that id, and never the
+    widest install of the app (:func:`widest_per_app`). The rule of who sees
+    an install is :data:`INSTALLS_SQL` with the groups of
+    ``routes/crm/access.my_groups``, as :func:`visible_installs` reads it. So
+    a paused, an archived or an expired install, a paused or an archived app,
+    and a group that the member left each give None. The row holds the
+    manifest of the version that the install pins.
+
+    *db* is a session that the caller opened with ``tenant_session(org)``.
+    *viewer* is the member that ``package_install.run_as`` names, never
+    request input. A viewer that is not an address reads nothing.
+    """
+    from gateway.routes.crm.access import my_groups
+
+    member = (viewer or "").strip().lower()
+    if "@" not in member:
+        return None
+    groups = sorted(await my_groups(db, member))
+    for row in await read_installs(db, member, groups):
+        if row.id == install_id:
+            return row
+    return None
+
+
+async def met_connections(db: Any, *, viewer: str) -> Met:
+    """The connections that *viewer* may use now, in the org that *db* binds
+    (WS-STU I1a): THE one read of a connection need.
+
+    It reads the bound org of the session, never an org of the caller, and
+    asks ``connections/store.met_providers``, the one reader of the registry.
+    So the met set and the installs come from one org. A session with no
+    bound org gives an empty :class:`Met`, so each connection need fails closed.
+    I9a: the answer keeps the org rows and the viewer's own rows apart.
+
+    *db* is a session that the caller opened with ``tenant_session()``.
+    *viewer* is the session member, or the ``run_as`` member of an install,
+    never request input. The resolve and the action door call it only for a
+    manifest that names a connection, so an app with none costs no read."""
+    from gateway.connections import store as connections
+
+    org = (await db.execute(text(BOUND_ORG_SQL))).scalar()
+    if not org:
+        return Met()
+    org_met, member_met = await connections.met_providers(db, str(org), viewer)
+    return Met(org=org_met, member=member_met)
+
+
 async def resolve_for(db: Any, *, viewer: str, can_use: CanUse) -> dict[str, Any]:
     """The answer of ``GET /shell/manifest`` for *viewer*.
 
     *db* is a session that the caller opened with ``tenant_session()``.
     *viewer* is the address of the session member, never request input.
     *can_use* is ``user.can_use_feature`` of that member.
+
+    WS-STU I1a: while ``STUDIO_CONNECTION_GATE_ORGS`` holds the bound tenant,
+    it reads the connections of the viewer ONCE, and only when a kept install
+    names one. ``/auth/me`` calls this function, so an install with no
+    connection costs no statement more. With the org off the list, nothing
+    reads the registry and ``connections`` makes no need.
     """
     kept = await visible_installs(db, viewer=viewer)
     claims = await read_claims(db, [i.id for i in kept])
-    return manifest_body(resolve(system_contributions(), kept, claims, can_use))
+    met: Met | None = None
+    if connection_gate_on(current_tenant()):
+        met = Met()
+        if any(connection_names(i.manifest) for i in kept):
+            met = await met_connections(db, viewer=viewer)
+    return manifest_body(resolve(system_contributions(), kept, claims, can_use, met, viewer))

@@ -301,7 +301,7 @@ class TestReapplyTheSameSha:
             " && '1' || '0' }}" in wf
         )
         assert (
-            '"DEPLOY_REF=${GITHUB_SHA} DEPLOY_FORCE=${DEPLOY_FORCE:-0} '
+            '"DEPLOY_REF=${RELEASE_SHA} DEPLOY_FORCE=${DEPLOY_FORCE:-0} '
             'DEPLOY_REINSTALL=${DEPLOY_REINSTALL:-0} bash -s"'
             " < /tmp/deploy_remote.sh" in wf
         )

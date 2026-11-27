@@ -5,7 +5,8 @@ import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from "react";
 import { useSession, signOut } from "next-auth/react";
 import { forgetThisDevice } from "@/lib/push";
-import { useInstallNav } from "@/lib/shell/packageManifest";
+import { clearOutbox } from "@/lib/chatOutbox";
+import { useHeldWithInstalls, useInstallNav } from "@/lib/shell/packageManifest";
 import { NAV_SECTIONS, visibleSections, type NavPane, type NavSection } from "@/lib/nav";
 import { useAccess } from "@/components/AccessProvider";
 import { shouldPollWorkspace } from "@/lib/access";
@@ -153,7 +154,14 @@ export default function Sidebar() {
   const railBase = shellNav
     ? shellSidebar(sections, shell.loading ? undefined : shell.layout)
     : sections;
-  const railSections = useInstallNav(railBase, access.features);
+  const railSections = useInstallNav(
+    railBase,
+    access.features,
+    shellNav ? { held: sections, layout: shell.loading ? undefined : shell.layout } : undefined,
+  );
+  // PKG-6c-2: the stars run over what the member holds WITH the installs, so a
+  // hide on an install row writes the install href.
+  const heldAll = useHeldWithInstalls(sections, access.features);
   useEffect(() => {
     window.clearTimeout(peekTimer.current);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- the peek ends when the fold or the page changes
@@ -229,7 +237,7 @@ export default function Sidebar() {
   const canHide = shellNav && shell.enabled && shell.stored !== undefined;
   const flipStar = (href: string) => {
     const base = starBase({ ...EMPTY_SHELL, ...(latestShell() ?? shell.stored) }, shell.layout);
-    return saveShellPrefs({ ...base, ...toggleStar(base, sections, href) });
+    return saveShellPrefs({ ...base, ...toggleStar(base, heldAll, href) });
   };
   const hideFromSidebar = (pane: NavPane) => {
     // Undo puts back the layout from BEFORE the hide, exactly. A second
@@ -630,7 +638,10 @@ export default function Sidebar() {
               <button
                 // WS-66 PN-1: forget this device's push first. It never
                 // throws and gives up after a few seconds.
-                onClick={() => void forgetThisDevice().then(() => signOut({ callbackUrl: "/signin" }))}
+                onClick={() => {
+                  clearOutbox(); // HRD-17b: no waiting message outlives the member
+                  void forgetThisDevice().then(() => signOut({ callbackUrl: "/signin" }));
+                }}
                 className="ml-2 shrink-0 rounded-lg p-1.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
                 title="Sign out"
               >

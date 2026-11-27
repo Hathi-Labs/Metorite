@@ -46,6 +46,7 @@ import { useToast } from "@/components/ui/Toast";
 import { invalidate, put } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
 
+import AgentKitDownload from "./AgentKitDownload";
 import AgentAccessPanel from "./AgentAccessPanel";
 import WaitingRequests from "./WaitingRequests";
 import { AGENT_SETUP_TEXT } from "../lib/agentSetupText";
@@ -251,6 +252,7 @@ function ConnectCard({ onBoxMade }: { onBoxMade: () => void }) {
           Copy setup for your agent
         </Button>
       </div>
+      <AgentKitDownload onCopy={copy} />
     </section>
   );
 }

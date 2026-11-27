@@ -7,15 +7,17 @@ shape of ``gateway/reach/flags.py``.
   default, allows no org. ``*`` is not a wildcard, so a ``*`` entry allows
   nothing.
 
-**What it gates.** A schedule tick, a matured wait and the startup sweep act
-for an org only when the org is listed. Each scan checks :func:`org_allowed`
+**What it gates.** A schedule tick, a matured wait, the startup sweep, a
+webhook and an event act for an org only when the org is listed. Each scan checks :func:`org_allowed`
 for each org BEFORE it reads a trigger or starts a run. Once a run binds its
 tenant, it can send mail or WhatsApp and spend credits, so the list is the
 owner's switch. ``WORKFLOW_SCHEDULER_ENABLED`` stays the kill switch of the
 whole loop and is read where it was read before.
 
-The org always comes from the loop's own enumeration of the ``organization``
-table, never from a request, a payload or the ambient tenant (R5, R11).
+A scan and the hook door take the org from their own enumeration of the
+``organization`` table. The event door takes the tenant that a member request
+bound. No door takes the org from a payload or a header (R5, R11). The
+manual door asks this list only for a long wait (H-328 part (c)).
 
 Fence: ``tests/unit/test_workflows_unattended_flag.py`` and
 ``tests/unit/test_workflows_lifecycle_rls_r8.py``.

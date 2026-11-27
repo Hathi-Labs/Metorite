@@ -109,12 +109,15 @@ OPS_BY_TYPE: Mapping[str, frozenset[str]] = {
     "checkbox": frozenset({"eq", "ne", "is_empty"}),
     # A relation holds an id (C7b). It joins a child to its parent, and it has no order.
     "relation": frozenset({"eq", "ne", "in", "is_empty"}),
+    # C8a. A person holds the lower-case address of a member, as the relation
+    # set: it has no order. A value runs through `studio_fields._person`.
+    "person": frozenset({"eq", "ne", "in", "is_empty"}),
 }
 
 #: The types that a sort takes. A sort needs a hot field, and ``v_bool`` has
 #: no index, so a checkbox field takes no sort. An id has no useful order, so a
-#: relation field takes none either.
-SORT_TYPES: frozenset[str] = frozenset(OPS_BY_TYPE) - {"checkbox", "relation"}
+#: relation field takes none either, and a person field (C8a) takes none.
+SORT_TYPES: frozenset[str] = frozenset(OPS_BY_TYPE) - {"checkbox", "relation", "person"}
 
 # --- the errors -------------------------------------------------------------
 
@@ -240,6 +243,9 @@ def check_shape(filter: Any, sort: Any = None) -> list[Mapping[str, Any]]:
             raise QueryError(
                 VALUE_INVALID, "Each condition is an object with field, op and value, and no other key.")
         key = _named(item["field"])
+        if not isinstance(item["field"], str):
+            # C8a fix round 1 (P2): a field name is text, before any read.
+            raise QueryError(FIELD_UNKNOWN, f"Field `{key}` is not a field of this object.", key)
         if item["op"] not in OPS:
             raise QueryError(OP_NOT_ALLOWED, f"Field `{key}`: the op is unknown. Use {_OP_LIST}.", key)
         if item["op"] == "in":
@@ -257,8 +263,98 @@ def _check_sort_shape(sort: Any) -> None:
         return
     if not isinstance(sort, Mapping) or "field" not in sort or not set(sort) <= _SORT_KEYS:
         raise QueryError(VALUE_INVALID, 'A sort is an object: {"field": <key>, "dir": "asc" or "desc"}.')
+    if not isinstance(sort["field"], str):
+        # C8a fix round 1 (P2): a field name is text, before any read.
+        raise QueryError(FIELD_UNKNOWN, "Field `?` is not a field of this object.", "?")
     if sort.get("dir", "asc") not in ("asc", "desc"):
         raise QueryError(VALUE_INVALID, 'The sort `dir` is "asc" or "desc".', _named(sort["field"]))
+
+
+# --- the shape of a store query (WS-SEM SEM-1b-1) ---------------------------
+#
+# ``semantic_model.md`` §5.1, Option A: the shape of this module serves each
+# store, and each store keeps its own compiler and its own value rules. A store
+# query adds ONE group, ``{"any": [leaf, ...]}``, of 2 to 8 leaves, one level
+# deep. The store names its own ops. The Studio parse above never calls this
+# check, so a Studio query, :data:`OPS` and each Studio schema do not change.
+# Fence: ``tests/unit/test_crm_query_grammar.py``.
+
+#: The key of a group, and the fewest and the most leaves of one group.
+ANY_KEY = "any"
+ANY_MIN = 2
+ANY_MAX = 8
+#: The longest key that a refusal names. A longer key is ``?``.
+_STORE_KEY_CHARS = 100
+
+
+def store_named(key: Any) -> str:
+    """The key to name in a refusal of a store query. A store key is not a
+    Studio key (a CRM key is a mixed-case API name or an ``@`` key word), so
+    :data:`NAME_PATTERN` does not apply. Text that is too long, holds a
+    backtick or holds a control character is ``?``."""
+    if (isinstance(key, str) and 0 < len(key) <= _STORE_KEY_CHARS and key.isprintable()
+            and "`" not in key):
+        return key
+    return "?"
+
+
+def _store_leaf(item: Any, ops: Sequence[str], max_in: int) -> Mapping[str, Any]:
+    """One leaf of a store query, after a check of its shape."""
+    if not isinstance(item, Mapping) or not {"field", "op"} <= set(item) \
+            or not set(item) <= _CONDITION_KEYS:
+        raise QueryError(
+            VALUE_INVALID, "Each condition is an object with field, op and value, and no "
+                           'other key. A group is {"any": [condition, ...]}, one level only.')
+    key = store_named(item["field"])
+    if not isinstance(item["field"], str) or not item["field"]:
+        raise QueryError(FIELD_UNKNOWN, f"Field `{key}` is not a field of this object.", key)
+    if item["op"] not in ops:
+        raise QueryError(OP_NOT_ALLOWED,
+                         f"Field `{key}`: the op is not one that this store takes. "
+                         f"Use {', '.join(ops)}.", key)
+    if item["op"] == "in":
+        values = item.get("value")
+        if not _is_list(values) or not values:
+            raise QueryError(VALUE_INVALID, f"Field `{key}`: `in` takes a list of values.", key)
+        if len(values) > max_in:
+            raise QueryError(TOO_BIG, f"Field `{key}`: `in` takes at most {max_in} values.", key)
+    return item
+
+
+def check_store_shape(query: Any, ops: Sequence[str], *, max_leaves: int = MAX_FILTERS,
+                      max_in: int = MAX_IN_VALUES) -> tuple[tuple[Mapping[str, Any], ...], ...]:
+    """The nodes of a store query, after a check of the shape only. Pure.
+
+    *query* is a list of nodes, and a record must meet each node (AND). A
+    node is a leaf ``{"field", "op", "value"}`` or a group ``{"any": [leaf,
+    ...]}`` of :data:`ANY_MIN` to :data:`ANY_MAX` leaves (OR), with no group
+    inside a group. Each node comes back as a tuple of its leaves: one leaf
+    for a leaf, each leaf of a group for a group. *ops* are the ops of the
+    store, and the refusal of another op names them. *max_leaves* caps the
+    leaves of the whole query, and *max_in* the values of one ``in``. The
+    check reads no field and no value, so the store checks each key and
+    value with its own rules. Raises :class:`QueryError`.
+    """
+    if not _is_list(query):
+        raise QueryError(VALUE_INVALID,
+                         'A query is a list of conditions {field, op, value} and groups '
+                         '{"any": [condition, ...]}.')
+    nodes: list[tuple[Mapping[str, Any], ...]] = []
+    for item in query:
+        if isinstance(item, Mapping) and ANY_KEY in item:
+            group = item[ANY_KEY]
+            if set(item) != {ANY_KEY} or not _is_list(group) or len(group) < ANY_MIN:
+                raise QueryError(VALUE_INVALID,
+                                 f'A group is {{"any": [condition, ...]}} with {ANY_MIN} to '
+                                 f"{ANY_MAX} conditions, and no other key.")
+            if len(group) > ANY_MAX:
+                raise QueryError(TOO_BIG, f"A group holds at most {ANY_MAX} conditions.")
+            nodes.append(tuple(_store_leaf(leaf, ops, max_in) for leaf in group))
+        else:
+            nodes.append((_store_leaf(item, ops, max_in),))
+    if sum(len(node) for node in nodes) > max_leaves:
+        raise QueryError(TOO_BIG, f"A query holds at most {max_leaves} conditions.")
+    return tuple(nodes)
 
 
 def page_bounds(offset: Any, limit: Any) -> tuple[int, int]:
@@ -423,8 +519,9 @@ MEASURE_OPS: tuple[str, ...] = ("count", "sum", "average")
 #: bucket takes ``day``.
 BUCKETS: tuple[str, ...] = ("day", "month")
 #: The types that a group takes: each type of the op table except money. A
-#: money value has a currency, so it is not a key.
-GROUP_TYPES: frozenset[str] = frozenset(OPS_BY_TYPE) - {"money"}
+#: money value has a currency, so it is not a key. A person (C8a) is not a key
+#: either: a count for each member would show the records of a row rule.
+GROUP_TYPES: frozenset[str] = frozenset(OPS_BY_TYPE) - {"money", "person"}
 #: The types of the field of each measure that reads one.
 MEASURE_TYPES: Mapping[str, frozenset[str]] = {
     "sum": frozenset({"number", "money"}),
@@ -672,5 +769,5 @@ _AGGREGATE_INPUT_SCHEMA: dict[str, Any] = {
 
 def aggregate_input_schema() -> dict[str, Any]:
     """The JSON Schema of the input of an aggregate (C2b): filter, group_by
-    and measures. No door reads it yet. A new copy on each call."""
+    and measures. The action door reads it for object:<name>.aggregate (D4b). A new copy on each call."""
     return copy.deepcopy(_AGGREGATE_INPUT_SCHEMA)

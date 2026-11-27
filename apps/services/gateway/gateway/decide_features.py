@@ -115,6 +115,11 @@ apps that came after email:
   (``acb_skills.decide_tools.ask_typed``) use the ``projects.`` area. The
   general System-1 ``decide`` tool starts no cool-down.
 
+WS-SEM SEM-13b (``project-docs/specs/semantic_model.md`` §10.7) adds the
+``connection.`` prefix and its one feature, ``connection.map_model``. It reads
+``connection_model_orgs``, bills ``integrations`` and starts the cool-down on
+a 402 only. It adds no flag.
+
 Fences: ``tests/unit/test_decide_seam.py``,
 ``tests/unit/test_email_decide_shadow.py``,
 ``tests/unit/test_email_decide_questions.py`` and
@@ -141,6 +146,8 @@ __all__ = [
     "ALL_ORGS",
     "CHOICE_OPTION_LIMIT",
     "CHOICE_TEXT_BUDGET",
+    "CONNECTION_FEATURES",
+    "CONNECTION_PREFIX",
     "CORRECTIONS_CLIP",
     "CRITERION_CLIP",
     "CRM_FEATURES",
@@ -177,6 +184,7 @@ __all__ = [
     "last_no_answer",
     "mode_for",
     "module_of",
+    "org_listed",
     "prefix_of",
     "score_level",
     "shadow",
@@ -222,12 +230,18 @@ class Prefix:
     ``module_slug`` is the app that :func:`ask` and :func:`shadow` bill when
     the caller names none. ``only_402`` is True when a 403 must not pause the
     other apps of the org: that 403 can name the app's own grant.
+
+    ``fold`` (SEM-13b) is True when the org list shares a reader that trims
+    and lower-cases each entry and the org (:func:`org_listed`). Only
+    ``connection.`` sets it, because ``connection_model_orgs`` has a second
+    reader with that rule. Each other prefix matches exactly, as before.
     """
 
     prefix: str
     orgs_setting: str
     module_slug: str | None
     only_402: bool
+    fold: bool = False
 
 
 #: Every feature, email first. ⚠️ ``email.rule_pick`` is not here. EM-T5b-1
@@ -280,6 +294,10 @@ FEATURE_TABLE: tuple[Feature, ...] = (
     Feature("projects.enrich", "projects", "mixed", on=True),
     Feature("projects.delegate_pick", "projects", "choice", on=True),
     Feature("projects.propose_picks", "projects", "choice", on=True),
+    # WS-SEM SEM-13b (`semantic_model.md` §10.7): step 3 of the profiler of a
+    # connection. It has no old path, so `on` is legal. It starts `off`, and a
+    # mode other than `off` is an owner flip.
+    Feature("connection.map_model", "connection", "choice", on=True),
 )
 
 
@@ -317,6 +335,10 @@ CRM_FEATURES: tuple[str, ...] = _group("crm")
 #: ``projects``.
 PROJECTS_FEATURES: tuple[str, ...] = _group("projects")
 
+#: WS-SEM SEM-13b: the features of the profiler of a connection. They read
+#: ``connection_model_orgs`` and bill ``integrations``.
+CONNECTION_FEATURES: tuple[str, ...] = _group("connection")
+
 #: A feature with this prefix takes its organization list from
 #: ``my_day_decide_orgs`` (``my_day_feed.md`` §10.9 item 5).
 MY_DAY_PREFIX = "my_day."
@@ -329,6 +351,11 @@ CRM_PREFIX = "crm."
 #: ``projects_decide_orgs`` (DEC-1).
 PROJECTS_PREFIX = "projects."
 
+#: A feature with this prefix takes its organization list from
+#: ``connection_model_orgs`` (``CONNECTION_MODEL_ORGS``, ``semantic_model.md``
+#: §10.7). It adds no flag of its own.
+CONNECTION_PREFIX = "connection."
+
 #: What each non-email prefix decides. A name with no prefix here is an email
 #: feature: it reads ``decide_feature_orgs`` and keeps the app of the run
 #: context, which is ``email``.
@@ -336,6 +363,12 @@ PREFIXES: tuple[Prefix, ...] = (
     Prefix(MY_DAY_PREFIX, "my_day_decide_orgs", "my_day", only_402=True),
     Prefix(CRM_PREFIX, "crm_decide_orgs", "crm", only_402=True),
     Prefix(PROJECTS_PREFIX, "projects_decide_orgs", "projects", only_402=True),
+    # SEM-13b: the app is `mcp.OWNING_APP`. A slug is an attribution label of
+    # `usage_event`, and it adds no price.
+    # `fold`: the list has a second reader, `semantic_model.connection_model_allowed`,
+    # and both use the one rule of `org_listed`.
+    Prefix(CONNECTION_PREFIX, "connection_model_orgs", "integrations", only_402=True,
+           fold=True),
 )
 
 #: Every feature of the registry, in table order.
@@ -588,6 +621,23 @@ def _parse_modes(raw: str) -> Mapping[str, str]:
     return MappingProxyType(modes)
 
 
+def org_listed(raw: str, organization_id: Any) -> bool:
+    """The ONE rule of a folded org list (WS-SEM SEM-13b, §10.7).
+
+    The org and each entry of the comma list are trimmed and lower-cased.
+    An empty org is never listed. ``*`` lists every org. An empty list lists
+    none. Two readers use it: :func:`mode_for` for a prefix with ``fold``
+    (``connection.``), and ``semantic_model.connection_model_allowed``. So the
+    two readers of ``connection_model_orgs`` agree. Fence:
+    ``test_connection_profiler.py::test_the_two_readers_of_connection_model_orgs_agree``.
+    """
+    org = str(organization_id or "").strip().lower()
+    if not org:
+        return False
+    listed = frozenset(p.strip().lower() for p in str(raw or "").split(",") if p.strip())
+    return ALL_ORGS in listed or org in listed
+
+
 @functools.lru_cache(maxsize=32)
 def _parse_orgs(raw: str) -> frozenset[str]:
     """The organization ids in ``raw``. Empty means none, and ``*`` (as one
@@ -621,6 +671,9 @@ def mode_for(feature: str) -> str:
     prefix = prefix_of(feature)
     raw_orgs = getattr(
         settings, prefix.orgs_setting if prefix else "decide_feature_orgs", "")
+    if prefix is not None and prefix.fold:
+        # SEM-13b: the one rule that the other reader of the list uses.
+        return mode if org_listed(raw_orgs or "", org) else "off"
     orgs = _parse_orgs(raw_orgs or "")
     if ALL_ORGS not in orgs and str(org) not in orgs:
         return "off"

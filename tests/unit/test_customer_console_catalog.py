@@ -27,6 +27,7 @@ from customer_console import catalog
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._customer_console_ladder import apply_ladder
 
 _URL = os.environ.get("CUSTOMER_CONSOLE_DATABASE_URL", "").strip()
@@ -566,8 +567,7 @@ class TestTheCatalogWrites:
 
 def test_this_suite_is_named_in_the_ci_skip_guard():
     """The hand-maintained R8 list defends itself, the way the others do."""
-    ci = (ROOT / ".github/workflows/pr-check.yml").read_text(encoding="utf-8")
-    assert "tests/unit/test_customer_console_catalog.py" in ci
+    assert "tests/unit/test_customer_console_catalog.py" in r8_lists.must_run()
 
 
 @_DB
