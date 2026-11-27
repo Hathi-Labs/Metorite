@@ -33,6 +33,31 @@ an uploaded `.xlsx` or `.docx`, converts it to PDF and attaches it to a draft.
 Spec only, and nothing is built. The owner put the converter on `aroh-sandbox-1`
 (2026-11-26).
 
+**PAR-11c (task 4014, rung 8) is BUILT, 2026-11-27, and it ships dark.** The
+new pack `chat-files` of `org-admin` holds four tools in
+`acb_skills/chat_workspace_tools.py`. `list_chat_files` reads the file list of
+this chat and the history of one file. `edit_chat_file`, `promote_chat_file`
+and `delete_chat_file` each show one card bound to the run member, and only an
+approve sends. The delete card names the file.
+
+Each PAR-11c tool sends the route of the Files panel as the verified run member,
+for the chat of the run. A shared room, WhatsApp and a run with no chat get a
+refusal and no request. The pack is in no `FOLLOWS` entry, so it stays off
+until the owner adds `chat-files` to `TOOL_PACKS`.
+
+The tools pay five chat rows, and three other rows are exempt. The two file
+uploads stay debt, as the uploads of P-5b-2 do. The chat ceiling goes from 28
+to 20. §6.4 holds the decision of each row.
+
+The save card of `edit_chat_file` shows each character that the save writes.
+Its body starts with two lines that hold no `key: value` field. So the card of
+the web app reads no field in the body, and it draws the body as one text. A
+text with a lone carriage return, U+2028 or U+2029 gets no card. The shared
+fixture `tests/fixtures/chat_file_card_cases.json` pins the body and its drawing.
+
+A promote card puts its warning and both paths in the body, so no clip cuts
+them. A card that a clip of `request_confirmation` would cut gets no card.
+
 **P-3, task 3954 (the CRM field map suggestions and the AI analysis) is BUILT,
 2026-11-25, in review, with no flag and no migration.** The CRM agent gets five
 tools. `crm_mapping_suggestions`, `crm_preview_suggestion` and
@@ -513,8 +538,8 @@ Section 6 sets the order of the waves. Each wave moves its rows from
 `WAVES` lists the board tasks that build it, and a wave with no task fails.
 `P0_CEILING` keeps the debt of each app at P-0. A ceiling above its baseline
 names the task that pays it in its comment, as "Paid by task N", and N is a
-task of the wave of that app. Four ceilings are above P-0 now (calendar,
-chat, settings, studio), and each one names its
+task of the wave of that app. Three ceilings are above P-0 now (calendar,
+settings, studio), and each one names its
 task. The CRM wave P-3 had no task,
 so task 3678 is its task. Fence: `tests/unit/test_chat_parity.py`.
 
@@ -677,9 +702,8 @@ to 52. Task 3960 took whatsapp to 13, and task 3961 took it to 6.
 P-1b took tasks to 1, and P-1c took calendar to 2. PAR-9 took apps to 2. Task
 3963 took notes to 45.
 
-The total of `DEBT_CEILING` is 242. The "Today" column above does not show
-all of these changes. The crm row is different: it shows the changes of tasks
-3951, 3954 and 3953.
+The "Today" column above does not show all of these changes. The crm row is
+different: it shows the changes of tasks 3951, 3954 and 3953.
 
 The rows of the table add up to 412 in the P-0 column and to 370 in the
 "Today" column. The totals 427 and 424 above are readings of 2026-11-22, and
@@ -687,6 +711,9 @@ they do not change.
 
 ACC-2 (task 3988) raised admin from 10 to 12, because the chat tool ACC-4
 waits on the PAR-6b decision (task 3932). Task 3990 pays the two rows.
+
+AP-2a raised shell from 7 to 9, and SBX-1b raised studio from 3 to 4. PAR-11c
+(task 4014) took chat from 28 to 20. The total of `DEBT_CEILING` is 234.
 
 ### 6.3 Rungs 0 to 3, slice by slice
 
@@ -1039,12 +1066,38 @@ uv run ruff check tests/unit/test_my_tasks_p1c_tools.py tests/unit/test_calendar
 - **Rung 8, PAR-9 (task 3950).** It pays 26 Custom Apps rows with the dark
   pack `studio-apps`. Two rows wait for the owner's ruling on their kind. The
   demo needs the owner to add `studio-apps` to `TOOL_PACKS` (§7, item 1).
+- **Rung 8, PAR-11c (task 4014).** It decides the ten rows of the files of a
+  chat. Five rows go to the dark pack `chat-files`, and three rows are exempt
+  with a kind of `EXEMPT_KINDS`. The two file uploads stay debt. The table
+  below holds each row. The demo
+  needs the owner to add `chat-files` to `TOOL_PACKS` (§7, item 1).
 - **Rung 6.** The two actions are a WhatsApp message and the meeting notes.
   WhatsApp goes first, because Notes has no live page (`APP_PAGE`).
 - **Rung 7.** The two actions are a people lookup and the end of a CRM task.
   Memory holds none. The CRM rows come from the CRM manifest, and not from the
   `DEBT` table, so the build of task 3678 confirms the row of the CRM task.
   People goes first: it pays the same demand with one third of the rows.
+- **The rows of PAR-11c (task 4014, STANDARD).** No route changed, and no
+  flag or migration was added.
+
+  | Row | Decision | Reason |
+  |---|---|---|
+  | `GET /api/agent/workspace/{}` | COVERED, `list_chat_files` | The file list of the panel |
+  | `GET /api/agent/workspace/{}/history` | COVERED, `list_chat_files` | The versions of one file |
+  | `PUT /api/agent/workspace/{}/file` | COVERED, `edit_chat_file` | The Save of the viewer, text only, after one card that shows each character of the text |
+  | `POST /api/agent/workspace/{}/promote` | COVERED, `promote_chat_file` | "Promote to Agent Data", after one card. The body holds `path` only |
+  | `DELETE /api/agent/workspace/{}/file` | COVERED, `delete_chat_file` | The Delete of the panel, after one card that names the file |
+  | `POST /api/agent/workspace/{}/upload` | DEBT, P-7 | The paperclip of the composer. A file upload stays debt, as in P-5b-2 |
+  | `POST /api/agent/artifacts/upload` | DEBT, P-7 | The Upload of the email rule editor. A file upload stays debt, as in P-5b-2 |
+  | `PATCH /api/agent/workspace/{}` | EXEMPT, `chat` | The app builder binds its own chat to the app folder when the page opens |
+  | `POST /api/artifacts/compile` | EXEMPT, `download` | The preview of a React file. The workbench builds it, and no member click sends it |
+  | `POST /api/documents/pdf` | EXEMPT, `download` | The Download PDF of a saved report. The browser saves the file |
+
+  A write reads the file list first, and a path that the list does not hold
+  gets no card. After the approve, the tool reads the list again, and a file
+  that changed gets no write. A file name and a history row are in one untrusted
+  frame. A held chat holds off the three writes, because `org-admin` is in
+  `egress.HELD_WRITE_OWNERS`. No write is on `HELD_CARD_WRITE_TOOLS`.
 - **The rung of P-5b, corrected (OD6 A, 2026-11-25).** The ladder puts
   People on rung 7, after rung 6. The board put task 3114 first, and the
   board sets the order (D118). So P-5b-1 was built before rung 6 closed. The

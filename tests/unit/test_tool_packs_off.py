@@ -299,6 +299,47 @@ def test_flag_on_the_same_people_turn_holds_the_people_tools(store, monkeypatch)
     assert "PEOPLE TOOLS." in on["body"]["messages"][0]["content"]
 
 
+#: PAR-11c (task 4014): words of the dark ``chat-files`` pack, under 12 words.
+CHAT_FILES_WORDS = "List the files of this chat and show the file history"
+CHAT_FILES_TOOLS = ("list_chat_files", "edit_chat_file", "promote_chat_file",
+                    "delete_chat_file")
+
+
+def test_flag_off_the_chat_files_pack_reaches_no_chat(store, monkeypatch) -> None:
+    """PAR-11c (task 4014): the ``chat-files`` pack is off while ``TOOL_PACKS``
+    is empty. The real stream run of the orchestrator, with words of the pack,
+    holds none of its tools and reads no pack state. Mutation: put
+    ``chat-files`` in ``FOLLOWS``, in a default list, or in the core tools of
+    the orchestrator -> a chat-files tool joins the request -> red."""
+    _flag(monkeypatch, False)
+    assert "chat-files" in tp.PACKS and "chat-files" not in tp.FOLLOWS
+    assert tp.matched_layer("chat-files", CHAT_FILES_WORDS) is not None, "the words name it"
+    assert tp.packs_on(ORG) == frozenset()
+    off = _drive(monkeypatch, "run-par11c-off-1", CHAT_FILES_WORDS)
+    kinds = [e.get("type") for e in off["events"]]
+    assert kinds[-1] == "RUN_FINISHED" and "RUN_ERROR" not in kinds, off["events"]
+    names = _tool_names(off["body"])
+    assert names, "non-vacuity: the request holds tools"
+    assert not set(CHAT_FILES_TOOLS) & set(names), sorted(set(CHAT_FILES_TOOLS) & set(names))
+    assert "CHAT FILES TOOLS." not in off["body"]["messages"][0]["content"]
+    assert _pack_calls(store) == []
+
+
+def test_flag_on_the_same_chat_files_turn_holds_the_chat_files_tools(store, monkeypatch) -> None:
+    """Non-vacuity of the case above: the owner's own line, ``chat-files``,
+    turns the pack on for the same turn. Mutation: the pack builds no tool ->
+    red."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "tool_packs", "chat-files", raising=False)
+    monkeypatch.setattr(settings, "tool_packs_orgs", "*", raising=False)
+    on = _drive(monkeypatch, "run-par11c-on-1", CHAT_FILES_WORDS)
+    kinds = [e.get("type") for e in on["events"]]
+    assert kinds[-1] == "RUN_FINISHED" and "RUN_ERROR" not in kinds, on["events"]
+    names = _tool_names(on["body"])
+    assert set(CHAT_FILES_TOOLS) <= set(names), names
+    assert "CHAT FILES TOOLS." in on["body"]["messages"][0]["content"]
+
+
 #: P-1c (task 3923): words of the dark ``calendar-connections`` pack.
 CONNECTION_WORDS = "Sync my google calendar and show my tasks in google calendar"
 CONNECTION_TOOLS = ("my_tasks_calendar_connection",)

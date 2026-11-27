@@ -1276,6 +1276,36 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # PAR-11 part c (chat_parity.md wave P-7, task 4014): the files of this chat.
+    # List the files and the history of a file, save the text of a file, move an
+    # upload into Agent Data, and delete a file. Each write ALWAYS shows one card.
+    # The owner is org-admin, which never runs as an agent. It is NOT in FOLLOWS:
+    # only the owner's pack list turns it on (tool_packs.packs_on). Fence:
+    # test_chat_workspace_tools.py.
+    "chat-files": {
+        "label": "Chat files",
+        "summary": (
+            "List the files of this chat and the history of a file, save the text of a "
+            "file, move an upload into Agent Data, or delete a file."
+        ),
+        "description": (
+            "A tool pack: the files of this chat, for the main assistant to load when a "
+            "turn asks to list, read the history of, save, move into Agent Data or delete "
+            "a file of the chat. Each write shows one card, and the routes act as the "
+            "member. A run loads a pack only where tool packs are on, so until then this "
+            "switch has no effect."
+        ),
+        "tools": (
+            "list_chat_files",
+            "edit_chat_file",
+            "promote_chat_file",
+            "delete_chat_file",
+        ),
+        "owner": "org-admin",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
 }
 
 
