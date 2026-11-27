@@ -72,10 +72,14 @@ class _Gateway:
         self.sent: tuple[int, Any] = (200, {"state": "sent", "reason": None})
         self.fault: type[httpx.HTTPError] | None = None
         self.bodies: list[bytes] = []
+        #: The ``X-User-Email`` of each request, and a fault that a GET raises.
+        self.emails: list[str | None] = []
+        self.read_fault: dict[str, type[httpx.HTTPError]] = {}
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
         self.calls.append((request.method, path, dict(request.url.params)))
+        self.emails.append(request.headers.get("x-user-email"))
         assert request.headers["x-user-email"] == MEMBER
         if request.method == "POST":
             # The one send of the pack, with no body (P-5b-5).
@@ -85,6 +89,8 @@ class _Gateway:
                 raise self.fault("no answer", request=request)
             return httpx.Response(self.sent[0], json=self.sent[1])
         assert request.method == "GET"
+        if path in self.read_fault:
+            raise self.read_fault[path]("no answer", request=request)
         forced = self.status.get(path)
         if forced is not None:
             return httpx.Response(forced[0], json=forced[1])
@@ -193,8 +199,8 @@ async def test_a_shared_room_gets_the_refusal_and_no_request(gw, monkeypatch, ca
     monkeypatch.setattr(pt, "_current_user_email", lambda: "room:7f1c")
     monkeypatch.setattr(pt, "_run_member", lambda: MEMBER)
     out = await call()
-    assert {k: v for k, v in out.items() if k != "sent"} == {
-        "ok": False, "error": pt._SHARED_ROOM}
+    said = pt._SHARED_ROOM + (" Nothing was sent." if "sent" in out else "")
+    assert {k: v for k, v in out.items() if k != "sent"} == {"ok": False, "error": said}
     assert out.get("sent", False) is False
     assert gw.calls == []
 
@@ -1186,10 +1192,14 @@ class _Cards:
         self.answer: Any = True
         #: The card channel after the answer. False makes a denial read as no card.
         self.open_after = True
+        #: What happens while the card waits, before the member answers.
+        self.during: Any = None
 
     async def confirm(self, title: str, detail: str = "", context: str = "",
                       **kw: Any) -> Any:
         self.shown.append({"title": title, "detail": detail, "context": context, **kw})
+        if self.during is not None:
+            self.during()
         return self.answer
 
 
@@ -1221,6 +1231,9 @@ def _run(*, verified: bool = True, member: str = MEMBER) -> Iterator[None]:
 
 SEND_PATHS = ["/reach/status", "/reach/preview", "/reach/brief"]
 READ_PATHS = ["/reach/status", "/reach/preview"]
+#: A free-text card reads the preview again after ``approved`` (reviewer P2).
+OPEN_PATHS = ["/reach/status", "/reach/preview", "/reach/preview", "/reach/brief"]
+REACH_OFF_UNSENT = "Reach is off for you. Nothing was sent."
 
 
 async def test_an_approved_card_posts_the_brief_once_with_no_body(send, cards) -> None:
@@ -1317,8 +1330,8 @@ async def test_the_send_needs_the_verified_member_of_the_run(gw, cards, verified
 
 
 @pytest.mark.parametrize(("forced", "error"), [
-    ((404, {"detail": "Not found"}), pt._REACH_OFF),
-    ((200, {"available": False, "linked": False}), pt._REACH_OFF),
+    ((404, {"detail": "Not found"}), REACH_OFF_UNSENT),
+    ((200, {"available": False, "linked": False}), REACH_OFF_UNSENT),
     ((200, {"available": True, "linked": False}), pt._NOT_LINKED)])
 async def test_reach_off_or_no_link_gives_words_and_no_card(send, cards, forced,
                                                             error) -> None:
@@ -1331,9 +1344,9 @@ async def test_reach_off_or_no_link_gives_words_and_no_card(send, cards, forced,
 
 
 @pytest.mark.parametrize(("forced", "error"), [
-    ((404, {"detail": "Not found"}), pt._REACH_OFF),
+    ((404, {"detail": "Not found"}), REACH_OFF_UNSENT),
     ((503, {"detail": "My Day could not be read in full"}), pt._DAY_UNREAD),
-    ((200, {"brief": None, "linked": True}), pt._SHAPE),
+    ((200, {"brief": None, "linked": True}), pt._SHAPE + " Nothing was sent."),
     ((200, {"brief": None, "linked": False, "window_open": True}), pt._NOT_LINKED)])
 async def test_a_preview_that_gives_no_window_shows_no_card(send, cards, forced,
                                                             error) -> None:
@@ -1341,6 +1354,88 @@ async def test_a_preview_that_gives_no_window_shows_no_card(send, cards, forced,
     out = await pt.reach_send_brief()
     assert out["ok"] is False and out["sent"] is False and out["error"] == error
     assert send.paths() == READ_PATHS and cards.shown == []
+
+
+@pytest.mark.parametrize("path", READ_PATHS)
+@pytest.mark.parametrize("forced", [
+    (401, {"detail": "Not signed in"}), (403, {"detail": "missing permission 'x:y'"}),
+    (500, {"detail": "boom"}), (500, None), "fault"])
+async def test_a_read_that_fails_before_the_card_says_nothing_was_sent(
+        send, cards, path, forced) -> None:
+    """Verifier: "Nothing was read" is not enough for a send. Mutation: drop
+    ``_say_unsent`` from ``_not_sent`` or ``_fail_unsent`` -> red."""
+    if forced == "fault":
+        send.read_fault[path] = httpx.ConnectError
+    else:
+        send.status[path] = forced
+    out = await pt.reach_send_brief()
+    assert out["ok"] is False and out["sent"] is False, out
+    assert out["error"].endswith("Nothing was sent."), out["error"]
+    assert cards.shown == [] and send.bodies == []
+
+
+async def test_a_free_text_card_reads_the_window_again_and_sends_once(send, cards) -> None:
+    """Reviewer P2: the window stays open while the card waits. Mutation:
+    drop the second read -> the paths differ -> red. Send twice -> red."""
+    send.window = True
+    out = await pt.reach_send_brief()
+    assert out["sent"] is True and out["decision"] == "approved", out
+    assert send.paths() == OPEN_PATHS and send.bodies == [b""]
+
+
+async def test_a_window_that_closed_while_the_card_waited_sends_nothing(send, cards) -> None:
+    """Reviewer P2: the card said free text, and ``deliver`` would now send
+    the paid template. Mutation: drop the second read -> one POST -> red."""
+    send.window = True
+    cards.during = lambda: setattr(send, "window", False)
+    out = await pt.reach_send_brief()
+    assert out == {"ok": False, "error": pt._WINDOW_CLOSED, "sent": False,
+                   "decision": "approved"}
+    assert send.paths() == OPEN_PATHS[:-1] and send.bodies == []
+
+
+@pytest.mark.parametrize("fault", [
+    (503, {"detail": "My Day could not be read in full"}), (500, {"detail": "boom"}),
+    (200, {"brief": None, "linked": True}), httpx.ReadTimeout, httpx.ConnectError])
+async def test_a_second_window_read_that_fails_sends_nothing(send, cards, fault) -> None:
+    """Reviewer P2: no read means no proof that the send is still free text.
+    Mutation: send when the second read fails -> one POST -> red."""
+    send.window = True
+
+    def fail() -> None:
+        if isinstance(fault, tuple):
+            send.status["/reach/preview"] = fault
+        else:
+            send.read_fault["/reach/preview"] = fault
+
+    cards.during = fail
+    out = await pt.reach_send_brief()
+    assert out == {"ok": False, "error": pt._WINDOW_UNREAD, "sent": False,
+                   "decision": "approved"}
+    assert send.paths() == OPEN_PATHS[:-1] and send.bodies == []
+
+
+async def test_a_paid_card_whose_window_opened_still_sends(send, cards) -> None:
+    """The card said the paid template, and an open window only makes the send
+    cheaper. So it does not read again. Mutation: refuse a moved window in
+    both ways -> no POST -> red."""
+    cards.during = lambda: setattr(send, "window", True)
+    out = await pt.reach_send_brief()
+    assert out["sent"] is True and send.paths() == SEND_PATHS
+
+
+async def test_each_request_of_the_send_is_the_verified_member(send, cards,
+                                                               monkeypatch) -> None:
+    """Verifier: the memory id and the verified member differ here. Each read,
+    the card and the POST name the verified member. Mutation: build the POST
+    or a read with ``_headers()`` (the memory id) -> red."""
+    monkeypatch.setattr(pt, "_current_user_email", lambda: "memory@example.test")
+    send.window = True
+    out = await pt.reach_send_brief()
+    assert out["sent"] is True, out
+    assert send.paths() == OPEN_PATHS
+    assert send.emails == [MEMBER] * len(OPEN_PATHS)
+    assert cards.shown[0]["responder"] == MEMBER
 
 
 @pytest.mark.parametrize("fault", [httpx.ReadTimeout, httpx.WriteTimeout,
@@ -1390,7 +1485,7 @@ async def test_an_unknown_answer_of_the_send_says_check_whatsapp(send, cards) ->
     out = await pt.reach_send_brief()
     assert out["ok"] is False and out["sent"] is None and out["error"] == pt._SEND_UNKNOWN
     send.sent = (404, {"detail": "Not found"})
-    assert (await pt.reach_send_brief())["error"] == pt._REACH_OFF
+    assert (await pt.reach_send_brief())["error"] == REACH_OFF_UNSENT
 
 
 def test_a_held_chat_holds_the_send_off(monkeypatch) -> None:

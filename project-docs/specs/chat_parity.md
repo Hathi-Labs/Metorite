@@ -1027,8 +1027,12 @@ uv run ruff check packages/acb_skills/acb_skills/people_tools.py tests/unit/test
   1. One new tool of the `people` pack, `reach_send_brief`. It takes no
      argument, so it names no person and no text (R5). The member is the
      verified member of the run (the rule of `home_tools._member`), never the
-     memory id. A shared room, a run with no verified member, and a run with
-     no card channel get plain words, and no request goes out.
+     memory id. Each read and the POST carry the verified member as
+     `X-User-Email`, also when the memory id differs. A shared room, a run with
+     no verified member, and a run with no card channel get plain words, and
+     no request goes out. Each answer that sends nothing says so in words. A
+     read that fails before the card adds "Nothing was sent." to the words of
+     the route.
   2. The tool reads `GET /reach/status` before any card. A 404, or
      `available: false`, gives "Reach is off for you." with no card. The route
      answers 200 with `available: false` when Reach is off, and never 404.
@@ -1039,6 +1043,19 @@ uv run ruff check packages/acb_skills/acb_skills/people_tools.py tests/unit/test
      `revised`, `stopped` and `no_card` send nothing. The card says that the
      brief goes to the member's own WhatsApp. It says free text or the paid
      template from `window_open`, which only `GET /reach/preview` gives.
+     A card can wait up to 3600 seconds, and `gateway/reach/whatsapp.py`
+     reads the window again when it sends. So after `approved`, a card that
+     said free text reads `GET /reach/preview` again before the POST. A window
+     that closed, or a read that fails, sends nothing, and the words say so.
+     The member can ask again and sees a new card. A card that said the paid
+     template does not read again, because an open window only makes the send
+     cheaper.
+     **The race that stays.** The window can still close between the second
+     read and the read of `deliver`. That gap is one request and the snapshot
+     of My Day, which takes a few seconds in a normal run. The POST timeout
+     of 30 seconds is the upper limit. Then the send goes as the paid template
+     that the card did not show. The tool cannot close this gap, because the
+     route takes no body that fixes the regime.
   4. A timeout or a lost connection after the POST says that the brief may
      have gone. Then the member checks WhatsApp before a new ask, and the tool
      never tries again. A connection that never opened sent nothing, and the

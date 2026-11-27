@@ -58,6 +58,12 @@ other stored key stays. No tool sends ``email``, ``status``,
 * Each call shows ONE card. Only ``approved`` sends ``POST /reach/brief``,
   with no body, once. A timeout or a lost connection after the request says
   that the brief may have gone, and the tool never tries again.
+* A card that said free text reads ``GET /reach/preview`` again after
+  ``approved`` and before the POST. A window that closed while the card
+  waited, or a read that fails, sends nothing: the send would now be the paid
+  template that the card did not show. A card that said the paid template
+  does not read again, because an open window only makes the send cheaper.
+* Each answer that sends nothing says so in words (:func:`_not_sent`).
 * It says ``open_world=True`` and is NOT on ``egress.HELD_CARD_WRITE_TOOLS``.
   So a chat that read outside mail holds it off (``egress.is_held_chat_off``).
 
@@ -295,6 +301,13 @@ _MAY_HAVE_GONE = ("The send did not answer in time, so your brief may have gone.
                   "WhatsApp before you ask again.")
 _NOT_SENT_ACT = "Your brief was not sent."
 _WONT_FIT_SEND = "The card of the send does not fit, so your brief was not sent."
+_WINDOW_CLOSED = ("Your WhatsApp window closed while the card waited, so the send now needs "
+                  "the paid template. Nothing was sent. Ask again to see the new card.")
+_WINDOW_UNREAD = ("Metorite could not read your WhatsApp window again after the card, so "
+                  "nothing was sent. Ask again to see a new card.")
+#: The words that already say that the brief did not go.
+_SAYS_UNSENT = ("nothing was sent", "was not sent")
+_UNSENT = "Nothing was sent."
 
 #: The card of the send. The text says where the brief goes, and how.
 SEND_CARD_TITLE = "Send your brief to your WhatsApp now?"
@@ -711,8 +724,25 @@ def _sender() -> tuple[str, str | None]:
     return member, None
 
 
+def _say_unsent(message: str) -> str:
+    """*message*, with "Nothing was sent." added when it does not say so yet.
+    A read of a People route says "Nothing was read", which is not enough
+    for a send (task 3946, verifier)."""
+    if any(words in message.lower() for words in _SAYS_UNSENT):
+        return message
+    return f"{message} {_UNSENT}" if message else _UNSENT
+
+
 def _not_sent(message: str, **extra: Any) -> dict[str, Any]:
-    return _refusal(message, sent=False, **extra)
+    """The answer of a send that sent nothing. Its words always say so."""
+    return _refusal(_say_unsent(message), sent=False, **extra)
+
+
+def _fail_unsent(reply: _Reply) -> dict[str, Any]:
+    """:func:`_fail` for the send: the same words, then "Nothing was sent."."""
+    said = _fail(reply)
+    return _not_sent(str(said.get("error") or ""),
+                     **{k: v for k, v in said.items() if k not in ("ok", "error")})
 
 
 async def _send_window(member: str) -> tuple[bool, dict[str, Any] | None]:
@@ -727,7 +757,7 @@ async def _send_window(member: str) -> tuple[bool, dict[str, Any] | None]:
                                 and state.get("available") is not True):
         return False, _not_sent(_REACH_OFF)
     if not status.ok:
-        return False, {**_fail(status), "sent": False}
+        return False, _fail_unsent(status)
     if state is None:
         return False, _not_sent(_SHAPE)
     if state.get("linked") is not True:
@@ -738,13 +768,33 @@ async def _send_window(member: str) -> tuple[bool, dict[str, Any] | None]:
     if preview.status == 503:
         return False, _not_sent(_DAY_UNREAD, status=503)
     if not preview.ok:
-        return False, {**_fail(preview), "sent": False}
+        return False, _fail_unsent(preview)
     data = preview.data if isinstance(preview.data, dict) else None
     if data is None or not isinstance(data.get("window_open"), bool):
         return False, _not_sent(_SHAPE)
     if data.get("linked") is not True:
         return False, _not_sent(_NOT_LINKED)
     return data["window_open"], None
+
+
+async def _window_moved(member: str) -> dict[str, Any] | None:
+    """The answer when a free-text card no longer holds, or None when the POST
+    may go. It reads ``GET /reach/preview`` again, after ``approved``.
+
+    ``gateway/reach/whatsapp.py`` ``deliver`` reads the window again when it
+    sends. A card can wait up to an hour, so a window that closed in that time
+    makes the send the paid template, which the card did not show. A window
+    that is closed now, or a read that fails, sends nothing (reviewer P2)."""
+    try:
+        reply = await _get(REACH_PREVIEW_PATH, member=member)
+    except _Refused:
+        return _not_sent(_WINDOW_UNREAD)
+    data = reply.data if reply.ok and isinstance(reply.data, dict) else None
+    if data is None or not isinstance(data.get("window_open"), bool):
+        return _not_sent(_WINDOW_UNREAD)
+    if data["window_open"] is not True:
+        return _not_sent(_WINDOW_CLOSED)
+    return None
 
 
 def _send_card(window_open: bool) -> str:
@@ -783,7 +833,7 @@ def _send_result(reply: _Reply) -> dict[str, Any]:
     if reply.status >= 500:
         return _refusal(_MAY_HAVE_GONE, sent=None, status=reply.status)
     if not reply.ok:
-        return {**_fail(reply), "sent": False}
+        return _fail_unsent(reply)
     data = reply.data if isinstance(reply.data, dict) else {}
     state, reason = data.get("state"), data.get("reason")
     if not isinstance(state, str) or not (reason is None or isinstance(reason, str)):
@@ -821,6 +871,10 @@ async def reach_send_brief() -> dict[str, Any]:
         return _not_sent(_SEND_NO_CARD, decision=decision)
     if decision != "approved":
         return _not_sent(ask_tools.card_not_done_text(_NOT_SENT_ACT), decision=decision)
+    if window:
+        moved = await _window_moved(member)
+        if moved is not None:
+            return {**moved, "decision": decision}
     try:
         reply = await _post(REACH_BRIEF_PATH, member)
     except _Refused as exc:
