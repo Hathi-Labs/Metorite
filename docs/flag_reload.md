@@ -884,7 +884,7 @@ customer console still read their flags at start.
 Task 4086. Run `scripts/flag_flip.sh` on the box as `acb`, from `/opt/acb/app`:
 
     bash scripts/flag_flip.sh TOOL_PACKS_ORGS --add <org id> --task <n>
-    bash scripts/flag_flip.sh DECIDE_FEATURE_MODES --add '<org id>=warn' --task <n>
+    bash scripts/flag_flip.sh DECIDE_FEATURE_MODES --add email.cold_check=shadow --task <n>
     bash scripts/flag_flip.sh CRM_ORGS --off --task <n> --dry-run
 
 The tool refuses a name that is not in `acb_common/flag_registry.py`. It

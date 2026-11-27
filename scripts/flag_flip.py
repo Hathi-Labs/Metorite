@@ -4,7 +4,7 @@
 Run it on the box as ``acb``, through ``scripts/flag_flip.sh``. Examples::
 
     bash scripts/flag_flip.sh TOOL_PACKS_ORGS --add <org id> --task 4086
-    bash scripts/flag_flip.sh DECIDE_FEATURE_MODES --add '<org id>=warn' --task 4086
+    bash scripts/flag_flip.sh DECIDE_FEATURE_MODES --add email.cold_check=shadow --task 4086
     bash scripts/flag_flip.sh CRM_ORGS --off --task 4086 --dry-run
 
 **Why.** Flags went on by hand edits of ``.env``. On 2026-11-27 a hand edit
@@ -22,7 +22,8 @@ same set of checked steps.
    answer on the task. The tool records the id and cannot check it. ``--off``
    and ``--remove`` need no id, because closing a flag is the safe way.
 3. The new value must be empty, ``*``, or org ids. A ``*_MODES`` value is
-   ``<org id or *>=<mode>`` pairs.
+   ``<name>=<mode>`` pairs (see :func:`parse`). A flag in
+   :data:`EMPTY_MEANS_ALL` is never set empty.
 4. The value must be the same in each env file that holds the key, so
    ``--add`` and ``--remove`` start from one known value.
 5. A key in an env file of a unit that the tool does not restart (the
@@ -46,7 +47,8 @@ chat-turn smoke is on (``SMOKE_CHAT_TURN=1``, task 4061), it runs that smoke
 after the flip.
 
 Exit codes: 0 flipped (or no change), 2 refused before any write, 3 the flip
-is written but not proved, 4 the smoke failed after a proved flip.
+is not proved or a write failed (the tool then puts the files back), 4 the
+smoke failed after a proved flip.
 
 Fence: ``tests/unit/test_flag_flip.py``.
 """
@@ -83,6 +85,11 @@ UNMANAGED_ENVS = {
     "workbench/control_plane/.env.local": "acb-workbench",
     "workbench/operator_console/.env.local": "acb-operator-console",
 }
+#: The flags whose EMPTY value means every org (the reader returns
+#: ``not orgs or org in orgs``). For these, --off and a --remove that empties
+#: the value turn the feature ON for every org, so the tool refuses both.
+#: Fence: test_flag_flip.py reads the reader.
+EMPTY_MEANS_ALL = frozenset({"ASSISTANT_PROFILE_ORGS"})
 #: How long a flip waits for a deploy that holds the deploy lock.
 LOCK_WAIT_S = float(os.environ.get("FLAG_FLIP_LOCK_WAIT_S", "120"))
 #: The units that read the root .env at start, besides the gateway. A flip
@@ -96,6 +103,8 @@ SMOKE_TIMEOUT_S = 600
 
 ORG_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 MODE_RE = re.compile(r"[a-z][a-z0-9_]{0,30}")
+#: A name of a ``*_MODES`` pair: ``*``, an org id, a feature or a kind.
+MODE_NAME_RE = re.compile(r"\*|[a-z0-9][a-z0-9_.-]{0,80}")
 KEY_RE = re.compile(r"[A-Z][A-Z0-9_]{0,80}")
 ANSWER_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
@@ -124,24 +133,40 @@ def _is_modes(key: str) -> bool:
 
 
 def parse(key: str, raw: str) -> list[str]:
-    """The items of a value: org ids, or ``org=mode`` pairs. Raises Refused."""
+    """The items of a value. Raises Refused.
+
+    A ``*_ORGS`` value is ``*`` alone, or org ids. A ``*_MODES`` value is
+    ``<name>=<mode>`` pairs. The name is an org id or ``*``
+    (``AGENT_CLAIM_SCOPE_MODES``), a feature (``DECIDE_FEATURE_MODES``:
+    ``email.cold_check=shadow``) or a kind (``PROACTIVE_KIND_MODES``). Each
+    reader drops a name that it does not know, so this grammar checks the
+    shape, and the reader's log names an unknown name.
+    """
     raw = raw.strip().strip('"').strip("'").strip()
     if raw == "":
         return []
     items = [i.strip() for i in raw.split(",") if i.strip()]
     for item in items:
         if _is_modes(key):
-            org, sep, mode = item.partition("=")
-            if not sep or not (org == "*" or ORG_RE.fullmatch(org)) or not MODE_RE.fullmatch(mode):
-                raise Refused(f"{key}: {item!r} is not <org id or *>=<mode>")
+            name, sep, mode = item.partition("=")
+            if not sep or not MODE_NAME_RE.fullmatch(name) or not MODE_RE.fullmatch(mode):
+                raise Refused(f"{key}: {item!r} is not <name>=<mode>")
         elif not (item == "*" or ORG_RE.fullmatch(item)):
             raise Refused(f"{key}: {item!r} is not an org id or *")
     if not _is_modes(key) and "*" in items and len(items) > 1:
         raise Refused(f"{key}: * with org ids is ambiguous. Use * alone.")
-    orgs = [i.partition("=")[0] for i in items]
-    if len(set(orgs)) != len(orgs):
-        raise Refused(f"{key}: an org is named twice")
+    names = [i.partition("=")[0] for i in items]
+    if len(set(names)) != len(names):
+        raise Refused(f"{key}: a name is given twice")
     return items
+
+
+def _one_item(key: str, arg: str | None) -> str:
+    """The one normalised item of ``--add`` or ``--remove``."""
+    items = parse(key, arg or "")
+    if len(items) != 1:
+        raise Refused(f"{key}: --add and --remove take one item. Use --set for a list.")
+    return items[0]
 
 
 def new_items(key: str, cur: list[str], op: str, arg: str | None) -> list[str]:
@@ -150,24 +175,24 @@ def new_items(key: str, cur: list[str], op: str, arg: str | None) -> list[str]:
         return []
     if op == "set":
         return parse(key, arg or "")
-    item = (arg or "").strip()
     if op == "add":
-        parse(key, item)
+        item = _one_item(key, arg)
         if not _is_modes(key) and item == "*":
             return ["*"]
         if not _is_modes(key) and "*" in cur:
             raise Refused(f"{key} is already * (every org)")
-        org = item.partition("=")[0]
-        kept = [i for i in cur if i.partition("=")[0] != org]
+        name = item.partition("=")[0]
+        kept = [i for i in cur if i.partition("=")[0] != name]
         return [*kept, item]
     if op == "remove":
-        if not (item == "*" or ORG_RE.fullmatch(item)):
-            raise Refused(f"{key}: {item!r} is not an org id or *")
-        if not _is_modes(key) and "*" in cur and item != "*":
+        name = (arg or "").strip()
+        if not (MODE_NAME_RE.fullmatch(name) if _is_modes(key) else (name == "*" or ORG_RE.fullmatch(name))):
+            raise Refused(f"{key}: {name!r} is not a name that the value can hold")
+        if not _is_modes(key) and "*" in cur and name != "*":
             raise Refused(f"{key} is * (every org). Name the orgs with --set.")
-        kept = [i for i in cur if i.partition("=")[0] != item]
+        kept = [i for i in cur if i.partition("=")[0] != name]
         if kept == cur:
-            raise Refused(f"{key} does not name {item}")
+            raise Refused(f"{key} does not name {name}")
         return kept
     raise Refused(f"unknown operation {op}")
 
@@ -175,28 +200,38 @@ def new_items(key: str, cur: list[str], op: str, arg: str | None) -> list[str]:
 # ── Env files ───────────────────────────────────────────────────────────────
 
 
+#: A line that sets *key*, in each form that python-dotenv reads.
+def _key_line(key: str) -> re.Pattern[str]:
+    return re.compile(rf"^[ \t]*(?:export[ \t]+)?{re.escape(key)}[ \t]*=")
+
+
 def read_key(path: Path, key: str) -> str | None:
-    """The value of the LAST ``KEY=`` line, as python-dotenv reads it. None when absent."""
-    val = None
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if line.startswith(f"{key}="):
-            val = line[len(key) + 1 :].strip().strip('"').strip("'").strip()
-    return val
+    """The value of *key* as python-dotenv reads it (the gateway's reader). None when absent."""
+    from dotenv import dotenv_values
+
+    if not any(_key_line(key).match(ln) for ln in path.read_text(encoding="utf-8").splitlines()):
+        return None
+    val = dotenv_values(path).get(key)
+    return (val or "").strip()
 
 
 def rewrite(path: Path, key: str, value: str) -> bytes:
-    """The new bytes of *path*: one ``KEY=value`` line, every other byte kept."""
-    text = path.read_text(encoding="utf-8")
-    lines = text.splitlines(keepends=True)
+    """The new bytes of *path*: one ``KEY=value`` line, every other byte kept.
+
+    Each line that sets *key* (also ``export KEY=`` and ``KEY = v``) goes. The
+    first one becomes ``KEY=value``, so one line holds the key.
+    """
+    pat = _key_line(key)
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     out: list[str] = []
     done = False
     for line in lines:
-        if line.startswith(f"{key}="):
+        if pat.match(line):
             if not done:
                 nl = "\n" if line.endswith("\n") else ""
                 out.append(f"{key}={value}{nl}")
                 done = True
-            continue  # a second KEY= line goes, so one line holds the key
+            continue
         out.append(line)
     if not done:
         if out and not out[-1].endswith("\n"):
@@ -253,31 +288,45 @@ def gateway_reloads() -> bool:
         return False
 
 
-def _since(t: float) -> str:
-    return dt.datetime.fromtimestamp(t, dt.UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
-
-
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
-def reload_gateway(key: str, t0: float) -> str:
-    """SIGHUP the gateway main process and wait for its log line. Returns the line.
+APPLIED_RE = re.compile(r"applied=\[([^\]]*)\]")
 
-    Raises RuntimeError when the reload is refused or no line names the key.
+
+def journal_cursor() -> str:
+    """The cursor of the newest gateway journal entry, before the SIGHUP."""
+    out = run(["sudo", "journalctl", "-u", GATEWAY, "-n", "0", "--show-cursor", "--no-pager"]).stdout
+    for line in out.splitlines():
+        if line.startswith("-- cursor: "):
+            return line[len("-- cursor: "):].strip()
+    raise RuntimeError("journalctl gave no cursor")
+
+
+def reload_gateway(key: str, cursor: str) -> str:
+    """SIGHUP the gateway main process and prove the reload. Returns the line.
+
+    It reads only the entries AFTER *cursor*, so an older line never proves
+    this flip. A ``flags.reload_refused`` or ``flags.reload_failed`` line
+    there fails the flip. The proof is a ``flags.reloaded`` line whose
+    ``applied=[...]`` names *key*.
     """
     res = run(["sudo", "systemctl", "kill", "-s", "HUP", "--kill-whom=main", GATEWAY])
     if res.returncode != 0:
         raise RuntimeError("the SIGHUP to the gateway failed")
     deadline = time.monotonic() + RELOAD_WAIT_S
     while True:
-        log = run(["sudo", "journalctl", "-u", GATEWAY, "--since", _since(t0), "-o", "cat", "--no-pager"])
-        for line in (ANSI_RE.sub("", ln) for ln in log.stdout.splitlines()):
+        log = run(["sudo", "journalctl", "-u", GATEWAY, f"--after-cursor={cursor}", "-o", "cat", "--no-pager"])
+        lines = [ANSI_RE.sub("", ln).strip() for ln in log.stdout.splitlines()]
+        for line in lines:
             if "flags.reload_refused" in line or "flags.reload_failed" in line:
-                raise RuntimeError(f"the gateway refused the reload: {line.strip()[:300]}")
-            if "flags.reloaded" in line and re.search(rf"\b{key}\b", line, re.IGNORECASE):
-                return line.strip()[:300]
+                raise RuntimeError(f"the gateway refused the reload: {line[:300]}")
+        for line in lines:
+            m = APPLIED_RE.search(line) if "flags.reloaded" in line else None
+            if m and re.search(rf"['\"]{key}['\"]", m.group(1), re.IGNORECASE):
+                return line[:300]
         if time.monotonic() >= deadline:
-            raise RuntimeError(f"no flags.reloaded line names {key} after {RELOAD_WAIT_S:.0f} s")
+            raise RuntimeError(f"no flags.reloaded line applies {key} after {RELOAD_WAIT_S:.0f} s")
         time.sleep(1)
 
 
@@ -380,23 +429,28 @@ def target_files(app: Path, key: str) -> list[Path]:
     return [app / ROOT_ENV] + ([edge] if key in EDGE_FLAGS or edge_held else [])
 
 
-def current_value(app: Path, key: str, files: list[Path]) -> str:
-    """The one value of *key* over *files*. A file with no key line counts only when it is the root."""
+def current_value(app: Path, key: str, files: list[Path], allow_drift: bool = False) -> str:
+    """The one value of *key* over the *files* that hold it. Empty when none does."""
     values = {str(f.relative_to(app)): read_key(f, key) for f in files}
-    seen = {v or "" for f, v in zip(files, values.values(), strict=True) if v is not None or f == files[0]}
+    seen = {v for v in values.values() if v is not None}
     if len(seen) > 1:
-        raise Refused(f"{key} differs between env files {values}. Fix it with --set")
+        if not allow_drift:
+            raise Refused(f"{key} differs between env files {values}. Fix it with --set")
+        print(f"flag_flip: {key} differs between env files {values}. --set makes them one.")
+        return ""
     return seen.pop() if seen else ""
 
 
 def _flip_locked(a: argparse.Namespace, key: str, app: Path, root: Path) -> int:
     files = target_files(app, key)
     edge = app / EDGE_ENV
-    old_raw = current_value(app, key, files)
+    old_raw = current_value(app, key, files, allow_drift=a.set is not None)
     cur = parse(key, old_raw)
     operation = "off" if a.off else "set" if a.set is not None else "add" if a.add is not None else "remove"
     new = new_items(key, cur, operation, a.set if a.set is not None else a.add if a.add is not None else a.remove)
     new_raw = ",".join(new)
+    if key in EMPTY_MEANS_ALL and not new and cur:
+        raise Refused(f"{key}: empty means EVERY org for this flag, so this would turn it on everywhere")
     if new == cur and all(read_key(f, key) is not None for f in files):
         print(f"flag_flip: {key} is already {old_raw!r}. No change.")
         return 0
@@ -409,6 +463,10 @@ def _flip_locked(a: argparse.Namespace, key: str, app: Path, root: Path) -> int:
         print("flag_flip: dry run. Nothing was written.")
         return 0
 
+    try:
+        cursor = journal_cursor()
+    except RuntimeError as exc:
+        raise Refused(str(exc)) from None
     t0 = time.time()
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(t0))
     baks = {f: backup(f, stamp, a.task) for f in files}
@@ -417,16 +475,22 @@ def _flip_locked(a: argparse.Namespace, key: str, app: Path, root: Path) -> int:
         for f in files:
             write_in_place(f, rewrite(f, key, new_raw))
     except (OSError, RuntimeError) as exc:
-        print(f"flag_flip: WRITE FAILED: {exc}", file=sys.stderr)
+        print(f"flag_flip: WRITE FAILED: {exc}. The tool puts each file back from its backup.", file=sys.stderr)
+        restored = True
         for f, bak in baks.items():
-            print(f"  restore: cat {bak} > {f}", file=sys.stderr)
+            try:
+                write_in_place(f, bak.read_bytes())
+            except (OSError, RuntimeError):
+                restored = False
+                print(f"  restore by hand: cat {bak} > {f}", file=sys.stderr)
+        _record(app, t0, a, key, old_raw, new_raw, files, "write failed" + ("" if restored else ", not restored"))
         return 3
 
     evidence: list[str] = []
     result = "proved"
     code = 0
     try:
-        evidence.append("gateway: " + reload_gateway(key, t0))
+        evidence.append("gateway: " + reload_gateway(key, cursor))
         if edge_changed:
             evidence.append(restart_edge(key, new_raw))
     except RuntimeError as exc:

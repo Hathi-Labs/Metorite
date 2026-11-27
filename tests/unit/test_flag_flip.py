@@ -49,7 +49,15 @@ FAKE = {
         '  *MainPID*) echo 4242 ;;\n'
         "esac\nexit 0\n"
     ),
-    "journalctl": '#!/bin/sh\ncat "$FAKE_DIR/journal" 2>/dev/null\nexit 0\n',
+    # The cursor is the line count of the fake journal at the call.
+    "journalctl": (
+        "#!/bin/sh\n"
+        'j="$FAKE_DIR/journal"; touch "$j"\n'
+        'for a in "$@"; do case "$a" in\n'
+        '  --show-cursor) echo "-- cursor: $(wc -l < "$j" | tr -d " ")"; exit 0 ;;\n'
+        '  --after-cursor=*) n="${a#--after-cursor=}"; tail -n +"$((n + 1))" "$j"; exit 0 ;;\n'
+        "esac; done\ncat \"$j\"\nexit 0\n"
+    ),
     # cat /proc/<pid>/environ reads the fake process env.
     "cat": (
         '#!/bin/sh\ncase "$1" in\n  /proc/*/environ) cat "$FAKE_DIR/environ" 2>/dev/null ;;\n'
@@ -147,12 +155,18 @@ def test_a_bad_value_is_refused(box, value):
     assert box.root.read_bytes() == before
 
 
-def test_a_modes_value_takes_org_mode_pairs_and_add_replaces_the_mode(box):
-    box.root.write_text(box.root.read_text() + f"DECIDE_FEATURE_MODES={ORG1}=warn\n")
+def test_a_modes_value_takes_name_mode_pairs_and_add_replaces_the_mode(box):
+    # A feature name (DECIDE_FEATURE_MODES) and an org id (AGENT_CLAIM_SCOPE_MODES).
+    box.root.write_text(box.root.read_text() + "DECIDE_FEATURE_MODES=email.cold_check=shadow\n"
+                        + f"AGENT_CLAIM_SCOPE_MODES={ORG1}=warn\n")
     box.reload_line("flags.reloaded applied=['DECIDE_FEATURE_MODES']")
-    assert flip("DECIDE_FEATURE_MODES", "--add", f"{ORG1}=refuse", "--task", "1", "--no-smoke") == 0
-    assert f"DECIDE_FEATURE_MODES={ORG1}=refuse\n" in box.root.read_text()
-    assert flip("DECIDE_FEATURE_MODES", "--add", ORG2, "--task", "1") == 2  # no mode
+    assert flip("DECIDE_FEATURE_MODES", "--add", "email.cold_check=on", "--task", "1",
+                "--owner-approved", ORG2, "--no-smoke") == 0
+    assert "DECIDE_FEATURE_MODES=email.cold_check=on\n" in box.root.read_text()
+    box.reload_line("flags.reloaded applied=['AGENT_CLAIM_SCOPE_MODES']")
+    assert flip("AGENT_CLAIM_SCOPE_MODES", "--add", f"{ORG1}=refuse", "--task", "1", "--no-smoke") == 0
+    assert f"AGENT_CLAIM_SCOPE_MODES={ORG1}=refuse\n" in box.root.read_text()
+    assert flip("AGENT_CLAIM_SCOPE_MODES", "--add", ORG2, "--task", "1") == 2  # no mode
 
 
 def test_a_gateway_with_no_reload_handler_is_refused_before_any_write(box):
@@ -340,3 +354,93 @@ def test_each_flag_whose_comment_marks_it_owner_only_is_listed():
     assert len(marked) > 20, "the scan found too few: the comment form changed"
     missing = marked - fr.OWNER_ONLY_FLAGS
     assert not missing, f"add these to OWNER_ONLY_FLAGS: {sorted(missing)}"
+
+
+def test_an_older_reloaded_line_never_proves_this_flip(box):
+    # A line from an earlier flip sits in the journal before the cursor.
+    (box.fake / "journal").write_text("flags.reloaded applied=['TOOL_PACKS_ORGS'] restart=[]\n")
+    box.reload_line("flags.reloaded applied=[] restart=[]")
+    assert flip("TOOL_PACKS_ORGS", "--add", ORG2, "--task", "1", "--no-smoke") == 3
+
+
+def test_a_refused_line_fails_even_after_a_reloaded_line(box):
+    box.reload_line("flags.reloaded applied=['TOOL_PACKS_ORGS'] restart=[]\nflags.reload_refused error=x")
+    assert flip("TOOL_PACKS_ORGS", "--add", ORG2, "--task", "1", "--no-smoke") == 3
+
+
+def test_the_key_must_be_in_applied_not_in_restart(box):
+    box.reload_line("flags.reloaded applied=[] restart=['TOOL_PACKS_ORGS']")
+    assert flip("TOOL_PACKS_ORGS", "--add", ORG2, "--task", "1", "--no-smoke") == 3
+
+
+def test_set_fixes_a_value_that_differs_between_files(box):
+    box.reload_line("flags.reloaded applied=['MCP_IMAGE_UPLOAD_ORGS']")
+    box.root.write_text(box.root.read_text() + f"MCP_IMAGE_UPLOAD_ORGS={ORG1}\n")
+    (box.app / EDGE).write_text((box.app / EDGE).read_text() + "MCP_IMAGE_UPLOAD_ORGS=\n")
+    (box.fake / "environ").write_text(f"X=1\0MCP_IMAGE_UPLOAD_ORGS={ORG2}\0")
+    assert flip("MCP_IMAGE_UPLOAD_ORGS", "--set", ORG2, "--task", "1", "--no-smoke") == 0
+    assert f"MCP_IMAGE_UPLOAD_ORGS={ORG2}\n" in (box.app / EDGE).read_text()
+
+
+def test_a_key_only_in_the_edge_file_is_not_drift(box):
+    box.reload_line("flags.reloaded applied=['PLAYBOOK_ORGS']")
+    (box.app / EDGE).write_text((box.app / EDGE).read_text() + f"PLAYBOOK_ORGS={ORG1}\n")
+    (box.fake / "environ").write_text(f"X=1\0PLAYBOOK_ORGS={ORG1},{ORG2}\0")
+    assert flip("PLAYBOOK_ORGS", "--add", ORG2, "--task", "1", "--no-smoke") == 0
+    assert f"PLAYBOOK_ORGS={ORG1},{ORG2}\n" in box.root.read_text()
+
+
+@pytest.mark.parametrize("line", [f"export TOOL_PACKS_ORGS={ORG1}", f"TOOL_PACKS_ORGS = {ORG1}",
+                                  f'TOOL_PACKS_ORGS="{ORG1}"'])
+def test_each_dotenv_form_is_read_and_replaced(box, line):
+    box.root.write_text(box.root.read_text().replace(f"TOOL_PACKS_ORGS={ORG1}", line))
+    box.reload_line("flags.reloaded applied=['TOOL_PACKS_ORGS']")
+    assert flip("TOOL_PACKS_ORGS", "--add", ORG2, "--task", "1", "--no-smoke") == 0
+    text = box.root.read_text()
+    assert f"TOOL_PACKS_ORGS={ORG1},{ORG2}\n" in text and text.count("TOOL_PACKS_ORGS") == 1
+
+
+@pytest.mark.parametrize("arg", [f'"{ORG2}"', f"'{ORG2}"])
+def test_add_stores_the_clean_item(box, arg):
+    box.reload_line("flags.reloaded applied=['TOOL_PACKS_ORGS']")
+    assert flip("TOOL_PACKS_ORGS", "--add", arg, "--task", "1", "--no-smoke") == 0
+    assert f"TOOL_PACKS_ORGS={ORG1},{ORG2}\n" in box.root.read_text()
+
+
+def test_add_takes_one_item(box):
+    assert flip("TOOL_PACKS_ORGS", "--add", f"{ORG1},{ORG2}", "--task", "1") == 2
+
+
+def test_a_write_that_fails_midway_puts_each_file_back(box, monkeypatch):
+    box.reload_line("flags.reloaded applied=['MCP_IMAGE_UPLOAD_ORGS']")
+    for f in (box.root, box.app / EDGE):
+        f.write_text(f.read_text() + "MCP_IMAGE_UPLOAD_ORGS=\n")
+    before = {f: f.read_bytes() for f in (box.root, box.app / EDGE)}
+    real = ff.write_in_place
+    calls = []
+
+    def flaky(path, data):
+        calls.append(path)
+        if len(calls) == 2:
+            raise OSError("disk full")
+        real(path, data)
+
+    monkeypatch.setattr(ff, "write_in_place", flaky)
+    assert flip("MCP_IMAGE_UPLOAD_ORGS", "--add", ORG1, "--task", "1", "--no-smoke") == 3
+    monkeypatch.setattr(ff, "write_in_place", real)
+    assert {f: f.read_bytes() for f in before} == before
+    assert "HUP" not in box.calls()
+    assert "\twrite failed\t" in (box.app.parent / "acb-flag-flips.log").read_text()
+
+
+def test_an_empty_means_all_flag_is_never_emptied(box):
+    box.root.write_text(box.root.read_text() + f"ASSISTANT_PROFILE_ORGS={ORG1}\n")
+    assert flip("ASSISTANT_PROFILE_ORGS", "--off", "--task", "1") == 2
+    assert flip("ASSISTANT_PROFILE_ORGS", "--remove", ORG1, "--task", "1") == 2
+
+
+def test_empty_means_all_matches_its_reader():
+    """ASSISTANT_PROFILE_ORGS: empty is every org. A change of the reader must update the set."""
+    src = (REPO / "packages/acb_common/acb_common/assistant_profile.py").read_text(encoding="utf-8")
+    assert "return not orgs or org in orgs" in src
+    assert ff.EMPTY_MEANS_ALL == frozenset({"ASSISTANT_PROFILE_ORGS"})
