@@ -78,9 +78,17 @@ def _attr_readers(names: set[str]) -> dict[str, list[str]]:
             for name in seen:
                 out.setdefault(name, []).append(path.resolve().as_posix())
     return out
+
+
+#: Task 574: OPTIONAL in secret_check.py names the secret with a reason and
+#: reads no value. Pin: test_secret_startup_check.py
+#: test_the_check_reads_no_optional_secret.
+_NAMES_ONLY = {(_REPO / "packages/acb_auth/acb_auth/secret_check.py").resolve().as_posix()}
+
+
 def test_one_module_reads_the_zoho_client_settings() -> None:
     reader = (_REPO / "apps/services/gateway/gateway/routes/crm/connection.py").resolve().as_posix()
     found = _attr_readers({"crm_zoho_client_id", "crm_zoho_client_secret"})
     for name, files in found.items():
-        assert files == [reader], (name, files)
+        assert [f for f in files if f not in _NAMES_ONLY] == [reader], (name, files)
     assert set(found) == {"crm_zoho_client_id", "crm_zoho_client_secret"}

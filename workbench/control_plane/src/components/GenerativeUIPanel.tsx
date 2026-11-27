@@ -106,6 +106,8 @@ const PANEL_HIDDEN_EVENTS = new Set([
   "confirmation_not_done",
   // WT-6a: the Undo of an archive receipt. The receipt line draws it.
   "confirmation_undo",
+  // SBX-3b: the row results of a held sandbox card. The receipt line draws them.
+  "confirmation_row_results",
   "generative_ui",
   // A dispatched browser action (H-164): a side effect with nothing to show.
   "frontend_tool",

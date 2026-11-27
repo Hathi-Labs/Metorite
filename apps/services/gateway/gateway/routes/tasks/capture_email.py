@@ -116,6 +116,9 @@ class CapturePreviewResponse(BaseModel):
     # Echoed so /enhance and /create don't re-resolve the email.
     from_name: str = ""
     subject: str = ""
+    # The address of the sender. ``from_name`` is text that the sender sets, so
+    # the chat card shows the two (task 3973).
+    from_email: str = ""
 
 
 class CaptureEnhanceResponse(BaseModel):
@@ -820,7 +823,8 @@ async def preview_capture_from_email(
 
         return CapturePreviewResponse(
             already_captured=already, draft=draft, similar=similar,
-            from_name=from_name, subject=email.subject or "")
+            from_name=from_name, subject=email.subject or "",
+            from_email=str(from_addr.get("email") or ""))
 
 
 @router.post("/capture/from-email/enhance",

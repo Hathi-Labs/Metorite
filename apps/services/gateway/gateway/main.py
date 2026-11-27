@@ -10,6 +10,7 @@ from typing import Any
 from acb_auth import (UserContext, UserRole, get_current_user,
                       identity_read_failed, require_authenticated,
                       require_role)
+from acb_auth.secret_check import check_startup_secrets
 from acb_common import configure_logging, get_logger, get_settings
 from acb_common import db_busy
 from acb_common.db import TenantUnbound, clear_tenant, release_tenant
@@ -101,6 +102,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging(settings.log_level)
     _log.info("gateway.startup", env=settings.acb_env)
+
+    # Task 574 (WS-2d, BO-8): the secrets that the gateway needs. Shadow (the
+    # default) logs each empty or public one by name and goes on. Enforce
+    # refuses the start. ⚠️ Keep it OUTSIDE every `try`, and before the first
+    # await: a swallow-all `except` would turn enforce into a log line.
+    # Fence: tests/unit/test_secret_startup_check.py.
+    check_startup_secrets("gateway", settings)
 
     # A flag flip is a SIGHUP, not a restart (gateway/flag_reload.py). After
     # the logging set-up, so its lines are formatted. `/version` reports it.
