@@ -1,19 +1,22 @@
 "use client";
 
 /**
- * WaitingDock — the dock above the message box for each card that waits on
- * the member (WD-1, `projects_ai_chat.md` §24.11, D234).
+ * WaitingDock — the dock above the message box for each QUESTION card that
+ * waits on the member (WD-1, `projects_ai_chat.md` §24.11, D234 and D9).
  *
- * With `WAITING_DOCK_ORGS` on, the approvals and the question cards draw here,
- * as the tabs of ONE card (`ConfirmationQueue` with `questions`), and not in
- * the thread. The dock sits in the form, outside the scrolling thread, so it
- * never scrolls away. It holds:
+ * With `WAITING_DOCK_ORGS` on, the `ask_questions` and the `ask_user` cards
+ * draw here, and not in the thread. Two cards that wait are two tabs. The
+ * dock sits OUTSIDE the form and outside the scrolling thread, so it never
+ * scrolls away. It holds:
  *
- * - the Fold control and, when the card is over the cap, the Expand control.
- *   They sit in the tab row, or on the title row of the one card, so they
- *   take no row of their own. No control drops an item unanswered (WD-D2);
- * - the ONE scroll box of the dock: the body of the open item, under the cap
- *   (`lib/waitingDock.ts` `dockCap`). That is the one amendment to C3;
+ * - ONE pointer row while an approval waits (D9). An approval card always
+ *   draws in the thread, as with the flag off. The row names the newest one,
+ *   and its Review only scrolls the thread to that card. It commits nothing;
+ * - the Fold control, on the title row of the open question. No control
+ *   drops an item unanswered (WD-D2);
+ * - the ONE scroll box of the dock: the body of the open question, under the
+ *   cap (`lib/waitingDock.ts` `dockCap`). That is the one amendment to C3. A
+ *   change of tab sets its scroll back to the top;
  * - beside it, `WaitingDockLive`: one polite live region, "N items wait for
  *   you" when the count goes up. The chat mounts it while the flag is on, so
  *   the region exists before the first item arrives. The arrival of an item
@@ -22,26 +25,76 @@
  * The fold is the dock's own, beside `RollupCard`, which never folds a card
  * that waits (audit rule 8). With the phone's keyboard up and no field of the
  * card in focus, the dock folds (K7). A field of the card in focus keeps it
- * open (K3). The cards stay mounted while folded, so no edit is lost.
+ * open (K3). The cards stay mounted while folded, so no pick is lost.
  *
  * Fences: `src/lib/waitingDock.test.ts` (the rules) and
  * `src/components/waitingDock.test.ts` (the markup).
  */
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 import { useVisualViewport } from "@/app/tasks/lib/useVisualViewport";
+import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
+import CardTabs, { cardPanelId, cardTabId } from "@/components/ui/CardTabs";
+import { KIND_ICON } from "@/lib/cardTabs";
 import { revealWithin } from "@/lib/scrollWithin";
-import { PINNED_ACTIONS, type DockMode, arrivalUnfolds, dockCap, dockFolded, isTextField, keyboardUp, liveAfter } from "@/lib/waitingDock";
+import {
+  PINNED_ACTIONS,
+  arrivalUnfolds,
+  dockCap,
+  dockFolded,
+  isTextField,
+  keyboardUp,
+  liveAfter,
+  POINTER_LEAD,
+  pointerMore,
+  UNFOLD_LABEL,
+} from "@/lib/waitingDock";
+
+/** What the dock hands a question card when it draws it. */
+export interface DockSlot {
+  /** The tab row, inside the card's frame, when two cards wait. */
+  tabs?: ReactNode;
+  /** The tab panel: the card is the panel the tabs control. */
+  tabPanel?: { id: string; labelledBy: string };
+  /** The dock's Fold control, on the card's title row. */
+  headerAside?: ReactNode;
+  /** A question card in the dock draws no X (WD-D2). Its Not now stays. */
+  inDock?: boolean;
+  /** The card is on the screen: its tab open, the dock not folded (round 7). */
+  dockShown?: boolean;
+}
+
+/** A question card as a tab of the dock (§24.11). */
+export interface DockQuestion {
+  /** Stable for the card's life: its request id. */
+  key: string;
+  /** The tab's words (`questionTabLabel`). */
+  label: string;
+  /** The whole question, for the tooltip. */
+  title: string;
+  /** Draw the card, with the tab row and the panel when it is the open tab. */
+  render: (slot: DockSlot) => ReactNode;
+}
+
+/** The pointer row: the newest approval that waits in the thread (D9). */
+export interface DockPointer {
+  /** The tab label of the newest approval that waits (`tabLabel`). */
+  label: string;
+  /** How many other approvals wait. */
+  more: number;
+  /** Scroll the thread to the card, and move the focus to its heading. */
+  onReview: () => void;
+}
 
 export interface WaitingDockProps {
-  /** How many items wait on the member (`dockCount`). */
-  count: number;
+  /** The question cards that wait, in tab order. */
+  questions: readonly DockQuestion[];
+  /** The pointer to the approvals in the thread, or null when none waits. */
+  pointer: DockPointer | null;
   /** The phone: the phone chrome, or a device with a soft keyboard. */
   phone: boolean;
-  /** The cards. `folded` draws them as one row, and `unfold` opens them. */
-  children: (dock: DockRender) => ReactNode;
   /** Tests and the visual rig: start folded. */
   initialFolded?: boolean;
 }
@@ -61,7 +114,7 @@ function around(root: HTMLElement | null): { host: HTMLElement; thread: HTMLElem
  * The heights the cap reads. `chat` is the room that the thread, the dock and
  * the form share, so a header row above the thread is not counted.
  * `composer` is all of that room but the thread and the dock's body: the
- * form, and the dock's own padding.
+ * form, the pointer row and the dock's own padding.
  */
 function measure(root: HTMLElement | null, body: HTMLElement | null): { chat: number; composer: number } | null {
   const a = around(root);
@@ -75,41 +128,40 @@ function measure(root: HTMLElement | null, body: HTMLElement | null): { chat: nu
 /** How long after a press ends the dock waits before it may fold (K3). */
 const PRESS_GRACE_MS = 500;
 
-/** What the dock hands the queue on each render. */
-export interface DockRender {
-  /** Folded to one row (WD-D2). */
-  folded: boolean;
-  /** Open the folded dock. */
-  unfold: () => void;
-  /** The header's Expand and Fold controls (D1). */
-  controls: ReactNode;
-  /** The view of the open card (D2). */
-  mode: DockMode;
-  /** Open the Expanded view (D3: a card's Review). */
-  expand: () => void;
-}
-
-export default function WaitingDock({ count, phone, children, initialFolded = false }: WaitingDockProps) {
+export default function WaitingDock({ questions, pointer, phone, initialFolded = false }: WaitingDockProps) {
   const rootRef = useRef<HTMLElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const uid = useId();
   const [manual, setManual] = useState(initialFolded);
-  const [expanded, setExpanded] = useState(false);
   const [fieldFocus, setFieldFocus] = useState(false);
   const [size, setSize] = useState<{ chat: number; composer: number } | null>(null);
   const [layout, setLayout] = useState(0);
   const [over, setOver] = useState(false);
-  // Rule 9: the fade at the foot of the body, above the pinned action row.
+  // Rule 10: the fade at the foot of the body, above the pinned Submit row.
   // It shows while more of the body is below, and goes at the end.
   const [atEnd, setAtEnd] = useState(true);
   const [pinH, setPinH] = useState(0);
   const vp = useVisualViewport();
-  // K2: a new item opens the dock to its cap, also after a fold by hand.
+  const count = questions.length;
+
+  // The open tab, by key. Only the first paint picks it (the first tab).
+  // After it, only the member or the answer of the open card moves it, so a
+  // new question never takes the open tab (rule 8). When the open card
+  // leaves, the card now at its place opens.
+  const [shown, setShown] = useState<{ key: string | null; index: number }>({ key: null, index: 0 });
+  const found = shown.key === null ? -1 : questions.findIndex((q) => q.key === shown.key);
+  const at = found >= 0 ? found : Math.min(shown.index, Math.max(0, count - 1));
+  const open = questions[at] ?? null;
+  if (open && (shown.key !== open.key || shown.index !== at)) setShown({ key: open.key, index: at });
+  // The tabs the member has opened: a tab not in it wears a dot.
+  const [seen, setSeen] = useState<ReadonlySet<string>>(() => new Set());
+  if (open && !seen.has(open.key)) setSeen(new Set([...seen, open.key]));
+
+  // K2: a new question opens the dock to its cap, also after a fold by hand.
   const [seenCount, setSeenCount] = useState(count);
   if (seenCount !== count) {
     setSeenCount(count);
     if (arrivalUnfolds(seenCount, count)) setManual(false);
-    // An item left (answered or gone): the next one opens Compact again.
-    else if (count < seenCount) setExpanded(false);
   }
   // K3: a press inside the dock. iOS gives a tapped button no focus, so the
   // field's blur has no related target. While a press runs, and a moment
@@ -117,12 +169,8 @@ export default function WaitingDock({ count, phone, children, initialFolded = fa
   const pressingRef = useRef(false);
   const graceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-
   const kbUp = keyboardUp({ phone, viewport: vp?.height ?? null, layout });
   const folded = dockFolded({ manual, keyboardUp: kbUp, cardFieldFocus: fieldFocus });
-  // Round 7: every fold leaves Expanded, by any cause (Fold, K7, the
-  // keyboard). An unfold then shows Compact, which holds no commit.
-  if (folded && expanded) setExpanded(false);
   const cap = size
     ? dockCap({
         phone,
@@ -131,7 +179,6 @@ export default function WaitingDock({ count, phone, children, initialFolded = fa
         composer: size.composer,
         keyboardUp: kbUp,
         cardFieldFocus: fieldFocus,
-        expanded,
       })
     : null;
 
@@ -155,6 +202,12 @@ export default function WaitingDock({ count, phone, children, initialFolded = fa
   useLayoutEffect(() => {
     read();
   });
+  // Requirement 4 of D9: a change of tab starts the new card at its top, so a
+  // long question never opens in the middle.
+  const openKey = open?.key ?? null;
+  useLayoutEffect(() => {
+    if (bodyRef.current) bodyRef.current.scrollTop = 0;
+  }, [openKey]);
   useEffect(() => {
     const root = rootRef.current;
     const a = around(root);
@@ -215,117 +268,146 @@ export default function WaitingDock({ count, phone, children, initialFolded = fa
   useEffect(() => () => {
     if (graceRef.current) clearTimeout(graceRef.current);
   }, []);
-  // D2: Review opens the Expanded view, and the focus moves into the dock's
-  // content, never onto a button (24.11, the fresh press).
-  const expand = () => {
-    setExpanded(true);
-    requestAnimationFrame(() => bodyRef.current?.focus({ preventScroll: true }));
-  };
-  // Esc closes the Expanded view, however it was opened: the first Esc
-  // anywhere in this chat, the message box too. It does nothing else, so it
-  // never also stops the run. A second Esc keeps its old meaning. A listener
-  // on the window in the capture phase runs before any handler of the page.
-  // Round 7: after a press on blank thread the focus is on the page body, and
-  // that Esc is this chat's too. An Esc of a modal, or of another surface,
-  // stays theirs. Esc in the earlier-draft question is that question's Back.
-  useEffect(() => {
-    if (!expanded) return;
-    const chatOf = () => rootRef.current?.closest("[data-dock-host]")?.parentElement ?? null;
-    let pressedHere = true;
-    const onPress = (e: PointerEvent) => {
-      const chat = chatOf();
-      pressedHere = !!chat && e.target instanceof Node && chat.contains(e.target);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      const chat = chatOf();
-      const target = e.target as Node | null;
-      if (!chat || !target) return;
-      if (target instanceof Element && target.closest("[data-earlier-question]")) return;
-      const fromPage = target === document.body || target === document.documentElement;
-      const modal = !!document.querySelector('[aria-modal="true"], dialog[open]');
-      if (!chat.contains(target) && !(fromPage && pressedHere && !modal)) return;
-      e.preventDefault();
-      e.stopPropagation();
-      e.stopImmediatePropagation();
-      setExpanded(false);
-    };
-    window.addEventListener("pointerdown", onPress, true);
-    window.addEventListener("keydown", onKey, true);
-    return () => {
-      window.removeEventListener("pointerdown", onPress, true);
-      window.removeEventListener("keydown", onKey, true);
-    };
-  }, [expanded]);
   // K7: the fold row of the keyboard opens the card only when the member
   // asks. A tap on its button opens the card and drops the keyboard.
   const unfold = () => {
     setManual(false);
     if (kbUp && typeof document !== "undefined") (document.activeElement as HTMLElement | null)?.blur?.();
   };
+  const go = (to: number) => {
+    const q = questions[to];
+    if (q) setShown({ key: q.key, index: to });
+  };
 
-  // The Fold and Expand controls. They take no row of their own: the queue
-  // puts them in the tab row, or on the title row of the one card.
-  const controls = folded ? null : (
-    <span className="inline-flex shrink-0 items-center gap-0.5" data-dock-controls="">
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon-xs"
-        icon={expanded ? "Minimize2" : "Maximize2"}
-        onClick={() => (expanded ? setExpanded(false) : expand())}
-        aria-label={expanded ? "Collapse the card" : "Expand the card"}
-        title={expanded ? "Collapse the card (Esc)" : "Expand the card"}
-        aria-expanded={expanded}
-        data-dock-expand={expanded ? "on" : "off"}
-      />
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon-xs"
-        icon="ChevronDown"
-        onClick={() => setManual(true)}
-        aria-label="Fold the card to one row"
-        title="Fold the card to one row"
-        aria-expanded
-        data-dock-fold=""
-      />
-    </span>
+  // The Fold control. It takes no row of its own: it sits on the title row
+  // of the open question.
+  const fold = (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon-xs"
+      icon="ChevronDown"
+      onClick={() => setManual(true)}
+      aria-label="Fold the card to one row"
+      title="Fold the card to one row"
+      aria-expanded
+      data-dock-fold=""
+    />
   );
+  // Two questions are two tabs of one card (WD-D3). The count reads
+  // "N waiting", as a question is not approved.
+  const tabs =
+    count > 1 ? (
+      <CardTabs
+        uid={uid}
+        index={at}
+        onGo={go}
+        words="waiting"
+        tabs={questions.map((q) => ({
+          key: q.key,
+          label: q.label,
+          title: q.title,
+          icon: KIND_ICON.question,
+          unseen: !seen.has(q.key),
+        }))}
+      />
+    ) : null;
 
   return (
     <section
       ref={rootRef}
-      data-waiting-dock={folded ? "folded" : "open"}
+      data-waiting-dock={count === 0 ? "pointer" : folded ? "folded" : "open"}
       aria-label="Waiting for you"
       onFocus={onFocusIn}
       onBlur={onFocusOut}
       onPointerDown={onPointerDown}
-
-      className="relative max-w-3xl mx-auto mb-2"
+      className="relative max-w-3xl mx-auto mb-2 space-y-2"
     >
-      {/* The one scroll box of the dock: the open item over the cap (C3). */}
-      <div
-        ref={bodyRef}
-        data-dock-body=""
-        // The focus lands here after Review (not on a button), so a held key
-        // or a second press on Review reaches no commit. The card's radius
-        // clips what scrolls under the pinned header's corners.
-        tabIndex={-1}
-        className="overflow-y-auto overscroll-contain scrollbar-thin rounded-lg glass:rounded-[16px]"
-        style={folded ? undefined : { maxHeight: cap === null ? "50vh" : `${cap}px` }}
-        onScroll={read}
-      >
-        {children({ folded, unfold, controls, mode: expanded ? "expanded" : "compact", expand })}
-      </div>
-      {/* The fade: theme tokens only, and it takes no click. */}
-      {!folded && over && !atEnd && (
+      {pointer && (
+        // D9: one row for the approvals, which wait in the thread. It names
+        // the newest, and Review only scrolls to it. It commits nothing.
         <div
-          aria-hidden
-          data-dock-fade=""
-          className="pointer-events-none absolute inset-x-px z-[2] h-8 bg-gradient-to-t from-card to-transparent"
-          style={{ bottom: pinH }}
-        />
+          data-dock-pointer=""
+          className="flex min-w-0 items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-1 text-[11px] glass:rounded-[16px] glass:border-transparent glass:bg-primary/12 glass:px-4 glass:text-footnote"
+        >
+          <Icon name="BellRing" size={13} className="shrink-0 text-primary" />
+          <span className="shrink-0 font-medium text-foreground">{POINTER_LEAD}</span>
+          <span className="min-w-0 flex-1 truncate text-muted-foreground" title={pointer.label} data-dock-pointer-label="">
+            {pointer.label}
+            {pointer.more > 0 && <span className="tabular-nums"> {pointerMore(pointer.more)}</span>}
+          </span>
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            onClick={pointer.onReview}
+            data-dock-pointer-review=""
+            className="shrink-0"
+          >
+            Review
+          </Button>
+        </div>
+      )}
+      {count > 0 && (
+        <>
+          {/* The one scroll box of the dock: the open question over the cap (C3). */}
+          <div
+            ref={bodyRef}
+            data-dock-body=""
+            className="overflow-y-auto overscroll-contain scrollbar-thin rounded-lg glass:rounded-[16px]"
+            style={folded ? undefined : { maxHeight: cap === null ? "50vh" : `${cap}px` }}
+            onScroll={read}
+          >
+            {folded && open && (
+              // The fold row: the open question and one button that ONLY
+              // opens the card (audit rule 2).
+              <div
+                data-dock-fold-row=""
+                className="flex min-w-0 items-center gap-2 rounded-lg border border-border bg-card px-3 py-1.5 text-xs glass:rounded-[16px] glass:border-primary/35"
+              >
+                <Icon name={KIND_ICON.question} size={13} className="shrink-0 text-primary" />
+                <span className="min-w-0 flex-1 truncate text-foreground" title={open.title}>
+                  {open.label}
+                </span>
+                {count > 1 && <span className="shrink-0 tabular-nums text-muted-foreground">{count} waiting</span>}
+                <Button type="button" size="sm" variant="secondary" onClick={unfold} data-dock-unfold="question" className="shrink-0">
+                  {UNFOLD_LABEL}
+                </Button>
+              </div>
+            )}
+            <div hidden={folded}>
+              {questions.map((q, i) => {
+                const isOpen = at === i;
+                // EVERY card stays mounted, hidden and inert while its tab is
+                // closed, so its picks and typed text live through a change
+                // of tab and a fold (round 7).
+                return (
+                  <div key={q.key} hidden={!isOpen} inert={!isOpen} data-dock-question={q.key}>
+                    {q.render({
+                      ...(isOpen
+                        ? {
+                            headerAside: fold,
+                            ...(tabs ? { tabs, tabPanel: { id: cardPanelId(uid), labelledBy: cardTabId(uid, at) } } : {}),
+                          }
+                        : {}),
+                      inDock: true,
+                      dockShown: isOpen && !folded,
+                    })}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          {/* The fade: theme tokens only, and it takes no click. */}
+          {!folded && over && !atEnd && (
+            <div
+              aria-hidden
+              data-dock-fade=""
+              className="pointer-events-none absolute inset-x-px z-[2] h-8 bg-gradient-to-t from-card to-transparent"
+              style={{ bottom: pinH }}
+            />
+          )}
+        </>
       )}
     </section>
   );
@@ -334,8 +416,9 @@ export default function WaitingDock({ count, phone, children, initialFolded = fa
 /**
  * The one polite live region of the dock (the a11y line of §24.11). It says
  * "N items wait for you" when the count goes up, and nothing when it goes
- * down. The chat mounts it while the flag is on, before any item waits, so a
- * screen reader hears the first arrival too. It starts from 0.
+ * down. The count holds the approvals in the thread too (D9). The chat mounts
+ * it while the flag is on, before any item waits, so a screen reader hears
+ * the first arrival too. It starts from 0.
  */
 export function WaitingDockLive({ count }: { count: number }) {
   const [prev, setPrev] = useState(0);

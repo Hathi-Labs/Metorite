@@ -1,20 +1,27 @@
 /**
- * The rules of the waiting dock (WD-1, `projects_ai_chat.md` §24.11).
+ * The rules of the waiting dock (WD-1, `projects_ai_chat.md` §24.11, D9).
+ *
+ * D9 (2026-11-27): the dock holds the two question cards and ONE pointer row.
+ * An approval card draws in the thread, as with the flag off.
  *
  * Mutations caught, by test:
- * - the dock draws with the flag off, or with nothing in it -> "draws only";
- * - a slot of a redraft counts as an item, or a card of two questions counts
- *   as two -> "the count";
- * - the cap ignores the phone, the keyboard or the two thread lines, or
- *   Expand covers the composer -> "the cap";
+ * - the dock draws with the flag off, with nothing in it, or for a slot of a
+ *   redraft alone -> "draws only";
+ * - a slot of a redraft counts as an item, a card of two questions counts as
+ *   two, or the approvals leave the count -> "the count";
+ * - the pointer names an old card, drops "and N more", or a tall card shows
+ *   its foot after Review -> "the pointer";
+ * - the cap ignores the phone, the keyboard or the two thread lines -> "the
+ *   cap";
  * - the keyboard up does not fold, or a field of the card in focus folds ->
  *   "the fold" (K3, K7);
  * - an arrival moves the focus while the member types, on a desktop, or for a
  *   text item -> "K1 and K2";
+ * - an approval moves the focus or the fold -> "K1 and K2";
  * - the box takes the focus back on a phone after the last item -> "K6";
  * - the live region speaks on a fall of the count -> "the live region";
  * - the thread line is a card or reads another count -> "the thread line";
- * - the fold row's button approves, rejects or sends -> "audit rule 2";
+ * - the fold row's button submits -> "audit rule 2";
  * - a press that began before the arm, or a held key, commits -> "the arm";
  * - a held Enter or an Enter just after a dock commit sends the box -> "the
  *   message box after a commit".
@@ -23,22 +30,20 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { personName } from "./cardTabs";
-
 import {
   MIN_DOCK_PX,
   FRESH_KEY_PROPS,
   ARM_MS,
+  POINTER_LEAD,
+  UNFOLD_LABEL,
   boxEnterBlocked,
   pressIsFresh,
-  previewLines,
-  sendLabel,
   PINNED_ACTIONS,
   TWO_LINES_PX,
-  peopleLine,
   arrivalBlursBox,
   dockCap,
   dockCount,
+  dockQuestionCount,
   arrivalUnfolds,
   dockFolded,
   dockShown,
@@ -48,10 +53,13 @@ import {
   liveAfter,
   liveAnnouncement,
   liveWords,
+  newestApproval,
   picksOnly,
+  pointerLine,
+  pointerScrollTop,
   threadLine,
-  unfoldLabel,
   userInputShape,
+  waitingApprovals,
   type DockSources,
 } from "./waitingDock";
 
@@ -67,11 +75,14 @@ describe("the dock draws only while an item waits", () => {
     expect(dockShown(true, NONE)).toBe(false);
   });
 
-  it("with an approval, a question card, or a slot of a redraft", () => {
+  it("with an approval (the pointer) or a question card", () => {
     expect(dockShown(true, two)).toBe(true);
     expect(dockShown(true, { ...NONE, elicitation: { questions: [{}] } })).toBe(true);
     expect(dockShown(true, { ...NONE, userInput: { choices: [], allowFreeform: true } })).toBe(true);
-    expect(dockShown(true, { ...NONE, confirmations: [{ key: "s", redraft: "updating" }] })).toBe(true);
+  });
+
+  it("D9: a slot of a redraft alone waits on the assistant, so it draws no pointer", () => {
+    expect(dockShown(true, { ...NONE, confirmations: [{ key: "s", redraft: "updating" }] })).toBe(false);
   });
 });
 
@@ -85,16 +96,64 @@ describe("the count", () => {
   it("never counts a slot of a redraft", () => {
     expect(dockCount({ ...NONE, confirmations: [{ key: "s", redraft: "updating" }, { key: "a" }] })).toBe(1);
   });
+
+  it("D9: the count holds the approvals in the thread, and only the questions move the dock", () => {
+    const src = { ...two, elicitation: { questions: [{}] } };
+    expect(waitingApprovals(src)).toBe(2);
+    expect(dockQuestionCount(src)).toBe(1);
+    expect(dockQuestionCount(two)).toBe(0);
+    expect(dockCount(src)).toBe(3);
+  });
+});
+
+describe("the pointer (D9)", () => {
+  it("names the newest approval that waits, and how many more", () => {
+    expect(pointerLine("Task: Fix the extruder", 0)).toBe("Waits for you: Task: Fix the extruder");
+    expect(pointerLine("Email to Kim", 2)).toBe("Waits for you: Email to Kim and 2 more");
+    expect(POINTER_LEAD).toBe("Waits for you:");
+    const cards = [{ key: "a" }, { key: "b" }, { key: "s", redraft: "updating" as const }];
+    expect(newestApproval(cards)).toEqual({ card: { key: "b" }, more: 1 });
+    expect(newestApproval([{ key: "s", redraft: "updating" as const }])).toBeNull();
+    expect(newestApproval([])).toBeNull();
+  });
+
+  it("Review shows a card that fits whole, with the least movement", () => {
+    const port = { top: 100, bottom: 600 };
+    // Below the room: its foot comes up to the foot of the room.
+    expect(pointerScrollTop(1000, port, { top: 500, bottom: 700 })).toBe(1100);
+    // Above the room: its top comes down to the top of the room.
+    expect(pointerScrollTop(1000, port, { top: 50, bottom: 250 })).toBe(950);
+    // In view: no move.
+    expect(pointerScrollTop(1000, port, { top: 200, bottom: 400 })).toBe(1000);
+  });
+
+  it("Review shows the TOP of a card taller than the room, from every place", () => {
+    const port = { top: 100, bottom: 600 };
+    for (const target of [{ top: 300, bottom: 1300 }, { top: -400, bottom: 900 }, { top: -900, bottom: 200 }]) {
+      const to = pointerScrollTop(1000, port, target);
+      expect(to).toBe(1000 + (target.top - port.top));
+    }
+  });
+
+  it("the chat moves the focus to the card's heading, never to a button, and the scroll is the thread's own", () => {
+    const chat = readFileSync(join(__dirname, "..", "components/AgentChat.tsx"), "utf-8");
+    const part = chat.slice(chat.indexOf("const reviewApproval = () =>"), chat.indexOf("const renderHitlCards"));
+    expect(part).toContain("pointerScrollTop(thread.scrollTop");
+    expect(part).toContain('card.querySelector<HTMLElement>("[data-rollup-title]")');
+    expect(part).toContain('head.setAttribute("tabindex", "-1")');
+    expect(part).toContain("head.focus({ preventScroll: true })");
+    expect(part).not.toMatch(/scrollIntoView|onAnswer|answerConfirmation|\.click\(/);
+  });
 });
 
 describe("the cap (audit rule 5)", () => {
-  const base = { chat: 800, viewport: 844, composer: 120, keyboardUp: false, cardFieldFocus: false, expanded: false };
+  const base = { chat: 800, viewport: 844, composer: 120, keyboardUp: false, cardFieldFocus: false };
 
-  it("Compact, a desktop: 40% of the chat column (D2)", () => {
+  it("a desktop: 40% of the chat column (rule 3)", () => {
     expect(dockCap({ ...base, phone: false })).toBe(320);
   });
 
-  it("Compact, a phone with the keyboard down: 50% of the visual viewport, under the room of the thread lines (D2)", () => {
+  it("a phone with the keyboard down: 50% of the visual viewport, under the room of the thread lines (rule 3)", () => {
     expect(dockCap({ ...base, phone: true, chat: 1000, viewport: 600 })).toBe(300);
     // A short chat column: two thread lines stay in view (F1).
     expect(dockCap({ ...base, phone: true, chat: 450, viewport: 844 })).toBe(450 - 120 - TWO_LINES_PX);
@@ -104,25 +163,26 @@ describe("the cap (audit rule 5)", () => {
     expect(dockCap({ ...base, phone: true, viewport: 400, keyboardUp: true, cardFieldFocus: true })).toBe(400 - 120 - TWO_LINES_PX);
   });
 
-  it("Expand: the chat less the composer and two lines, never over the composer", () => {
-    const cap = dockCap({ ...base, phone: false, expanded: true });
-    expect(cap).toBe(800 - 120 - TWO_LINES_PX);
-    expect(cap + 120).toBeLessThan(800);
-  });
-
-  it("never below the floor: the action row and a part of the body always show (rule 9)", () => {
+  it("never below the floor: the Submit row and a part of the body always show (rule 10)", () => {
     expect(dockCap({ ...base, phone: true, viewport: 100, keyboardUp: true, cardFieldFocus: true })).toBe(MIN_DOCK_PX);
   });
 });
 
-describe("rule 9: the actions never scroll (owner, 2026-11-27)", () => {
-  it("globals.css holds the card's own action rows at the foot of the dock's body", () => {
+describe("rule 10: the Submit row never scrolls (owner, 2026-11-27)", () => {
+  it("globals.css holds the question's own Submit row at the foot of the dock's body", () => {
     const css = readFileSync(join(__dirname, "..", "app/globals.css"), "utf-8").replace(/\s+/g, " ");
     const rule = css.slice(css.indexOf("[data-dock-body] :is("));
     for (const sel of PINNED_ACTIONS.split(", ")) expect(rule).toContain(sel);
     expect(rule).toMatch(/position: sticky; bottom: 0;/);
     // Theme tokens only, never a literal colour.
     expect(rule.slice(0, rule.indexOf("}"))).toContain("background: var(--card)");
+  });
+
+  it("D9: no selector of an approval is left in the dock's rules", () => {
+    expect(PINNED_ACTIONS).toBe("div:has(> [data-elicitation-submit])");
+    const css = readFileSync(join(__dirname, "..", "app/globals.css"), "utf-8");
+    const dock = css.slice(css.indexOf("WD-1 (projects_ai_chat.md 24.11"));
+    expect(dock).not.toMatch(/data-confirmation-approve|data-reply-send|data-dock-review|data-earlier-question/);
   });
 
   it("the dock draws no copy of a button: the fade takes no click and reads the tokens", () => {
@@ -132,13 +192,9 @@ describe("rule 9: the actions never scroll (owner, 2026-11-27)", () => {
     expect(dock).not.toMatch(/data-confirmation-approve|data-reply-send|data-elicitation-submit/);
   });
 
-  it("the people line: the To names that go, each other row as a count, and who is left out", () => {
-    const rows = { to: ["kim@contoso.test", "Ravi Kumar <ravi@contoso.test>", "lena@contoso.test"], cc: ["geo@acme.test", "ops@acme.test"] };
-    const all = new Set(["kim@contoso.test", "ravi kumar <ravi@contoso.test>", "lena@contoso.test", "geo@acme.test", "ops@acme.test"]);
-    expect(peopleLine(rows, all, personName)).toBe("To Kim, Ravi Kumar, Lena · Cc 2");
-    const less = new Set(["kim@contoso.test", "ravi kumar <ravi@contoso.test>", "lena@contoso.test", "ops@acme.test"]);
-    expect(peopleLine(rows, less, personName)).toBe("To Kim, Ravi Kumar, Lena · Cc 1 · 1 left out");
-    expect(peopleLine({ to: ["kim@contoso.test"], cc: [] }, new Set(), personName)).toBe("To nobody · 1 left out");
+  it("D9 requirement 4: a change of tab sets the dock's scroll back to the top", () => {
+    const dock = readFileSync(join(__dirname, "..", "components/WaitingDock.tsx"), "utf-8");
+    expect(dock).toMatch(/useLayoutEffect\(\(\) => \{\s*if \(bodyRef\.current\) bodyRef\.current\.scrollTop = 0;\s*\}, \[openKey\]\);/);
   });
 });
 
@@ -205,15 +261,22 @@ describe("K1 and K2: an arrival never moves the focus while the member types", (
     expect(arrivalBlursBox({ ...idle, boxFocused: false })).toBe(false);
   });
 
-  it("picks only (audit rule 6): an approval of any kind, or a question card where every question has options", () => {
-    expect(picksOnly({ kind: "approval" })).toBe(true);
-    expect(picksOnly({ kind: "question", questions: [{ options: ["a"], allowFreeformInput: false }] })).toBe(true);
+  it("picks only (audit rule 6): a question card where every question has options", () => {
+    expect(picksOnly([{ options: ["a"], allowFreeformInput: false }])).toBe(true);
     // The optional "Other" field does not make a text item.
-    expect(picksOnly({ kind: "question", questions: [{ options: ["a"], allowFreeformInput: true }] })).toBe(true);
-    expect(picksOnly({ kind: "question", questions: [{ options: ["a"] }, { options: null }] })).toBe(false);
-    expect(picksOnly({ kind: "question", questions: [{ options: [] }] })).toBe(false);
-    expect(picksOnly({ kind: "question", questions: userInputShape({ choices: ["Yes", "No"], allowFreeform: true }) })).toBe(true);
-    expect(picksOnly({ kind: "question", questions: userInputShape({ choices: [], allowFreeform: true }) })).toBe(false);
+    expect(picksOnly([{ options: ["a"], allowFreeformInput: true }])).toBe(true);
+    expect(picksOnly([{ options: ["a"] }, { options: null }])).toBe(false);
+    expect(picksOnly([{ options: [] }])).toBe(false);
+    expect(picksOnly(userInputShape({ choices: ["Yes", "No"], allowFreeform: true }))).toBe(true);
+    expect(picksOnly(userInputShape({ choices: [], allowFreeform: true }))).toBe(false);
+  });
+
+  it("D9: only the count of the dock's questions moves the focus, never an approval in the thread", () => {
+    const chat = readFileSync(join(__dirname, "..", "components/AgentChat.tsx"), "utf-8");
+    expect(chat).toContain("const dockQ = dockQuestionCount(dockSources);");
+    expect(chat).toContain("if (dockQ > prev && box) {");
+    expect(chat).toContain("} else if (dockQ === 0 && prev > 0) {");
+    expect(chat).toContain("}, [dockOn, dockQ, dockPicksOnly, phoneChrome, focusQuietly]);");
   });
 });
 
@@ -261,29 +324,28 @@ describe("the thread line (WD-D1)", () => {
     expect(threadLine(4)).toBe("Waiting for you: 4 items, below");
   });
 
-  it("AgentChat draws it as a plain line that only scrolls the thread", () => {
+  it("AgentChat draws it as a plain line that only scrolls the thread, while a question is in the dock", () => {
     const chat = readFileSync(join(__dirname, "..", "components/AgentChat.tsx"), "utf-8");
-    const part = chat.slice(chat.indexOf("const renderDockThreadPart"), chat.indexOf("const renderHitlCards"));
-    expect(part).toContain("{threadLine(dockN)}");
-    expect(part).toContain("onClick={scrollToBottom}");
-    expect(part).not.toMatch(/<(RollupCard|ConfirmationQueue|ConfirmationCard)\b/);
+    const part = chat.slice(chat.indexOf("const renderHitlCards"), chat.indexOf("<form onSubmit={handleSubmit}"));
+    expect(part).toContain("const lineHere = dockOn && dockQ > 0;");
+    const line = part.slice(part.indexOf("{lineHere && ("), part.indexOf("</Button>", part.indexOf("{lineHere && (")));
+    expect(line).toContain("{threadLine(dockN)}");
+    expect(line).toContain("onClick={scrollToBottom}");
+    expect(line).not.toMatch(/<(RollupCard|ConfirmationQueue|ConfirmationCard)\b/);
   });
 });
 
-describe("audit rule 2: the fold row never approves, rejects or sends", () => {
+describe("audit rule 2: the fold row never submits", () => {
   it("its one button only opens the card, with a word that is no consent", () => {
-    expect(unfoldLabel("approval")).toBe("Review");
-    expect(unfoldLabel("question")).toBe("Answer");
-    for (const w of [unfoldLabel("approval"), unfoldLabel("question")]) {
-      expect(w).not.toMatch(/approve|reject|send|submit|discard/i);
-    }
+    expect(UNFOLD_LABEL).toBe("Answer");
+    expect(UNFOLD_LABEL).not.toMatch(/approve|reject|send|submit|discard/i);
   });
 
-  it("the queue wires the button to `onUnfold` and to no answer", () => {
-    const q = readFileSync(join(__dirname, "..", "components/ConfirmationQueue.tsx"), "utf-8");
-    const fold = q.slice(q.indexOf("function DockQueue"), q.indexOf("<div hidden={folded}>"));
-    expect(fold).toContain("onClick={onUnfold}");
-    expect(fold).not.toMatch(/onAnswer|onApprove|onReject|onReply|onSubmit/);
+  it("the dock wires the button to the unfold and to no answer", () => {
+    const dock = readFileSync(join(__dirname, "..", "components/WaitingDock.tsx"), "utf-8");
+    const row = dock.slice(dock.indexOf("data-dock-fold-row"), dock.indexOf("<div hidden={folded}>"));
+    expect(row).toContain("onClick={unfold}");
+    expect(row).not.toMatch(/onAnswer|onApprove|onReject|onReply|onSubmit/);
   });
 });
 
@@ -297,30 +359,22 @@ describe("the fresh press (24.11, 2026-11-27)", () => {
     expect(prevented).toBe(1);
   });
 
-  it("each commit button of the dock takes the guard, and the card arms again on each change of view", () => {
-    const read = (f: string) => readFileSync(join(__dirname, "..", f), "utf-8");
-    const card = read("components/ConfirmationCard.tsx");
-    // Round 7: the arm is keyed on what the member sees, not on the view alone.
-    expect(card).toContain("useArmed(dockMode ? `${dockMode}:${dockShown !== false}:${asking || formAsking}:${slot ?? \"\"}` : \"\", dockShown !== false)");
-    expect(card).toContain("onClickCapture={dockMode ? arm.guard : undefined}");
-    expect(card).toMatch(/data-confirmation-reject=""\s+\{\.\.\.fresh\}/);
-    expect(card).toMatch(/data-confirmation-approve=""\s+\{\.\.\.fresh\}/);
-    for (const f of ["components/NewMailCardForm.tsx", "components/ReplyCardForm.tsx"]) {
-      const src = read(f);
-      expect(src).toMatch(/data-reply-send=""\s+\{\.\.\.fresh\}/);
-      expect(src).toMatch(/data-reply-save=""\s+\{\.\.\.fresh\}/);
-      // Review is its own element: a key that no commit button holds.
-      expect(src).toContain('<Button key="review"');
-    }
-    expect(read("components/EarlierDraftQuestion.tsx")).toContain('data-earlier-delete="" {...fresh}');
+  it("Submit and Not now of a question in the dock take the guard, and the card arms again on each change of view", () => {
+    const card = readFileSync(join(__dirname, "..", "components/ElicitationCard.tsx"), "utf-8");
+    expect(card).toContain("useArmed(inDock ? `q:${dockShown !== false}` : \"\", inDock && dockShown !== false)");
+    expect(card).toContain("onClickCapture={inDock ? arm.guard : undefined}");
+    expect(card).toContain("{...(inDock ? FRESH_KEY_PROPS : {})}");
+    // The dock hands `dockShown` to each card: open tab and not folded.
+    const dock = readFileSync(join(__dirname, "..", "components/WaitingDock.tsx"), "utf-8");
+    expect(dock).toContain("dockShown: isOpen && !folded,");
   });
-});
 
-describe("the previews", () => {
-  it("the first three lines of a text, and whether more follow", () => {
-    expect(previewLines("a\nb\nc\nd")).toEqual({ lines: ["a", "b", "c"], more: true });
-    expect(previewLines("a\nb\n")).toEqual({ lines: ["a", "b"], more: false });
-    expect(sendLabel(5)).toBe("Send to 5");
+  it("the guard reads only the controls of a question (D9)", () => {
+    const fp = readFileSync(join(__dirname, "freshPress.ts"), "utf-8");
+    const list = fp.slice(fp.indexOf("export const COMMIT_CONTROLS"), fp.indexOf('].join(", ")'));
+    expect(list).toContain("[data-elicitation-submit]");
+    expect(list).toContain("[data-not-now]");
+    expect(list).not.toMatch(/confirmation|reply|earlier/);
   });
 });
 
@@ -346,8 +400,10 @@ describe("the arm (24.11 rule 7, round 7)", () => {
     expect(pressIsFresh({ ...log, pointerDownAt: 10, pointerUpAt: 20, armedAt: ARMED, now: 5000 })).toBe(true);
   });
 
-  it("the card waits ARM_MS", () => {
+  it("the card waits ARM_MS, the same value as an approval in the thread", () => {
     expect(ARM_MS).toBe(400);
+    const card = readFileSync(join(__dirname, "..", "components/ConfirmationCard.tsx"), "utf-8");
+    expect(card).toContain(`export const ARM_MS = ${ARM_MS};`);
   });
 });
 

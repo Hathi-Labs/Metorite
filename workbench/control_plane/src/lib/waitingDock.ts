@@ -2,10 +2,14 @@
  * waitingDock — the rules of the waiting dock of the chat (WD-1).
  *
  * Spec: `project-docs/specs/projects_ai_chat.md` §24.11 (owner, 2026-11-27,
- * D234). With `WAITING_DOCK_ORGS` on, every card that waits on the member
- * draws in a dock above the message box, outside the scrolling thread. The
- * thread keeps one line at the old place. The dock never scrolls away, it may
- * fold to one row, and it has a height cap.
+ * D234, D9). With `WAITING_DOCK_ORGS` on, each QUESTION card that waits on
+ * the member draws in a dock above the message box, outside the scrolling
+ * thread. The thread keeps one line at the old place. The dock never scrolls
+ * away, it may fold to one row, and it has a height cap.
+ *
+ * D9 (2026-11-27): an approval card never draws in the dock. It draws in the
+ * thread, exactly as with the flag off. While one waits, the dock holds ONE
+ * pointer row that names it. Its Review only scrolls the thread to the card.
  *
  * This file decides WHAT the dock holds, HOW TALL it may be, WHEN it folds and
  * WHEN the focus may move (K1, K2, K3, K6, K7). It reads the state that
@@ -17,9 +21,7 @@
 
 import { refocusQuietly } from "@/lib/composerFocus";
 import type { PendingConfirmation } from "@/lib/confirmationQueue";
-
-/** The kind of a dock item: a write to approve, or a question card. */
-export type DockKind = "approval" | "question";
+import { nearestScrollTop, type Span } from "@/lib/scrollWithin";
 
 /** One question of a question card, as the dock reads it. */
 export interface DockQuestionShape {
@@ -40,21 +42,36 @@ export interface DockSources {
 /**
  * How many items wait on the member: each approval card that is not a slot,
  * and each question card. A card of many questions is one item (one tab).
- * A slot of a redraft waits on the assistant, so it never counts.
+ * A slot of a redraft waits on the assistant, so it never counts. The count
+ * holds the approvals in the thread too (D9): the thread line and the live
+ * region read it.
  */
 export function dockCount(src: DockSources): number {
-  const approvals = src.confirmations.filter((c) => !c.redraft).length;
-  return approvals + (src.elicitation ? 1 : 0) + (src.userInput ? 1 : 0);
+  return waitingApprovals(src) + dockQuestionCount(src);
+}
+
+/** The approvals that wait on the member, in the thread (no slot). */
+export function waitingApprovals(src: DockSources): number {
+  return src.confirmations.filter((c) => !c.redraft).length;
 }
 
 /**
- * The dock draws only while it holds a tab: an approval, a slot of a redraft
- * (which keeps its tab, as in the queue today), or a question card that
- * waits. With the flag off it never draws.
+ * The question cards in the dock. Only these move the focus or the fold (K1,
+ * K2, K6, K7). An approval waits in the thread, so it moves nothing there (D9).
+ */
+export function dockQuestionCount(src: DockSources): number {
+  return (src.elicitation ? 1 : 0) + (src.userInput ? 1 : 0);
+}
+
+/**
+ * The dock draws only while it holds something: a question card that waits,
+ * or the pointer to an approval that waits (D9). A slot of a redraft waits on
+ * the assistant, so alone it draws no pointer. With the flag off it never
+ * draws.
  */
 export function dockShown(on: boolean, src: DockSources): boolean {
   if (!on) return false;
-  return src.confirmations.length > 0 || !!src.elicitation || !!src.userInput;
+  return waitingApprovals(src) > 0 || dockQuestionCount(src) > 0;
 }
 
 // ── The words ─────────────────────────────────────────────────────────────
@@ -95,23 +112,55 @@ export function liveAfter(prev: number, n: number, words: string): string {
 }
 
 /** The label of the fold row's button. It only opens the card (audit rule 2). */
-export function unfoldLabel(kind: DockKind): string {
-  return kind === "approval" ? "Review" : "Answer";
+export const UNFOLD_LABEL = "Answer";
+
+/** The lead words of the pointer row (D9). */
+export const POINTER_LEAD = "Waits for you:";
+
+/** The words after the label when more approvals wait: "and 2 more". */
+export function pointerMore(n: number): string {
+  return n > 0 ? `and ${n} more` : "";
+}
+
+/** The whole line of the pointer row, as a screen reader and a test read it. */
+export function pointerLine(label: string, more: number): string {
+  return [POINTER_LEAD, label, pointerMore(more)].filter(Boolean).join(" ");
+}
+
+/**
+ * The newest approval that waits, for the pointer row: the last card of the
+ * queue that is not a slot, and how many others wait. Null when none waits.
+ */
+export function newestApproval<T extends Pick<PendingConfirmation, "redraft">>(
+  cards: readonly T[],
+): { card: T; more: number } | null {
+  const live = cards.filter((c) => !c.redraft);
+  const card = live[live.length - 1];
+  return card ? { card, more: live.length - 1 } : null;
+}
+
+/**
+ * The `scrollTop` of the thread after the pointer's Review (D9). A card that
+ * fits shows whole, with the least movement. A card taller than the thread's
+ * room shows its TOP, so the member reads it from the start.
+ */
+export function pointerScrollTop(scrollTop: number, port: Span, target: Span): number {
+  const taller = target.bottom - target.top > port.bottom - port.top;
+  if (taller) return scrollTop + (target.top - port.top);
+  return nearestScrollTop(scrollTop, port, target);
 }
 
 // ── The kind of input an item needs (K2, audit rule 6) ────────────────────
 
 /**
- * Picks only: the member answers with a press, and no keyboard is needed. An
- * approval of any kind is picks only (its fields are optional edits). A
+ * Picks only: the member answers with a press, and no keyboard is needed. A
  * question card is picks only when every question has options (audit rule
  * 6). Its "Other" field is optional, and opens a keyboard only on a tap (K3).
- * A card with any question that has no options is a text item.
+ * A card with any question that has no options is a text item. An approval
+ * is in the thread (D9), so the dock never reads it here.
  */
-export function picksOnly(item: { kind: DockKind; questions?: readonly DockQuestionShape[] }): boolean {
-  if (item.kind === "approval") return true;
-  const qs = item.questions ?? [];
-  return qs.length > 0 && qs.every((q) => (q.options?.length ?? 0) > 0);
+export function picksOnly(questions: readonly DockQuestionShape[]): boolean {
+  return questions.length > 0 && questions.every((q) => (q.options?.length ?? 0) > 0);
 }
 
 /** The questions of the `ask_user` card, in the shape `picksOnly` reads. */
@@ -197,60 +246,23 @@ export function isTextField(el: { tagName?: string; type?: string; isContentEdit
 // ── The height cap (audit rule 5) ─────────────────────────────────────────
 
 /**
- * Rule 9 (owner, 2026-11-27): the action rows that never scroll in the dock.
- * Each is the card's own row, so the dock draws no copy of a button. The same
- * list is the rule in `globals.css`.
+ * Rule 10 (owner, 2026-11-27): the Submit row of the open question never
+ * scrolls in the dock. It is the card's own row, so the dock draws no copy of
+ * a button. The same selector is the rule in `globals.css`.
  */
-export const PINNED_ACTIONS =
-  "div:has(> [data-confirmation-approve]), div:has(> [data-reply-send]), div:has(> [data-dock-review]), div:has(> [data-elicitation-submit]), [data-earlier-question]";
+export const PINNED_ACTIONS = "div:has(> [data-elicitation-submit])";
 
-/** The least height of the dock, so the action row and a part of the body
+/** The least height of the dock, so the Submit row and a part of the body
  *  always show, even on a very small screen. */
 export const MIN_DOCK_PX = 160;
 
-/**
- * The one line of the people of a send card in the dock (rule 9): the To
- * names that go, the count of each other row that goes, and the count of the
- * people left out. "To Kim, Ravi Kumar, Lena · Cc 2", "To Kim · 1 left out".
- */
-export function peopleLine(
-  rows: { to: readonly string[]; cc: readonly string[]; bcc?: readonly string[] },
-  ticked: ReadonlySet<string>,
-  name: (addr: string) => string,
-): string {
-  const on = (a: string) => ticked.has(a) || ticked.has(a.toLowerCase());
-  const to = rows.to.filter(on).map(name);
-  const cc = rows.cc.filter(on).length;
-  const bcc = (rows.bcc ?? []).filter(on).length;
-  const all = rows.to.length + rows.cc.length + (rows.bcc ?? []).length;
-  const goes = rows.to.filter(on).length + cc + bcc;
-  const parts = [to.length > 0 ? `To ${to.join(", ")}` : "To nobody"];
-  if (cc > 0) parts.push(`Cc ${cc}`);
-  if (bcc > 0) parts.push(`Bcc ${bcc}`);
-  if (all > goes) parts.push(`${all - goes} left out`);
-  return parts.join(" · ");
-}
-
-// ── Compact and Expanded (D2, D3, owner delegation of 2026-11-27) ─────────
-
-/** The mode of the open card in the dock: the same card, drawn two ways. */
-export type DockMode = "compact" | "expanded";
-
-/** The body lines that the compact view of an email shows. */
-export const PREVIEW_LINES = 3;
-
-/** The first `PREVIEW_LINES` lines of a text, and whether more follow. */
-export function previewLines(text: string): { lines: string[]; more: boolean } {
-  const all = text.replace(/\s+$/, "").split(/\r?\n/);
-  return { lines: all.slice(0, PREVIEW_LINES), more: all.length > PREVIEW_LINES };
-}
+// ── The fresh press (24.11 rule 7, round 7) ───────────────────────────────
 
 /**
- * The consent rule (projects_ai_chat.md 24.11, 2026-11-27): a commit needs a
- * FRESH press. A held key (`repeat`) never presses a commit button: its
- * default action, the click, does not run. The card's arm does the rest
- * (`lib/freshPress.ts`): a commit waits `ARM_MS` after each change of what
- * the member sees of the card.
+ * A commit needs a FRESH press. A held key (`repeat`) never presses Submit or
+ * Not now: its default action, the click, does not run. The card's arm does
+ * the rest (`lib/freshPress.ts`): a commit waits `ARM_MS` after each change
+ * of what the member sees of the card.
  */
 export const FRESH_KEY_PROPS = {
   onKeyDown: (e: { repeat: boolean; preventDefault: () => void }) => {
@@ -258,7 +270,11 @@ export const FRESH_KEY_PROPS = {
   },
 };
 
-/** How long a card ignores a commit after it shows, in ms (24.11 rule 7). */
+/**
+ * How long a question card in the dock ignores a commit after it shows, in
+ * ms (24.11 rule 7). It is the value of `ARM_MS` in `ConfirmationCard.tsx`,
+ * which an approval keeps in the thread. A test holds the two equal.
+ */
 export const ARM_MS = 400;
 
 /** The times of the last press of each kind, from `performance.now()`. */
@@ -302,11 +318,6 @@ export function boxEnterBlocked(st: { dock: boolean; repeat: boolean; msSinceCom
   return st.dock && (st.repeat || st.msSinceCommit < ARM_MS);
 }
 
-/** D3: the Send of an Expanded email names how many people get it. */
-export function sendLabel(people: number): string {
-  return `Send to ${people}`;
-}
-
 /** Two lines of the thread stay in view over the dock (F1): about 3rem. */
 export const TWO_LINES_PX = 48;
 
@@ -317,25 +328,22 @@ export interface CapInput {
   chat: number;
   /** The height of the visual viewport, in px, or null before it is read. */
   viewport: number | null;
-  /** The height of the form without the dock: the box and its rows. */
+  /** The height of the form without the dock's body: the box, its rows and
+   *  the pointer row. */
   composer: number;
   keyboardUp: boolean;
   /** A field of the card holds the focus (K3). */
   cardFieldFocus: boolean;
-  /** The member pressed Expand. */
-  expanded: boolean;
 }
 
 /**
  * The most height the dock may take, in px. The cap counts the dock only.
- * The dock is as tall as its content, up to the cap (D2, 2026-11-27).
+ * The dock is as tall as its content, up to the cap (rule 3).
  *
- * - Compact, a desktop: 40% of the chat column.
- * - Compact, a phone: 50% of the visual viewport.
+ * - A desktop: 40% of the chat column.
+ * - A phone: 50% of the visual viewport.
  * - A phone with the keyboard up and a field of the card in focus: the
  *   visual viewport less the composer less two lines of the thread.
- * - Expanded: the chat column less the composer less two lines of the
- *   thread. It never covers the composer.
  * - No cap is over that room, so two lines of the thread always show (F1).
  */
 export function dockCap(st: CapInput): number {
@@ -346,7 +354,37 @@ export function dockCap(st: CapInput): number {
   else if (!st.phone) base = Math.floor(st.chat * 0.4);
   else base = Math.floor(vp * 0.5);
   // No cap ever covers two lines of the thread (F1). A very small screen
-  // still keeps the action row and a part of the body (`MIN_DOCK_PX`).
-  const most = room(st.chat);
-  return Math.max(MIN_DOCK_PX, st.expanded ? most : Math.min(base, most));
+  // still keeps the Submit row and a part of the body (`MIN_DOCK_PX`).
+  return Math.max(MIN_DOCK_PX, Math.min(base, room(st.chat)));
+}
+
+// LEGACY-DOCK-APPROVALS: removed by the deletion commit of D9.
+export type DockMode = "compact" | "expanded";
+export const PREVIEW_LINES = 3;
+export function previewLines(text: string): { lines: string[]; more: boolean } {
+  const all = text.replace(/\s+$/, "").split(/\r?\n/);
+  return { lines: all.slice(0, PREVIEW_LINES), more: all.length > PREVIEW_LINES };
+}
+export function sendLabel(people: number): string {
+  return `Send to ${people}`;
+}
+export function unfoldLabel(kind: "approval" | "question"): string {
+  return kind === "approval" ? "Review" : "Answer";
+}
+export function peopleLine(
+  rows: { to: readonly string[]; cc: readonly string[]; bcc?: readonly string[] },
+  ticked: ReadonlySet<string>,
+  name: (addr: string) => string,
+): string {
+  const on = (a: string) => ticked.has(a) || ticked.has(a.toLowerCase());
+  const to = rows.to.filter(on).map(name);
+  const cc = rows.cc.filter(on).length;
+  const bcc = (rows.bcc ?? []).filter(on).length;
+  const all = rows.to.length + rows.cc.length + (rows.bcc ?? []).length;
+  const goes = rows.to.filter(on).length + cc + bcc;
+  const parts = [to.length > 0 ? `To ${to.join(", ")}` : "To nobody"];
+  if (cc > 0) parts.push(`Cc ${cc}`);
+  if (bcc > 0) parts.push(`Bcc ${bcc}`);
+  if (all > goes) parts.push(`${all - goes} left out`);
+  return parts.join(" · ");
 }
