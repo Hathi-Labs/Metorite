@@ -1092,6 +1092,10 @@ exit code, and it orders events by the `tool_use` index, as `openClaims` does.
      a word, with a result that is not an error. The line format is
      `REQUEUE<TAB>pr<TAB>task<TAB>lane<TAB>note`, as in
      `printf 'REQUEUE\t%s\t%s\t%s\t%s\n' N T lane 'note' >> ~/lanes/merge-queue.tsv`.
+     The box merger lane reads these lines for a HIGH PR (its lane notes,
+     `~/lanes/lane-merge-*.txt`, 2026-11-26). The merge bot does not read
+     them. `lane-merge.md` (~53) and `lane_handover.sh` (~35) still call this
+     file history. That text is stale, and task 4042 notes it for a fix.
   3. An `add_task_reference` `tool_use` on the URL of N with `landing` set to
      `queued`, `parked` or `gone`. This disposition exists only once PR 2898
      (LBB-2) is on main. Before that, it is not counted.
