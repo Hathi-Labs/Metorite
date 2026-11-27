@@ -883,7 +883,9 @@ of agent graph view as well, in addition to the timeline, list, board, etc.
 
 The owner approved two mockups on 2026-11-26: a new Agents view, and a simpler phone view. The new view replaces the map of SW-103 on the Agents canvas of a project. The lens of Agents at work keeps that map. The flag `AGENT_LENSES_ORGS` keeps the new view dark.
 
-**Owner, 2026-11-27 (task 4097).** The view had too many options. The owner asked for one map of everyone's work, with a few filters and the same data. This replaces some rules of 2026-11-26. They are the Board, Graph and List switch, the state chips and the Waits-on toggle. They are also the overview tiles, the levels and the breadcrumb. It also replaces the scale mockup `scale.html`. Do not bring them back.
+**Owner, 2026-11-27 (task 4097).** The view had too many options. The owner asked for one map of everyone's work, with a few filters and the same data.
+
+This replaces some rules of 2026-11-26. They are the Board, Graph and List switch, the state chips and the Waits-on toggle. They are also the overview tiles, the levels and the breadcrumb. It also replaces the scale mockup `scale.html`. Do not bring them back.
 
 - **One view.** The Agents canvas draws one map. The question that it answers: how the work splits across people, their agents and their subagents, and what needs the member.
 - **One toolbar, one row.** People (Everyone, Me, then each person), one switch (Active or All) and Find. "Needs you N" with a step back and next sits at the right, and only when a question waits. It holds no other control.
