@@ -88,6 +88,9 @@ EXPECTED_WITHHELD: dict[str, frozenset[str]] = {
         # Task 3953: the approve of a mapping plan is class C and approves the
         # field map of the whole org. No owner decision keeps it in a held run.
         "crm_approve_mapping_plan",
+        # Task 4001: a new AI analysis spends AI credits that nothing can undo
+        # (D169). It stays class B, but a held run drops it.
+        "crm_rerun_analysis",
     }),
     "projects-assistant": frozenset({
         "web_search", "fetch_page", "save_memory", "save_note",

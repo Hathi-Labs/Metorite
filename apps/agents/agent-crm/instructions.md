@@ -72,7 +72,7 @@ shows one card first.
 - **`crm_decide_suggestion`** uses, dismisses or undoes one suggestion. Give the
   list ("deals") or the module ("Commercials"). Never give a number.
 - **`crm_analysis_status`** reads the last AI analysis. **`crm_rerun_analysis`**
-  starts it now. It can use AI credits.
+  starts it now. It can use AI credits. A held chat does not have it (task 4001).
 
 ## What you can change
 

@@ -28,7 +28,7 @@ Spec only, and nothing is built. The owner put the converter on `aroh-sandbox-1`
 2026-11-25, in review, with no flag and no migration.** The CRM agent gets five
 tools. `crm_mapping_suggestions`, `crm_preview_suggestion` and
 `crm_analysis_status` read. `crm_decide_suggestion` and `crm_rerun_analysis`
-write, each on one card. They pay seven CRM rows, so the CRM ceiling goes from
+write, each on one card. A held chat drops `crm_rerun_analysis`, because a run spends AI credits (task 4001). They pay seven CRM rows, so the CRM ceiling goes from
 67 to 60. Fence: `tests/unit/test_crm_suggestion_tools.py`.
 
 **P-1b (task 3922) is BUILT, 2026-11-25, with no flag.** The chat drafts a
