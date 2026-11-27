@@ -78,16 +78,29 @@ WHEN = {
     "studio-share": (
         "Load to share a skill with the organization, end its share, or approve or reject "
         "a skill share."),
+    # PAR-9 (task 3950): the small pack of the Custom Apps, of the studio owner.
+    "studio-apps": (
+        "Load to read, change, publish, share or pin a Custom App of the App Workshop, its "
+        "files or its stored data."),
     # PAR-2a (task 3102): the members of the org. PAR-4a (task 3107): the groups,
     # the roles, the overrides and the name of the org. PAR-6a (task 3109): the
     # Integrations. PAR-4d (task 3936): the seats.
     "org-admin": (
         "Load for org members, seats, sign-in requests, groups, roles, overrides or name, or "
         "integrations, MCP servers, plugins, GitHub."),
-    # P-5b-1 (task 3114): the dark people pack of the same owner.
+    # P-5b-1 (task 3114): the dark people pack of the same owner. P-5b-2 (task
+    # 3943) added the changes of your own row and your absences. P-5b-5 (task
+    # 3946) added the send of my brief.
     "people": (
-        "Load for the people directory, your own row, the open work of a colleague, or the "
-        "Reach preview."),
+        "Load for the people directory, your row or its changes, your absences, a "
+        "colleague's work, the Reach preview, or to send my brief."),
+    # P-1c (task 3923): the dark calendar-connections pack of the same owner.
+    "calendar-connections": (
+        "Load to sync a connected Google or Outlook calendar now, or to show or hide "
+        "your tasks in it."),
+    # Task 3963: the notes pack of the same owner.
+    "notes": (
+        "Load for your meetings, a meeting transcript or the Note Taker settings."),
 }
 
 

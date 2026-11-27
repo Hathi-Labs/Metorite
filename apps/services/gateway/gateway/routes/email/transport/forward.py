@@ -62,6 +62,7 @@ Fence: ``tests/unit/test_email_forward.py`` (hermetic) and
 from __future__ import annotations
 
 import html as _html
+import json
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -70,6 +71,7 @@ from typing import Any
 
 import httpx
 from acb_auth import UserContext, get_current_user
+from acb_common import member_actions
 from fastapi import Depends, HTTPException
 from gateway.routes.email.core import (
     _log,
@@ -316,6 +318,7 @@ async def forward_email(
                 total = sum(int(f.size_bytes or 0) for f in chosen)
                 _log.info("email.forwarded", account_id=account_id, message_id=mid,
                           attachments=len(sent_names), bytes=total, native=True)
+                await _record_forward(db, user, row, req)
                 return {"id": sent_id, "ok": True, "subject": subject,
                         "attachments": sent_names, "bytes": total}
             # Graph's forward carries every file or none of them, so a subset
@@ -347,6 +350,10 @@ async def forward_email(
                     attachments=attachments or None,
                     thread_id=None,
                 )
+            # Only this SMTP path can name a refused recipient (§21.15).
+            await _record_forward(
+                db, user, row, req,
+                refused=getattr(sess.provider, "last_refused", None) or ())
 
     _log.info(
         "email.forwarded", account_id=account_id, message_id=mid,
@@ -359,6 +366,38 @@ async def forward_email(
         "attachments": [a["filename"] for a in attachments],
         "bytes": total,
     }
+
+
+def _sender_address(value: Any) -> str | None:
+    """The address in ``email_messages.from_address``. The column is JSONB,
+    ``{"name", "email"}``, so the address is the ``email`` key. A JSON text
+    and a plain address also read."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return value
+    if isinstance(value, dict):
+        return str(value.get("email") or "") or None
+    return value if isinstance(value, str) else None
+
+
+async def _record_forward(
+    db: Any, user: UserContext, row: Any, req: ForwardEmailRequest,
+    refused: Any = (),
+) -> None:
+    """WS-PZ MM-1: one row in the act record for the forward that just went.
+    The row holds the sender domain and the recipients that the server took,
+    never a subject or a body. Dark behind MEMBER_ACTIONS_ORGS, and it never
+    fails the forward."""
+    await member_actions.record_act(
+        db, org=member_actions.org_of(user), member=user.email or "",
+        app="email", act="forward", via="app", item_kind="email",
+        item_id=str(row.id), mailbox_id=str(row.account_id),
+        features={"sender_domain": member_actions.domain_of(
+            _sender_address(row.from_address))},
+        targets=member_actions.sent_to(
+            [*req.to, *(req.cc or []), *(req.bcc or [])], refused))
 
 
 async def _fetch_files(

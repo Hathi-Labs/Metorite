@@ -117,6 +117,8 @@ BEGIN
   TRUNCATE public.agent_client, public.auth_email_otp_token, public.email_detached_purges,
            public.failure_fingerprints, public.failure_daily, public.failure_config;
   DELETE FROM public.agent_token;
+  -- A sandbox run capability holds a token hash (SBX-2). The CHECK and the key refuse a blank, so delete the rows.
+  DELETE FROM public.sandbox_capabilities;
   DELETE FROM public.provider_keys;
   -- A push subscription is a device credential. Staging must not push to a real phone (WS-66 RE-9b).
   DELETE FROM public.push_subscriptions;

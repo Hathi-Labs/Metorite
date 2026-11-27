@@ -84,12 +84,58 @@ def test_exemptions_are_deliberate_and_few() -> None:
     failure store holds the counts of platform code faults in three platform
     tables with no organization id and no tenant text. Only SECURITY DEFINER
     functions reach them. ``test_the_failure_store_tables_are_placed`` pins
-    each entry and its reason."""
+    each entry and its reason.
+
+    Raised 19 → 20 by WS-TO SBX-2 (``agent_sandbox.md`` §12.2 decision 5,
+    migration 503). The sandbox door looks a capability up by its token hash
+    before it knows the tenant, as the edge does for ``agent_token``.
+    ``test_the_sandbox_capability_table_is_exempt_with_its_reason`` pins the
+    entry and its reason."""
     gen = _generator()
-    assert len(gen.EXEMPT) <= 19, (
+    assert len(gen.EXEMPT) <= 20, (
         f"{len(gen.EXEMPT)} exempt tables. Each one is a table with no tenant "
         "isolation. Justify the growth explicitly."
     )
+
+
+def test_the_sandbox_capability_table_is_exempt_with_its_reason() -> None:
+    """WS-TO SBX-2 (``agent_sandbox.md`` §12.2 decision 5). The door reads a
+    capability before it knows the tenant, so the table is RLS-EXEMPT, with
+    the reason of ``agent_token``. The row keeps ``organization_id`` with a
+    foreign key to the tenant, the hash is the key, and no column holds the
+    token. The migration revokes PUBLIC and the Supabase roles, because a
+    table with no policy is open to any role with a grant."""
+    gen = _generator()
+    assert "sandbox_capabilities" in gen.discover_tables()
+    assert gen.EXEMPT.get("sandbox_capabilities") == (
+        "looked up by token hash before the tenant is known; returns "
+        "organization_id so the door can bind it"
+    )
+    assert "sandbox_capabilities" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "sandbox_capabilities" not in policies
+    [migration] = [
+        p for p in (_REPO / "infra" / "postgres").glob("[0-9]*_*.sql")
+        if "CREATE TABLE IF NOT EXISTS sandbox_capabilities"
+        in p.read_text(encoding="utf-8")
+    ]
+    body = migration.read_text(encoding="utf-8")
+    create = body.split("CREATE TABLE IF NOT EXISTS sandbox_capabilities", 1)[1]
+    columns = create.split(");", 1)[0]
+    assert re.search(r"organization_id\s+UUID\s+NOT NULL REFERENCES organization \(id\) "
+                     r"ON DELETE CASCADE", columns)
+    assert re.search(r"token_sha256\s+TEXT\s+PRIMARY KEY", columns)
+    assert "CHECK (token_sha256 ~ '^[0-9a-f]{64}$')" in columns
+    assert "CHECK (expires_at <= created_at + interval '15 minutes')" in columns
+    assert "CHECK (phase <> 'smoke' OR cardinality(write_scopes) = 0)" in columns
+    assert not re.search(r"\btoken\s+TEXT", columns), "the table never holds the token"
+    assert "ROW LEVEL SECURITY" not in body
+    assert "REVOKE ALL ON TABLE sandbox_capabilities FROM PUBLIC;" in body
+    assert "ARRAY['anon', 'authenticated', 'service_role']" in body
+    assert "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE sandbox_capabilities TO acb_app;" \
+        in body
 
 
 def test_the_detached_purge_table_is_exempt_with_its_reason() -> None:
@@ -246,6 +292,38 @@ def test_the_studio_skill_runs_table_is_tenant_scoped() -> None:
     policies = (generated / "04_policies.sql").read_text(encoding="utf-8")
     assert "ALTER TABLE studio_skill_runs\n    ADD COLUMN IF NOT EXISTS" in add
     assert "ALTER TABLE studio_skill_runs FORCE  ROW LEVEL SECURITY" in policies
+
+
+def test_the_tool_gaps_table_is_tenant_scoped() -> None:
+    """SBX-1a (``agent_sandbox.md`` §7.4, task 3800). ``tool_gaps`` holds the
+    need of a member of an org, so it must never be exempt, and the committed
+    phases must carry it (R5). Mutation: remove the table from
+    ``generated/04``, and this fails."""
+    gen = _generator()
+    assert "tool_gaps" in gen.discover_tables()
+    assert "tool_gaps" not in gen.EXEMPT
+    assert "tool_gaps" not in gen.HOMONYM_BLOCKED
+    generated = _REPO / "infra" / "postgres" / "generated"
+    add = (generated / "01_add_columns.sql").read_text(encoding="utf-8")
+    policies = (generated / "04_policies.sql").read_text(encoding="utf-8")
+    assert "ALTER TABLE tool_gaps\n    ADD COLUMN IF NOT EXISTS" in add
+    assert "ALTER TABLE tool_gaps FORCE  ROW LEVEL SECURITY" in policies
+
+
+def test_the_user_tool_runs_table_is_tenant_scoped() -> None:
+    """SBX-4b1 (``agent_sandbox.md`` §7.3, §12.4 decision 10, task 3986).
+    ``user_tool_runs`` holds the steps of a member of an org, so it must never
+    be exempt, and the committed phases must carry it (R5). Mutation: remove
+    the table from ``generated/04``, and this fails."""
+    gen = _generator()
+    assert "user_tool_runs" in gen.discover_tables()
+    assert "user_tool_runs" not in gen.EXEMPT
+    assert "user_tool_runs" not in gen.HOMONYM_BLOCKED
+    generated = _REPO / "infra" / "postgres" / "generated"
+    add = (generated / "01_add_columns.sql").read_text(encoding="utf-8")
+    policies = (generated / "04_policies.sql").read_text(encoding="utf-8")
+    assert "ALTER TABLE user_tool_runs\n    ADD COLUMN IF NOT EXISTS" in add
+    assert "ALTER TABLE user_tool_runs FORCE  ROW LEVEL SECURITY" in policies
 
 
 def test_the_crm_settings_table_is_tenant_scoped() -> None:
@@ -446,16 +524,18 @@ def test_the_fill_rank_table_is_tenant_scoped() -> None:
     ["kb_spaces", "kb_space_grants", "kb_pages", "kb_page_versions", "kb_links",
      "kb_chunks", "kb_favorites", "kb_page_proposals", "kb_gaps",
      "kb_sources", "kb_source_nodes", "kb_entities",
-     "kb_sync_cursors", "kb_sync_runs", "kb_node_access"],
+     "kb_sync_cursors", "kb_sync_runs", "kb_node_access",
+     "kb_documents", "kb_source_includes"],
 )
 def test_the_knowledge_tables_are_tenant_scoped(table: str) -> None:
-    """WS-61 KB-1, KB-3, KB-2f, KB-5a, KB-9a, KC-1a, KC-3 and KC-4a
+    """WS-61 KB-1, KB-3, KB-2f, KB-5a, KB-9a, KC-1a, KC-3, KC-4a and KC-5a
     (``knowledge_base.md`` §6.1, §8.4, §12, §14 and §21.7,
     ``knowledge_curation.md`` §16). The spaces, grants, pages, versions,
     links, the chunks of the index, the favourites of a member, the proposed
     edits of the assistant, the questions that Knowledge could not answer, the
     connected file sources with their folder trees, the cursors and runs of
-    their sync, and the provider readers of each node hold what
+    their sync, the provider readers of each node, and the text and the
+    included folders of the index hold what
     one organization wrote down. None may be exempt, and the committed policy phase must carry each
     (R5)."""
     gen = _generator()
@@ -486,6 +566,21 @@ def test_the_shared_mailbox_tables_are_tenant_scoped(table: str) -> None:
         encoding="utf-8",
     )
     assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
+def test_the_focus_sessions_table_is_tenant_scoped() -> None:
+    """WS-MDC CC-5a (``my_day_command_centre.md`` §9.3, D-MD-5). A focus
+    session holds the minutes of one member of one organization. It may not
+    be exempt, and the committed policy phase must carry it (R5). RLS covers
+    the org, and the routes add the member."""
+    gen = _generator()
+    assert "focus_sessions" in gen.discover_tables()
+    assert "focus_sessions" not in gen.EXEMPT
+    assert "focus_sessions" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE focus_sessions FORCE  ROW LEVEL SECURITY" in policies
 
 
 def test_the_signature_image_table_is_tenant_scoped() -> None:
@@ -659,7 +754,7 @@ def test_the_package_field_value_table_is_tenant_scoped() -> None:
     "table", ["studio_objects", "studio_object_fields", "studio_records", "studio_record_hot",
               "studio_record_changes", "studio_batches", "studio_batch_items",
               "studio_saved_views", "studio_object_counters", "integration_attention",
-              "studio_mcp_tool_approvals"],
+              "studio_mcp_tool_approvals", "member_action"],
 )
 def test_the_studio_object_tables_are_tenant_scoped(table: str) -> None:
     """WS-STU C1 (``ai_studio.md`` §3.1). An object, its fields, its records,

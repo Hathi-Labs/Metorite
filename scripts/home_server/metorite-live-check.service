@@ -1,0 +1,16 @@
+# The "done means live" report of the home box (LBB-1a, task 4044). A user unit of `dev`.
+# metorite-live-check.timer starts it 30 minutes after each release slot. It reads
+# GET /version (no credential) and writes ONLY ~/lanes/live-check.tsv.
+# The env file holds no secret: LIVE_CHECK_MODE (off or dry) and LIVE_CHECK_GATEWAY_URL.
+# With a missing file or mode off, it exits 0 with no call.
+# Install: copy this unit and the script to the box (owner gate `deploy`).
+# Logs:    journalctl --user -u metorite-live-check.service
+[Unit]
+Description=Metorite live check: is each recent merge live in production (LBB-1a)
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-%h/.config/metorite/live-check.env
+ExecStart=/usr/bin/python3 %h/.local/lib/metorite/live_check.py
+TimeoutStartSec=300

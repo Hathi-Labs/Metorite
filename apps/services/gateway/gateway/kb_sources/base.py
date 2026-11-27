@@ -32,9 +32,10 @@ Three rules hold this seam:
 **KC-1a builds discovery. KC-3 builds the change feed.**
 :meth:`KbSource.changes_start_token` and :meth:`KbSource.list_changed` read
 the provider's change feed as metadata, in :class:`ChangePage` pages (KC-3).
-:meth:`KbSource.fetch_text` and :meth:`KbSource.fetch_bytes` are part of the
-protocol, and an adapter may raise ``NotImplementedError("KC-5")`` for them
-until KC-5 (the text) ships.
+:meth:`KbSource.fetch_document` is part of the protocol since KC-5a. The
+Google adapter raises ``NotImplementedError("KC-5b")`` until the real fetch
+(KC-5b) ships, and the index pass (``kb_sync/index.py``) then ends its run
+``stopped`` with the code ``fetch_unavailable``. Tests use a fake adapter.
 
 **A dead change cursor** raises :class:`CursorExpired`. The engine then takes
 a new start token FIRST, and relists the tree slim (``kb_sync/engine.py``).
@@ -72,8 +73,9 @@ SCOPE_ORG = "org"
 KIND_FOLDER = "folder"
 KIND_FILE = "file"
 
-#: The message of a method that a later slice builds.
-NOT_IN_KC1 = "KC-5"
+#: The message of a method that a later slice builds: the real Google fetch
+#: (the bounded download, the export and ``alt=media``) is KC-5b.
+NOT_IN_KC5A = "KC-5b"
 
 
 @dataclass(frozen=True)
@@ -111,6 +113,20 @@ class AccountIdentity:
     account_id: str
     email: str
     display_name: str = ""
+
+
+@dataclass(frozen=True)
+class FetchedFile:
+    """The bytes of one file, and the name suffix that tells how to read them.
+
+    ``suffix`` is lower case and starts with a dot, such as ``.docx``. A
+    Google-native file comes back in an Office format (an export), so the
+    suffix is the one of the export. The adapter bounds ``data`` (KC-5b): the
+    index pass never asks for a node over 25 MB.
+    """
+
+    data: bytes
+    suffix: str
 
 
 @dataclass(frozen=True)
@@ -274,11 +290,10 @@ class KbSource(Protocol):
         self, cred: SourceCredential, cursor: AccessCursor | None, *, budget: int,
     ) -> AccessPage: ...
 
-    # KC-5: the text of one document, capped. KC-5: the bytes, only for
-    # "Keep a copy".
-    async def fetch_text(self, cred: SourceCredential, node: SourceNode) -> str: ...
-
-    async def fetch_bytes(self, cred: SourceCredential, node: SourceNode) -> bytes: ...
+    # KC-5a: the bytes of one file and their suffix. A Google-native file is
+    # exported to an Office format. Raises SourceError with the code
+    # ``http_403`` or ``http_404`` for a file the member can no longer read.
+    async def fetch_document(self, cred: SourceCredential, node: SourceNode) -> FetchedFile: ...
 
     # The URL that opens the node at the provider. Never fetched.
     def deep_link(self, node: SourceNode) -> str: ...
@@ -288,7 +303,7 @@ __all__ = [
     "ANYONE",
     "KIND_FILE",
     "KIND_FOLDER",
-    "NOT_IN_KC1",
+    "NOT_IN_KC5A",
     "READER_ANYONE",
     "READER_DOMAIN",
     "READER_GROUP",
@@ -304,6 +319,7 @@ __all__ = [
     "CursorExpired",
     "DiscoverCursor",
     "DiscoverPage",
+    "FetchedFile",
     "KbSource",
     "NeedsReconnect",
     "NodeAccess",

@@ -13,8 +13,10 @@ The tools are in ``acb_skills.org_admin_tools`` (PAR-2a),
 ``acb_skills.org_admin_more_tools`` (PAR-4a: groups, roles, overrides and the
 name of the org. PAR-4c: the removal and the purge of a member. PAR-4d: the
 seats), ``acb_skills.integrations_admin_tools`` (PAR-6a) and
-``acb_skills.people_tools`` (P-5b-1 and P-5b-5, the pack ``people``), and this module
-keeps no copy. They call the admin and Integrations routes over
+``acb_skills.people_tools`` (P-5b-1 and P-5b-5, the pack ``people``) and
+``acb_skills.notes_read_tools`` (task 3963, the pack ``notes``). The one act of
+the dark pack ``calendar-connections`` is ``skill_my_tasks``'s
+``my_tasks_calendar_connection`` (P-1c, task 3923). This module keeps no copy. They call the admin and Integrations routes over
 HTTP as the member, and take no org or member argument. The routes decide
 each right.
 
@@ -34,6 +36,7 @@ from typing import Any
 
 from acb_common import get_settings
 from acb_skills.integrations_admin_tools import INTEGRATIONS_ADMIN_TOOLS
+from acb_skills.notes_read_tools import NOTES_READ_TOOLS
 from acb_skills.org_admin_more_tools import ORG_ADMIN_MORE_TOOLS, ORG_ADMIN_SEAT_TOOLS
 from acb_skills.org_admin_tools import ORG_ADMIN_TOOLS
 from acb_skills.people_tools import PEOPLE_TOOLS
@@ -45,8 +48,22 @@ INSTRUCTIONS = (
     else "You hold the member tools of the organization. You are not a second assistant."
 )
 
+# P-1c (task 3923, option a): the act on a connected calendar, for the dark pack
+# ``calendar-connections``. This owner never runs as an agent and has no
+# specialist, so a dark pack of it cannot take the reach of the Projects owner
+# away (``tests/unit/test_calendar_connections_pack.py``). The owner choice
+# waits on the owner's answer on task 3923.
+_CALENDAR_CONNECTION_TOOLS: list[Any] = []
+try:
+    from skill_my_tasks import my_tasks_calendar_connection
+
+    _CALENDAR_CONNECTION_TOOLS = [my_tasks_calendar_connection]
+except ImportError:
+    # skill-my-tasks is not installed: the pack is then empty, not broken.
+    pass
+
 _TOOLS = [*ORG_ADMIN_TOOLS, *ORG_ADMIN_MORE_TOOLS, *ORG_ADMIN_SEAT_TOOLS, *PEOPLE_TOOLS,
-          *INTEGRATIONS_ADMIN_TOOLS]
+          *_CALENDAR_CONNECTION_TOOLS, *NOTES_READ_TOOLS, *INTEGRATIONS_ADMIN_TOOLS]
 
 
 def _register_agent_tools() -> dict[str, Any]:
