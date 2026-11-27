@@ -2272,7 +2272,13 @@ async def register_agent(
     # registered ``worker`` would share ``cache_root/worker`` with the spawn child.
     # STU-G1: the name of a pack-only owner is reserved too, so no registered
     # agent shows in a list under the name of an owner that never runs.
+    # SBX-4b1 (agent_sandbox.md §12.4 decision 11): the broker names
+    # `user-tool` and `compute` are reserved too, because a registered agent
+    # with either name would share the container key of a broker step.
+    from acb_skills.agent_paths import BROKER_AGENT_NAMES
+
     reserved = {a["name"] for a in (*_INTERNAL_AGENTS, *_PACK_OWNER_AGENTS)}
+    reserved |= BROKER_AGENT_NAMES
     if req.name.strip().lower() in reserved:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
