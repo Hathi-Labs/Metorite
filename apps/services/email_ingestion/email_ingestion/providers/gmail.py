@@ -2128,6 +2128,7 @@ class GmailProvider(BaseEmailProvider):
     async def bulk_apply(
         self, provider_message_ids: list[str], action: str,
         failed_out: list[str] | None = None,
+        *, message_ids: dict[str, str | None] | None = None,
     ) -> dict[str, str]:
         """Collapse a bulk label action into batchModify calls of 1000.
 
@@ -2147,7 +2148,7 @@ class GmailProvider(BaseEmailProvider):
         ops = self._BULK_LABEL_OPS.get(action)
         if ops is None:
             return await super().bulk_apply(
-                provider_message_ids, action, failed_out)
+                provider_message_ids, action, failed_out, message_ids=message_ids)
         add, remove = ops
         client = await self._get_client()
         for i in range(0, len(provider_message_ids), self._BATCH_MODIFY_MAX):

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -49,7 +50,15 @@ from acb_skills import tier_policy
 from evals.one_assistant_measure import checks as ck
 from evals.one_assistant_measure import checks_2874 as ck_2874
 from evals.one_assistant_measure import compare as cmp
-from evals.one_assistant_measure import fanout, mirror, pack, scenarios_2874, spend, splits
+from evals.one_assistant_measure import (
+    fanout,
+    mcp_fixture,
+    mirror,
+    pack,
+    scenarios_2874,
+    spend,
+    splits,
+)
 from evals.one_assistant_measure import mailbox as mb
 from evals.one_assistant_measure import workgateway as wg
 from evals.one_assistant_measure.scenarios import SCENARIOS, Scenario, all_scenarios
@@ -96,6 +105,30 @@ STUDIO_PACKS = ("studio",)
 SEARCH_PLANS = True
 
 
+#: CSY-3. The set of the connected-systems chats. SCRIPTED ONLY: a live run of it spends
+#: money, and the owner has not opened one (:func:`live_refusal`).
+MCP_SET = "mcp"
+
+
+def live_refusal(chosen: tuple[Scenario, ...], wanted: set[str]) -> str:
+    """The reason that a live run may not take the MCP chats, or "".
+
+    A live arm for the set is OWNER-GATE (spend). The run keeps the chats out of a live
+    run of all chats, and refuses a live run that names one."""
+    named = sorted(sc.id for sc in chosen if sc.set == MCP_SET and sc.id in wanted)
+    if named:
+        return (f"{', '.join(named)}: the connected-systems chats have no live arm "
+                "(CSY-3, a live run is OWNER-GATE for spend). Use --scripted.")
+    return ""
+
+
+def _no_live_mcp(sc: Scenario, live: bool) -> None:
+    """CSY-3. A live ``run_chat`` of a connected-systems chat raises, also for a caller
+    that skips the command line."""
+    if live and (refusal := live_refusal((sc,), {sc.id})):
+        raise ValueError(refusal)
+
+
 def search_built() -> bool:
     """True when the plans of TS-5b are in (:data:`SEARCH_PLANS`) and the
     settings hold ``tool_search_orgs``, the flag of TS-2a. Until then the
@@ -119,6 +152,9 @@ def arms_for(sc: Scenario, asked: tuple[str, ...]) -> tuple[str, ...]:
         want = (ARMS[1], SPAWN_ARM)
     elif sc.set == "studio":
         want = (ARMS[1], SEARCH_ARM)
+    elif sc.set == MCP_SET:
+        # CSY-3. The server and the email pack meet only where the chat holds packs.
+        want = (ARMS[1],)
     else:
         want = ARMS
     return tuple(a for a in want if a in asked and (a != SEARCH_ARM or search_built()))
@@ -374,7 +410,11 @@ def scripted_models(sc: Scenario, arm: str,  # noqa: C901 - one plan per arm
         # The web tools and the spawn tool belong to no owner: the orchestrator
         # calls them itself, in every arm that holds them.
         direct = [c for c in calls_of if c[0] in BASE_DIRECT]
-        calls_of = tuple(c for c in calls_of if c[0] not in BASE_DIRECT)
+        # CSY-3. A call of the MCP server runs last, after the Metorite tools of the turn
+        # (the miss chat asks Metorite first). It is the model's own call, in every arm.
+        server = [c for c in calls_of if c[0] == mcp_fixture.FULL]
+        calls_of = tuple(c for c in calls_of
+                         if c[0] not in BASE_DIRECT and c[0] != mcp_fixture.FULL)
         if arm == "delegation":
             by_owner: dict[str, list[tuple[str, dict[str, Any]]]] = {}
             for call in calls_of:
@@ -455,6 +495,9 @@ def scripted_models(sc: Scenario, arm: str,  # noqa: C901 - one plan per arm
                 for name, args in setup:
                     n += 1
                     orch.append(tool_turn(name, args, call_id=f"call_{n}"))
+            for name, args in server:
+                n += 1
+                orch.append(tool_turn(name, args, call_id=f"call_{n}"))
             used = used or bool(mine)
         answer = plan.search_answer if arm == SEARCH_ARM and plan.search_answer else plan.answer
         orch.append(text_turn(answer))
@@ -614,6 +657,7 @@ def tap_schemas(mp: Any) -> None:
 
     ``harness.ModelCall`` keeps only the NUMBER of tools. The checks of the search
     arm need their names, the description of ``find_tools`` and the schema tokens.
+    It also sets ``connected``, the "Connected systems" block of the request (CSY-3).
     This wraps ``_WireTap.handle_async_request`` from here and edits no harness
     file: it reads the body that the tap reads, and sets three attributes on the
     call that the tap added (``tool_names``, ``find_description``, ``schema_tokens``,
@@ -640,6 +684,7 @@ def tap_schemas(mp: Any) -> None:
         if mine is not None:
             funcs = [t.get("function") or {} for t in tools]
             mine.tool_names = [str(f.get("name") or "") for f in funcs]
+            mine.connected = ck.connected_block_in(body if isinstance(body, dict) else {})
             mine.find_description = next(
                 (str(f.get("description") or "") for f in funcs if f.get("name") == ck.FIND_TOOL), "")
             mine.schema_tokens = ck.schema_tokens_of(tools)
@@ -844,8 +889,10 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
     from tests.unit._native_maf_harness import load_agent_module
 
     live = router is not None
+    _no_live_mcp(sc, live)
     rows: list[dict[str, Any]] = []
-    with RoutingHarness(live=live, real_specialists=live) as harness:
+    with contextlib.ExitStack() as servers, \
+            RoutingHarness(live=live, real_specialists=live) as harness:
         tap_every_agent(harness._mp)
         if live:
             _use_router(harness, router)
@@ -892,6 +939,9 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
         # ``crm_mode``, which the harness pins to ``native``.
         work = wg.WorkGateway(mode=sc.mode)
         work.install(harness._mp)
+        # CSY-3: the fake MCP server of the connected-systems chats, behind the real path.
+        server = (mcp_fixture.install(harness._mp, ds.ORG, servers)
+                  if sc.set == MCP_SET else None)
         from acb_skills import crm_tools, tool_packs
 
         async def crm_mode() -> str:
@@ -947,7 +997,8 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                 break
             marks = (len(gateway.calls), len(member.cards), len(harness.model_calls),
                      len(tap.events), len(harness.sent), len(harness.passed),
-                     len(store.calls), len(work.calls), len(refused))
+                     len(store.calls), len(work.calls), len(refused),
+                     len(server.calls) if server else 0)
             turn_at[:] = [marks[2], marks[5]]
             member.mode = turn.card
             # The gateway binds the app that the member is in, for this turn.
@@ -994,6 +1045,9 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                 schema_tokens=max((int(getattr(c, "schema_tokens", 0) or 0) for c in orch_calls),
                                   default=0),
                 held=marked,
+                mcp_calls=ck.work_calls_of(record.events, frozenset({mcp_fixture.FULL}))[0],
+                mcp_served=list(server.calls[marks[9]:]) if server else [],
+                connected=next((b for c in orch_calls if (b := getattr(c, "connected", ""))), ""),
                 ordered=ck_2874.ordered_calls_of(record.events),
             )
             result = ck.check_turn(turn, obs)
@@ -1021,6 +1075,7 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                 "capped": next(iter(refused[marks[8]:]), None),
                 "handoffs": [ck.handoff_kind(t) for t in obs.tasks],
                 "set": sc.set, "surface": sc.surface,
+                "mcp_tools": [n for n, _, _ in obs.mcp_calls], "mcp_served": obs.mcp_served,
                 # Task 3649: the split and the tags, so a results file reads on its own.
                 "split": splits.split_of(sc), "tags": list(sc.tags),
                 "work_tools": [n for n, _, _ in [*obs.work_calls, *obs.sub_work_calls]],
@@ -2125,6 +2180,12 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one command line
         print("FAIL" if problems else f"PASS: {len(rows)} turns on {len(arms)} arms")
         return EXIT_FAIL if problems else EXIT_PASS
 
+    # CSY-3: the check runs BEFORE the router and its key are read.
+    refusal = live_refusal(chosen, wanted)
+    if refusal:
+        print(f"NO-GO: {refusal}")
+        return EXIT_NO_GO
+    scenarios = tuple(sc for sc in scenarios if sc.set != MCP_SET)
     # The owner ceiling comes before any credential, network or file step of a live run.
     earlier = args.spent_before
     if args.spent_before_from.strip():

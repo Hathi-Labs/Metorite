@@ -18,6 +18,7 @@ import {
   type ProviderAvailability,
 } from "./connect";
 import type { ForwardBody } from "./forward";
+import type { PreviousState } from "./markDone";
 import { announceDraftLeft } from "@/lib/draftLeftEvent";
 import { announceRulesChanged } from "./rulesChanged";
 
@@ -2034,17 +2035,32 @@ export async function getRulesHistory(
 export async function resolveThread(
   accountId: string,
   threadId: string,
-  opts: { done?: boolean; dismiss?: boolean } = {}
-): Promise<void> {
-  await gatewayFetch(`/email/reply-zero/resolve`, {
+  opts: { done?: boolean; dismiss?: boolean; restore?: PreviousState } = {}
+): Promise<{ previous: PreviousState | null }> {
+  const res = await gatewayFetch<{
+    previous?: { status: PreviousState["status"]; follow_up: boolean } | null;
+  }>(`/email/reply-zero/resolve`, {
     method: "POST",
     body: JSON.stringify({
       account_id: accountId,
       thread_id: threadId,
       done: opts.done ?? true,
       dismiss: opts.dismiss ?? false,
+      // A move back after Mark done (§6.6). The gateway names the labels.
+      ...(opts.restore
+        ? { restore: { status: opts.restore.status, follow_up: opts.restore.followUp } }
+        : {}),
     }),
   });
+  // `previous` comes only from a Mark done with the flag on.
+  const was = res?.previous;
+  return { previous: was ? { status: was.status, followUp: was.follow_up } : null };
+}
+
+/** Whether this organization has "Mark done" (§6.6). */
+export async function getMarkDoneEnabled(): Promise<boolean> {
+  const res = await gatewayFetch<{ enabled?: boolean }>("/email/reply-zero/mark-done");
+  return res?.enabled === true;
 }
 
 /** Snooze (or, with until=null, un-snooze) a conversation. Applies to the whole

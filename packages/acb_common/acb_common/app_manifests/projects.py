@@ -34,8 +34,9 @@ op sends.
   whole space.
 * Import stays class X. Its routes need ``admin:access:manage``, the right
   of an admin (§19.11), and its upload is a file, not JSON.
-* Goals and teams have no route in the Projects router. A goal object is
-  later work (task 977), and a team is a filter (D87).
+* Goals have no route in the Projects router. A goal object is later work
+  (task 977). A team is a filter (D87). Its one read, ``GET /projects/teams``,
+  stays off the door until T-6 (task 2537).
 
 **What never gets an op (§19.11).** A grant or a pin that acts as one, the
 answer of a person, a bulk export, and an act that reaches another person.
@@ -85,6 +86,12 @@ GRANT = (
 DECISION = (
     "§19.11: the person whom a decision asks answers it in Projects. An agent "
     "never answers for that person."
+)
+
+#: WS-39 T-1: the read of the teams of a member waits for its own slice.
+TEAMS_READ = (
+    "T-6 (task 2537) builds the chat and MCP read of the teams of a member. It "
+    "decides the door op of this row."
 )
 
 #: The door never deletes a record for good.
@@ -217,6 +224,16 @@ _CHILD_REPORT = (
     "signed agent starts or stops a child run, through its hook. MCP_ROUTES "
     "stays its allowlist."
 )
+_PACKAGE_FIELDS = (
+    "WS-PKG PKG-14a: the dark door of the extension values of a package "
+    "(package_host.md §8.3). No chat tool reaches it yet. PKG-14b adds the "
+    "tool with the task panel, and the door adds nothing before then."
+)
+_FOCUS_LOG = (
+    "WS-MDC CC-5a: the dark focus-session log of the member "
+    "(my_day_command_centre.md §9.3). No chat tool reaches it yet. CC-10 adds "
+    "the tools, and the door adds nothing before then."
+)
 _AGENT_DELETE = (
     "The typed tool delete_task of §9 serves this route, after the yes of the "
     "member (EA3-51). MCP_ROUTES stays its allowlist."
@@ -241,13 +258,16 @@ PROJECTS_DOOR = App(
     feature="projects",
     router="gateway.routes.projects",
     routes=(
+        # ── teams.py (WS-39 T-1, task 2532), dark behind TEAMS_ORGS ──
+        Route("GET", "/projects/teams", "list_teams", "A", off_door=TEAMS_READ),
         # ── tree.py ──
-        Route("GET", "/projects/tree", "projects_tree", "A", off_door=TYPED),
+        Route("GET", "/projects/tree", "projects_tree", "A", off_door=TYPED, sandbox=True),
         Route("GET", "/projects/nodes", "", "X", reason=_FLAT_TREE),
-        Route("GET", "/projects/nodes/{project_id}", "project_summary", "A", off_door=TYPED),
-        Route("GET", "/projects/summary", "project_summary", "A", off_door=LATER),
+        Route("GET", "/projects/nodes/{project_id}", "project_summary", "A", off_door=TYPED,
+              sandbox=True),
+        Route("GET", "/projects/summary", "project_summary", "A", off_door=LATER, sandbox=True),
         Route("GET", "/projects/nodes/{project_id}/summary", "project_summary", "A",
-              off_door=LATER),
+              off_door=LATER, sandbox=True),
         Route("POST", "/projects/nodes", "create_project", "B", off_door=TYPED),
         Route("PATCH", "/projects/nodes/{project_id}", "update_project", "B", off_door=TYPED),
         Route("POST", "/projects/nodes/{project_id}/move", "move_project", "C", off_door=LATER),
@@ -274,9 +294,9 @@ PROJECTS_DOOR = App(
         Route("DELETE", "/projects/nodes/{project_id}/authorities/{pin_id}", "unpin_authority",
               "C", off_door=GRANT),
         Route("GET", "/projects/nodes/{project_id}/updates", "list_project_updates", "A",
-              off_door=TYPED),
+              off_door=TYPED, sandbox=True),
         Route("POST", "/projects/nodes/{project_id}/updates", "post_project_update", "B",
-              off_door=TYPED),
+              off_door=TYPED, sandbox_write=True),
         Route("DELETE", "/projects/nodes/{project_id}/updates/{update_id}",
               "delete_project_update", "C", off_door=LATER),
         Route("GET", "/projects/decisions", "my_decisions", "A", off_door=LATER),
@@ -319,24 +339,31 @@ PROJECTS_DOOR = App(
               title="Close an active cycle, with a choice for each task that is not done.",
               plain=PLAIN),
         # ── tasks.py ──
-        Route("GET", "/projects/tasks", "list_tasks", "A", off_door=TYPED),
-        Route("GET", "/projects/tasks/stats", "board_stats", "A", off_door=TYPED),
-        Route("GET", "/projects/assignable-members", "assignable_members", "A", off_door=TYPED),
-        Route("GET", "/projects/tasks/{task_id}", "task_detail", "A", off_door=TYPED),
+        Route("GET", "/projects/tasks", "list_tasks", "A", off_door=TYPED, sandbox=True),
+        Route("GET", "/projects/tasks/stats", "board_stats", "A", off_door=TYPED, sandbox=True),
+        Route("GET", "/projects/assignable-members", "assignable_members", "A", off_door=TYPED,
+              sandbox=True),
+        Route("GET", "/projects/tasks/{task_id}", "task_detail", "A", off_door=TYPED, sandbox=True),
         Route("GET", "/projects/tasks/{task_id}/subtree", "delete_task", "C",
               off_door=TASK_DELETE),
-        Route("POST", "/projects/tasks", "create_task", "B", off_door=TYPED),
-        Route("PATCH", "/projects/tasks/{task_id}", "update_task", "B", off_door=TYPED),
-        Route("POST", "/projects/tasks/{task_id}/move", "move_task", "B", off_door=TYPED),
+        Route("POST", "/projects/tasks", "create_task", "B", off_door=TYPED,
+              sandbox_write=True),
+        Route("PATCH", "/projects/tasks/{task_id}", "update_task", "B", off_door=TYPED,
+              sandbox_write=True),
+        Route("POST", "/projects/tasks/{task_id}/move", "move_task", "B", off_door=TYPED,
+              sandbox_write=True),
         Route("DELETE", "/projects/tasks/{task_id}", "delete_task", "C", off_door=TASK_DELETE),
-        Route("POST", "/projects/tasks/{task_id}/archive", "archive_task", "C", off_door=LATER),
+        Route("POST", "/projects/tasks/{task_id}/archive", "archive_task", "C", off_door=LATER,
+              sandbox_write=True),
         Route("POST", "/projects/tasks/{task_id}/unarchive", "unarchive_task", "B",
               off_door=LATER),
-        Route("PUT", "/projects/tasks/{task_id}/assignees", "assign", "B", off_door=TYPED),
+        Route("PUT", "/projects/tasks/{task_id}/assignees", "assign", "B", off_door=TYPED,
+              sandbox_write=True),
         Route("POST", "/projects/tasks/{task_id}/claim", "claim_task", "B", off_door=TYPED),
         Route("POST", "/projects/tasks/{task_id}/check-result", "report_check", "B",
               off_door=TYPED),
-        Route("POST", "/projects/tasks/{task_id}/links", "link_tasks", "B", off_door=TYPED),
+        Route("POST", "/projects/tasks/{task_id}/links", "link_tasks", "B", off_door=TYPED,
+              sandbox_write=True),
         Route("DELETE", "/projects/tasks/{task_id}/links/{link_id}", "unlink_tasks", "B",
               off_door=TYPED),
         Route("GET", "/projects/tasks/{task_id}/epic-contract", "set_epic_contract", "B",
@@ -349,8 +376,10 @@ PROJECTS_DOOR = App(
         Route("POST", "/projects/tasks/move", "move_task", "B", off_door=TYPED),
         Route("POST", "/projects/tasks/{task_id}/merge", "merge_tasks", "C", off_door=LATER),
         # ── activities.py ──
-        Route("GET", "/projects/tasks/{task_id}/timeline", "task_detail", "A", off_door=TYPED),
-        Route("POST", "/projects/tasks/{task_id}/comments", "comment", "B", off_door=TYPED),
+        Route("GET", "/projects/tasks/{task_id}/timeline", "task_detail", "A", off_door=TYPED,
+              sandbox=True),
+        Route("POST", "/projects/tasks/{task_id}/comments", "comment", "B", off_door=TYPED,
+              sandbox_write=True),
         Route("PATCH", "/projects/comments/{activity_id}", "edit_comment", "B", off_door=TYPED),
         Route("DELETE", "/projects/comments/{activity_id}", "delete_comment", "C",
               off_door=TYPED),
@@ -359,7 +388,7 @@ PROJECTS_DOOR = App(
         # ── admin.py: statuses and status sets (§19.16, act 4), and types. The
         # registration slice (MCP-G24b) moves the chat guards to the routes first.
         Route("GET", "/projects/nodes/{project_id}/statuses", "vocabulary", "A",
-              off_door=TYPED),
+              off_door=TYPED, sandbox=True),
         Route("POST", "/projects/nodes/{project_id}/statuses", "create_status", "B",
               off_door=STATUS_GUARD),
         Route("PATCH", "/projects/statuses/{status_id}", "update_status", "B",
@@ -372,19 +401,22 @@ PROJECTS_DOOR = App(
               off_door=PREVIEW_POST),
         Route("POST", "/projects/nodes/{project_id}/status-set", "set_status_set", "C",
               off_door=STATUS_SET_GUARDS),
-        Route("GET", "/projects/nodes/{project_id}/types", "vocabulary", "A", off_door=TYPED),
+        Route("GET", "/projects/nodes/{project_id}/types", "vocabulary", "A", off_door=TYPED,
+              sandbox=True),
         Route("POST", "/projects/nodes/{project_id}/types", "create_type", "B", off_door=LATER),
         Route("PATCH", "/projects/types/{type_id}", "update_type", "B", off_door=LATER),
         Route("DELETE", "/projects/types/{type_id}", "delete_type", "C", off_door=HARD_DELETE),
         # ── custom_fields.py ──
-        Route("GET", "/projects/nodes/{project_id}/fields", "vocabulary", "A", off_door=TYPED),
+        Route("GET", "/projects/nodes/{project_id}/fields", "vocabulary", "A", off_door=TYPED,
+              sandbox=True),
         Route("POST", "/projects/nodes/{project_id}/fields", "create_field", "B",
               off_door=LATER),
         Route("PATCH", "/projects/fields/{field_id}", "update_field", "B", off_door=LATER),
         Route("DELETE", "/projects/fields/{field_id}", "delete_field", "C",
               off_door=HARD_DELETE),
         # ── tags.py ──
-        Route("GET", "/projects/nodes/{project_id}/tags", "vocabulary", "A", off_door=TYPED),
+        Route("GET", "/projects/nodes/{project_id}/tags", "vocabulary", "A", off_door=TYPED,
+              sandbox=True),
         Route("POST", "/projects/nodes/{project_id}/tags", "create_tag", "B", off_door=LATER),
         Route("PATCH", "/projects/tags/{tag_id}", "update_tag", "B", off_door=LATER),
         Route("GET", "/projects/tags/{tag_id}/impact", "delete_tag", "C", off_door=DELETE_COUNT),
@@ -392,7 +424,8 @@ PROJECTS_DOOR = App(
         Route("DELETE", "/projects/tags/{tag_id}", "delete_tag", "C", off_door=HARD_DELETE),
         # ── views.py: saved views (§19.16, act 2) ──
         Route("GET", "/projects/nodes/{project_id}/views", "project_views", "A",
-              op="list_views", title="List the saved views of a project.", plain=PLAIN),
+              op="list_views", title="List the saved views of a project.", plain=PLAIN,
+              sandbox=True),
         Route("POST", "/projects/nodes/{project_id}/views", "save_view", "B",
               op="create_view", title="Save a new view on a project.", plain=PLAIN),
         Route("PATCH", "/projects/views/{view_id}", "save_view", "B",
@@ -404,15 +437,20 @@ PROJECTS_DOOR = App(
         Route("PUT", "/projects/views/{view_id}/positions", "", "X", reason=_SCREEN),
         # ── me.py · personal.py ──
         Route("GET", "/projects/assigned-to-me", "my_work", "A", off_door=LATER),
-        Route("GET", "/projects/plan/order", "my_work", "A", off_door=TYPED),
-        Route("GET", "/projects/my/project", "my_work", "A", off_door=LATER),
+        Route("GET", "/projects/plan/order", "my_work", "A", off_door=TYPED, sandbox=True),
+        # SW-45: the MCP `my_work` reads the free tasks of the own apps.
+        Route("GET", "/projects/my/own-app-free", "own_app_free", "A", off_door=TYPED),
+        # LBB-2: the MCP `my_work` reads the open PRs to land of an agent label.
+        Route("GET", "/projects/agent-work/landing", "land_your_pr", "A", off_door=TYPED),
+        Route("GET", "/projects/my/project", "my_work", "A", off_door=LATER, sandbox=True),
         Route("POST", "/projects/my/project", "", "X", reason=_MY_PROJECT),
-        Route("POST", "/projects/my/tasks", "create_personal_task", "B", off_door=LATER),
+        Route("POST", "/projects/my/tasks", "create_personal_task", "B", off_door=LATER,
+              sandbox_write=True),
         Route("POST", "/projects/my/tasks/batch", "", "X", reason=_MY_TASKS_STEP),
         Route("POST", "/projects/my/tasks/{task_id}/organize", "", "X", reason=_MY_TASKS_STEP),
         Route("POST", "/projects/my/tasks/{task_id}/subtasks", "", "X", reason=_MY_TASKS_STEP),
         Route("PATCH", "/projects/tasks/{task_id}/personal", "set_my_overlay", "B",
-              off_door=LATER),
+              off_door=LATER, sandbox_write=True),
         Route("GET", "/projects/my/inbox", "my_work", "A", off_door=LATER),
         Route("GET", "/projects/my/tasks/{task_id}", "my_task", "A", off_door=LATER),
         Route("GET", "/projects/my/summary", "", "X", reason=_MY_TASKS_STEP),
@@ -420,20 +458,22 @@ PROJECTS_DOOR = App(
         Route("GET", "/projects/my/tasks/{task_id}/lanes", "vocabulary", "A",
               off_door=LATER),
         Route("GET", "/projects/my/calendar", "calendar", "A", off_door=LATER),
-        Route("GET", "/projects/my/contexts", "my_contexts", "A", off_door=LATER),
-        Route("GET", "/projects/my/today", "my_work", "A", off_door=LATER),
+        Route("GET", "/projects/my/contexts", "my_contexts", "A", off_door=LATER, sandbox=True),
+        Route("GET", "/projects/my/today", "my_work", "A", off_door=LATER, sandbox=True),
         Route("GET", "/projects/my/led", "my_led_projects", "A", off_door=LATER),
-        Route("GET", "/projects/my/areas", "my_areas", "A", off_door=LATER),
+        Route("GET", "/projects/my/areas", "my_areas", "A", off_door=LATER, sandbox=True),
         Route("POST", "/projects/my/areas", "create_area", "B", off_door=LATER),
         Route("PATCH", "/projects/my/areas/{area_id}", "rename_area", "C", off_door=LATER),
         Route("DELETE", "/projects/my/areas/{area_id}", "delete_area", "C",
               off_door=HARD_DELETE),
-        Route("POST", "/projects/tasks/{task_id}/complete", "complete", "B", off_door=LATER),
-        Route("POST", "/projects/tasks/{task_id}/defer", "defer", "B", off_door=LATER),
+        Route("POST", "/projects/tasks/{task_id}/complete", "complete", "B", off_door=LATER,
+              sandbox_write=True),
+        Route("POST", "/projects/tasks/{task_id}/defer", "defer", "B", off_door=LATER,
+              sandbox_write=True),
         Route("POST", "/projects/tasks/{task_id}/nudge", "nudge_task", "C",
               off_door=REACHES_PERSON),
         # ── reminders.py ──
-        Route("GET", "/projects/my/reminders", "list_reminders", "A", off_door=LATER),
+        Route("GET", "/projects/my/reminders", "list_reminders", "A", off_door=LATER, sandbox=True),
         Route("POST", "/projects/my/reminders", "set_reminder", "B", off_door=LATER),
         Route("PATCH", "/projects/my/reminders/{reminder_id}", "update_reminder", "B",
               off_door=LATER),
@@ -452,9 +492,12 @@ PROJECTS_DOOR = App(
         Route("POST", "/projects/my/calendar/replan", "", "X", reason=_PLANNER),
         Route("POST", "/projects/my/calendar/rollover", "", "X", reason=_PLANNER),
         Route("GET", "/projects/my/calendar/estimate-stats", "", "X", reason=_PLANNER),
+        Route("POST", "/projects/my/focus-sessions", "", "X", reason=_FOCUS_LOG),
+        Route("PATCH", "/projects/my/focus-sessions/{session_id}", "", "X", reason=_FOCUS_LOG),
+        Route("GET", "/projects/my/focus-sessions", "", "X", reason=_FOCUS_LOG),
         # ── calendar.py · search.py · export.py · delta.py ──
-        Route("GET", "/projects/calendar", "calendar", "A", off_door=LATER),
-        Route("GET", "/projects/search", "find_tasks", "A", off_door=TYPED),
+        Route("GET", "/projects/calendar", "calendar", "A", off_door=LATER, sandbox=True),
+        Route("GET", "/projects/search", "find_tasks", "A", off_door=TYPED, sandbox=True),
         Route("GET", "/projects/search/refs", "", "X", reason=_REFS),
         Route("GET", "/projects/export/tasks.csv", "export_tasks", "A", off_door=EXPORT),
         Route("GET", "/projects/delta/tasks", "", "X", reason=_DELTA),
@@ -476,11 +519,14 @@ PROJECTS_DOOR = App(
         Route("GET", "/projects/people/reach", "people_for", "A", off_door=LATER),
         Route("GET", "/projects/assignees", "people_for", "A", off_door=LATER),
         # ── analytics.py · reports.py ──
-        Route("GET", "/projects/analytics/stuck", "analytics_stuck", "A", off_door=LATER),
-        Route("GET", "/projects/analytics/load", "analytics_load", "A", off_door=LATER),
+        Route("GET", "/projects/analytics/stuck", "analytics_stuck", "A", off_door=LATER,
+              sandbox=True),
+        Route("GET", "/projects/analytics/load", "analytics_load", "A", off_door=LATER,
+              sandbox=True),
         Route("GET", "/projects/analytics/throughput", "analytics_throughput", "A",
-              off_door=LATER),
-        Route("GET", "/projects/analytics/finished", "analytics_finished", "A", off_door=LATER),
+              off_door=LATER, sandbox=True),
+        Route("GET", "/projects/analytics/finished", "analytics_finished", "A", off_door=LATER,
+              sandbox=True),
         Route("GET", "/projects/analytics/outlook", "analytics_outlook", "A", off_door=LATER),
         Route("GET", "/projects/analytics/capacity", "team_capacity", "A", off_door=LATER),
         Route("GET", "/projects/tasks/{task_id}/candidates", "fit_for_task", "A",
@@ -490,17 +536,25 @@ PROJECTS_DOOR = App(
         Route("GET", "/projects/analytics/conflicts", "find_conflicts", "A", off_door=LATER),
         Route("GET", "/projects/analytics/dataset", "task_dataset", "A", off_door=LATER),
         Route("POST", "/projects/plan/preview", "propose_plan", "B", off_door=LATER),
-        Route("GET", "/projects/plan/analysis", "get_plan", "A", off_door=TYPED),
-        Route("GET", "/projects/reports", "report_list", "A", off_door=LATER),
-        Route("GET", "/projects/reports/templates", "render_report", "A", off_door=LATER),
-        Route("GET", "/projects/reports/subjects", "render_report", "A", off_door=LATER),
+        Route("GET", "/projects/plan/analysis", "get_plan", "A", off_door=TYPED, sandbox=True),
+        # ── package_fields.py (WS-PKG PKG-14a, dark behind PACKAGE_HOST_ORGS) ──
+        Route("GET", "/projects/tasks/{task_id}/package-fields", "", "X",
+              reason=_PACKAGE_FIELDS),
+        Route("PUT", "/projects/tasks/{task_id}/package-fields/{install_id}/{field_key}", "",
+              "X", reason=_PACKAGE_FIELDS),
+        Route("GET", "/projects/reports", "report_list", "A", off_door=LATER, sandbox=True),
+        Route("GET", "/projects/reports/templates", "render_report", "A", off_door=LATER,
+              sandbox=True),
+        Route("GET", "/projects/reports/subjects", "render_report", "A", off_door=LATER,
+              sandbox=True),
         Route("POST", "/projects/reports", "report_save", "B", off_door=LATER),
-        Route("GET", "/projects/reports/{report_id}", "report_render", "A", off_door=LATER),
+        Route("GET", "/projects/reports/{report_id}", "report_render", "A", off_door=LATER,
+              sandbox=True),
         Route("PATCH", "/projects/reports/{report_id}", "report_save", "B", off_door=LATER),
         Route("DELETE", "/projects/reports/{report_id}", "report_delete", "C",
               off_door=HARD_DELETE),
         Route("GET", "/projects/reports/{report_id}/render", "report_render", "A",
-              off_door=LATER),
+              off_door=LATER, sandbox=True),
         Route("POST", "/projects/reports/preview", "render_report", "A", off_door=LATER),
         Route("GET", "/projects/reports/{report_id}/recipients", "report_recipients", "A",
               off_door=LATER),
@@ -516,18 +570,20 @@ PROJECTS_DOOR = App(
         Route("POST", "/projects/tasks/{task_id}/attachments", "attach_to_task", "C",
               off_door=TYPED),
         Route("GET", "/projects/tasks/{task_id}/attachments", "task_detail", "A",
-              off_door=TYPED),
+              off_door=TYPED, sandbox=True),
         Route("GET", "/projects/attachments/{attachment_id}/{filename}", "", "X",
               reason=_BYTES),
         Route("DELETE", "/projects/tasks/{task_id}/attachments/{attachment_id}",
               "delete_attachment", "C", off_door=HARD_DELETE),
         # ── recurrence.py · relations.py · watchers.py ──
-        Route("GET", "/projects/tasks/{task_id}/recurrence", "recurrence", "A", off_door=LATER),
+        Route("GET", "/projects/tasks/{task_id}/recurrence", "recurrence", "A", off_door=LATER,
+              sandbox=True),
         Route("PUT", "/projects/tasks/{task_id}/recurrence", "set_recurrence", "B",
-              off_door=LATER),
+              off_door=LATER, sandbox_write=True),
         Route("DELETE", "/projects/tasks/{task_id}/recurrence", "set_recurrence", "B",
               off_door=LATER),
-        Route("GET", "/projects/tasks/{task_id}/relations", "task_detail", "A", off_door=TYPED),
+        Route("GET", "/projects/tasks/{task_id}/relations", "task_detail", "A", off_door=TYPED,
+              sandbox=True),
         # ── refs.py ──
         Route("GET", "/projects/tasks/{task_id}/refs", "task_detail", "A", off_door=TYPED),
         Route("POST", "/projects/tasks/{task_id}/refs", "add_task_ref", "B", off_door=TYPED),
@@ -587,14 +643,14 @@ PROJECTS_DOOR = App(
         Route("GET", "/projects/nodes/{project_id}/watchers", "watchers", "A", off_door=LATER),
         # ── intake.py · notifications.py ──
         Route("POST", "/projects/intake", "capture_intake", "B", off_door=LATER),
-        Route("GET", "/projects/intake", "intake_queue", "A", off_door=LATER),
+        Route("GET", "/projects/intake", "intake_queue", "A", off_door=LATER, sandbox=True),
         Route("POST", "/projects/intake/{task_id}/accept", "triage_intake", "B", off_door=LATER),
         Route("POST", "/projects/intake/{task_id}/decline", "triage_intake", "B",
               off_door=LATER),
         Route("POST", "/projects/intake/{task_id}/duplicate", "triage_intake", "B",
               off_door=LATER),
         Route("POST", "/projects/intake/{task_id}/snooze", "triage_intake", "B", off_door=LATER),
-        Route("GET", "/projects/notifications", "notifications", "A", off_door=LATER),
+        Route("GET", "/projects/notifications", "notifications", "A", off_door=LATER, sandbox=True),
         Route("POST", "/projects/notifications/read", "mark_notifications_read", "B",
               off_door=LATER),
         # ── templates.py (§19.16, act 5). PROJECTS_TEMPLATES_ORGS keeps each route at 404.

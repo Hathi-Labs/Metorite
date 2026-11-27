@@ -123,6 +123,10 @@ _PLANNER_REASON = (
     "The day planner is the Calendar app's and the Tasks assistant's (calendar_ai_review.md §4). "
     "The chat reaches it through the calendar-day pack (my_tasks_plan_day and its siblings)."
 )
+#: WS-MDC CC-5a ships the focus-session log with no chat tool. CC-10 adds the
+#: tools (``my_day_command_centre.md`` §9.3), and `test_projects_chat_x_pin.py`
+#: holds these rows as pending for that slice.
+_FOCUS_LOG_REASON = "The tools come with CC-10 (my_day_command_centre.md §9.3)."
 #: A file import is an admin's upload through a wizard (project_import.md §7.7).
 _IMPORT_REASON = (
     "A file import is an admin's upload and review through the import wizard "
@@ -284,6 +288,13 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/assigned-to-me", "my_work", "A"),
     # SW-68a: the plan order of the member's tasks. The MCP `my_work` reads it.
     Route("GET", "/projects/plan/order", "my_work", "A"),
+    # SW-45: the free tasks of the member's own apps. The MCP `my_work` reads
+    # it. The chat `my_work` does not read it yet, so its tool is PLANNED.
+    Route("GET", "/projects/my/own-app-free", "own_app_free", "A"),
+    # LBB-2: the open PRs to land of an agent session. The MCP `my_work`
+    # reads it. A person's chat holds no PR of an agent label, so the chat
+    # `my_work` never reads it, and the route answers no row for a person.
+    Route("GET", "/projects/agent-work/landing", "land_your_pr", "A"),
     Route("GET", "/projects/my/project", "my_work", "A"),
     Route(
         "POST",
@@ -353,6 +364,8 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/my/contexts", "my_contexts", "A"),
     # WS-46 P7 - the member's date and zone (`user_settings.timezone`). It is
     # my_work's read, and the tools that guess a day reach it as a composite.
+    # WS-MDC CC-2: `with_tasks=true` adds the Today set of the one predicate.
+    # The chat sends no `with_tasks` until CC-10 (FIELD_EXEMPT below).
     Route("GET", "/projects/my/today", "my_work", "A"),
     # WS-39 S6e — the projects I lead, with their open work and mine.
     Route("GET", "/projects/my/led", "my_led_projects", "A"),
@@ -399,6 +412,10 @@ MANIFEST: tuple[Route, ...] = (
     Route("POST", "/projects/my/calendar/replan", "", "X", _PLANNER_REASON),
     Route("POST", "/projects/my/calendar/rollover", "", "X", _PLANNER_REASON),
     Route("GET", "/projects/my/calendar/estimate-stats", "", "X", _PLANNER_REASON),
+    # ── focus_sessions.py (WS-MDC CC-5a) ─────────────────────────────────
+    Route("POST", "/projects/my/focus-sessions", "", "X", _FOCUS_LOG_REASON),
+    Route("PATCH", "/projects/my/focus-sessions/{session_id}", "", "X", _FOCUS_LOG_REASON),
+    Route("GET", "/projects/my/focus-sessions", "", "X", _FOCUS_LOG_REASON),
     # ── calendar.py · search.py · export.py · delta.py ───────────────────
     Route("GET", "/projects/calendar", "calendar", "A"),
     Route("GET", "/projects/search", "find_tasks", "A"),
@@ -479,6 +496,23 @@ MANIFEST: tuple[Route, ...] = (
     # PJP-6a: the plan engine's read. SP-12 gives it the chat tool `get_plan`
     # (class A), the same read that the MCP tool `get_plan` makes.
     Route("GET", "/projects/plan/analysis", "get_plan", "A"),
+    # WS-PKG PKG-14a: the extension values of a package on a task
+    # (package_fields.py, package_host.md §8.3). Dark behind PACKAGE_HOST_ORGS.
+    # PKG-14b adds the panel and the chat tool, and moves both rows.
+    Route(
+        "GET",
+        "/projects/tasks/{task_id}/package-fields",
+        "",
+        "X",
+        "A dark read with no chat tool yet. PKG-14b adds the tool with the task panel.",
+    ),
+    Route(
+        "PUT",
+        "/projects/tasks/{task_id}/package-fields/{install_id}/{field_key}",
+        "",
+        "X",
+        "A dark write with no chat tool yet. PKG-14b adds the tool with the task panel.",
+    ),
     Route("GET", "/projects/reports", "report_list", "A"),
     # WS-27bn R2 - the template gallery. It must sit ABOVE the
     # {report_id} row, because route_for takes the first match. R-final:
@@ -651,6 +685,10 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/templates", "list_templates", "A"),
     Route("POST", "/projects/templates", "save_as_template", "C"),
     Route("POST", "/projects/templates/{template_id}/apply", "create_project_from_template", "C"),
+    # ── teams.py (WS-39 T-1, task 2532) ──────────────────────────────────
+    # Dark behind TEAMS_ORGS. The teams of the member and the spaces of each.
+    # A read, so class A. T-6 (task 2537) builds the chat and MCP read.
+    Route("GET", "/projects/teams", "list_teams", "A"),
 )
 
 #: Tools the manifest names that no slice has built yet, with the slice that
@@ -661,6 +699,13 @@ PLANNED: dict[str, str] = {
     "assignable_members": "Metorite task 2216, chat parity for the assignable member list",
     # MCP-G19a: the route is built. The chat tool waits on Metorite task 2223.
     "board_stats": "Metorite task 2223, chat parity for the board count",
+    # SW-45 (task 1878): the route is built, and the MCP `my_work` reads it.
+    # The chat `my_work` does not show the group yet (agent_coordination.md SW-45).
+    "own_app_free": "WS-MCP SW-45 follow-up, chat parity for the own_app_free group of my_work",
+    # LBB-2 (task 4041): the route is built, and the MCP `my_work` reads it with the
+    # agent label of the session. A person's chat holds no PR of an agent label, so
+    # the chat tool waits (engineering_practice.md section 7b.2).
+    "land_your_pr": "LBB-2 follow-up, chat parity for the land_your_pr rows of my_work",
     # S2 (2026-09-22) shipped the fifteen daily class B verbs. S2b
     # (2026-09-23) shipped the rest of class B and the two reads it needed
     # (`recurrence`, `my_task`).
@@ -713,6 +758,9 @@ PLANNED: dict[str, str] = {
     # WS-MCP SW-32 (2026-11-11) added the run plan for an outside agent. The
     # chat has no run of its own.
     "set_run_plan": "WS-MCP SW-32, in-product chat parity, after EA-12e",
+    # WS-39 T-1 (2026-11-11) added the read of the teams of a member. The chat
+    # and the MCP get it through the app door in T-6.
+    "list_teams": "Metorite task 2537, T-6 the teams in the chat and over the MCP",
     # ⚠️ `approve_task_archive` is NOT a chat tool, ever (EA3-40, D-OP-13). Its
     # route is class X with a reason, and `waiting_agent_requests` lists it.
     # WS-66 RM-3 (2026-10-25) built the seven reminder tools that RM-1 planned.
@@ -1259,6 +1307,8 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
         "waiting_on": "set_my_overlay.waiting_on",
         "delegated_at": "set_my_overlay.waiting_since",
         "expected_by": "set_my_overlay.expected_by",
+        # WS-MDC CC-2: today's focus, the member's today or null.
+        "focus_on": "set_my_overlay.todays_focus",
     },
     ("POST", "/projects/tasks/{task_id}/defer"): {"until": "defer.until"},
     ("GET", "/projects/my/calendar"): {"start": "calendar.start", "end": "calendar.end"},
@@ -1438,6 +1488,11 @@ _AUDIT_FILTER_REASON = (
     "An audit filter of the agent door (MCP-G19a). The chat gets it with "
     "the board count tool, Metorite task 2223."
 )
+#: MCP-G19c (task 2315). The type filters of the agent door.
+_AGENT_DOOR_TYPE_REASON = (
+    "A type filter of the agent door (MCP-G19c). The chat tool for it is "
+    "part of Metorite task 2223."
+)
 _STATS_ROUTE_REASON = (
     "A field of the board count route of the agent door (MCP-G19a). Its "
     "chat tool is Metorite task 2223."
@@ -1500,6 +1555,11 @@ _STATUS_PLACE_REASON = (
     "every organization, and the route accepts it at all times. "
     "test_projects_status_chat.py proves the send."
 )
+#: WS-39 T-1 (task 2532). The team scope of the app, dark behind TEAMS_ORGS.
+_TEAM_SCOPE_REASON = (
+    "The team scope of the app (WS-39 T-1, dark behind TEAMS_ORGS). The chat "
+    "and the MCP get it through the app door in T-6, Metorite task 2537."
+)
 
 
 #: WS-MCP SW-7b (``agent_coordination.md`` §3.7 item 2). The name that an
@@ -1527,7 +1587,21 @@ _AGENT_OVERVIEW_REASON = (
 )
 
 FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
+    # WS-39 T-1: the team scope (`team_scope.py`). T-6 gives it to the chat.
+    ("GET", "/projects/teams"): {"team": _TEAM_SCOPE_REASON},
+    ("GET", "/projects/tree"): {"team": _TEAM_SCOPE_REASON},
     ("GET", "/projects/assignable-members"): {"project_id": _MEMBERS_ROUTE_REASON},
+    # LBB-2 (engineering_practice.md section 7b.2): the label of an agent session. A
+    # person's chat has no session label and holds no PR of a lane.
+    ("GET", "/projects/agent-work/landing"): {
+        "agent_label": "The label of an outside agent session (LBB-2). The MCP `my_work` sends it. A chat has no session label.",
+    },
+    # LBB-2: the landing mark of a pull request. A lane sends it over the MCP
+    # `add_task_reference` after a hand-over to a merger. The chat hands
+    # nothing to a merger.
+    ("POST", "/projects/tasks/{task_id}/refs"): {
+        "landing": "The landing mark of a PR that a lane handed to a merger (LBB-2). Only the MCP `add_task_reference` sends it.",
+    },
     # SP-12: `get_plan` and the MCP tool plan from today. A first working day
     # is a web planner override, and the chat has no use for it.
     ("GET", "/projects/plan/analysis"): {
@@ -1557,6 +1631,7 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "unheld": _STATS_ROUTE_REASON,
         "updated_after": _STATS_ROUTE_REASON,
         "updated_before": _STATS_ROUTE_REASON,
+        "team": _TEAM_SCOPE_REASON,
     },
     # WS-42 PST-4: the place of a lane. The tools send them when the model
     # passes a place, and this fence's witnesses pass none.
@@ -1584,6 +1659,12 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "updated_after": _AUDIT_FILTER_REASON,
         "updated_before": _AUDIT_FILTER_REASON,
         "compact": "A row shape of the agent door (MCP-G19a), not a filter. The chat prints its own rows.",
+        "type_id": _AGENT_DOOR_TYPE_REASON,
+        "type_name": _AGENT_DOOR_TYPE_REASON,
+        "task_number": (
+            "A task number of the agent door (MCP-G19c). The chat finds a task by "
+            "its number through search."
+        ),
         "agent_focus": _AGENT_FILTER_REASON,
         "agent_worked": _AGENT_FILTER_REASON,
         "with_status_counts": (
@@ -1613,6 +1694,7 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         ),
         "scope": _MINE_SCOPE_REASON,
         "with_overlay": _MINE_OVERLAY_REASON,
+        "team": _TEAM_SCOPE_REASON,
     },
     # WS-64 OP-6c: the export takes the same subset as list_tasks.
     ("GET", "/projects/export/tasks.csv"): {
@@ -1669,6 +1751,8 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "project_id": _AGENT_OVERVIEW_REASON,
         "shape": _AGENT_OVERVIEW_REASON,
         "show_quiet": _AGENT_OVERVIEW_REASON,
+        "detail": _AGENT_OVERVIEW_REASON,
+        "session": _AGENT_OVERVIEW_REASON,
     },
     # WS-MCP SW-23: the report of a Check. An outside agent sends each field
     # over MCP (`report_check`). The chat has no report tool.
@@ -1730,6 +1814,9 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
             "The edit guard of an outside agent (D-PM-20, WS-55 MCP-G2). A chat "
             "write reads the row first."
         ),
+        # LBB-2c (engineering_practice.md section 7b.10): the claim gate of a
+        # self-add reads the label of the session.
+        "agent_label": _AGENT_LABEL_REASON,
     },
     # one_assistant_context.md §9.4 WT-6a: the browser's Undo of a chat receipt.
     ("POST", "/projects/tasks/{task_id}/unarchive"): {
@@ -1757,6 +1844,7 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
     ("GET", "/projects/search"): {
         "exclude_relatives_of": "The link picker's filter in the app. task_detail reads links.",
         "include_triage": _TRIAGE_READ_REASON,
+        "team": _TEAM_SCOPE_REASON,
     },
     ("PATCH", "/projects/comments/{activity_id}"): {
         "parent_id": "Only POST reads it. An edit cannot re-parent a comment (activities.py).",
@@ -1804,6 +1892,11 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "timezone": _SETTINGS_AFTER_CREATE_REASON,
         "task_prefix": _TASK_PREFIX_REASON,
         "position": "A new node takes no position, as the app's create sends none. move_project sets its place.",
+        # WS-39 SP-3a: the app's create sends no style, and a new node is Flow.
+        "work_style": (
+            "A new node starts as Flow. The app sets the style after the create, in "
+            "How this team works."
+        ),
     },
     ("PATCH", "/projects/nodes/{project_id}"): {
         "If-Match": (
@@ -1845,6 +1938,12 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
     },
     ("GET", "/projects/my/calendar"): {
         "include_done": "Done work is read through my_work include_done.",
+    },
+    ("GET", "/projects/my/today"): {
+        "with_tasks": (
+            "The Today set of My Day (my_day_command_centre.md §9.2, CC-2). The "
+            "chat reads the day with its plan tools in CC-10."
+        ),
     },
     ("GET", "/projects/calendar"): {
         "status_id": _READ_FILTER_REASON,
@@ -1912,6 +2011,10 @@ FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
         "cooldown_days": "G26", "credit_budget": "G26", "If-Match": "G26",
     },
     ("POST", "/projects/cycles/{cycle_id}/start"): {"capacity": "G26"},
+    # G26 (WS-39 SP-3a): the style picker and the backlog read of the Backlog
+    # canvas. SP-5 sends each field.
+    ("PATCH", "/projects/nodes/{project_id}"): {"work_style": "G26"},
+    ("GET", "/projects/tasks"): {"cycle": "G26"},
     # G25 (WS-AP AP-8a): the person ask. AP-10 sends each field.
     ("POST", "/projects/tasks/{task_id}/asks"): {
         "addressee": "G25", "question": "G25", "choices": "G25", "due_at": "G25",
@@ -1984,6 +2087,21 @@ UI_ACTIONS: dict[str, str] = {
     "projectsApi.deleteProject": "delete_project",
     "projectsApi.convertFolder": "convert_folder_to_project",
     "projectsApi.grants": "project_access",
+    # WS-MDC CC-2: the Today set (`GET /projects/my/today?with_tasks=true`) for
+    # the Today chip of My work. ⚠️ my_work has NO Today view: it reads this
+    # route for the member's day and zone only, and sends no `with_tasks`
+    # (FIELD_EXEMPT). The row names my_work because the fence takes no other
+    # shape: UI_PLANNED needs a class X route and a gap of
+    # `projects_agent_parity.md` §3.3, and UI_EXEMPT needs a class X route.
+    # The chat gets the set with its plan tools in CC-10 (task 1978).
+    "projectsApi.myTodaySet": "my_work",
+    # ── projectsApi: the cycles of the Backlog canvas (WS-39 SP-3a) ──────
+    # SP-5a (Metorite task 964) built each tool, so no row is debt.
+    "projectsApi.cycles": "list_cycles",
+    "projectsApi.cycle": "cycle_detail",
+    "projectsApi.createCycle": "create_cycle",
+    "projectsApi.addCycleTask": "plan_cycle",
+    "projectsApi.removeCycleTask": "plan_cycle",
     # ── projectsApi: analytics and reports ───────────────────────────────
     "projectsApi.stuck": "analytics_stuck",
     "projectsApi.load": "analytics_load",

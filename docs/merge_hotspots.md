@@ -42,9 +42,8 @@ whose entries a revert can delete. We built none.
   the order of the list: `test_green_pointer.py` compares a list with itself.
 - `docs/flag_reload.md`: the flag paragraphs are sorted by flag name. Fence:
   `tests/unit/test_flag_doc_sorted.py`.
-- Still open: `tests/unit/test_flag_reload.py` (one test for each flag, appended)
-  and the flag fields of `settings.py`. A sort fence there needs a rule for the
-  grouped comments, so each gets its own slice.
+- `tests/unit/test_flag_reload.py` and the flag fields of `settings.py`: slice 3
+  below (PR 2380).
 
 ## Slice 2 (proposed): one file for each §14 row
 
@@ -55,13 +54,24 @@ when they edit the same slice. Fences to move first: `test_index_completeness.py
 `test_doc_names_resolve.py` and each test that reads `ai_studio.md` §14 by
 row id. This slice needs a scan of those readers, so it gets its own task.
 
-## Slice 3 (proposed): `settings.py` flags in one registry
+## Slice 3 (built, PR 2380, task 3284): the per-org flags in one registry
 
-A flag block goes into a per-area list that is sorted by name, one entry for
-each line. Two sorted insertions land in different hunks unless the names are
-neighbours. A union driver is wrong here, for the same reason as in slice 1. `tests/fences.json` stays a sorted JSON list. Its commas make a
-union driver unsafe, so its fix is the sort order that its fence already
-holds.
+- Every `*_orgs` and `*_modes` field of `Settings` lives in
+  `packages/acb_common/acb_common/flag_registry.py` (class `FlagRegistry`),
+  sorted by name, one block each. `Settings` extends `FlagRegistry`, so
+  `Settings.model_fields`, the reload list and each reader are unchanged.
+- Two flag PRs edit different hunks, unless their names are neighbours.
+- A reader test whose reader is `reader(org) -> bool` is one line of the sorted
+  `_READERS` table in `tests/unit/test_flag_reload.py`.
+- A one-reader fence names `flag_registry.py` as the declarer.
+- `scripts/affected_tests.py` treats a flag-only diff of `flag_registry.py` as
+  it treats one of `settings.py` (CIV-33c-1): it selects the tests that name
+  the flag, and it does not go FULL.
+- How a lane resolves a conflict: keep main's `settings.py`, put the field at
+  its sorted place in `flag_registry.py`, and add its `_READERS` line. Lane
+  rule 17 says the same.
+- Fences: `tests/unit/test_flag_registry.py` (sorted, per-org lists only, and
+  `Settings` declares none of its own) and `tests/unit/test_affected_tests.py`.
 
 ## Measure
 

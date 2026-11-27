@@ -442,23 +442,30 @@ class IMAPProvider(BaseEmailProvider):
             messages.reverse()
             # Stamp the canonical folder for non-INBOX mailboxes so Sent/Drafts/
             # user folders file correctly (the flag-based default is INBOX).
+            # Task 4100: a UID is unique in one folder only, and the upsert
+            # keys on (account_id, provider_message_id). So a mail outside
+            # INBOX gets the id ``<mailbox>:<uid>`` and never overwrites the
+            # INBOX row with the same UID number.
             if canon != "inbox":
                 for m in messages:
                     m.folder = canon
+                    m.provider_message_id = imap_message_id(
+                        folder, m.provider_message_id)
             return messages, None
 
         return await asyncio.to_thread(_list)
 
     async def get_message(self, provider_message_id: str) -> EmailMessage:
         imap = await self._get_imap()
+        mailbox, uid = split_imap_message_id(provider_message_id)
 
         def _get() -> EmailMessage:
-            s, _ = imap.select("INBOX", readonly=True)
+            s, _ = imap.select(_imap_quote(mailbox), readonly=True)
             if s != "OK":
-                raise ValueError("Cannot select INBOX")
+                raise ValueError(f"Cannot select {mailbox}")
 
             s, data = imap.uid(
-                "FETCH", provider_message_id, "(FLAGS BODY[] INTERNALDATE UID)"
+                "FETCH", uid, "(FLAGS BODY[] INTERNALDATE UID)"
             )
             if s != "OK" or not data:
                 raise ValueError(f"Message not found: {provider_message_id}")
@@ -466,6 +473,9 @@ class IMAPProvider(BaseEmailProvider):
             messages = _parse_imap_fetch_full(data)
             if not messages:
                 raise ValueError(f"Message not found: {provider_message_id}")
+            # Task 4100: the answer keeps the id that the caller asked for, so
+            # a mail outside INBOX never comes back under a bare INBOX UID.
+            messages[0].provider_message_id = provider_message_id
             return messages[0]
 
         return await asyncio.to_thread(_get)
@@ -481,9 +491,17 @@ class IMAPProvider(BaseEmailProvider):
         So the read selects the folder of the stored row, and it fetches the
         Message-ID with the Reply-To. It names no Reply-To, and the reply goes
         to the sender, when the folder is unknown, when the stored Message-ID
-        is unknown, or when the message it read has another Message-ID."""
+        is unknown, or when the message it read has another Message-ID.
+
+        Task 4100: an id ``<mailbox>:<uid>`` names its own mailbox, and that
+        mailbox wins over ``folder``."""
         wanted = (message_id or "").strip()
-        mailbox = await self._imap_mailbox_of(folder)
+        named, uid = split_imap_message_id(provider_message_id)
+        if named != "INBOX":
+            mailbox: str | None = named
+            provider_message_id = uid
+        else:
+            mailbox = await self._imap_mailbox_of(folder)
         if not mailbox or not wanted:
             _log.warning("imap.reply_to_skipped reason=%s",
                          "no_folder" if not mailbox else "no_message_id")
@@ -680,9 +698,14 @@ class IMAPProvider(BaseEmailProvider):
         remove_labels: list[str] | None = None,
     ) -> None:
         imap = await self._get_imap()
+        # Task 4100: the flags go to the mail in the mailbox that the id
+        # names, never to the INBOX mail with the same UID number.
+        mailbox, provider_message_id = split_imap_message_id(provider_message_id)
 
         def _modify() -> None:
-            imap.select("INBOX", readonly=False)
+            s, _ = imap.select(_imap_quote(mailbox), readonly=False)
+            if s != "OK":
+                raise ValueError(f"Cannot select {mailbox}")
 
             if add_labels:
                 flags: list[str] = []
@@ -705,33 +728,48 @@ class IMAPProvider(BaseEmailProvider):
 
         await asyncio.to_thread(_modify)
 
-    async def trash_message(self, provider_message_id: str) -> None:
+    #: Task 4095 (§18.13.3): the trash checks the stored Message-ID.
+    TRASH_CHECKS_MESSAGE_ID = True
+
+    async def trash_message(
+        self, provider_message_id: str, *, message_id: str | None = None,
+    ) -> None:
+        """Move one INBOX message to the Trash folder, by its UID.
+
+        Task 3977 (§18.13): a draft that Metorite saved has the id
+        ``draft-<folder>``, not a UID, and the sync reads INBOX only. So this
+        raises for an id that is not a UID.
+
+        Task 4025 (§18.13.3): every command runs with INBOX selected, because
+        a UID is unique in one folder only. The order is UID MOVE when the
+        server has MOVE. Else it is UID COPY, a STORE of ``\\Deleted`` and a
+        UID EXPUNGE of this one UID (UIDPLUS). A server with neither keeps
+        the original flagged ``\\Deleted`` after the copy, because a plain
+        EXPUNGE also removes each mail that another client flagged.
+
+        It raises, and removes and flags nothing, when no Trash folder
+        exists, when the UID is not in INBOX, or when the copy or the move
+        is not OK. A caller then knows that nothing was trashed. It answers
+        None: the Trash copy has a new UID, but an IMAP id always names a
+        message of INBOX (``sync_messages``).
+
+        Task 4095 (§18.13.3): ``message_id`` is the stored Message-ID of the
+        row. After a change of UIDVALIDITY, a stored UID can name another
+        mail. So the trash reads the Message-ID of the mail at the UID with
+        ``BODY.PEEK``, and it raises, and moves nothing, when the two differ,
+        when the mail has none, or when ``message_id`` is empty. Call it
+        through ``base.trash_checked``.
+
+        Task 4100: an id ``<mailbox>:<uid>`` names a mail outside INBOX, so
+        this raises for it and moves nothing."""
+        uid = str(provider_message_id or "")
+        if not uid.isdigit():
+            raise ValueError("IMAP trash needs the UID of an INBOX message")
+        wanted = _message_id_key(message_id)
+        if not wanted:
+            raise ValueError("IMAP trash needs the stored Message-ID of the mail")
         imap = await self._get_imap()
-
-        def _trash() -> None:
-            imap.select("INBOX", readonly=False)
-            trash_dir = None
-            for name in (
-                "Trash", "TRASH", "Deleted Items", "Deleted Messages",
-                "[Gmail]/Trash",
-            ):
-                try:
-                    s, _ = imap.select(f'"{name}"', readonly=True)
-                    if s == "OK":
-                        trash_dir = name
-                        break
-                except Exception:
-                    continue
-
-            if trash_dir:
-                imap.select(f'"{trash_dir}"', readonly=False)
-                imap.uid("COPY", provider_message_id, trash_dir)
-
-            imap.select("INBOX", readonly=False)
-            imap.uid("STORE", provider_message_id, "+FLAGS", "\\Deleted")
-            imap.expunge()
-
-        await asyncio.to_thread(_trash)
+        await asyncio.to_thread(_trash_inbox_uid, imap, uid, wanted)
 
     async def sync_messages(
         self,
@@ -820,12 +858,15 @@ class IMAPProvider(BaseEmailProvider):
         self, provider_message_id: str, provider_attachment_id: str
     ) -> bytes:
         imap = await self._get_imap()
+        mailbox, uid = split_imap_message_id(provider_message_id)
 
         def _get_att() -> bytes:
-            imap.select("INBOX", readonly=True)
+            s, _ = imap.select(_imap_quote(mailbox), readonly=True)
+            if s != "OK":
+                raise ValueError(f"Cannot select {mailbox}")
             s, data = imap.uid(
                 "FETCH",
-                provider_message_id,
+                uid,
                 f"(BODY[{provider_attachment_id}])",
             )
             if s != "OK" or not data or not data[0]:
@@ -837,6 +878,222 @@ class IMAPProvider(BaseEmailProvider):
             raise ValueError("No attachment data in response")
 
         return await asyncio.to_thread(_get_att)
+
+
+# -- The trash of one INBOX message (task 4025) --------------------------------
+
+#: The names of a Trash folder, in order, for a server with no SPECIAL-USE
+#: ``\Trash`` flag (RFC 6154). The flag wins over each name.
+TRASH_FOLDER_NAMES = (
+    "Trash", "TRASH", "Deleted Items", "Deleted Messages", "[Gmail]/Trash",
+    "INBOX.Trash",
+)
+
+_LIST_LINE = re.compile(
+    r'^\((?P<flags>[^)]*)\)\s+(?:"(?:[^"\\]|\\.)*"|NIL)\s+(?P<name>.+)$',
+    re.IGNORECASE,
+)
+
+
+def imap_message_id(mailbox: str, uid: str) -> str:
+    """The stored id of mail ``uid`` of ``mailbox`` (task 4100).
+
+    A UID is unique in one mailbox only, and ``email_messages`` keys on
+    ``(account_id, provider_message_id)``. So an INBOX mail keeps its bare
+    UID, as every stored row has it, and a mail of another mailbox gets
+    ``<mailbox>:<uid>``. The UID is the last part, and it holds digits only,
+    so ``split_imap_message_id`` reads the id back for any mailbox name."""
+    if not mailbox or mailbox.upper() == "INBOX":
+        return str(uid)
+    return f"{mailbox}:{uid}"
+
+
+def split_imap_message_id(provider_message_id: str) -> tuple[str, str]:
+    """The mailbox and the UID of one stored IMAP id (task 4100).
+
+    A bare UID names an INBOX mail. Any other id gives INBOX and the id as
+    it is, so a command with it fails at the server and changes nothing."""
+    pid = str(provider_message_id or "")
+    mailbox, sep, uid = pid.rpartition(":")
+    if sep and mailbox and uid.isdigit():
+        return mailbox, uid
+    return "INBOX", pid
+
+
+def _imap_quote(name: str) -> str:
+    """``name`` as an IMAP quoted string. imaplib sends a mailbox name of
+    UID MOVE as it is, and Python 3.12 does that for UID COPY too, so a name
+    with a space such as ``Deleted Items`` needs the quotes."""
+    return '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _list_entry(item: Any) -> tuple[set[str], str] | None:
+    """The flags and the name of one LIST line, or None.
+
+    A name can come as a quoted string, as an atom (Dovecot sends ``Trash``
+    with no quotes) or as a literal (imaplib gives a tuple)."""
+    literal: bytes | None = None
+    if isinstance(item, tuple) and len(item) >= 2:
+        head, literal = item[0], item[1]
+    else:
+        head = item
+    if not isinstance(head, (bytes, str)):
+        return None
+    line = (head.decode("utf-8", errors="replace")
+            if isinstance(head, bytes) else head).strip()
+    m = _LIST_LINE.match(line)
+    if not m:
+        return None
+    flags = {f.lower() for f in m.group("flags").split()}
+    if literal is not None:
+        return flags, (literal.decode("utf-8", errors="replace")
+                       if isinstance(literal, bytes) else str(literal))
+    raw = m.group("name").strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] == '"':
+        raw = re.sub(r"\\(.)", r"\1", raw[1:-1])
+    return flags, raw
+
+
+def _find_trash_folder(imap: Any) -> str | None:
+    """The Trash folder of the account, read from LIST, or None.
+
+    LIST selects no folder, so it cannot move the selected folder."""
+    typ, data = imap.list()
+    if typ != "OK":
+        raise RuntimeError(f"IMAP LIST answered {typ}")
+    names: list[str] = []
+    for item in data or []:
+        entry = _list_entry(item)
+        if entry is None:
+            continue
+        flags, name = entry
+        if "\\noselect" in flags or "\\nonexistent" in flags:
+            continue
+        if "\\trash" in flags:
+            return name
+        names.append(name)
+    for wanted in TRASH_FOLDER_NAMES:
+        if wanted in names:
+            return wanted
+    return None
+
+
+def _capabilities(imap: Any) -> set[str]:
+    """The capabilities of the server after the login, in upper case.
+
+    imaplib reads them before the login only, and a server can name more
+    after it. So this asks again, and it falls back to the first list."""
+    words: list[str] = []
+    try:
+        typ, data = imap.capability()
+        if typ == "OK":
+            for part in data or []:
+                text = (part.decode("ascii", errors="replace")
+                        if isinstance(part, bytes) else str(part))
+                words.extend(text.split())
+    except Exception:  # the list that imaplib read at connect stays
+        words = []
+    if not words:
+        words = [str(c) for c in (getattr(imap, "capabilities", None) or ())]
+    return {w.upper() for w in words}
+
+
+def _message_id_key(value: Any) -> str:
+    """The compare key of one Message-ID, or "" when it holds none.
+
+    Task 4095 (§18.13.3). The key removes folding and white space, keeps the
+    first ``<...>`` id with no brackets, and drops a comment after it. It
+    keeps the case, because both values come from the same header bytes on
+    one server. So a change of case is another id, and the trash fails
+    closed."""
+    text = re.sub(r"\s+", "", str(value or ""))
+    m = re.search(r"<([^<>]+)>", text)
+    if m:
+        return m.group(1)
+    return "" if "<" in text or ">" in text else text
+
+
+def _message_id_at(imap: Any, uid: str) -> set[str]:
+    """The compare keys of each Message-ID of INBOX message ``uid``.
+
+    It reads with ``BODY.PEEK``, so the mail stays unread. It keeps only the
+    parts of the answer for this UID, because a server can add a FETCH line
+    for another mail. A server can name the UID before the header or after
+    it, so the check reads the line of the literal and the line after it."""
+    typ, data = imap.uid(
+        "FETCH", uid, "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
+    if typ != "OK":
+        raise RuntimeError(f"IMAP UID FETCH answered {typ}")
+    parts = list(data or [])
+    raw = b""
+    for i, part in enumerate(parts):
+        if not (isinstance(part, tuple) and len(part) >= 2
+                and isinstance(part[1], bytes)):
+            continue
+        after = parts[i + 1] if i + 1 < len(parts) else b""
+        around = b" ".join(x for x in (part[0], after) if isinstance(x, bytes))
+        if re.search(rf"\bUID\s+{uid}\b", around.decode("ascii", errors="replace")):
+            raw += part[1]
+    headers = email_lib.message_from_bytes(raw)
+    keys = {_message_id_key(v) for v in headers.get_all("Message-ID") or []}
+    return {k for k in keys if k}
+
+
+def _trash_inbox_uid(imap: Any, uid: str, wanted: str) -> None:
+    """Move INBOX message ``uid`` to the Trash folder, or raise.
+
+    It runs in one worker thread, so no other command can select another
+    folder between the steps. It never sends a plain EXPUNGE. ``wanted`` is
+    the compare key of the stored Message-ID (``_message_id_key``). The mail
+    at the UID must hold that one Message-ID, or nothing moves (task 4095)."""
+    trash = _find_trash_folder(imap)
+    if not trash:
+        raise RuntimeError("The IMAP account has no Trash folder")
+    if trash.upper() == "INBOX":
+        raise RuntimeError("The IMAP Trash folder is INBOX")
+    caps = _capabilities(imap)
+
+    typ, _ = imap.select("INBOX", readonly=False)
+    if typ != "OK":
+        raise RuntimeError(f"IMAP SELECT INBOX answered {typ}")
+    typ, data = imap.uid("SEARCH", None, f"UID {uid}")
+    found = b" ".join(d for d in (data or []) if isinstance(d, bytes)).split()
+    if typ != "OK" or uid.encode() not in found:
+        raise RuntimeError(f"IMAP UID {uid} is not in INBOX")
+    keys = _message_id_at(imap, uid)
+    if not keys:
+        raise RuntimeError(f"IMAP UID {uid} has no Message-ID to check")
+    if keys != {wanted}:
+        # A rebuild of INBOX gave the UID to another mail (task 4095).
+        raise RuntimeError(f"IMAP UID {uid} names another mail now")
+
+    target = _imap_quote(trash)
+    if "MOVE" in caps:
+        typ, _ = imap.uid("MOVE", uid, target)
+        if typ != "OK":
+            raise RuntimeError(f"IMAP UID MOVE answered {typ}")
+        return
+
+    typ, _ = imap.uid("COPY", uid, target)
+    if typ != "OK":
+        raise RuntimeError(f"IMAP UID COPY answered {typ}")
+    typ, _ = imap.uid("STORE", uid, "+FLAGS.SILENT", "(\\Deleted)")
+    if typ != "OK":
+        # The copy is in Trash and the original is in INBOX, not flagged.
+        raise RuntimeError(f"IMAP STORE answered {typ}")
+    if "UIDPLUS" not in caps:
+        # No safe expunge of one UID. The copy is in Trash, and the original
+        # stays flagged \Deleted until the next expunge of any client.
+        _log.info("imap.trash_left_flagged reason=no_uidplus")
+        return
+    try:
+        typ, _ = imap.uid("EXPUNGE", uid)
+    except imaplib.IMAP4.error as exc:
+        typ = f"error {str(exc)[:80]}"
+    if typ != "OK":
+        # The copy is in Trash, so the trash stands. The original keeps its
+        # \Deleted flag, as on a server with no UIDPLUS.
+        _log.warning("imap.trash_expunge_not_ok answer=%s", typ)
 
 
 # -- IMAP message parsing helpers ----------------------------------------------
@@ -1034,6 +1291,10 @@ def _parse_imap_raw_message(
     return EmailMessage(
         provider_message_id=uid,
         thread_id=thread_id,
+        # Task 4100: the mail's OWN Message-ID, or None. ``thread_id`` can
+        # hold the In-Reply-To of the parent, so a trash check never reads it
+        # for a mail outside INBOX (``gateway.routes.email.core``).
+        internet_message_id=thread_id_raw or None,
         folder=folder,
         labels=labels,
         from_address=from_addr,
