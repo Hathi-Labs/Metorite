@@ -25,5 +25,8 @@ closes no pull request.
 |---|---|---|---|
 | 1793, seat tiers | 1280 | The task waits on the base price (D204 point 9) | Give the numbers, or let the per-seat price be the base price |
 | 1400, chat wave 2 | 2124 | Answered 2026-11-26: a task moves with its new parent. Cut the missing parts again in small PRs | The re-cut task. Close PR 1400 after its last part merges |
-| 2094, agent work review | 349 | Keep the new column, or use the policy store of SW-94? | Use the policy store |
-| 2515, MM-1c acts | 3615 | Do you accept `proactive_loop.md` section 5.3? | Drop that one hunk and land the rest |
+| 2094, agent work review | 349 | Answered. A box lane has built on it since 2026-11-27 12:44 UTC | That lane lands it. Its run was quiet from 17:19 UTC |
+
+## Result, 2026-11-27 23:35 UTC
+
+The PC lane merged 20 pull requests of its list. Another lane merged PR 2515. Two open pull requests wait on the owner: 2163 (screen approval, task 859) and 1998 (`TOOL_PACKS`, task 1680).
