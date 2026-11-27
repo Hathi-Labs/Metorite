@@ -32,6 +32,8 @@ import {
   asLayout,
   bodyFor,
   chatPinAllowed,
+  agentLensesAllowed,
+  agentLensesOn,
   chatPinOn,
   chatTopicsAllowed,
   chatTopicsOn,
@@ -265,6 +267,7 @@ describe("GD-5a: the tour mark and the guide's switch", () => {
       skill_offer?: boolean;
       chat_pin?: boolean;
       chat_topics?: boolean;
+      agent_lenses?: boolean;
     },
   ) =>
     vi.fn(async (_url: string, init?: RequestInit) => {
@@ -417,6 +420,19 @@ describe("GD-5a: the tour mark and the guide's switch", () => {
     await readShellPrefs();
     expect(chatTopicsAllowed()).toBe(false);
     expect(asLayout({ ...NEVER, chat_topics: true })).not.toHaveProperty("chat_topics");
+  });
+
+  it("the read sets the Agents lenses switch, and a new member resets it (AMR-1)", async () => {
+    expect(agentLensesOn({ ...NEVER, agent_lenses: true })).toBe(true);
+    expect(agentLensesOn({ ...NEVER, agent_lenses: "true" })).toBe(false);
+    expect(agentLensesOn({ ...NEVER, chat_topics: true })).toBe(false);
+    expect(agentLensesOn(null)).toBe(false);
+    vi.stubGlobal("fetch", server({ ...NEVER, agent_lenses: true }));
+    await readShellPrefs();
+    expect(agentLensesAllowed()).toBe(true);
+    clearAll();
+    expect(agentLensesAllowed()).toBe(false);
+    expect(asLayout({ ...NEVER, agent_lenses: true })).not.toHaveProperty("agent_lenses");
   });
 
   it("the read passes the switch to the guide, and a new member resets it", async () => {

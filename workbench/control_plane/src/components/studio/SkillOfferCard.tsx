@@ -58,12 +58,16 @@ import {
 } from "@/lib/studio/skillOffer";
 import { classWord } from "@/lib/studio/skillForm";
 import { NAME_MAX } from "@/lib/studio/skillStarter";
-import { createSkill, listCatalogActions, type CatalogAction } from "@/lib/studio/skillsApi";
+import { createSkill, listCatalogActions, matchSkill, type CatalogAction } from "@/lib/studio/skillsApi";
 import { useSkillOfferOn } from "@/lib/shell/shellPrefs";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 /** The cache key of the catalog that the offer reads. */
 export const OFFER_CATALOG_KEY = "studio:skill-offer:catalog";
+/** The cache key of the answer "a saved skill ran on this turn" (task 3830). */
+export function offerRanKey(messageId: string): string {
+  return `studio:skill-offer:ran:${messageId}`;
+}
 /** The space of the card at the end of the turn, under the action bar. */
 const SLOT_CLASS = "mt-3 min-w-0";
 
@@ -75,6 +79,16 @@ const SLOT_CLASS = "mt-3 min-w-0";
 export async function loadOfferCatalog(): Promise<CatalogAction[] | null> {
   const reply = await listCatalogActions();
   return reply.ok ? (reply.data.actions ?? []) : null;
+}
+
+/**
+ * True when a saved skill of the member matches the words of the turn, so the
+ * calls came from that skill. null when the read failed: the card then draws
+ * nothing (fail closed).
+ */
+export async function loadSkillRan(words: string): Promise<boolean | null> {
+  const reply = await matchSkill(words);
+  return reply.ok ? reply.data.matched === true : null;
 }
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
@@ -131,9 +145,12 @@ export function SkillOfferView({ offer, local, name, onName, onSave, onDismiss, 
               <Field label="Instructions">{draft.body.instructions}</Field>
               <Field label="Actions">
                 <ol className="space-y-1">
-                  {actions.map((a) => (
-                    <li key={a.id} className="flex items-start gap-2" data-skill-offer-action={a.id}>
-                      <span className="min-w-0 flex-1 break-words">{a.title}</span>
+                  {actions.map((a, n) => (
+                    <li key={`${n}:${a.id}`} className="flex items-start gap-2" data-skill-offer-action={a.id}>
+                      <span className="min-w-0 flex-1 break-words">
+                        {a.title}
+                        {a.target ? <span className="text-muted-foreground"> · {a.target}</span> : null}
+                      </span>
                       {/* The class sits at the right, as in the Studio form. */}
                       <Badge tone="neutral" size="xs" className="shrink-0">{classWord(a.cls)}</Badge>
                     </li>
@@ -216,6 +233,10 @@ export default function SkillOfferCard({ turn }: { turn: OfferTurn }) {
   const catalog = useCachedResource(asks ? OFFER_CATALOG_KEY : null, loadOfferCatalog);
   // The name box lives in the offer store, so Save reads the typed name itself
   // (`pressSave` reads `boxName`), and a remount keeps it.
+  const ran = useCachedResource(
+    asks ? offerRanKey(turn.messageId) : null,
+    () => loadSkillRan(turn.prompt?.words ?? ""),
+  );
   const readName = () => typedName(turn.messageId);
   useSyncExternalStore(subscribeOffers, readName, readName);
 
@@ -234,7 +255,7 @@ export default function SkillOfferCard({ turn }: { turn: OfferTurn }) {
       </div>
     );
   }
-  const offer = asks ? skillOffer(turn, catalog.data, answeredOffer(local)) : null;
+  const offer = asks ? skillOffer(turn, catalog.data, answeredOffer(local), ran.data ?? null) : null;
   if (!offer) return null;
   return (
     <div className={SLOT_CLASS}>

@@ -36,7 +36,7 @@ import {
   type ConfirmationAction,
   type ConfirmationQueueState,
 } from "@/lib/confirmationQueue";
-import { respondFailure, sendRespondInput } from "@/lib/respondInput";
+import { ANSWERED_ONCE_TEXT, respondFailure, sendRespondInput } from "@/lib/respondInput";
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 const read = (rel: string) => readFileSync(join(SRC, rel), "utf8");
@@ -159,6 +159,21 @@ async function answerThrough(status: number | "throw") {
   }
 }
 
+// HRD-16: someone answered the card first. The card leaves, and its line
+// says so. Mutation caught: map "answered" to a restore (the card comes
+// back) or to a silent drop (no words).
+describe("the answer POST: a card someone already answered", () => {
+  it("leaves the queue, and its line says that someone answered it", () => {
+    const card = run(TEN).cards[1];
+    const s = run([...TEN, { type: "answering", key: card.key }, settleAnswer(card, "answered")]);
+    expect(s.cards.some((c) => c.key === card.key)).toBe(false);
+    expect(s.answering.has(card.key)).toBe(false);
+    expect(settleAnswer(card, "answered")).toEqual({
+      type: "dropped", key: card.key, reason: ANSWERED_ONCE_TEXT,
+    });
+  });
+});
+
 describe("the answer POST: restore only on a failure a retry can pass", () => {
   // Mutation caught: restoring on every failure (the 2026-10-06 loop).
   it("a 409 drops the card", async () => {
@@ -201,9 +216,9 @@ describe("the answer POST: restore only on a failure a retry can pass", () => {
   });
 
   it("a 400 or 422 retries, every other 4xx drops, every 5xx retries", () => {
-    expect([401, 403, 404, 409].map(respondFailure)).toEqual(Array(4).fill("drop"));
-    expect([400, 422].map(respondFailure)).toEqual(["retry", "retry"]);
-    expect([500, 502, 503, 504].map(respondFailure)).toEqual(Array(4).fill("retry"));
+    expect([401, 403, 404, 409].map((s) => respondFailure(s))).toEqual(Array(4).fill("drop"));
+    expect([400, 422].map((s) => respondFailure(s))).toEqual(["retry", "retry"]);
+    expect([500, 502, 503, 504].map((s) => respondFailure(s))).toEqual(Array(4).fill("retry"));
     expect(respondFailure(undefined)).toBe("retry");
   });
 

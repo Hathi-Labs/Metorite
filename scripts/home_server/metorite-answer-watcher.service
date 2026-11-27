@@ -1,8 +1,9 @@
 # The answer watcher of the home box (CIV-14f, task 1731). A user unit of `dev`.
 # metorite-answer-watcher.timer starts it every 2 minutes. It starts ONE fresh
 # headless session for each agent run that a person answered or queued.
-# It reads the read-only token from ~/.config/metorite/watcher.env (mode 0600).
-# With no token it logs one line and exits 0.
+# It reads the token from ~/.config/metorite/watcher.env (mode 0600) when that
+# file exists, else the box token through ~/.local/bin/metorite-box-headers
+# (task 4062). With no token it logs one line and exits 0.
 # Install: bash scripts/home_server/answer_watcher.sh install
 # Logs:    journalctl --user -u metorite-answer-watcher.service
 [Unit]
