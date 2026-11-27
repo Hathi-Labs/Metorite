@@ -72,6 +72,7 @@ from acb_common.settings import Settings
 from agent_edge import tools
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import DBAPIError
 
 from tests.unit import test_mcp_edge_task_writes as t
 from tests.unit import test_mcp_edge_writes as w
@@ -378,9 +379,18 @@ class TestTheGoalOnARealDatabase:
         _setup(live)
         b = _other_org(live)
         goal = _mk(live, "wm5 goal cross read", kind="goal")
-        # The foreign key alone cannot hold the tenant. The admin links B's
-        # epic to A's Goal, and A's roll-up must still not see it.
+        # The same-org guard of 491 refuses this link for each role, a bypass
+        # role too (23503).
+        with pytest.raises(DBAPIError) as refused, live.admin.begin() as c:
+            c.execute(text("UPDATE pm_tasks SET goal_task_id = CAST(:g AS uuid)"
+                           " WHERE id = CAST(:t AS uuid)"), {"g": goal, "t": b["epic"]})
+        assert getattr(refused.value.orig, "sqlstate", None) == "23503", refused.value
+        assert "names no pm_tasks row of this organization" in str(refused.value)
+        # Defence in depth: a row from before the guard. The admin links B's
+        # epic to A's Goal with the triggers off, and A's roll-up must still
+        # not see it.
         with live.admin.begin() as c:
+            c.execute(text("SET LOCAL session_replication_role = replica"))
             c.execute(text("UPDATE pm_tasks SET goal_task_id = CAST(:g AS uuid)"
                            " WHERE id = CAST(:t AS uuid)"), {"g": goal, "t": b["epic"]})
         try:

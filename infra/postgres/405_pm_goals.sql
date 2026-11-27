@@ -21,6 +21,7 @@
 --     Goal for each epic (D199.6), so a second link replaces the first.
 --   One partial index (organization_id, goal_task_id) serves the read of
 --   `rollup.goal_rollup`: the epics of one Goal.
+--   One trigger attaches the same-org guard of 491 to the new key (below).
 --
 -- Who writes them: `POST /projects/types` and `PATCH /projects/types/{id}`
 --   write `is_goal` (`routes/projects/admin.py`). `POST /projects/tasks` and
@@ -52,6 +53,16 @@
 --   row of another tenant before that. No column holds a member address, so
 --   the member purge needs no change.
 --
+-- The same-org guard (task 3846): the file attaches `pm_same_org_ref` of
+--   491 to the new key as `trg_pm_tasks_same_org_goal_task_id`, with the
+--   column list `goal_task_id, organization_id`, as 491 attaches it to
+--   `parent_task_id`. So a key that names a task of another organization gets
+--   23503 for each role, a bypass role too. A NULL key passes, so the
+--   `ON DELETE SET NULL` of a deleted Goal still works. The function must
+--   exist first, so this file must sort after 491 (R1). Fence:
+--   tests/unit/test_pm_fk_same_org_r8.py (`test_every_pm_key_has_a_guard`
+--   and the probes of `pm_tasks.goal_task_id`).
+--
 -- Never wait for the lock: `ALTER TABLE` takes ACCESS EXCLUSIVE, and every
 --   task write takes this table. So the file sets `lock_timeout` first, as
 --   304 and 401 do. On a lock timeout the runner tries the whole file again.
@@ -76,6 +87,10 @@ ALTER TABLE pm_tasks
 CREATE INDEX IF NOT EXISTS idx_pm_tasks_org_goal
     ON pm_tasks (organization_id, goal_task_id)
     WHERE goal_task_id IS NOT NULL;
+
+CREATE OR REPLACE TRIGGER trg_pm_tasks_same_org_goal_task_id
+    BEFORE INSERT OR UPDATE OF goal_task_id, organization_id ON pm_tasks
+    FOR EACH ROW EXECUTE FUNCTION pm_same_org_ref('pm_tasks', 'goal_task_id');
 
 COMMENT ON COLUMN pm_task_types.is_goal IS
     'WM-5: a task of this type is a Goal. core.is_goal_type reads it. POST and PATCH /projects/types write it.';
