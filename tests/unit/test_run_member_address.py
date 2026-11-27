@@ -312,6 +312,52 @@ async def test_in_a_real_room_the_home_tools_refuse_and_a_solo_twin_sends(
     assert sent, "the solo twin sent no request"
 
 
+async def test_in_a_real_room_the_chat_list_tools_refuse_and_a_solo_twin_sends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Task 4017. ``chat_thread_tools`` lists and changes the member's own chat
+    list. A real room (memory id ``room:<thread>``, the typer's address, not
+    solo) and a chosen room id with an ``@`` each refuse with no request. The
+    same read in a solo run sends its request."""
+    from acb_common import get_settings
+    from acb_skills import chat_pin_tools as cpt
+    from acb_skills import chat_thread_tools as ct
+    from acb_skills import egress
+
+    sent: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request.url.path)
+        return httpx.Response(200, json=[])
+
+    monkeypatch.setattr(cpt, "_transport", lambda: httpx.MockTransport(handler))
+    monkeypatch.setattr(get_settings(), "gateway_internal_token", "t-4017", raising=False)
+
+    async def _no_card(*_a: Any, **_k: Any) -> bool:
+        return False
+
+    monkeypatch.setattr(egress, "write_must_show_card", _no_card)
+    calls = (lambda: ct.list_chats(), lambda: ct.edit_chat("archive", "c-1"),
+             lambda: ct.delete_chat("c-1"))
+    with _real_room(solo=False):
+        for call in calls:
+            assert await call() == {"ok": False, "error": ct._SHARED_ROOM}
+    with run_context_scope(), artifact_context_scope():
+        bind_run_context(run_id="r-4017", user=MEMBER, member_verified=True)
+        bind_artifact_context(session_id="s-4017", member=MEMBER,
+                              agent_name="orchestrator", run_id="r-4017")
+        binding = _bind_memory_user_id(ROOM)
+        try:
+            for call in calls:
+                assert await call() == {"ok": False, "error": ct._SHARED_ROOM}
+        finally:
+            _unbind_memory_user_id(binding)
+    assert sent == []
+    with _real_room(solo=True):
+        await ct.list_chats()
+    assert sent, "the solo twin sent no request"
+
+
 async def test_the_chat_constraints_read_and_undo_nothing_for_a_room(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -68,6 +68,7 @@ from acb_common.paging import paged
 
 from acb_skills import chat_pin_tools as _pin
 from acb_skills.hidden_text import hidden_problem, strip_hidden
+from acb_skills.memory_tools import run_member_address
 from acb_skills.tool_annotations import annotate
 
 __all__ = [
@@ -170,7 +171,8 @@ def _member_or_refusal() -> tuple[str, str]:
     """``(member, "")`` for a run that may use the chat list, or ``("", the
     refusal)``. The member is the verified member of the run binding
     (``chat_pin_tools._member``). A shared room binds ``room:<thread>`` as the
-    memory id, so a memory id with no address is a shared room."""
+    memory id, and ``memory_tools.run_member_address`` refuses it. A run that
+    is not solo (:func:`_solo_run`) is refused too (task 4017)."""
     if _pin._on_whatsapp():
         return "", _ON_WHATSAPP
     member = _pin._member()
@@ -182,9 +184,24 @@ def _member_or_refusal() -> tuple[str, str]:
         memory = _get_memory_user_id() or ""
     except Exception:
         memory = ""
-    if "@" not in memory:
+    if run_member_address(memory) is None or not _solo_run():
         return "", _SHARED_ROOM
     return member, ""
+
+
+def _solo_run() -> bool:
+    """True only when the run boundary says this run is the member's own
+    solo chat (``executor.run_is_solo``), as ``home_tools._solo_run``. Task
+    4017: the chat list is the member's own. A room of one that other members
+    can read (visibility ``org`` or ``people``) binds the member's own memory
+    id, so only this flag keeps the list out of it. A failed import reads
+    False. Never raises."""
+    try:
+        from orchestrator.executor import run_is_solo
+
+        return run_is_solo() is True
+    except Exception:
+        return False
 
 
 def _refusal(message: str, **extra: Any) -> dict[str, Any]:
