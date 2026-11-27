@@ -1156,6 +1156,83 @@ PYTEST_ADDOPTS="-o timeout_method=thread" uv run pytest -p no:cacheprovider \
 are gate `enforcement-flip` (a dated grant or the owner). `warn` comes first,
 then `block` after one day with no false block.
 
+### 7b.6 LBB-1: done means live (task 4044)
+
+**Status: not built.** LBB-1 has two parts, as LBB-3 does.
+- **LBB-1a (this build): a report.** After each release slot, a box script
+  lists each recent merge and says whether production runs it. It writes only
+  its own file. Tier STANDARD.
+- **LBB-1b (later): the board.** The merger lane moves a task to Done only
+  when the report says LIVE, and leaves a "merged, not live" comment before
+  that. This changes step f of `scripts/home_server/lanes/lane-merge.md`.
+  metorite-78 makes that change after one day of the report. A script cannot
+  write the board yet: the box has no Metorite credential (task 1819).
+
+**What runs.** `scripts/home_server/live_check.py` (Python standard library,
+plus `git`). The units `scripts/home_server/metorite-live-check.service` and
+`.timer` run it at 06:00, 14:00 and 22:00 UTC, 30 minutes after each slot, in
+the shape of `metorite-answer-watcher.service`:
+`EnvironmentFile=-%h/.config/metorite/live-check.env`,
+`ExecStart=/usr/bin/python3 %h/.local/lib/metorite/live_check.py`,
+`Type=oneshot`, `TimeoutStartSec=300`.
+
+**The mode.** `LIVE_CHECK_MODE` from the env file. A missing file or `off`
+(the default): exit 0 with no call. `dry`: write the report. Any other value
+reads as `off` and logs one line.
+
+**What it reads.**
+- `GET <LIVE_CHECK_GATEWAY_URL>/version`, a read with no credential, as
+  `scripts/ci_deploy_reach.sh` does. The deployed SHA is `applied_sha`, else
+  `sha`. When both are null or the call fails, the run writes one line with
+  state `UNKNOWN` and exits 0.
+- The merges of the last 72 hours: the `DONE <pr> <sha>` lines of
+  `~/lanes/merge-bot.log` and of `~/lanes/merge-queue.log`. A task number on
+  the line (`task NNNN`) goes into the report. The time of a merge is the
+  committer date of its SHA.
+- Its clone `~/lanes/live-check-src`. Each run fetches `main` and the
+  deployed SHA. The script makes the clone with `git clone` when it is
+  missing.
+
+**The states, for each merge.**
+- `LIVE`: `git merge-base --is-ancestor <merge> <deployed>` succeeds.
+- `WAITING`: not live, and fewer than two release slots (05:30, 13:30, 21:30
+  UTC) have passed since the merge.
+- `STUCK`: not live, and two or more slots have passed.
+- `UNKNOWN`: the merge SHA or the deployed SHA cannot be fetched.
+
+**The report.** One line for each merge in each run, appended to
+`~/lanes/live-check.tsv`:
+`<UTC time><TAB><pr><TAB><merge sha><TAB><task or -><TAB><state><TAB><deployed sha>`.
+
+**Test seams.** `LIVE_CHECK_VERSION_CMD` (the `/version` read),
+`LIVE_CHECK_LANES` (the folder of the logs and the report),
+`LIVE_CHECK_SRC` (the clone), `LIVE_CHECK_NOW` (the time, epoch seconds).
+
+**Done when** (each with a test in `tests/unit/test_live_check.py`, with a
+temp git repo and temp log files):
+1. `off`, a missing env file, or another value: no read and no write.
+2. `dry`: one report line for each DONE line of the last 72 hours, and none
+   for an older one.
+3. Each state: an ancestor is `LIVE`; a merge after the deployed SHA is
+   `WAITING` before the second slot and `STUCK` after it; a SHA that cannot be
+   fetched is `UNKNOWN`.
+4. A `/version` with no SHA, or a failed read, gives one `UNKNOWN` line and
+   exit 0.
+5. The timer fires at 06:00, 14:00 and 22:00 UTC, and the service holds no
+   secret.
+
+**Verify with.**
+
+```
+PYTEST_ADDOPTS="-o timeout_method=thread" uv run pytest -p no:cacheprovider \
+  tests/unit/test_live_check.py
+uv run ruff check scripts/home_server/live_check.py tests/unit/test_live_check.py
+```
+
+**Rollout (not in the build).** Install the units and set `LIVE_CHECK_MODE=dry`
+with the production gateway URL: gate `deploy`. After one day, metorite-78
+changes lane-merge.md step f (LBB-1b).
+
 ## 8. What to fix before customer #1 — in order
 
 This list names them so that nobody finds them again from zero. Each belongs
