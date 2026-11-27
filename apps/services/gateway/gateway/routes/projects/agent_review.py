@@ -3,18 +3,22 @@ Metorite task 349).
 
 Spec: ``project-docs/specs/agent_coordination.md`` SW-18a.
 
-    PUT  /projects/nodes/{id}/agent-review   → the setting of one project
     POST /projects/tasks/{id}/agent-review   → a person approves the work
 
-**The setting.** ``pm_projects.agent_work_needs_review`` (default false) and
-``pm_projects.agent_review_default_reviewer`` (migration
-``*_pm_agent_review.sql``). Only the PUT writes them, and only a lead of the
-project or of an ancestor, or a Projects admin, may
-(``authority.assert_may_set_agent_review``). The setting of the task's OWN
-project counts. A parent's setting does not reach a child project.
+**The setting** is two keys of the policy store of SW-94 (owner, 2026-11-26):
+``review_required`` (default false) and ``review_reviewer`` (a member's email,
+or null for a lead). ``POST /agent-policies`` is the one writer, with its
+writer rules: a lead of the project or of an ancestor for a project row, and
+an org admin for any row. :func:`needs_review` and :func:`reviewer_for` read
+them through ``agent_policies.policy_for``, the one reader. It walks the
+task's project, each parent, the organization, then the default, on the one
+project-tree walk (``agent_guidance.project_chains``). So a parent's row
+reaches a child project, and an org row reaches every project. While
+``AGENT_POLICY_ORGS`` does not name the org, the store gives the default,
+false, so nothing redirects.
 
-**The redirect.** When a SIGNED agent (``UserContext.agent``) moves a task of
-such a project into a ``done`` lane, the move lands in the review lane of the
+**The redirect.** When a SIGNED agent (``UserContext.agent``) moves a task
+that needs review into a ``done`` lane, the move lands in the review lane of the
 task's own status set instead (:func:`review_lane`), and the task records the
 reviewer and the time (``pm_tasks.agent_reviewer``,
 ``pm_tasks.agent_review_requested_at``). A person's move is never redirected.
@@ -44,14 +48,14 @@ by hand, to done or back to work, decides the review too. A move across
 projects with two status sets writes ``status_id`` directly and does not clear
 the wait. The next status move does (a known gap, with the flag off).
 
-Dark: while ``agent_review_enabled`` is off (``agent_oauth.agent_review_enabled``,
-the one reader), both routes answer 404 and :func:`redirect_for` returns None.
+Dark twice: while ``agent_review_enabled`` is off (``agent_oauth.agent_review_enabled``,
+the one reader), the approve answers 404 and :func:`redirect_for` returns None.
+While ``AGENT_POLICY_ORGS`` does not name the org, the setting reads false.
 Fence: ``tests/unit/test_pm_agent_review_r8.py``.
 """
 
 from __future__ import annotations
 
-import re
 import uuid
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -60,25 +64,19 @@ from acb_auth import UserContext, get_current_user
 from acb_auth.agent_oauth import agent_review_enabled
 from acb_common.no_person import NO_PERSON_PRESENT, NO_PERSON_TEXT, no_person_present
 from fastapi import Depends, Header, HTTPException
-from gateway.routes.projects.authority import (
-    assert_may_approve_agent_work,
-    assert_may_set_agent_review,
-)
+from gateway.routes.projects.authority import assert_may_approve_agent_work
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
     STARTED_CATEGORY,
-    ProjectModel,
     TaskModel,
     _tenant_session,
     actor,
     apply_status_transition,
     emit,
     load_default_status,
-    load_visible_project,
     load_visible_task,
     record_activity,
-    record_field_change,
     require_precondition,
     require_row,
     resolve_visibility,
@@ -90,7 +88,7 @@ from gateway.routes.projects.core import (
     transient_as_409,
     wire,
 )
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text
 
 #: The word that names a review lane, matched in any case.
@@ -115,15 +113,12 @@ NO_REVIEW_LANE_NOTE = (
 #: The detail codes of the approve.
 NOT_WAITING = "not_waiting"
 NO_DONE_STATUS = "no_done_status"
-#: The 403 of a signed agent on either route.
+#: The 403 of a signed agent on the approve.
 AGENT_REFUSED = "A person decides this. An agent connection cannot."
-#: The 422 of a default reviewer who cannot open the project.
-REVIEWER_CANNOT_SEE = (
-    "The reviewer must be a member of this organization who can open this project."
-)
-#: The longest address that a reviewer may have.
-MAX_REVIEWER_CHARS = 320
-_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+$")
+
+#: The two keys of the policy store that hold the setting (SW-94 REGISTRY).
+REVIEW_KEY = "review_required"
+REVIEWER_KEY = "review_reviewer"
 
 #: The body of the system line of a request, and of an approve.
 REQUESTED_BODY = "The agent's work waits for review."
@@ -144,8 +139,9 @@ async def require_review() -> None:
 
 
 def _refuse_agent_or_absent_person(user: UserContext) -> None:
-    """A person decides both acts. A signed agent gets 403, and so does a run
-    with no person present (AUTO-7a), before any read."""
+    """A person approves. A signed agent gets 403, and so does a run with no
+    person present (AUTO-7a), before any read. ``POST /agent-policies``
+    refuses a signed agent itself (SW-94)."""
     if getattr(user, "agent", None) is not None:
         raise HTTPException(status_code=403, detail=AGENT_REFUSED)
     if no_person_present():
@@ -159,6 +155,81 @@ def _uuid_or_none(value: Any) -> str | None:
         return str(uuid.UUID(str(value)))
     except (TypeError, ValueError):
         return None
+
+
+def _field(row: Any, name: str) -> Any:
+    return row.get(name) if isinstance(row, dict) else getattr(row, name, None)
+
+
+# ── The setting, read from the policy store ─────────────────────────────────
+
+
+def _as_landed(task: Any, project_id: Any) -> dict[str, Any]:
+    """*task* as it would be in *project_id*: the fields that ``policy_for``
+    reads, with the project changed."""
+    return {
+        "organization_id": _field(task, "organization_id"),
+        "project_id": str(project_id),
+        "risk_tier": _field(task, "risk_tier"),
+    }
+
+
+async def _policy(db: Any, subject: Any, key: str) -> Any:
+    """``agent_policies.policy_for``, the one reader of the store."""
+    # Imported here: `agent_policies` imports `agent_guidance`, which imports
+    # the projects package, and the package imports this module through
+    # `tasks.py`. A module import would make a cycle.
+    from gateway.routes.agent_policies import policy_for
+
+    return (await policy_for(db, subject, key)).value
+
+
+async def needs_review(db: Any, task: Any, *, project_id: Any = None) -> bool:
+    """True when the policy ``review_required`` holds for *task*, a row of
+    ``pm_tasks``, or for *task* in *project_id* when the caller gives it.
+
+    The one read of the setting. ``agent_policies.policy_for`` walks the
+    project, each parent, the organization and the default. It gives the
+    default (false) while ``AGENT_POLICY_ORGS`` does not name the org. The
+    tenant comes from the row or the session, never from request input (R5).
+    """
+    subject = task if project_id is None else _as_landed(task, project_id)
+    return await _policy(db, subject, REVIEW_KEY) is True
+
+
+async def reviewer_for(db: Any, task: Any) -> str | None:
+    """The reviewer of agent work on *task*: the policy ``review_reviewer``,
+    or ``None`` for a lead.
+
+    A reviewer who is not an active member of the tenant, or who cannot open
+    the task's project, is ``None`` too, so a lead decides. The store checks
+    only the shape of the email, because an org row names no project.
+    """
+    value = await _policy(db, task, REVIEWER_KEY)
+    reviewer = str(value or "").strip().lower() or None
+    if reviewer is None:
+        return None
+    if not await _reviewer_sees(db, reviewer, str(_field(task, "project_id"))):
+        return None
+    return reviewer
+
+
+async def _reviewer_sees(db: Any, reviewer: str, project_id: str) -> bool:
+    """True when *reviewer* is an active member of this tenant who opens the
+    project. The visibility of ``core.resolve_visibility_for``, the seam that
+    the bell reads for a person who is not the caller."""
+    vis = await resolve_visibility_for(db, reviewer)
+    if not vis.organization_id:
+        return False
+    row = (await db.execute(
+        text(
+            "SELECT 1 FROM pm_projects p WHERE p.id = CAST(:pid AS uuid)"
+            " AND p.organization_id = CAST(:vis_org AS uuid)"
+            f" AND {vis.project_clause('p.id')} LIMIT 1"
+        ),
+        {"pid": project_id, **vis.params},
+    )).fetchone()
+    return row is not None
 
 
 # ── The review lane ─────────────────────────────────────────────────────────
@@ -214,10 +285,6 @@ _TARGET_SQL = (
     " WHERE id = CAST(:sid AS uuid) AND project_id = CAST(:owner AS uuid)"
 )
 _CATEGORY_SQL = "SELECT category FROM pm_task_statuses WHERE id = CAST(:sid AS uuid)"
-_SETTING_SQL = (
-    "SELECT agent_work_needs_review, agent_review_default_reviewer"
-    " FROM pm_projects WHERE id = CAST(:pid AS uuid)"
-)
 
 
 async def redirect_for(db: Any, user: UserContext, task: Any, target_status_id: Any
@@ -226,8 +293,8 @@ async def redirect_for(db: Any, user: UserContext, task: Any, target_status_id: 
 
     ``None`` when the rule does not apply: the flag is off, the caller is a
     person, the target is not a ``done`` lane of the task's own set, the task
-    is done already, or the task's project does not need review. A cancelled
-    task is redirected. A target that is not in the set is
+    is done already, or :func:`needs_review` is false. A cancelled task is
+    redirected. A target that is not in the set is
     left to ``apply_status_transition``, which refuses it as before.
     """
     if not review_on() or getattr(user, "agent", None) is None:
@@ -245,11 +312,10 @@ async def redirect_for(db: Any, user: UserContext, task: Any, target_status_id: 
     current = (await db.execute(text(_CATEGORY_SQL), {"sid": str(task.status_id)})).fetchone()
     if current is not None and current.category == COMPLETED_CATEGORY:
         return None
-    setting = (await db.execute(text(_SETTING_SQL), {"pid": str(task.project_id)})).fetchone()
-    if setting is None or not setting.agent_work_needs_review:
+    if not await needs_review(db, task):
         return None
-    reviewer = str(setting.agent_review_default_reviewer or "").strip().lower() or None
-    return Redirect(lane=await review_lane_of_set(db, owner), reviewer=reviewer)
+    return Redirect(lane=await review_lane_of_set(db, owner),
+                    reviewer=await reviewer_for(db, task))
 
 
 async def review_target(db: Any, user: UserContext, task: Any, new_status: Any
@@ -321,11 +387,6 @@ MOVE_WAITING = "review_waiting"
 MOVE_LEAVES_REVIEW = "review_project"
 MOVE_NEEDS_REVIEW = "review_needed"
 
-_NEEDS_REVIEW_ANY_SQL = (
-    "SELECT id FROM pm_projects WHERE id = ANY(CAST(:ids AS uuid[]))"
-    " AND agent_work_needs_review LIMIT 1"
-)
-
 
 async def refuse_agent_move_out(db: Any, user: UserContext, rows: list[Any],
                                 dest_project_id: Any) -> None:
@@ -333,11 +394,12 @@ async def refuse_agent_move_out(db: Any, user: UserContext, rows: list[Any],
 
     ``move._plan`` calls it for the named tasks AND each carried subtask, so
     the preview and the apply refuse alike. A move out is a person's act,
-    because the destination may not need review: a new child project starts
-    with the setting off. While the flag is on, a signed agent gets 403 for a
-    task that waits for review, and for a task whose project needs review. A
-    task that stays in the destination is not checked. A person's move is
-    unchanged.
+    because the destination may not need review: a project row can turn the
+    policy off there. While the flag is on, a signed agent gets 403 for a
+    task that waits for review, and for a task that :func:`needs_review`.
+    The policy is read once for each (project, tier) of the tasks that
+    leave. A task that stays in the destination is not checked. A person's
+    move is unchanged.
     """
     if not review_on() or getattr(user, "agent", None) is None:
         return
@@ -348,8 +410,14 @@ async def refuse_agent_move_out(db: Any, user: UserContext, rows: list[Any],
             "message": "A task in this move waits for a person to review the "
                        "agent's work, so a person moves it.",
         })
-    ids = sorted({str(r.project_id) for r in leaving})
-    if ids and (await db.execute(text(_NEEDS_REVIEW_ANY_SQL), {"ids": ids})).fetchone():
+    read: set[tuple[str, Any]] = set()
+    for row in leaving:
+        key = (str(row.project_id), _field(row, "risk_tier"))
+        if key in read:
+            continue
+        read.add(key)
+        if not await needs_review(db, row):
+            continue
         raise HTTPException(status_code=403, detail={
             "error": MOVE_LEAVES_REVIEW,
             "message": "A person accepts agent work in this project, so a person "
@@ -363,8 +431,9 @@ async def refuse_agent_move(db: Any, user: UserContext, task: Any, dest_project_
     project (SW-18a, ``move.move_tasks``).
 
     A move with a ``status_map`` is a status move too. While the flag is on,
-    a signed agent gets 403 for a landing in ``done`` when the source or the
-    destination project needs review. :func:`refuse_agent_move_out` has
+    a signed agent gets 403 for a landing in ``done`` when
+    :func:`needs_review` holds for the task in the source or in the
+    destination project. :func:`refuse_agent_move_out` has
     already refused a waiting task and a move out of a reviewed project. A
     person's move is unchanged.
     """
@@ -373,8 +442,7 @@ async def refuse_agent_move(db: Any, user: UserContext, task: Any, dest_project_
     if landing_category != COMPLETED_CATEGORY:
         return
     for pid in sorted({str(task.project_id), str(dest_project_id)}):
-        setting = (await db.execute(text(_SETTING_SQL), {"pid": pid})).fetchone()
-        if setting is not None and setting.agent_work_needs_review:
+        if await needs_review(db, task, project_id=pid):
             raise HTTPException(status_code=403, detail={
                 "error": MOVE_NEEDS_REVIEW,
                 "message": "A person accepts agent work in this project. Move the "
@@ -390,102 +458,6 @@ async def settle_review(db: Any, user: UserContext, task_id: str, before: Any,
     if await settle_after_move(db, user, task_id, before, redirect, moved):
         return await require_row(db, "pm_tasks", task_id, "Task")
     return row
-
-
-# ── PUT /nodes/{id}/agent-review ────────────────────────────────────────────
-
-
-class AgentReviewSettingIn(BaseModel):
-    """The body of ``PUT /nodes/{id}/agent-review``. No other key."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    needs_review: bool
-    default_reviewer: str | None = Field(default=None, max_length=MAX_REVIEWER_CHARS)
-
-
-def _clean_reviewer(value: str | None) -> str | None:
-    cleaned = str(value or "").strip().lower()
-    if not cleaned:
-        return None
-    if "\x00" in cleaned or not _EMAIL.fullmatch(cleaned):
-        raise HTTPException(status_code=422, detail="default_reviewer is an email address.")
-    return cleaned
-
-
-async def _reviewer_sees(db: Any, reviewer: str, project_id: str) -> bool:
-    """True when *reviewer* is an active member of this tenant who opens the
-    project. The visibility of ``core.resolve_visibility_for``, the seam that
-    the bell reads for a person who is not the caller."""
-    vis = await resolve_visibility_for(db, reviewer)
-    if not vis.organization_id:
-        return False
-    row = (await db.execute(
-        text(
-            "SELECT 1 FROM pm_projects p WHERE p.id = CAST(:pid AS uuid)"
-            " AND p.organization_id = CAST(:vis_org AS uuid)"
-            f" AND {vis.project_clause('p.id')} LIMIT 1"
-        ),
-        {"pid": project_id, **vis.params},
-    )).fetchone()
-    return row is not None
-
-
-def _setting_out(row: Any, lane: Any | None) -> dict[str, Any]:
-    on = bool(getattr(row, "agent_work_needs_review", False))
-    return {
-        "project_id": str(row.id),
-        "needs_review": on,
-        "default_reviewer": getattr(row, "agent_review_default_reviewer", None),
-        "review_status": ({"id": str(lane.id), "name": lane.name} if lane is not None
-                          else None),
-        "note": NO_REVIEW_LANE_NOTE if on and lane is None else None,
-        "version": wire(row.updated_at),
-    }
-
-
-@router.put("/nodes/{project_id}/agent-review", dependencies=[Depends(require_review)])
-@transient_as_409
-async def set_agent_review(
-    project_id: str, payload: AgentReviewSettingIn,
-    user: UserContext = Depends(get_current_user),
-) -> dict:
-    """Turn "Agent work needs review" on or off for one project (SW-18a).
-
-    The order: the flag (404), a person (403), the visibility (404), the
-    authority of a grant write (403), the reviewer (422), then the write. The
-    answer names the review lane that the redirect uses, or says that the
-    project has none.
-    """
-    _refuse_agent_or_absent_person(user)
-    reviewer = _clean_reviewer(payload.default_reviewer)
-    if _uuid_or_none(project_id) is None:
-        raise HTTPException(status_code=404, detail="Project not found")
-    async with _tenant_session() as db:
-        vis = await resolve_visibility(db, user)
-        before = await load_visible_project(db, vis, project_id)
-        await assert_may_set_agent_review(db, user, before)
-        if reviewer is not None and not await _reviewer_sees(db, reviewer, project_id):
-            raise HTTPException(status_code=422, detail=REVIEWER_CANNOT_SEE)
-        after = (await db.execute(text(
-            "UPDATE pm_projects SET agent_work_needs_review = :on,"
-            " agent_review_default_reviewer = :reviewer, updated_at = now()"
-            " WHERE id = CAST(:pid AS uuid) RETURNING *"),
-            {"on": payload.needs_review, "reviewer": reviewer, "pid": project_id},
-        )).fetchone()
-        changes = [
-            {"field": field, "old": getattr(before, field, None), "new": getattr(after, field)}
-            for field in ("agent_work_needs_review", "agent_review_default_reviewer")
-            if getattr(before, field, None) != getattr(after, field)
-        ]
-        if changes:
-            await record_field_change(
-                db, created_by=actor(user), project_id=project_id, changes=changes)
-        answer = _setting_out(after, await review_lane_of_set(
-            db, await status_owner_id(db, project_id)))
-        answer["project"] = row_to_dict(after, ProjectModel)
-    await emit("pm.project.updated", {"project_id": project_id})
-    return answer
 
 
 # ── POST /tasks/{id}/agent-review ───────────────────────────────────────────

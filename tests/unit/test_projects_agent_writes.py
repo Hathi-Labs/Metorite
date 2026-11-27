@@ -2644,9 +2644,9 @@ async def test_every_manifest_tool_is_now_built() -> None:
     # WS-MCP SW-23: an outside agent reports a run of a Check over MCP. The
     # chat moves a task through `update_task`.
     sw_23 = {"report_check"}
-    # WS-MCP SW-18a: a person sets the review of agent work and approves it.
-    # The chat tools come in the SW-18 follow-up.
-    sw_18a = {"set_agent_review", "approve_agent_work"}
+    # WS-MCP SW-18a: a person approves agent work. The chat tool comes in the
+    # SW-18 follow-up. The setting is a key of the policy store (SW-94).
+    sw_18a = {"approve_agent_work"}
     # WS-MCP SW-32: an outside agent sets the plan of its own run. The chat
     # has no run of its own.
     sw_32 = {"set_run_plan"}

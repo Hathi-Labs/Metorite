@@ -129,6 +129,8 @@ FIRST_KEYS = {
     "lane_mode", "pr_open_to_review", "release_cutoff", "review_required",
     "required_checks", "budget_mode", "budget_minutes_day", "budget_writes_day",
     "loop_guard_repeats", "agents_paused",
+    # SW-18a (2026-11-27): the default reviewer of agent work.
+    "review_reviewer",
 }
 AUTH_PATH = {"agents_paused", "budget_mode", "required_checks", "claim_scope_mode",
              "lane_mode", "question_auto_after_minutes", "pr_open_to_review"}
@@ -152,6 +154,30 @@ def test_the_registry_holds_the_first_keys() -> None:
             agent_policies.check_value(spec, spec.default)
     assert reg["agents_paused"].form == "actor"
     assert "member" in reg["agents_paused"].scopes
+
+
+def test_each_kind_has_a_check() -> None:
+    """A kind with no check would raise KeyError at save. SW-18a added
+    ``member_or_null``."""
+    kinds = {s.kind for s in agent_policies.REGISTRY.values()}
+    assert kinds <= set(agent_policies._CHECKS), kinds - set(agent_policies._CHECKS)
+    assert "member_or_null" in kinds
+
+
+def test_the_member_kind_takes_an_email_or_null() -> None:
+    """SW-18a. ``review_reviewer`` holds a member's email, trimmed and in lower
+    case, or null (a lead decides). Anything else gets 422."""
+    spec = agent_policies.REGISTRY["review_reviewer"]
+    assert (spec.form, spec.kind, spec.default) == ("task", "member_or_null", None)
+    assert spec.tiers is agent_policies.REGISTRY["review_required"].tiers is True
+    assert not spec.auth_path and not spec.admin_only
+    check = agent_policies.check_value
+    assert check(spec, "  Rev@Policies.TEST ") == "rev@policies.test"
+    assert check(spec, None) is None
+    for bad in ("", " ", "rev", "a b@c.d", 7, False, ["a@b.c"], {"e": "a@b.c"},
+                "a@b.c\x00", "x" * 201 + "@b.c"):
+        with pytest.raises(ValueError):
+            check(spec, bad)
 
 
 def test_the_flag_of_the_store_is_per_org(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -646,6 +672,30 @@ async def test_a_lead_writes_a_plain_key_for_own_project_only(world, flags) -> N
     assert archived.status_code == 409
     assert unknown.status_code == 404
     assert agent.status_code == 403
+
+
+@_DB_GATE
+async def test_a_lead_names_the_reviewer_of_agent_work(world, flags) -> None:
+    """SW-18a. ``review_reviewer`` is off the auth path, as the PUT of the first
+    build was: a lead writes it for the lead's own project. The store keeps the
+    email in lower case, and ``policy_for`` gives it to a child project."""
+    w = world
+    _reset(w)
+    async with _session(w.p) as call:
+        own = await call(w.lead_s_u, _body("review_reviewer", "project", w.p1,
+                                           " Lead-S@Policies.TEST "))
+        not_lead = await call(w.lead_o_u, _body("review_reviewer", "project", w.p1,
+                                                w.lead_o))
+        org = await call(w.lead_s_u, _body("review_reviewer", "organization", None, w.lead_s))
+        bad = await call(w.lead_s_u, _body("review_reviewer", "project", w.p1, "nobody"))
+        got = await call.task(w.a, w.task_p2, "review_reviewer")
+        none = await call.task(w.a, w.task_other, "review_reviewer")
+    assert own.status_code == 201, own.text
+    assert own.json()["value"] == w.lead_s
+    assert not_lead.status_code == 403 and org.status_code == 403
+    assert bad.status_code == 422
+    assert got.value == w.lead_s and got.source["project_id"] == w.p1
+    assert none.value is None and none.source == {"scope_kind": "default"}
 
 
 @_DB_GATE

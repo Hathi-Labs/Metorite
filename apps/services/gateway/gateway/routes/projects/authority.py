@@ -63,8 +63,10 @@ tree the owner of the tree may also convert their own folder. Door:
 the task, or a lead of its project or of an ancestor, approves it. Nobody
 else does, a Projects admin too: the setting names who accepts the work. A
 signed agent never approves. Door: ``POST /tasks/{id}/agent-review``
-(``agent_review.py``). The setting itself is a write of who decides, so it
-needs :func:`may_write_grant`. Door: ``PUT /nodes/{id}/agent-review``.
+(``agent_review.py``). The setting is two keys of the policy store
+(``review_required`` and ``review_reviewer``, SW-94). Its one writer is
+``POST /agent-policies``, and a lead writes a project row through
+:func:`guidance_write_refusal`, the floor of :func:`may_write_grant`.
 
 Each read runs inside the caller's tenant session, so RLS bounds it.
 Fences: ``tests/unit/test_projects_write_authority.py`` (R8) and
@@ -553,10 +555,6 @@ async def assert_may_write_guidance(db: Any, user: Any, project: Any) -> None:
 AGENT_REVIEW_REFUSED = (
     "Only the reviewer of this task or the project lead can approve the agent's work."
 )
-#: The 403 of a change of the review setting (SW-18a).
-AGENT_REVIEW_SETTING_REFUSED = (
-    "Only the project lead or a Projects admin can change who reviews agent work here."
-)
 
 
 async def may_approve_agent_work(db: Any, user: Any, task: Any) -> bool:
@@ -581,18 +579,6 @@ async def assert_may_approve_agent_work(db: Any, user: Any, task: Any) -> None:
     """403 with :data:`AGENT_REVIEW_REFUSED`, or return. (SW-18a.)"""
     if not await may_approve_agent_work(db, user, task):
         raise HTTPException(status_code=403, detail=AGENT_REVIEW_REFUSED)
-
-
-async def assert_may_set_agent_review(db: Any, user: Any, project: Any) -> None:
-    """403 with :data:`AGENT_REVIEW_SETTING_REFUSED`, or return. (SW-18a.)
-
-    The setting names who accepts agent work, so its floor is the floor of a
-    grant (:func:`may_write_grant`): a lead of the project or of an
-    ancestor, or a Projects admin. A signed agent never sets it.
-    """
-    if getattr(user, "agent", None) is not None or not await may_write_grant(
-            db, user, project):
-        raise HTTPException(status_code=403, detail=AGENT_REVIEW_SETTING_REFUSED)
 
 
 async def attach_can_write_grants(db: Any, user: Any, row: dict[str, Any]) -> dict[str, Any]:

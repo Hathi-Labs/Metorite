@@ -163,11 +163,6 @@ MANIFEST: tuple[Route, ...] = (
     Route("DELETE", "/projects/nodes/{project_id}/grants/{grant_id}", "revoke_access", "C"),
     # WS-ALN ALN-4 repair (D-OP-9): the pin of a Knowledge page to a project.
     # The route decides who may pin (`authority.assert_may_write_grant`).
-    # WS-MCP SW-18a: "Agent work needs review" of one project. It names who
-    # accepts agent work, so the route needs a lead or a Projects admin. The
-    # app can turn it back, so class B. Dark behind AGENT_REVIEW_ENABLED, and
-    # off MCP_ROUTES. The chat tool waits for the SW-18 follow-up.
-    Route("PUT", "/projects/nodes/{project_id}/agent-review", "set_agent_review", "B"),
     Route("GET", "/projects/nodes/{project_id}/authorities", "project_authorities", "A"),
     Route("POST", "/projects/nodes/{project_id}/authorities", "pin_authority", "C"),
     Route(
@@ -756,11 +751,11 @@ PLANNED: dict[str, str] = {
     # WS-MCP SW-23 (2026-11-11) added the report of a Check for an outside
     # agent. The chat moves a task through `update_task`.
     "report_check": "WS-MCP SW-23 follow-up, in-product chat parity, after EA-12e",
-    # WS-MCP SW-18a (2026-11-11) added the review setting of a project and
-    # the approve of agent work. Both are a person's acts, dark. The chat
-    # gets them in the SW-18 follow-up: the approve with one card, and a
-    # refusal of a run with no person present before the card.
-    "set_agent_review": "WS-MCP SW-18 follow-up, in-product chat parity",
+    # WS-MCP SW-18a (2026-11-11) added the approve of agent work, a person's
+    # act, dark. The chat gets it in the SW-18 follow-up, with one card, and a
+    # refusal of a run with no person present before the card. The setting is
+    # a key of the policy store (`POST /agent-policies`, SW-94), not a route
+    # of this manifest.
     "approve_agent_work": "WS-MCP SW-18 follow-up, in-product chat parity",
     # WS-55 EA-6g (2026-10-15) added the archive request and its approval.
     # The chat archives through `archive_task`.
@@ -1560,8 +1555,8 @@ _CHECK_REPORT_REASON = (
     "The report of a run of a Check (SW-23). An outside agent sends it over MCP "
     "with report_check. The chat has no report tool."
 )
-#: WS-MCP SW-18a. The review of agent work. A person sets it and approves
-#: it in the app. The chat gets both in the SW-18 follow-up.
+#: WS-MCP SW-18a. The approve of agent work, a person's act in the app. The
+#: chat gets it in the SW-18 follow-up.
 _AGENT_REVIEW_REASON = (
     "The review of agent work (SW-18a), a person's act that ships dark. The chat "
     "tool comes in the SW-18 follow-up."
@@ -1760,11 +1755,7 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "detail": _AGENT_OVERVIEW_REASON,
         "session": _AGENT_OVERVIEW_REASON,
     },
-    # WS-MCP SW-18a: the review of agent work. No chat tool sends a field yet.
-    ("PUT", "/projects/nodes/{project_id}/agent-review"): {
-        "needs_review": _AGENT_REVIEW_REASON,
-        "default_reviewer": _AGENT_REVIEW_REASON,
-    },
+    # WS-MCP SW-18a: the approve of agent work. No chat tool sends a field yet.
     ("POST", "/projects/tasks/{task_id}/agent-review"): {
         "decision": _AGENT_REVIEW_REASON,
         "If-Match": _AGENT_REVIEW_REASON,

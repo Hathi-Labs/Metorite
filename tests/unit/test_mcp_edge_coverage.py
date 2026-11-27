@@ -304,9 +304,9 @@ NEVER_ON_THE_EDGE = (
     # update stays a member's act in this slice.
     ("DELETE", "/projects/nodes/{project_id}/updates/{update_id}"),
     # WS-MCP SW-18a (agent_coordination.md SW-18a): a person accepts agent
-    # work, and a lead says that a project needs it. An agent never reaches
-    # either act, so it cannot approve its own work.
-    ("PUT", "/projects/nodes/{project_id}/agent-review"),
+    # work. An agent never reaches the approve, so it cannot approve its own
+    # work. The setting is a key of `POST /agent-policies`, which refuses a
+    # signed agent (SW-94).
     ("POST", "/projects/tasks/{task_id}/agent-review"),
 )
 

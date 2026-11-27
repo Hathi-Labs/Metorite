@@ -1880,10 +1880,11 @@ class Settings(FlagRegistry):
     # on a box is gate `enforcement-flip`.
     agent_task_checks_enabled: bool = False
     # SW-18a (spec agent_coordination.md SW-18a): a person accepts agent work
-    # before it is done. Default OFF. While it is false, the two review routes
-    # (`PUT /projects/nodes/{id}/agent-review` and `POST
-    # /projects/tasks/{id}/agent-review`) answer 404, and an agent's move to
-    # done goes to done as before, whatever a project says. The edge reads it
+    # before it is done. Default OFF. While it is false, the approve route
+    # (`POST /projects/tasks/{id}/agent-review`) answers 404, and an agent's
+    # move to done goes to done as before, whatever the policy
+    # `review_required` says. The setting is that key of the policy store,
+    # behind `AGENT_POLICY_ORGS` (SW-94, owner 2026-11-26). The edge reads it
     # too, for the review sentences of two tool texts, so both units need the
     # same value. `acb_auth.agent_oauth.agent_review_enabled` is the one
     # reader. 🔴 A flip on a box is gate `enforcement-flip`.

@@ -2,19 +2,22 @@
 
 Spec: ``project-docs/specs/agent_coordination.md`` SW-18a.
 
-A project setting "Agent work needs review" (default off) and an optional
-default reviewer. With the setting on, a SIGNED agent's move to done lands in
-the review lane of the task's own status set: the first ``in_progress`` status
-whose name holds "review". With no such lane the move goes to done, with a
-note. A person's move is never redirected. The named reviewer, or a lead of
-the project or of an ancestor, approves: the task moves to done and the open
-agent run closes. Everybody else gets 403. Dark behind
-``agent_review_enabled``.
+The setting "Agent work needs review" is the policy key ``review_required``
+of the SW-94 store (default false), and the default reviewer is the key
+``review_reviewer`` (owner, 2026-11-26). ``POST /agent-policies`` writes them,
+and ``agent_policies.policy_for`` reads them: the project, each parent, the
+org, then the default. With the setting on, a SIGNED agent's move to done
+lands in the review lane of the task's own status set: the first
+``in_progress`` status whose name holds "review". With no such lane the move
+goes to done, with a note. A person's move is never redirected. The named
+reviewer, or a lead of the project or of an ancestor, approves: the task
+moves to done and the open agent run closes. Everybody else gets 403. Dark
+behind ``agent_review_enabled`` and ``AGENT_POLICY_ORGS``.
 
 Two halves.
 
-**Database-free (always runs).** The records, the migration text, the CI skip
-guard and the edge texts of the flag.
+**Database-free (always runs).** The records, the migration text, the policy
+key, the CI skip guard and the edge texts of the flag.
 
 **R8 (a real database, as a NON-privileged NOBYPASSRLS role).** The edge and
 the person both call the REAL gateway app.
@@ -40,6 +43,17 @@ Run::
 * R12. ``G/agent_review.py``: ``redirect_for`` skips a cancelled task. ``test_an_agent_done_of_a_cancelled_task_lands_in_review``.
 * R13. ``G/move.py``: ``_plan`` skips ``refuse_agent_move_out``. ``test_an_agent_moves_no_work_into_a_new_child_project`` and ``test_a_carried_subtask_keeps_the_review``.
 * R14. ``G/core.py``: ``apply_status_transition`` keeps the wait. ``test_mark_done_by_a_person_ends_the_wait``.
+* R15. ``G/agent_review.py``: ``needs_review`` reads ``policy_for`` with the
+  key ``review_cap`` or returns False. ``test_a_project_row_turns_review_on``.
+* R16. ``apps/services/gateway/gateway/routes/agent_policies.py``: ``policy_for``
+  reads the project only (``levels`` without the org).
+  ``test_an_org_row_turns_it_on_for_every_project``.
+* R17. ``G/agent_review.py``: ``needs_review`` passes the task's project
+  alone, with no walk. ``test_a_parent_row_reaches_a_child_project``.
+* R18. ``G/agent_review.py``: ``reviewer_for`` skips ``_reviewer_sees``.
+  ``test_a_reviewer_who_cannot_open_the_project_is_dropped``.
+* R19. ``G/agent_review.py``: ``needs_review`` ignores *project_id*.
+  ``test_an_agent_move_does_not_skip_the_review`` (the landing in done).
 """
 from __future__ import annotations
 
@@ -76,18 +90,25 @@ _send = t._send
 
 _ROOT = Path(__file__).resolve().parents[2]
 APPROVE = "/projects/tasks/{task_id}/agent-review"
-SETTING = "/projects/nodes/{project_id}/agent-review"
+#: The route of the first build. The rework of 2026-11-27 removed it.
+OLD_SETTING = "/projects/nodes/{project_id}/agent-review"
+POLICIES = "/agent-policies"
 MEMBER = w.MEMBER
 REVIEWER = "reviewer@mcpwrites.test"
 LEAD = "lead@mcpwrites.test"
 OTHER = "other@mcpwrites.test"
+ADMIN = "admin@mcpwrites.test"
+STRANGER = "stranger@mcpwrites.test"
 _APP_ROLE = "acb_app_agentreview"
 _APP_PW = "agentreview_scratch_pw"
 
 
 @pytest.fixture
-def review_on(monkeypatch):
-    monkeypatch.setattr(get_settings(), "agent_review_enabled", True)
+def review_on(monkeypatch, world):
+    """Both gates on: the review flag, and the policy store for this org only."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "agent_review_enabled", True)
+    monkeypatch.setattr(settings, "agent_policy_orgs", world.org)
 
 
 def _migration() -> str:
@@ -105,16 +126,69 @@ def _migration() -> str:
 
 
 class TestTheRecords:
-    def test_both_routes_are_a_persons_acts_off_the_edge(self):
+    def test_the_approve_is_a_persons_act_off_the_edge(self):
         rows = {(r.method, r.path): r for r in m.MANIFEST}
         assert rows[("POST", APPROVE)].cls == "C"
         assert rows[("POST", APPROVE)].tool == "approve_agent_work"
-        assert rows[("PUT", SETTING)].cls == "B"
-        assert rows[("PUT", SETTING)].tool == "set_agent_review"
-        assert {"approve_agent_work", "set_agent_review"} <= set(m.PLANNED)
-        for pair in (("POST", APPROVE), ("PUT", SETTING)):
-            assert pair not in agent_oauth.MCP_ROUTES, pair
-            assert pair not in agent_oauth.MCP_WRITE_ROUTES, pair
+        assert "approve_agent_work" in m.PLANNED
+        assert ("POST", APPROVE) not in agent_oauth.MCP_ROUTES
+        assert ("POST", APPROVE) not in agent_oauth.MCP_WRITE_ROUTES
+
+    def test_the_setting_route_is_gone(self):
+        """Owner, 2026-11-26: the policy store holds the setting. No route of
+        the Projects router writes it, and no chat tool is planned for it."""
+        from gateway.routes.projects import agent_review
+
+        assert ("PUT", OLD_SETTING) not in {(r.method, r.path) for r in m.MANIFEST}
+        assert "set_agent_review" not in m.PLANNED
+        assert not hasattr(agent_review, "set_agent_review")
+        from gateway.routes.projects import authority
+        assert not hasattr(authority, "assert_may_set_agent_review")
+
+    def test_the_setting_is_read_from_the_policy_store(self):
+        """The one reader (``policy_for``) and the one walk: no SQL of
+        ``agent_review.py`` names a project column of the setting."""
+        import inspect
+
+        from gateway.routes.projects import agent_review
+
+        src = inspect.getsource(agent_review)
+        assert "agent_work_needs_review" not in src
+        assert "agent_review_default_reviewer" not in src
+        assert "WITH RECURSIVE" not in src.upper() and "parent_project_id" not in src
+        assert "from gateway.routes.agent_policies import policy_for" in src
+        assert agent_review.REVIEW_KEY == "review_required"
+        assert agent_review.REVIEWER_KEY == "review_reviewer"
+
+    def test_the_store_imports_first_with_no_cycle(self):
+        """``agent_policies`` imports the projects package, which imports
+        ``agent_review`` through ``tasks.py``. So ``agent_review`` imports the
+        store inside the read. A module import makes a cycle, and this fresh
+        interpreter then fails."""
+        import subprocess
+        import sys
+
+        done = subprocess.run(
+            [sys.executable, "-c", "import gateway.routes.agent_policies"],
+            capture_output=True, text=True, timeout=300, cwd=_ROOT, check=False)
+        assert done.returncode == 0, done.stderr[-2000:]
+
+    def test_the_reviewer_key_takes_an_email_or_null(self):
+        from gateway.routes import agent_policies as ap
+
+        spec = ap.REGISTRY["review_reviewer"]
+        assert (spec.form, spec.kind, spec.default, spec.tiers) == (
+            "task", "member_or_null", None, True)
+        assert set(spec.scopes) == {"organization", "project"}
+        # A lead writes it for the lead's own project, as the PUT of the first
+        # build let a lead do. So it is not on the auth path.
+        assert not spec.auth_path and not spec.admin_only
+        assert ap.REGISTRY["review_required"].tiers is spec.tiers
+        assert ap.check_value(spec, " Reviewer@MCPWrites.TEST ") == REVIEWER
+        assert ap.check_value(spec, None) is None
+        for bad in ("", "  ", "no-at-sign", 5, True, ["a@b.c"], "a@b.c\x00"):
+            with pytest.raises(ValueError):
+                ap.check_value(spec, bad)
 
     def test_the_review_word_and_codes(self):
         from gateway.routes.projects import agent_review, checks
@@ -126,22 +200,25 @@ class TestTheRecords:
 
     def test_the_migration_is_expand_only(self):
         body = _migration()
-        for column in ("agent_work_needs_review", "agent_review_default_reviewer",
-                       "agent_reviewer", "agent_review_requested_at"):
-            assert f"ADD COLUMN IF NOT EXISTS {column}" in body, column
+        for column in ("agent_reviewer", "agent_review_requested_at"):
+            assert f"ALTER TABLE pm_tasks ADD COLUMN IF NOT EXISTS {column}" in body, column
         assert "SET lock_timeout" in body
-        assert "BOOLEAN NOT NULL DEFAULT false" in body
         sql = body.split("-- ===")[-1]
         assert "DROP " not in sql.upper()
-        assert sql.count("NOT VALID") == 2 and sql.count("VALIDATE CONSTRAINT") == 2
+        # Owner, 2026-11-26: the setting is in the policy store, so the file
+        # adds no project column and no project CHECK.
+        assert "pm_projects" not in sql
+        assert "agent_work_needs_review" not in sql
+        assert sql.count("NOT VALID") == 1 and sql.count("VALIDATE CONSTRAINT") == 1
 
     def test_this_suite_is_named_in_the_ci_skip_guard(self):
         """An R8 suite that CI does not list skips in silence when the database
-        gate is disarmed. Match the argument line, not a mention."""
+        gate is disarmed. Both workflows read the list of ``tests/fences.json``."""
+        fences = json.loads((_ROOT / "tests" / "fences.json").read_text(encoding="utf-8"))
+        assert "tests/unit/test_pm_agent_review_r8.py" in fences["r8"]["must_run"]
         for name in ("pr-check.yml", "deploy.yml"):
             workflow = (_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
-            assert re.search(r"^\s+tests/unit/test_pm_agent_review_r8\.py \\?$",
-                             workflow, re.M), name
+            assert re.search(r"--lists-from-fences\b", workflow), name
 
 
 class TestTheEdgeTexts:
@@ -174,17 +251,45 @@ def _grant(seeder: Any, project: str, who: str) -> None:
                " RETURNING project_id", p=project, s=who, a=w.OWNER, o=seeder.org)
 
 
-def _setting(seeder: Any, project: str, on: bool, reviewer: str | None = None) -> None:
-    seeder.one("UPDATE pm_projects SET agent_work_needs_review = :on,"
-               " agent_review_default_reviewer = :r WHERE id = CAST(:p AS uuid)"
-               " RETURNING id", on=on, r=reviewer, p=project)
+def _policy(key: str, scope_kind: str, scope_id: str | None, value: Any, *,
+            clear: bool = False) -> dict[str, Any]:
+    """The body of one save of ``POST /agent-policies``, tier ``any``."""
+    body: dict[str, Any] = {"key": key, "scope_kind": scope_kind, "scope_id": scope_id,
+                            "tier": "any", "value": value}
+    if clear:
+        body["clear"] = True
+    return body
+
+
+async def _save(world, email: str, body: dict[str, Any], *, expect: int = 201
+                ) -> httpx.Response:
+    """One save through the real route, as the person *email*."""
+    sent = await _person(world, email, "POST", POLICIES, body=body)
+    assert sent.status_code == expect, (body, sent.text)
+    return sent
+
+
+@pytest.fixture
+async def seeded(live, review_on):
+    """The project rows of the four projects of :func:`world`, saved once
+    through ``POST /agent-policies`` by the lead (a lead of an ancestor).
+    "Off" gets no row, so it reads the default, false."""
+    if not getattr(live, "policies_saved", False):
+        for project, reviewer in ((live.team, REVIEWER), (live.plain, REVIEWER),
+                                  (live.open, None)):
+            await _save(live, LEAD, _policy("review_required", "project", project, True))
+            if reviewer is not None:
+                await _save(live, LEAD, _policy("review_reviewer", "project", project, reviewer))
+        live.policies_saved = True
+    return live
 
 
 @pytest.fixture(scope="module")
 def world():
     """A private promoted catalog: two tenants. The first has the agent's
-    member, a reviewer, a lead and a member with no say, and four projects.
-    The app role is NOSUPERUSER NOBYPASSRLS, so FORCE RLS binds each request."""
+    member, a reviewer, a lead, a member with no say and an org admin, and
+    four projects. The policy rows come from :func:`seeded`. The app role is
+    NOSUPERUSER NOBYPASSRLS, so FORCE RLS binds each request."""
     if not w._URL:
         pytest.skip("TENANT_LADDER_DATABASE_URL unset")
     admin_url = make_url(w._URL)
@@ -212,6 +317,7 @@ def world():
     a.number = 100_000
     for who in (MEMBER, REVIEWER, LEAD, OTHER):
         a.member(who, ["feature:projects"])
+    a.member(ADMIN, ["feature:projects", "admin:settings:manage"])
     names = ("Team", "Plain", "Off", "Open")
     projects = {name: a.project(name, in_space=True) for name in names}
     for project in projects.values():
@@ -237,10 +343,6 @@ def world():
         n_review=a.status(open_, "Needs review", "in_progress", 2),
         n_done=a.status(open_, "Done", "done", 3),
     )
-    _setting(a, team, True, REVIEWER)
-    _setting(a, plain, True, REVIEWER)
-    _setting(a, off, False)
-    _setting(a, open_, True)
     b = w._Seeder(eng, other_org)
     b.number = 200_000
     b_project = b.project("Elsewhere")
@@ -308,7 +410,7 @@ def _status_changes(world, task: str) -> int:
             " AND type = 'status_change'"), {"t": task}).scalar() or 0)
 
 
-@pytest.mark.usefixtures("review_on")
+@pytest.mark.usefixtures("review_on", "seeded")
 class TestTheRedirectOnARealDatabase:
     pytestmark = _DB_GATE
 
@@ -372,9 +474,24 @@ class TestTheRedirectOnARealDatabase:
         assert _row(live, task).agent_review_requested_at is None
         approve = await _approve(live, REVIEWER, task)
         assert approve.status_code == 404, approve.text
-        setting = await _person(live, LEAD, "PUT", SETTING.format(project_id=live.team),
-                                body={"needs_review": False})
-        assert setting.status_code == 404, setting.text
+
+    async def test_with_the_store_off_the_setting_reads_false(self, live, monkeypatch):
+        """``AGENT_POLICY_ORGS`` does not name the org: ``policy_for`` reads no
+        row and gives the default, so an agent's done goes to done although
+        the project row says true. The store's route answers 404 too."""
+        monkeypatch.setattr(get_settings(), "agent_policy_orgs", "")
+        task = live.task(live.team, live.s.doing, "sw18a store off")
+        got = await _agent_done(live, task, live.s.done)
+        assert got["status"]["id"] == live.s.done
+        row = _row(live, task)
+        assert row.completed_at is not None and row.agent_review_requested_at is None
+        other = live.task(live.team, live.s.doing, "sw18a store off again")
+        sent = await _send(live, "PATCH", f"/projects/tasks/{other}",
+                           body={"status_id": live.s.done})
+        assert sent.status_code == 200 and "agent_review" not in sent.json()
+        saved = await _person(live, LEAD, "POST", POLICIES,
+                              body=_policy("review_required", "project", live.team, False))
+        assert saved.status_code == 404, saved.text
 
     async def test_with_no_review_lane_the_done_stays_with_a_note(self, live):
         task = live.task(live.plain, live.s.p_doing, "sw18a no lane")
@@ -414,7 +531,7 @@ class TestTheRedirectOnARealDatabase:
         assert row.check_last_result == "passed"
 
 
-@pytest.mark.usefixtures("review_on")
+@pytest.mark.usefixtures("review_on", "seeded")
 class TestTheApproveOnARealDatabase:
     pytestmark = _DB_GATE
 
@@ -538,9 +655,10 @@ class TestTheApproveOnARealDatabase:
         assert str(_row(live, incoming).project_id) == live.off
 
     async def test_an_agent_moves_no_work_into_a_new_child_project(self, live):
-        """Gap (a): an agent makes a child project, whose setting starts off,
-        and moves its own task there. The move out of the reviewed project is
-        a person's act, in the preview and in the apply."""
+        """Gap (a): an agent makes a child project and moves its own task
+        there. A row on the child can turn the policy off, so the move out of
+        the reviewed project is a person's act, in the preview and in the
+        apply."""
         child = await _send(live, "POST", "/projects/nodes", body={
             "name": "sw18a child", "parent_project_id": live.team})
         assert child.status_code in (200, 201), child.text
@@ -610,44 +728,140 @@ class TestTheApproveOnARealDatabase:
         assert refused.status_code == 409 and refused.json()["detail"] == "not_waiting"
 
 
-@pytest.mark.usefixtures("review_on")
+def _fresh(live, name: str) -> SimpleNamespace:
+    """A new project in its own space, with a lane named for review. LEAD leads
+    the space, and REVIEWER, LEAD and OTHER may open it. No policy row."""
+    seeder = live.seeder
+    project = seeder.project(name, in_space=True)
+    space = seeder.root(project)
+    for who in (REVIEWER, LEAD, OTHER):
+        _grant(seeder, space, who)
+    seeder.one("UPDATE pm_projects SET lead = :l WHERE id = CAST(:p AS uuid) RETURNING id",
+               l=LEAD, p=space)
+    return SimpleNamespace(
+        id=project, space=space,
+        doing=seeder.status(project, "Doing", "in_progress", 1),
+        review=seeder.status(project, "In review", "in_progress", 2),
+        done=seeder.status(project, "Done", "done", 3),
+    )
+
+
+@pytest.mark.usefixtures("review_on", "seeded")
 class TestTheSettingOnARealDatabase:
+    """The setting is the policy store of SW-94 (owner, 2026-11-26). Each row
+    here goes through the real ``POST /agent-policies``."""
+
     pytestmark = _DB_GATE
 
-    async def test_a_lead_turns_it_on_and_the_answer_names_the_lane(self, live):
-        project = live.seeder.project("sw18a setting", in_space=True)
-        space = live.seeder.root(project)
-        for who in (REVIEWER, LEAD, OTHER):
-            _grant(live.seeder, space, who)
-        live.seeder.one("UPDATE pm_projects SET lead = :l WHERE id = CAST(:p AS uuid)"
-                        " RETURNING id", l=LEAD, p=space)
-        path = SETTING.format(project_id=project)
-        refused = await _person(live, OTHER, "PUT", path, body={"needs_review": True})
-        assert refused.status_code == 403, refused.text
-        signed = await _send(live, "PUT", path, body={"needs_review": True})
+    async def test_a_project_row_turns_review_on(self, live):
+        p = _fresh(live, "sw18a project row")
+        before = live.task(p.id, p.doing, "sw18a before the row")
+        assert (await _agent_done(live, before, p.done))["status"]["id"] == p.done
+        body = _policy("review_required", "project", p.id, True)
+        await _save(live, OTHER, body, expect=403)
+        signed = await _send(live, "POST", POLICIES, body=body)
         assert signed.status_code in (401, 403), signed.text
-        stranger = await _person(live, LEAD, "PUT", path, body={
-            "needs_review": True, "default_reviewer": "nobody@mcpwrites.test"})
-        assert stranger.status_code == 422, stranger.text
-        extra = await _person(live, LEAD, "PUT", path, body={"needs_review": True, "x": 1})
-        assert extra.status_code == 422, extra.text
-        on = await _person(live, LEAD, "PUT", path, body={
-            "needs_review": True, "default_reviewer": " Reviewer@MCPWrites.test "})
-        assert on.status_code == 200, on.text
-        body = on.json()
-        assert (body["needs_review"], body["default_reviewer"], body["review_status"]) == (
-            True, REVIEWER, None)
-        assert "no in progress status whose name says review" in body["note"]
-        lane = live.seeder.status(project, "Review", "in_progress", 2)
-        off = await _person(live, LEAD, "PUT", path, body={"needs_review": True})
-        assert off.status_code == 200, off.text
-        assert off.json()["review_status"] == {"id": lane, "name": "Review"}
-        assert off.json()["default_reviewer"] is None and off.json()["note"] is None
-        with live.admin.begin() as c:
-            row = c.execute(text("SELECT agent_work_needs_review, agent_review_default_reviewer"
-                                 " FROM pm_projects WHERE id = CAST(:p AS uuid)"),
-                            {"p": project}).one()
-        assert (row.agent_work_needs_review, row.agent_review_default_reviewer) == (True, None)
+        saved = await _save(live, LEAD, body)
+        assert saved.json()["value"] is True and saved.json()["written_by"] == LEAD
+        after = live.task(p.id, p.doing, "sw18a after the row")
+        got = await _agent_done(live, after, p.done)
+        assert got["status"]["id"] == p.review
+        row = _row(live, after)
+        # No reviewer row, so a lead decides.
+        assert row.agent_review_requested_at is not None and row.agent_reviewer is None
+        approved = await _approve(live, LEAD, after)
+        assert approved.status_code == 200, approved.text
+
+    async def test_an_org_row_turns_it_on_for_every_project(self, live):
+        p, q = _fresh(live, "sw18a org one"), _fresh(live, "sw18a org two")
+        on = _policy("review_required", "organization", None, True)
+        await _save(live, LEAD, on, expect=403)
+        try:
+            await _save(live, ADMIN, on)
+            await _save(live, ADMIN, _policy("review_reviewer", "organization", None, REVIEWER))
+            for project in (p, q):
+                task = live.task(project.id, project.doing, "sw18a org row")
+                assert (await _agent_done(live, task, project.done))["status"]["id"] == (
+                    project.review)
+                assert _row(live, task).agent_reviewer == REVIEWER
+            # A nearer row wins: a project row turns it off under the org row.
+            await _save(live, LEAD, _policy("review_required", "project", q.id, False))
+            task = live.task(q.id, q.doing, "sw18a project off under org on")
+            assert (await _agent_done(live, task, q.done))["status"]["id"] == q.done
+        finally:
+            await _save(live, ADMIN, _policy("review_required", "organization", None, None,
+                                             clear=True))
+            await _save(live, ADMIN, _policy("review_reviewer", "organization", None, None,
+                                             clear=True))
+        cleared = live.task(p.id, p.doing, "sw18a org row cleared")
+        assert (await _agent_done(live, cleared, p.done))["status"]["id"] == p.done
+
+    async def test_a_parent_row_reaches_a_child_project(self, live):
+        """A child of Team has no row. Team's rows reach it through the one
+        walk, the reviewer too. A row on the child turns it off there."""
+        child = await _send(live, "POST", "/projects/nodes", body={
+            "name": "sw18a reached child", "parent_project_id": live.team})
+        assert child.status_code in (200, 201), child.text
+        child_id = child.json()["id"]
+
+        async def made(title: str) -> str:
+            result = await _mcp(live, "write", "create_task",
+                                {"project_id": child_id, "title": title})
+            assert result["isError"] is False, result
+            return result["structuredContent"]["task"]["id"]
+
+        task = await made("sw18a in the child")
+        got = await _agent_done(live, task, live.s.done)
+        assert got["status"]["id"] == live.s.review
+        row = _row(live, task)
+        assert str(row.project_id) == child_id and row.agent_reviewer == REVIEWER
+        await _save(live, LEAD, _policy("review_required", "project", child_id, False))
+        other = await made("sw18a child turned off")
+        assert (await _agent_done(live, other, live.s.done))["status"]["id"] == live.s.done
+
+    async def test_a_reviewer_who_cannot_open_the_project_is_dropped(self, live):
+        """The store checks the shape of the email only. The redirect records
+        a reviewer only when that member can open the project."""
+        p = _fresh(live, "sw18a reviewer")
+        await _save(live, LEAD, _policy("review_required", "project", p.id, True))
+        await _save(live, LEAD, _policy("review_reviewer", "project", p.id, "no-email"),
+                    expect=422)
+        await _save(live, LEAD, _policy("review_reviewer", "project", p.id, STRANGER))
+        task = live.task(p.id, p.doing, "sw18a stranger")
+        assert (await _agent_done(live, task, p.done))["status"]["id"] == p.review
+        assert _row(live, task).agent_reviewer is None
+        named = await _save(live, LEAD, _policy(
+            "review_reviewer", "project", p.id, " Reviewer@MCPWrites.TEST "))
+        assert named.json()["value"] == REVIEWER
+        again = live.task(p.id, p.doing, "sw18a named")
+        await _agent_done(live, again, p.done)
+        assert _row(live, again).agent_reviewer == REVIEWER
+        approved = await _approve(live, REVIEWER, again)
+        assert approved.status_code == 200, approved.text
+
+    async def test_the_old_setting_route_is_gone(self, live):
+        sent = await _person(live, LEAD, "PUT", OLD_SETTING.format(project_id=live.team),
+                             body={"needs_review": False})
+        assert sent.status_code in (404, 405), sent.text
+
+
+class TestTheSchemaOnARealDatabase:
+    pytestmark = _DB_GATE
+
+    def test_pm_projects_has_no_setting_column(self, world):
+        """Owner, 2026-11-26: the setting is a policy row, never a column."""
+        with world.admin.begin() as c:
+            columns = {r[0]: r[1] for r in c.execute(text(
+                "SELECT column_name, table_name FROM information_schema.columns"
+                " WHERE table_schema = 'public' AND table_name IN ('pm_projects', 'pm_tasks')"
+                " AND column_name IN ('agent_work_needs_review',"
+                " 'agent_review_default_reviewer', 'agent_reviewer',"
+                " 'agent_review_requested_at')"))}
+            checks = {r[0] for r in c.execute(text(
+                "SELECT conname FROM pg_constraint WHERE conname IN"
+                " ('pm_tasks_agent_review_whole', 'pm_projects_agent_reviewer_not_blank')"))}
+        assert columns == {"agent_reviewer": "pm_tasks", "agent_review_requested_at": "pm_tasks"}
+        assert checks == {"pm_tasks_agent_review_whole"}
 
     def test_the_database_refuses_a_reviewer_with_no_wait(self, world):
         task = world.task(world.team, world.s.doing, "sw18a schema")
@@ -657,9 +871,7 @@ class TestTheSettingOnARealDatabase:
                 c.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": world.org})
                 c.execute(text("UPDATE pm_tasks SET agent_reviewer = 'x@y.z'"
                                " WHERE id = CAST(:t AS uuid)"), {"t": task})
-            with pytest.raises(IntegrityError), app.begin() as c:
-                c.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": world.org})
-                c.execute(text("UPDATE pm_projects SET agent_review_default_reviewer = '  '"
-                               " WHERE id = CAST(:p AS uuid)"), {"p": world.team})
         finally:
             app.dispose()
+
+

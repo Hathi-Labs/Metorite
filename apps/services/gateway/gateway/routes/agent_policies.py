@@ -52,8 +52,10 @@ tier on a key that takes none, and for a value of the wrong type. The tenant
 comes from the session (R5). The version comes from the database, with an
 advisory lock on the scope and a retry on the unique index.
 
-The Settings tab "Policies" (SW-31b) is a later slice. No caller reads a policy
-yet. SW-49, SW-54, SW-18 and the later slices read through this module.
+The Settings tab "Policies" (SW-31b) is a later slice. SW-18a is the first
+reader: ``projects/agent_review.py`` reads ``review_required`` and
+``review_reviewer`` through :func:`policy_for` (owner, 2026-11-26). SW-49,
+SW-54 and the later slices read through this module too.
 
 Fence: ``tests/unit/test_agent_policies_r8.py`` (R8) and
 ``tests/unit/test_tenant_coverage.py``.
@@ -130,7 +132,7 @@ class PolicyKey:
     ``form`` is ``task`` (read by :func:`policy_for`) or ``actor`` (read by
     :func:`policy_for_actor`). ``scopes`` are the scope kinds it accepts.
     ``kind`` is the value type: ``bool``, ``int``, ``int_or_null``, ``mode``,
-    ``choice``, ``text_list`` or ``time_or_null``. ``modes`` holds the values
+    ``choice``, ``text_list``, ``time_or_null`` or ``member_or_null``. ``modes`` holds the values
     of ``mode`` and ``choice``, lowest first for a mode. ``auth_path`` needs
     ``admin:settings:manage`` except as the writer rules say. ``tiers`` is True
     when a row may name a risk tier. ``flag`` names the ``Settings`` field of
@@ -189,6 +191,8 @@ REGISTRY: dict[str, PolicyKey] = {k.name: k for k in (
               note="The release cut-off, HH:MM UTC. None by default."),
     PolicyKey("review_required", "task", TASK_SCOPES, "bool", False, tiers=True,
               note="Agent work needs review (SW-18)."),
+    PolicyKey("review_reviewer", "task", TASK_SCOPES, "member_or_null", None, tiers=True,
+              note="Who reviews agent work. Null means a project lead (SW-18a)."),
     PolicyKey("required_checks", "task", TASK_SCOPES, "text_list", [], auth_path=True,
               tiers=True, admin_only=True, note="The required check names (SW-54)."),
     PolicyKey("budget_mode", "actor", _LANE_SCOPES, "mode", "off", auth_path=True,
@@ -251,10 +255,26 @@ def _check_time(spec: PolicyKey, value: Any) -> Any:
     return value
 
 
+def _check_member(spec: PolicyKey, value: Any) -> Any:
+    """A member's email, trimmed and in lower case, or None (SW-18a).
+
+    The shape only. The reader decides whether the member can open the
+    project of the task (``agent_review.reviewer_for``), because a row at the
+    organization scope names no project."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{spec.name} takes a member's email, or null.")
+    cleaned = value.strip().lower()
+    if "\x00" in cleaned or not _EMAIL.match(cleaned):
+        raise ValueError(f"{spec.name} takes a member's email, or null.")
+    return cleaned
+
+
 _CHECKS = {
     "bool": _check_bool, "int": _check_int, "int_or_null": _check_int,
     "mode": _check_mode, "choice": _check_mode, "text_list": _check_text_list,
-    "time_or_null": _check_time,
+    "time_or_null": _check_time, "member_or_null": _check_member,
 }
 
 
