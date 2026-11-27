@@ -526,10 +526,11 @@ _SAMPLE: dict[str, Any] = {
 _ROW_SAMPLE: dict[str, Any] = {"name": "Spike", "is_epic": "yes"}
 #: The whole call, where the base call takes another branch of the tool.
 _CALL: dict[tuple[str, str, str], dict[str, Any]] = {
-    # D-OP-10 (OP-7): the card sends the ids that the member ticked.
+    # D-OP-10 (OP-7): the card sends the ids that the member ticked. One of
+    # the three offered: since ARC-2b a full set sends the flag instead.
     ("DELETE", "/projects/tasks/{task_id}", "delete_subtask_ids"): {
         "task_id": tw.LIVE,
-        "subtasks_to_delete": "all",
+        "subtasks_to_delete": tw.SUB_B,
     },
     # The same tool, a tree above the 200-id cap: "all" sends the flag.
     ("DELETE", "/projects/tasks/{task_id}", "delete_all_subtasks"): {
