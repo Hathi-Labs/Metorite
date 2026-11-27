@@ -88,7 +88,7 @@ import re
 import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -122,6 +122,7 @@ from agent_edge.gateway_client import (
     GatewayUnreachable,
     RouteRefused,
     actor_via,
+    new_batch_key,
     send_call,
 )
 from agent_edge.gateway_client import get as gateway_get
@@ -170,6 +171,19 @@ TEXT_BAD_CURSOR = "The cursor is not valid. List again with no cursor."
 TEXT_WRITE_FORBIDDEN = "This member cannot change that."
 TEXT_STALE = "The task changed. Read it again."
 TEXT_CAP = "Too many changes. Wait a few minutes."
+#: MCP-G28a (D209). The texts of the two counters of the cap. Each one names
+#: the counter that refused. A 429 with any other detail keeps
+#: :data:`TEXT_CAP`.
+TEXT_CALL_CAP = (
+    "Too many changes. This connection used all of its write calls for now."
+    " Wait a few minutes.")
+TEXT_ROW_CAP = (
+    "Too many changes. This connection changed all of the rows that it may"
+    " change for now. Wait a few minutes.")
+#: The three texts of a 429 of a write. A caller that must know "the cap
+#: refused this" checks this set, never one text, so a new counter text
+#: cannot slip past it (``_BULK_STOP_TEXTS``, ``_refused``).
+_CAP_TEXTS: frozenset[str] = frozenset({TEXT_CAP, TEXT_CALL_CAP, TEXT_ROW_CAP})
 #: MCP-G10. The seconds of a wait that an agent sees, at most. A header value
 #: beyond it is a fault, and the edge does not pass it on.
 MAX_RETRY_AFTER_S = 3600
@@ -188,13 +202,28 @@ def write_limit_line() -> str:
     MCP-G20: it names the LIVE limit, ``agent_oauth.write_cap`` and
     ``agent_oauth.write_window_s``, when ``tools/list`` runs. So the text
     follows ``AGENT_WRITE_CAP`` and ``AGENT_WRITE_WINDOW_S``.
+    MCP-G28a (D209): it names both counters, the calls and the rows
+    (``agent_oauth.write_row_cap``, ``AGENT_WRITE_ROW_CAP``).
     ``test_mcp_edge_write_clarity.py`` pins the text of the defaults.
     """
     return (
-        f" Limit: a connection makes at most {agent_oauth.write_cap()} changes in"
+        f" Limit: a connection makes at most {agent_oauth.write_cap()} write calls"
+        f" and {agent_oauth.write_row_cap()} changed rows in"
         f" {_span(agent_oauth.write_window_s())}, counted from its first change."
-        " Past it, a refusal holds retry_after, the seconds to wait."
+        " Past a limit, a refusal holds retry_after, the seconds to wait."
     )
+
+
+def _cap_text(answer: Answer) -> str:
+    """The text of a 429 of a write (MCP-G28a): the text of the counter that
+    the gateway names in its detail, else :data:`TEXT_CAP`. The edge reads
+    the detail to choose the text, and never sends the detail."""
+    detail = answer.body.get("detail") if isinstance(answer.body, dict) else None
+    if detail == agent_oauth.WRITE_ROW_CAP_DETAIL:
+        return TEXT_ROW_CAP
+    if detail == agent_oauth.WRITE_CAP_DETAIL:
+        return TEXT_CALL_CAP
+    return TEXT_CAP
 #: EA-6f (EA3-32). An agent may move a task to done. A cancel stays a human
 #: step, and a new task may not start closed.
 TEXT_CANCEL_STEP = "Cancelling a task stays a human step."
@@ -631,7 +660,7 @@ def _body_of(answer: Answer, not_found: str, *, write: bool = False) -> Any:
     if write and status == 412:
         raise ToolError(TEXT_STALE)
     if write and status == 429:
-        raise ToolError(TEXT_CAP, answer.retry_after)
+        raise ToolError(_cap_text(answer), answer.retry_after)
     if 400 <= status < 500:
         raise ToolError(TEXT_BAD_REQUEST)
     raise ToolError(TEXT_BUSY, answer.retry_after)
@@ -692,7 +721,7 @@ async def _write(ctx: Context, method: str, template: str, not_found: str, *,
         answer = await gateway_write(
             ctx.key, ctx.caller.lookup, method, template, json_body=json_body,
             path_params=path_params, query=query or [], if_match=if_match,
-            session=ctx.session)
+            session=ctx.session, batch=ctx.batch)
     except GatewayNotSent:
         raise _NotSent(TEXT_BUSY) from None
     except GatewayUnreachable:
@@ -1142,11 +1171,18 @@ class Context:
 
     SW-7: *session* is the MCP session key that ``mcp.py`` read from a
     verified ``Mcp-Session-Id``, or ``None``. Every gateway call of the
-    tool signs it in as ``X-Agent-Session``."""
+    tool signs it in as ``X-Agent-Session``.
+
+    MCP-G28a (D209): *batch* is the batch key of one bulk call, or ``None``.
+    Only ``update_tasks`` sets it, with a fresh key for each call
+    (``gateway_client.new_batch_key``). Each write of the call signs it in as
+    ``X-Agent-Batch``, so branch 0 counts the call once and each row once.
+    No tool input sets it."""
 
     caller: Caller
     key: str
     session: str | None = None
+    batch: str | None = None
 
 
 #: SW-7 (spec §12.5). The sentences of a tool description that follow
@@ -7616,8 +7652,10 @@ UPDATE_TASK = Tool(
 
 # ── update_tasks (MCP-G20, §9.2) ────────────────────────────────────────────
 
-#: MCP-G20. The most items of one ``update_tasks`` call.
-MAX_BULK_UPDATES = 50
+#: MCP-G20. The most items of one ``update_tasks`` call. MCP-G28a: it is the
+#: most rows of one write call, ``agent_oauth.WRITE_ROWS_PER_CALL``, so branch
+#: 0 counts one call for each full call of this tool.
+MAX_BULK_UPDATES = agent_oauth.WRITE_ROWS_PER_CALL
 #: ``update_tasks`` starts no new item after this many seconds of its call.
 #: The items after it come back with ``tried`` false and
 #: :data:`TEXT_BULK_TIME`, so a long call never ends as busy after its
@@ -7638,7 +7676,7 @@ TEXT_BULK_STOPPED = (
     "Metorite refused this connection, so it did not try this item. Nothing"
     " changed for this task.")
 #: The texts after which no later item can land, so the call sends no more.
-_BULK_STOP_TEXTS: frozenset[str] = frozenset({TEXT_CAP, TEXT_WRITES_OFF})
+_BULK_STOP_TEXTS: frozenset[str] = _CAP_TEXTS | {TEXT_WRITES_OFF}
 
 _BULK_UPDATE_INPUT: dict[str, Any] = {
     "type": "object",
@@ -7716,6 +7754,10 @@ async def _update_tasks(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     others. After the cap or the writes switch refuses an item, no later item
     can land, so the call sends no more and marks them ``tried`` false.
 
+    MCP-G28a (D209): the call mints ONE batch key, and each item signs it in.
+    So branch 0 counts the whole call as 1 call and each item as 1 row. The
+    key is new for each call and never comes from a tool input.
+
     Each item is checked again against the input of ``update_task``, so a
     null means the same here. A ``task_id`` twice is refused before any
     request.
@@ -7724,6 +7766,7 @@ async def _update_tasks(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     ids = [str(item.get("task_id")).lower() for item in raw]
     if len(set(ids)) != len(ids):
         raise ToolError(TEXT_BULK_DUPLICATE)
+    ctx = replace(ctx, batch=new_batch_key())
     loop = asyncio.get_running_loop()
     started = loop.time()
     results: list[dict[str, Any]] = []
@@ -7770,9 +7813,10 @@ UPDATE_TASKS = Tool(
         " lists each item: ok true with the task and its new version, or ok"
         " false with the error. tried false means that Metorite stopped before"
         " the item, so nothing changed for that task. A task_id may be in one call"
-        " only once. Send parent_task_id in an item with no other field. Each"
-        " item counts as one change in the limit, and after the limit the items"
-        " that were not tried hold retry_after." + _UNTRUSTED_NOTE
+        " only once. Send parent_task_id in an item with no other field. One"
+        " call counts as 1 write call in the limit, and each item counts as 1"
+        " changed row. After a limit, the items that were not tried hold"
+        " retry_after." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
     input_schema=_BULK_UPDATE_INPUT,
@@ -10786,16 +10830,18 @@ async def _question_images(ctx: Context, task_id: str, ids: list[str]) -> None:
 
 def _refused(error: ToolError) -> bool:
     """True when the gateway refused a write and a release can follow: a
-    write that never left the edge, and every tool error but two texts.
+    write that never left the edge, and every tool error but the busy text
+    and the cap texts.
 
     * The busy text. A busy answer can come after the write landed (CIV-14b
       fix round 2).
-    * The cap text (fix round 3). The cap counts each write, so the release
+    * The cap texts (fix round 3). The cap counts each write, so the release
       gets 429 too. The run stays, and after the wait a retry with the same
-      key asks on that run."""
+      key asks on that run. MCP-G28a: a 429 of the gateway names its
+      counter, so each text of :data:`_CAP_TEXTS` keeps the run."""
     if isinstance(error, _NotSent):
         return True
-    return error.text not in (TEXT_BUSY, TEXT_CAP)
+    return error.text != TEXT_BUSY and error.text not in _CAP_TEXTS
 
 
 async def _ask_on_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
@@ -12051,7 +12097,8 @@ def _door_body(answer: Answer, door: app_manifests.DoorOp, *, write: bool) -> An
         raise ToolError(TEXT_DOOR_INPUT.format(names=", ".join(names)) if names
                         else TEXT_DOOR_INPUT_ANY)
     if status == 429:
-        raise ToolError(TEXT_CAP if write else TEXT_DOOR_READ_CAP, answer.retry_after)
+        raise ToolError(_cap_text(answer) if write else TEXT_DOOR_READ_CAP,
+                        answer.retry_after)
     if 400 <= status < 500:
         raise ToolError(TEXT_BAD_REQUEST)
     raise ToolError(TEXT_BUSY, answer.retry_after)
@@ -13289,6 +13336,7 @@ __all__ = [
     "TEXT_BULK_STOPPED",
     "TEXT_BULK_TIME",
     "TEXT_BUSY",
+    "TEXT_CALL_CAP",
     "TEXT_CANCEL_STEP",
     "TEXT_CAP",
     "TEXT_CHECKS_OFF",
@@ -13397,6 +13445,7 @@ __all__ = [
     "TEXT_REQUEST_STALE",
     "TEXT_REQUEST_TOO_LARGE",
     "TEXT_REQUEST_UNSHOWABLE",
+    "TEXT_ROW_CAP",
     "TEXT_RUNS_OFF",
     "TEXT_RUN_CONFLICT",
     "TEXT_RUN_NOT_FOUND",
