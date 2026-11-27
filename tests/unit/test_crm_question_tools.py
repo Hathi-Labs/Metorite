@@ -655,7 +655,8 @@ async def test_a_term_answer_does_not_point_at_a_change_that_does_not_exist(
     _gateway(monkeypatch)
     out = await _M.crm_answer_setup_question("term:Bills_X:collection", "Grand Total")
     assert _M._CHANGE_PLACE not in out
-    assert "Neither the chat nor the settings can change it now." in out
+    assert "shows this answer and cannot change it." in out
+    assert "crm_answer_question can show the question card again." in out
 
 
 async def test_a_dismissal_says_the_chat_cannot_undo_it(monkeypatch) -> None:

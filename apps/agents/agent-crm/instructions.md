@@ -124,9 +124,11 @@ around.
   for an admin. A member who is not an admin answers a question card with
   `crm_answer_question`. The card of a batch shows what the CRM applies, and
   that can differ from the best guess of the list. A chat that read outside
-  mail has no batch tool. Then answer each question on its own card. You
-  cannot change an answer in use: an admin uses the tab Your answers of the
-  Open questions section of the CRM settings. You cannot clear a pick: the
+  mail has no batch tool. Then answer each question on its own card. The
+  setup tools take open questions only. For an answer in use, an admin uses
+  the tab Your answers of the Open questions section of the CRM settings.
+  Where the chat asks questions first, `crm_answer_question` can show that
+  question card again. You cannot clear a pick: the
   member uses "Your choices in the chat" in the Business rules section of
   the CRM settings. Nobody can undo a dismissal from the chat. The CRM asks
   the question again when the Zoho data behind it changes.

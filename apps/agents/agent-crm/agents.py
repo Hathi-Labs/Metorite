@@ -3680,7 +3680,7 @@ _DISMISS_NOTE = (
     "asks again when the Zoho data behind it changes."
 )
 
-#: Where a member changes or undoes an answer in use. The chat reads only the
+#: Where a member changes or undoes an answer in use. The setup tools take only
 #: open questions, and the Undo is ``PUT /crm/catalogue/{module}``, which this
 #: agent does not send (``_ALLOWED_METHODS``).
 _CHANGE_PLACE = (
@@ -3817,10 +3817,11 @@ async def crm_list_questions(
     them.
 
     Each question shows its id, its choices, the best guess and the picks of
-    members. With ``include_answered``, the answers in use follow, to read
-    only: the chat answers open questions only. A member changes an answer in
-    use on the tab Your answers of the Open questions section of the CRM
-    settings. The answer is one page. ``offset`` reads the next page, as
+    members. With ``include_answered``, the answers in use follow. The setup
+    tools take open questions only. A member changes an answer in use on the
+    tab Your answers of the Open questions section of the CRM settings.
+    Where the chat asks questions first, crm_answer_question can show the
+    card of an answered question again. The answer is one page. ``offset`` reads the next page, as
     its last line says. Use it before crm_answer_setup_question,
     crm_dismiss_question and crm_accept_best_guesses."""
     body = await _read_questions(bool(include_answered))
@@ -4128,8 +4129,9 @@ def _answered_text(q: dict[str, Any], shown: str, change: str, value: Any,
         # A term has no part, so the tab Your answers shows it with no change
         # (``correctionTarget`` of ``questions.ts`` is null for it).
         return out + (" The tab Your answers of the Open questions section of the CRM "
-                      "settings shows this answer. Neither the chat nor the settings "
-                      "can change it now.")
+                      "settings shows this answer and cannot change it. Where the "
+                      "chat asks questions first, crm_answer_question can show the "
+                      "question card again.")
     return f"{out} {_CHANGE_PLACE}"
 
 
