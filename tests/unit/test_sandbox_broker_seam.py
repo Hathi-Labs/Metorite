@@ -248,6 +248,35 @@ def test_the_broker_starts_no_process_but_docker() -> None:
     assert 'which("docker")' in ast.unparse(binary).replace("'", '"')
 
 
+async def test_the_tools_target_never_falls_back_to_the_host(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """SBX-F11, extended by SBX-4a: with ``tools:*`` in the scope, a start of
+    the ``tools`` target is refused, and no process of any kind starts, so
+    nothing runs on the host."""
+    import asyncio
+
+    from orchestrator import sandbox_broker as sb
+
+    from tests.unit._sandbox_broker_fakes import bound_run, configure_env
+
+    values = configure_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(values["settings"], "maf_coding_scope", "tools:*")
+    spawned: list[tuple[object, ...]] = []
+
+    async def no_process(*args: object, **kw: object) -> None:
+        spawned.append(args)
+        raise AssertionError("a tools start must start no process")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", no_process)
+    monkeypatch.setattr(asyncio, "create_subprocess_shell", no_process)
+    broker = sb.SandboxBroker()
+    with bound_run("aaaaaaaa-0000-0000-0000-0000000000f1", agent=sb.USER_TOOL_AGENT), \
+            pytest.raises(sb.SandboxRefused):
+        await broker.acquire()
+    assert spawned == []
+
+
 # ── review round 3: the unit suite never reaches the daemon ─────────────────
 
 
