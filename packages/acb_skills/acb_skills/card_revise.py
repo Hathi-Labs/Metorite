@@ -66,6 +66,10 @@ TTL_S = 7 * 24 * 3600
 MARKER_TTL_S = 600
 #: The most drafts that one record keeps. The oldest goes first.
 MAX_DRAFTS = 20
+#: Task 3978: the most reply drafts of ``draft_reply`` that one record keeps,
+#: apart from :data:`MAX_DRAFTS`. So reply drafts never push out a draft of a
+#: new mail, and the one-draft rule of task 3814 keeps its targets.
+MAX_REPLY_DRAFTS = 20
 #: The longest wait for one Redis call.
 REDIS_TIMEOUT_S = 2.0
 #: The line of a card whose save replaces a draft of this chat.
@@ -128,6 +132,10 @@ class ChatDraft:
     digest: str = ""
     #: True when the save carried files. An update can never drop a file.
     files: bool = False
+    #: Task 3978: a reply draft of ``draft_reply``. The record holds it, so
+    #: ``edit_draft`` knows that the chat made it. It is never the target of
+    #: a save of a new mail (:func:`plan_save`, :func:`save_one_draft`).
+    reply: bool = False
 
 
 def _addresses(values: Iterable[Any] | None) -> tuple[str, ...]:
@@ -250,8 +258,18 @@ def _record_of(raw: Any) -> _Record:
         if isinstance(row, dict) and str(row.get("id") or "").strip():
             out.append(ChatDraft(str(row["id"]).strip(), _addresses(row.get("to")),
                                  str(row.get("subject") or ""), str(row.get("digest") or ""),
-                                 bool(row.get("files"))))
+                                 bool(row.get("files")), bool(row.get("reply"))))
     return _Record(out, marker if isinstance(marker, dict) else {})
+
+
+def _kept(drafts: list[ChatDraft]) -> list[ChatDraft]:
+    """The newest :data:`MAX_DRAFTS` drafts of a new mail and the newest
+    :data:`MAX_REPLY_DRAFTS` reply drafts, each cap apart, in record order."""
+    mail = [d for d in drafts if not d.reply]
+    reply = [d for d in drafts if d.reply]
+    keep = {id(d) for d in mail[max(0, len(mail) - MAX_DRAFTS):]
+            + reply[max(0, len(reply) - MAX_REPLY_DRAFTS):]}
+    return [d for d in drafts if id(d) in keep]
 
 
 def _parts(org: str, thread: str, account_id: str, member: str) -> bool:
@@ -274,8 +292,9 @@ async def _write(org: str, thread: str, account_id: str, member: str, rec: _Reco
     value = json.dumps({
         "v": 2,
         "drafts": [{"id": d.draft_id, "to": list(d.to), "subject": d.subject,
-                    "digest": d.digest, **({"files": True} if d.files else {})}
-                   for d in rec.drafts[-MAX_DRAFTS:]],
+                    "digest": d.digest, **({"files": True} if d.files else {}),
+                    **({"reply": True} if d.reply else {})}
+                   for d in _kept(rec.drafts)],
         **({"marker": rec.marker} if rec.marker else {}),
     })
     with organization_scope(org):
@@ -294,7 +313,7 @@ def _live_marker(rec: _Record, act: str, to: Iterable[Any] | None) -> str:
     if not want or want != _addresses(m.get("to")):
         return ""
     did = str(m.get("draft_id") or "")
-    return did if any(d.draft_id == did for d in rec.drafts) else ""
+    return did if any(d.draft_id == did and not d.reply for d in rec.drafts) else ""
 
 
 # ── Before the card ──────────────────────────────────────────────────────────
@@ -321,7 +340,8 @@ async def plan_save(
     if marked:
         return marked
     for draft in reversed(rec.drafts):
-        if same_mail(draft, to, subject):
+        # Task 3978: a reply draft is never the draft of a new mail.
+        if not draft.reply and same_mail(draft, to, subject):
             return draft.draft_id
     return ""
 
@@ -354,13 +374,18 @@ async def note_draft(
     *, thread: str, account_id: str, member: str, draft_id: str,
     to: Iterable[Any] | None, subject: Any, digest: str = "", replaces: str = "",
     only_if_known: bool = False, act: str = "", files: bool = False, org: object = None,
+    reply: bool = False,
 ) -> None:
     """Write *draft_id* into the record, as the newest draft of this chat.
 
     *replaces* names a draft id that leaves the record. With *only_if_known*,
     the record changes only when it already holds *draft_id* or *replaces*:
     ``edit_draft`` of any other draft never joins it. A save of *act* spends
-    the marker of *act*. A Redis fault writes nothing and never raises."""
+    the marker of *act*. A Redis fault writes nothing and never raises.
+
+    *reply* (task 3978) marks a reply draft of ``draft_reply``. An entry that
+    was a reply draft stays one when a later write takes its place, so an
+    edit never makes it a target of a new mail."""
     org_id = _org(org)
     did = str(draft_id or "").strip()
     if not (did and _parts(org_id, thread, account_id, member)):
@@ -370,8 +395,10 @@ async def note_draft(
         gone = {did, str(replaces or "").strip()} - {""}
         if only_if_known and all(d.draft_id not in gone for d in rec.drafts):
             return
+        reply = reply or any(d.reply for d in rec.drafts if d.draft_id in gone)
         rec.drafts = [d for d in rec.drafts if d.draft_id not in gone]
-        rec.drafts.append(ChatDraft(did, _addresses(to), subject_key(subject), digest, files))
+        rec.drafts.append(ChatDraft(did, _addresses(to), subject_key(subject), digest, files,
+                                    reply))
         if act and rec.marker.get("act") == act:
             rec.marker = {}
         await _write(org_id, thread, account_id, member, rec)
@@ -537,7 +564,8 @@ async def _known(
     except Exception as exc:
         _log.warning("card_revise.record_read_failed", error=type(exc).__name__)
         return None
-    return next((d for d in rec.drafts if d.draft_id == did), None)
+    # Task 3978: a reply draft is never the target of a save of a new mail.
+    return next((d for d in rec.drafts if d.draft_id == did and not d.reply), None)
 
 
 async def _forget(did: str, org: str, thread: str, account_id: str, member: str) -> None:

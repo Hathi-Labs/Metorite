@@ -19,12 +19,23 @@ the sidebar one admin right for the page: `admin:members:read`.
 **PAR-0 (task 3098, 2026-11-22): §6 holds the ladder of the epic, and §7 its
 decisions.** §6 sets the order of the work now.
 
+**Task 3979 (2026-11-26): §6.6 specifies the documents rung.** The chat edits
+an uploaded `.xlsx` or `.docx`, converts it to PDF and attaches it to a draft.
+Spec only, and nothing is built. The owner put the converter on `aroh-sandbox-1`
+(2026-11-26).
+
 **P-3, task 3954 (the CRM field map suggestions and the AI analysis) is BUILT,
 2026-11-25, in review, with no flag and no migration.** The CRM agent gets five
 tools. `crm_mapping_suggestions`, `crm_preview_suggestion` and
 `crm_analysis_status` read. `crm_decide_suggestion` and `crm_rerun_analysis`
 write, each on one card. They pay seven CRM rows, so the CRM ceiling goes from
 72 to 65. Fence: `tests/unit/test_crm_suggestion_tools.py`.
+
+**P-1b (task 3922) is BUILT, 2026-11-25, with no flag.** The chat drafts a
+task from a mail, or from a reply that the member sent, and makes it after one
+card. Two tools of the new pack `mail-tasks` pay the six capture rows of mail:
+`my_tasks_draft_from_mail` and `my_tasks_capture_from_mail`. The tasks ceiling
+went from 7 to 1. §6.4 holds the P-1 slices.
 
 **PAR-3 (task 3105, the Knowledge writes) is BUILT, 2026-11-22, dark behind
 `KNOWLEDGE_CHAT_WRITES` (default off).** The orchestrator gets four tools in
@@ -76,10 +87,54 @@ memory ceiling from 5 to 4. §6.4 holds the P-5b slices. Fences:
 had no caller, so the slice deleted it. `POST /api/tasks/people` left the UI,
 and the people ceiling went from 13 to 12. The gateway route stays.
 
+**P-5b-2 (task 3943) is BUILT, 2026-11-25, and it ships dark.** The pack
+`people` holds five writes of the member's own record:
+`update_my_profile`, `set_my_skills`, `set_my_credentials`, `add_my_absence`
+and `remove_my_absence`. Each write sends a self route of `selfservice.py`
+(`/people/me`), so the server finds the row of the caller and no write takes
+a person id. Each write shows one card with the exact change: the old and new
+value, the row to add, or the row to remove. It saves only on Approve.
+
+Two limits of the card are known. A long old value shows cut, and the new
+value always shows whole. A credential that came from a CV loses that mark
+when `set_my_credentials` saves it, because the route takes no `source`.
+
+The object fields `working_hours`, `links` and `emergency_contact` merge. The
+tool lays the keys that the member gives over the stored object, and it keeps
+each other stored key. A key given as null leaves. The card shows the stored
+object and the merged object, and the PATCH sends the merged object. A list
+or an object shows as the exact JSON that the write sends, with each non-ASCII
+character escaped.
+
+The profile write and the two list writes read the row again after Approve.
+They save nothing when the row changed while the card waited. A shift name
+that matches no shift of the organization saves but changes nothing, so the
+answer says so after the save.
+
+No write sends `email` (OD1 B). P-5b-2 paid five people rows, so the people
+ceiling went from 12 to 7. Fences: `tests/unit/test_people_tools.py` and
+`tests/unit/test_people_tools_r8.py` (R8).
+
 **P-5b-1, a fact for the owner.** The owner may turn the pack on, and
 `packs_batch_on` may name an org. Then `reach_preview` can bring the subject of
 an outside mail into a WhatsApp turn. The tool marks that chat as one that read
 outside text, so each egress tool and each held write then shows a card first.
+
+**P-1c (task 3923) is BUILT, 2026-11-25, and it ships dark.**
+The new pack `calendar-connections` holds one tool,
+`my_tasks_calendar_connection`. It syncs a connected calendar now, or turns
+on or off the switch that shows the member's tasks in it. Each act asks on one
+card first. The list read stays in `calendar-day`, as P-1a built it.
+
+The chat does not disconnect a calendar (§7 item 10). P-1c paid two calendar
+rows, 4 to 2.
+
+The pack reaches no chat until the owner's `TOOL_PACKS` line names
+`calendar-connections`. Until then, "sync my google calendar" loads no pack,
+as on main. The owner of the pack is `org-admin`, and the owner picked that
+option on 2026-11-26 (§7 item 11). §6.4 holds the P-1c block. Fences:
+`tests/unit/test_my_tasks_p1c_tools.py` and
+`tests/unit/test_calendar_connections_pack.py`.
 
 **PAR-2a (task 3102) is BUILT, 2026-11-23, and it ships dark.** The pack
 `org-admin` (`acb_skills/org_admin_tools.py`) holds four tools:
@@ -225,6 +280,41 @@ card shows module code with a number for each line.
   before the card of the change (`copilot.py`).
 - The cards of a test run and of the helper count the steps by type. They do
   not show the text of a step.
+- A box with `TOOL_PACKS=*` turns the pack on. So the owner's `TOOL_PACKS`
+  line is the switch.
+
+**PAR-9 (task 3950, rung 8) is BUILT, 2026-11-25, dark.** It pays 26 of
+the 28 debt rows of Custom Apps, so the apps ceiling goes from 28 to 2. Six
+tools join the new pack `studio-apps` of the owner `studio-builder`
+(`acb_skills/custom_app_tools.py`). `custom_app_read` reads the list, one app,
+its versions, its shares, its checkpoints, its files and its stored data.
+
+The five writes are `custom_app_save`, `custom_app_files`,
+`custom_app_publish`, `custom_app_share` and `custom_app_data`. Each tool sends
+the route of the UI as the member, so the route keeps its gates. A publish, a
+roll back, each share act, a file delete, a restore and a data delete ALWAYS
+show one card. The other writes show one card only in a chat that read outside
+mail.
+
+The pack has no surface and is not in `FOLLOWS`, so the owner turns it on with
+a `TOOL_PACKS` line. Fence: `tests/unit/test_custom_app_tools.py`.
+
+**PAR-9, the facts for the owner.**
+
+- **Decide: two rows wait for a ruling on their kind.** The code of an app
+  sends `POST /api/apps/{}/ai/complete` and `POST /api/apps/{}/tools/{}`
+  through the `cc` bridge (`ccBridge.ts`). No member click sends them, and no
+  kind of §2 fits. A `runtime` kind would take the apps debt to 0. The tool
+  registry of the second route is empty since D52, so each call fails today.
+- **A share does what the share form does, and no more.** The App Workshop
+  shares an app with one email address in the role `use`. The route also takes
+  an agent subject and the roles `edit` and `own`, but the page leaves them out
+  on purpose. So the chat refuses them with plain words and no card.
+- **A publish can widen who opens the app.** The card names who can open the
+  app after the publish, and who can open it now.
+- **A file write and a value write show no card in a clear chat**, as the App
+  Workshop does. The live version changes only at a publish, which always
+  shows a card.
 - A box with `TOOL_PACKS=*` turns the pack on. So the owner's `TOOL_PACKS`
   line is the switch.
 
@@ -419,6 +509,10 @@ chat, settings, studio), and each one names its
 task. The CRM wave P-3 had no task,
 so task 3678 is its task. Fence: `tests/unit/test_chat_parity.py`.
 
+P-6 (Workflows) paid its first parity rows through `ai_studio.md` rows E13a
+(ceiling 24 to 22) and E13b (22 to 18). PAR-8a (§6.4) paid the other 18. E13c
+owns the arm of one trigger, and its chat tool is open (STB-6, task 2134).
+
 **A new UI action needs a chat tool, or a row in the parity table.**
 `workbench/control_plane/AGENTS.md` carries this rule to UI work.
 
@@ -464,10 +558,10 @@ went down. P-1a then paid three rows of tasks and calendar, so the total is 424.
 | knowledge | 17 | 19 | P-5 | 3105 |
 | memory | 5 | 5 | P-5 | 3114 |
 | workflows | 24 | 0 | P-6 | 3115, 3903 (PAR-8a built) |
-| apps | 29 | 28 | P-6 | 3115 |
+| apps | 29 | 28 | P-6 | 3115, 3950 (PAR-9 built) |
 | agents | 20 | 20 | P-6 | 3115 |
 | chat | 25 | 28 | P-7 | 3115 |
-| shell | 15 | 7 | P-7 | 3115, 3903 (PAR-8b built) |
+| shell | 15 | 9 | P-7 | 3115, 3903 (PAR-8b built). WS-AP AP-2a added two reads, and slice AP-10 pays them |
 | settings | 21 | 30 | P-8 | 3108 |
 | admin | 36 | 36 | P-8 | 3102, 3107 |
 | integrations | 19 | 22 | P-8 | 3109 |
@@ -482,16 +576,46 @@ WhatsApp agent pay the 12 WhatsApp GET rows of the debt (25 to 13). They are
 and `whatsapp_link_status`. None sends a message. The WhatsApp write rows stay
 debt.
 
+**P-4d (task 3963) is BUILT in part, 2026-11-25.** Six notes read tools pay
+the 6 Notes GET rows that are owner-checked or per member (51 to 45). They are
+`notes_meetings`, `notes_meeting`, `notes_settings`, `notes_templates`,
+`notes_glossary` and `notes_copilot_instructions`. They are the new pack
+`notes`, owned by `org-admin` as the pack `people` is (OD4 A). Each tool sends
+GET routes only, as the member. None writes, joins a meeting, starts a bot or
+reaches a person.
+
+The meeting text is the member's own words. A result shows it as written, inside
+the untrusted frame. A provider error of a failed run is not shown. A
+library over the route cap says "at least" and never says "last page". The
+pack is not in `FOLLOWS`. A run loads it where the owner lists `notes` in
+`TOOL_PACKS`, or where `TOOL_PACKS` is `*`.
+
+The 32 Notes write rows stay debt. Thirteen read rows wait for task 3966. Twelve
+gateway routes read a meeting by its id with no owner check, or they refresh a
+bot and write rows. They are `/note`, `/actions`, `/agenda`, `/agenda/progress`,
+`/context`, `/bot`, `/bot/diagnostics`, `/live/session`, `/live/roster`,
+`/bots/active`, `/bots/status` and `/live/sessions`.
+
+The thirteenth route is `/bot/identity`. Its status check starts a browser on
+the profile of the bot, and a bot join at the same time can fail.
+
 **Later than this reading (2026-11-25).** The table does not change after its
 date. For the debt of today, read `DEBT_CEILING`.
 
-Seven ceilings changed after 2026-11-22. PAR-2a, PAR-4a, PAR-4c and PAR-4d
+Thirteen ceilings changed after 2026-11-22. PAR-2a, PAR-4a, PAR-4c and PAR-4d
 took admin to 10. PAR-6a took integrations to 4, and P-2a took email to 5.
-PAR-3 took knowledge to 15, and PAR-3b took it to 4. P-5b-1 took people to 13
-and memory to 4, and P-5b-6 took people to 12. Task 3960 took whatsapp to 13.
+PAR-3 took knowledge to 15, and PAR-3b took it to 4.
 
-The total of `DEBT_CEILING` is 304. The "Today" column above does not show
-these changes.
+P-5b-1 took people to 13 and memory to 4. P-5b-6 took people to 12, and P-5b-2
+took it to 7. Tasks 3951 and 3954 took crm to 60, and task 3960 took whatsapp
+to 13. P-1b took tasks to 1, and P-1c took calendar to 2. PAR-9 took apps to 2.
+Task 3963 took notes to 45.
+
+The total of `DEBT_CEILING` is 252. The "Today" column above does not show
+all of these changes.
+
+ACC-2 (task 3988) raised admin from 10 to 12, because the chat tool ACC-4
+waits on the PAR-6b decision (task 3932). Task 3990 pays the two rows.
 
 ### 6.3 Rungs 0 to 3, slice by slice
 
@@ -659,10 +783,10 @@ at build. Each of these rungs ends in a demo task, and the table names it.
 
 | Rung | Apps, in order | Wave | Task | Demo | Debt rows | Reason |
 |---|---|---|---|---|---|---|
-| 4 | Email, then Calendar and Tasks | P-2, P-1 | 3111, then 3112, 3922 and 3923 | 3904 | 14 and 11 (14 before P-1a) | Production said "I can't" on 2026-11-09. Three most-used actions are here. |
+| 4 | Email, then Calendar and Tasks | P-2, P-1 | 3111, then 3112, 3922 and 3923 | 3904 | 5 and 5 (email 14 before P-2a and P-2c. Calendar and Tasks 14 before P-1a, 11 before P-1b) | Production said "I can't" on 2026-11-09. Three most-used actions are here. |
 | 5 | The shell, then Workflows | P-7, P-6 | 3903 (cut from 3115) | 3905 | 7 (PAR-8b built) and 0 (PAR-8a built) | Four most-used actions are here. |
 | 6 | WhatsApp, then Notes | P-4 | 3113 | 3906 | 25 and 51 | Two most-used actions are here. |
-| 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 17 (24 before P-5b-1) and 60 (72 before tasks 3951 and 3954) | People and CRM each hold one of the most-used actions. |
+| 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 11 (24 before P-5b-1) and 60 (72 before tasks 3951 and 3954) | People and CRM each hold one of the most-used actions. |
 | 8 | Chat threads, Custom Apps, Agent Registry, AI Studio | P-7, P-6, P-9 | 3115 | 3908 | 79 | No evidence of demand yet. |
 
 - **Rung 4.** The three actions are mail search, a task from an email and the
@@ -676,8 +800,8 @@ P-1 does not take all 14. The table names the owner of each row.
 | Slice | Task | Tier | Rows | State |
 |---|---|---|---|---|
 | P-1a: list the connected calendars, propose a title, propose the missing fields | 3112 | STANDARD, agent-safe | 3: `GET /api/calendar/connections`, `POST /api/tasks/items/{}/suggest-title`, `POST /api/tasks/items/{}/enrich` | BUILT, 2026-11-22 |
-| P-1b: a task from an email and from a reply | 3922 | HIGH. The owner approves the preview and the merge. Choose the pack with P-2 (task 3111) | 6: the capture rows of mail | To do |
-| P-1c: Sync now, the switch and Disconnect of a connection | 3923 | HIGH | 3: the sync, the `PATCH` and the `DELETE` of a connection | To do |
+| P-1b: a task from an email and from a reply | 3922 | HIGH. The owner approves the preview and the merge | 6: the capture rows of mail | BUILT, 2026-11-25 |
+| P-1c: Sync now and the switch of a connection | 3923 | HIGH | 2: the sync and the `PATCH` of a connection. The `DELETE` stays debt (§7 item 10) | BUILT, 2026-11-25, dark. The owner picked option (a) of §7 item 11 on 2026-11-26 08:40 UTC (answer 5bc98d70), and approved the merge at 09:13 UTC (answer 051363c7) |
 | The day state read | 1680 | Not P-1 | 1: `GET /api/tasks/calendar/day-state`, PR 1998 | Not here |
 | Fill the context of many tasks | none | An owner question | 1: `POST /api/tasks/ai/backfill-context` | Stays debt. The owner decides: retire the button of `/tasks`, or build a tool with a card |
 
@@ -686,6 +810,57 @@ P-1 does not take all 14. The table names the owner of each row.
   entry. The connections read shows no token. When `CALENDAR_SYNC_READ` is off,
   it answers in one line. Each proposal changes nothing. The member applies
   a field with the task edit tool. A held chat keeps all three.
+- **P-1b.** Two tools of `skill_my_tasks` are in a new pack, `mail-tasks`,
+  owned by the Projects assistant. The pack follows `projects` (one new
+  `FOLLOWS` entry), so it needs no `TOOL_PACKS` line. The email pack stays with
+  P-2, so P-1b does not touch it. The spec asked P-1b to choose the pack with
+  P-2 (task 3111). The choice is `mail-tasks`, a pack of its own, and P-1b
+  changes no file of the email pack. The pull request of P-1b tells P-2 so.
+  Review round 1 moved the tools out of
+  `calendar-day`: at 22 tools, that pack pushed `projects` out of turns where
+  it fitted on main.
+  - `my_tasks_draft_from_mail` reads. It sends `/preview`, `/enhance` or
+    `/from-reply/detect`, and makes no task. A held chat keeps it.
+  - `my_tasks_capture_from_mail` makes one task after one card. It sends
+    `/create`, `/from-reply/create`, or the one-click `/capture/from-email`
+    when the member lets the AI pick each field.
+  - The mail text is hostile. Each answer puts the sender, the subject, the
+    draft and the similar tasks in one `UntrustedFrame` block, and marks the
+    chat. The card starts with the mailbox line of RX-1 and binds the run's
+    own member. The tool refuses a field that the route drops with no word.
+  - A held chat keeps the write behind its one card (D169, decided on task
+    3922). The write is on `egress.HELD_CARD_WRITE_TOOLS` with its pinned
+    parameters. In a held chat it refuses the AI path, because that card
+    cannot show the fields, and a cut card.
+  - The tool keeps no assignee. The store of a capture
+    (`item_lens._PmLens.insert_capture`) reads none, and the board lookup of a
+    delegate reads `task_accounts`, which nothing writes. So the tool refuses
+    `assignee_name` before the card, and no card names a person. A WAITING
+    task waits on the sender of the mail, or on the member for a reply. The
+    answer says so when the stored disposition differs from the card. The reply path labels the
+    thread at the mail provider, so the card says so and the tool says
+    `open_world=True`. The reply card also shows the thread and the subject
+    that the task keeps.
+  - Accepted in review: `open_world=True` takes the write out of a covered
+    run (H-236), so a covered run makes no task from a mail.
+  - The write joins the kind `task.create` of `tool_packs._KIND_TOOLS`, so a
+    hand-off that made a task refuses it.
+  - `capture_intake(source="email")` of `skill_projects` is a different act.
+    It puts a task in the intake queue of a project (`/projects/intake`). It
+    reads no mail, and it has no draft, no idempotency per mail and no thread
+    tag. So it pays none of the six rows.
+  - "Make a task from this email" loads `mail-tasks`. With the held switch
+    on, `projects` stays where the three packs fit (base 54 and less). At the
+    base of production (57) main loaded only the email pack. A turn that names
+    a project, a board or an assignment loads no `mail-tasks`, so it chooses
+    as on main. `test_my_tasks_p1b_tools.py` measures each base from 30 to 59.
+- **Verify P-1b.** Run these commands in the worktree.
+
+```bash
+timeout 900 uv run pytest tests/unit/test_my_tasks_p1b_tools.py tests/unit/test_chat_parity.py tests/unit/test_calendar_day_pack.py tests/unit/test_calendar_day_held.py tests/unit/test_pack_requests.py tests/unit/test_pack_no_double_write.py tests/unit/test_skill_task_lens.py tests/unit/test_studio_split_matrix.py tests/unit/test_projects_packs.py tests/unit/test_park_made_line.py tests/unit/test_held_card_writes.py tests/unit/test_resume_stored_call.py tests/unit/test_tool_packs_registry.py tests/unit/test_answer_claims.py -q -p no:cacheprovider
+uv run ruff check apps/skills/skill-my-tasks packages/acb_skills/acb_skills tests/unit/test_my_tasks_p1b_tools.py
+```
+
 - **The day acts of My Day are not P-1.** CC-10 (task 1978) owns the capture,
   the focus start and stop, and the plan and the close of the day. P-1 builds
   no day flow, and no second read of the day state.
@@ -719,6 +894,61 @@ uv run ruff check apps/skills/skill-my-tasks packages/acb_skills/acb_skills test
 - **Next in P-2.** P-2b puts three writes on one card each: delete a mail,
   load older mail of a folder, and remove older mail from Metorite. P-2c is
   BUILT. The signature image stays with SG-6 (task 2182).
+
+**P-1c: Sync now and the switch (task 3923, rung 4, HIGH).**
+
+- **Gate.** AGENT-SAFE to build, dark. The owner approves the card previews
+  (D145) and the merge (D-PAR-4). The owner turns the pack on with a
+  `TOOL_PACKS` line.
+- **Scope.** One tool of `skill_my_tasks`,
+  `my_tasks_calendar_connection(provider, action)`. The act `sync` sends
+  `POST .../{id}/sync`. The acts `show_tasks` and `hide_tasks` send
+  `PATCH .../{id}` with `push_tasks`. The tool pays the rows of the sync and
+  of the `PATCH`. The row of the `DELETE` stays debt (§7 item 10).
+- **The pack.** The owner chose a new small pack (§7 item 9). The pack
+  `calendar-connections` holds the one act. The list read
+  `my_tasks_list_calendar_connections` and its words stay in `calendar-day`,
+  which keeps its 20 tools. The pack is in no `FOLLOWS` entry and in no
+  default, so it reaches no chat until the owner's `TOOL_PACKS` line names it.
+  Its owner is `org-admin`, a pack-only owner with no specialist (§7 item 11).
+- **The flow.** The tool takes the provider, `google` or `outlook`, and no id.
+  It reads the list of P-1a and takes the row that is not disconnected. It
+  shows one card, and it sends one write after an approve.
+- **No new seam.** The gateway routes exist. This slice adds no route, no BFF
+  path, no migration, no flag, no SQL, no `TOOL_PACKS` slug and no `FOLLOWS`
+  entry.
+- **The cap of 110 tools.** The base is 56 tools. The worst turn that can occur
+  holds `calendar-day` (20), `projects` (23) and the smallest Projects work
+  pack (11), which is 110. The new pack adds 1, so a turn with it,
+  `calendar-day` and `projects` holds 100. A fourth pack is not possible,
+  because `MAX_PACKS` is 3.
+- **Acceptance.**
+  1. The rows of the sync and of the `PATCH` are COVERED. The `DELETE` row is
+     in `DEBT`, and the calendar ceiling is 2 (`test_chat_parity.py`).
+  2. Each act sends its request only after an approve of one card. A deny, a
+     closed card or a run with no person sends no write.
+  3. When the route answers 404 (the flag is off), the tool answers the
+     `CONNECTIONS_OFF` line and sends no write.
+  4. In a held chat the act is absent, with `HELD_CARD_WRITES_ORGS` empty and
+     with it on.
+  5. No output holds a token or a field outside the allow-list.
+  6. No tool of `skill_my_tasks` disconnects a calendar, and the C-04 eval
+     passes with no change.
+  7. With an empty `TOOL_PACKS` line, the stream run of a turn with the words
+     of the pack holds no tool of the pack (`test_tool_packs_off.py`).
+  8. `tp.owner_packs("projects-assistant")` does not hold the pack, and the
+     loader still reaches the Projects owner while the pack is off
+     (`test_calendar_connections_pack.py`).
+  9. `calendar-day` holds 20 tools, and the golden matrix equals the one of
+     main.
+- **Done when** the commands below pass, and the owner approves the previews
+  and the merge.
+
+```bash
+PYTHONPATH=. timeout 300 uv run pytest evals/trajectories -q -p no:cacheprovider
+timeout 1500 uv run pytest tests/unit/test_chat_parity.py tests/unit/test_my_tasks_p1c_tools.py tests/unit/test_calendar_connections_pack.py tests/unit/test_tool_packs_off.py tests/unit/test_calendar_day_pack.py tests/unit/test_calendar_day_held.py tests/unit/test_pack_requests.py tests/unit/test_projects_packs.py tests/unit/test_tool_packs_registry.py tests/unit/test_tool_packs_choice.py tests/unit/test_studio_split_matrix.py -q -p no:cacheprovider --timeout=120
+uv run ruff check tests/unit/test_my_tasks_p1c_tools.py tests/unit/test_calendar_connections_pack.py
+```
 - **Rung 5.** The four actions are the Home feed, "Needs you", the decision on
   a pending action, and a workflow run. Task 3115 holds 113 rows, so this rung
   takes its shell and Workflows rows as one slice, PAR-8 (task 3903). The demo
@@ -728,6 +958,9 @@ uv run ruff check apps/skills/skill-my-tasks packages/acb_skills/acb_skills test
   Home feed and Needs you, and changes a Home card. The demo needs the owner
   to add `studio-workflows` to `TOOL_PACKS` and to set `HOME_TOOLS_ORGS` (§7,
   item 1).
+- **Rung 8, PAR-9 (task 3950).** It pays 26 Custom Apps rows with the dark
+  pack `studio-apps`. Two rows wait for the owner's ruling on their kind. The
+  demo needs the owner to add `studio-apps` to `TOOL_PACKS` (§7, item 1).
 - **Rung 6.** The two actions are a WhatsApp message and the meeting notes.
   WhatsApp goes first, because Notes has no live page (`APP_PAGE`).
 - **Rung 7.** The two actions are a people lookup and the end of a CRM task.
@@ -748,8 +981,8 @@ data. The gate column names what the owner does before the slice is live.
 | Slice | Rows | Gate | State |
 |---|---|---|---|
 | P-5b-1 (task 3114): four reads. The directory, my row, the work of a person, the Reach preview | 6 people rows: `GET /api/people`, `GET /api/people/me`, `GET /api/people/me/work`, `GET /api/people/{}/work`, `GET /api/me/reach/status`, `GET /api/me/reach/preview`. 1 memory row: `POST /api/chat/memories` becomes an EXEMPT row of the kind `chat` (OD5 A) | Dark. The owner adds `people` to `TOOL_PACKS` | BUILT, 2026-11-25 |
-| P-5b-2 (task 3943): self writes of my own row, on one card each. Never `email` (OD1 B) | `PATCH /api/people/{}` for my own row, and the self rows of skills, credentials, absences, avatar and resume | The owner approves the preview of the card | To do |
-| P-5b-3 (task 3944): admin writes of a person, on one card each. It waits for OD1 C | `PATCH /api/tasks/people/{}`, `POST /api/tasks/people/{}/resume`, and the admin side of the P-5b-2 rows | Waits for the owner (OD1 C, a later decision) | Waits |
+| P-5b-2 (task 3943): self writes of my own row, on one card each. Never `email` (OD1 B) | 5 people rows: `PATCH /api/people/{}`, `PUT /api/people/{}/skills`, `PUT /api/people/{}/credentials`, `POST /api/people/{}/absences`, `DELETE /api/people/{}/absences/{}`. The avatar and resume rows are file uploads, and they stay debt | Dark. The owner approves the preview of the card, then adds `people` to `TOOL_PACKS` | BUILT dark (task 3943), 2026-11-25 |
+| P-5b-3 (task 3944): admin writes of a person, on one card each. It waits for OD1 C | `PATCH /api/tasks/people/{}`, `POST /api/tasks/people/{}/resume`, and the admin half of the five P-5b-2 rows. `ADMIN_HALF_OPEN` in `chat_parity.py` names those five rows for task 3944 | Waits for the owner (OD1 C, a later decision) | Waits |
 | P-5b-4 (task 3945): the work schedule of the company, on one card | `PUT /api/people/schedule` | The owner approves the preview of the card | To do |
 | P-5b-5 (task 3946): send my brief now, on one card each time (OD7 A) | `POST /api/me/reach/brief` | The owner approves the preview of the card | To do |
 | P-5b-6 (task 3947): delete the dead client code that creates a person (OD3 A) | `POST /api/tasks/people` leaves the UI, so its row goes | none | Built, 2026-11-25. `createPerson` and the create branch of `savePerson` are gone, so the people ceiling is 12. The gateway route stays. |
@@ -865,6 +1098,112 @@ instruction.
    `.claude/commands/delivery-review.md` then adds the step.
 3. Whether a run prints examples at all, or the counts only.
 
+### 6.6 The documents rung (task 3979, spec only, 2026-11-26)
+
+**The report.** On 2026-11-26 a customer asked the production chat to edit an
+Excel file and to make a PDF of it. The chat could not do it.
+
+**The rung.** A member uploads a `.xlsx` or a `.docx` file in the chat. The
+member asks for a change and for a PDF. The chat edits a copy, converts it, and
+attaches the result to an email draft. No button of the UI does it, so it adds
+no row to the `DEBT` table (§1). The rung changes no ceiling.
+
+**Where it sits.** It is rung 9 of this ladder. That number is a name. The
+owner and the board set its order (D118), and a customer waits for it.
+
+#### What exists today (read from the code, 2026-11-26)
+
+| Step | Today |
+|---|---|
+| Read the file | Built. The shared reader reads the text of `.docx` and `.xlsx` (`email_app_master_plan.md` EM-T11 and EM-T11b) |
+| Make a new PDF | Built, from a spec only. `make_document` (`acb_skills/documents.py`) lays out a deck or a report. It converts no file |
+| Edit the file | Only `run_command` can do it, and it needs a healthy sandbox broker. The repo shows that production has none. The gateway unit hides the Docker socket (`box_hardening.md` BH-D5), and BH-3 and the image are open gates (WS43-G1 and WS43-G2) |
+| Convert the file to PDF | Not built. No image holds an office converter. `ai_studio.md` §19.4 leaves LibreOffice out for size |
+| Attach a file to a draft | Built. `draft_email` takes an `artifact:<agent>:<path>` ref of a chat file, and the server checks that the member can see it |
+
+#### The rules of the rung
+
+1. **No office file is opened for write or conversion in the gateway.** The file
+   is untrusted data. An isolated worker opens it.
+2. **The worker has no network and no secret** (`agent_sandbox.md` §5.4, and
+   the `--network none` of SBX-18). The gateway side of the broker sends the
+   bytes in, and it takes the result out. The code in the worker calls nothing.
+3. **The tools run fixed code.** The model sends a list of edits as data. It
+   sends no script. So the rung does not wait for the user tools of rung 6 of
+   D224 (`agent_sandbox.md` §0b).
+4. **The source file never changes.** Each result is a new file in the chat
+   folder, with its own card.
+5. **The answer names each loss.** A library can drop a part of a workbook, for
+   example a chart, a picture or a macro. The tool checks for these parts
+   before the edit. The answer names them. It never says "kept" for a part that
+   the result does not hold.
+6. **The answer claims only a file that exists.** It says that it made a PDF
+   only when the PDF is in the chat folder.
+7. **An attach sends nothing.** The draft keeps the card and the rules that it
+   has today.
+
+#### The slices
+
+**Flags and gates.** The scope seam of `agent_sandbox.md` §0c binds this rung.
+
+- DOC-1 adds the target `convert` to `MAF_CODING_TARGETS`. The proposed name is
+  `convert`. An entry for a target that the parser does not know turns every
+  target off, so no entry goes on a box before the code does.
+- The flip that runs code is `convert:<org>` in `MAF_CODING_SCOPE`. It is an
+  owner gate. The `enforcement-flip` grant does not open it.
+- `CHAT_DOCUMENT_ORGS` (proposed, default empty, off) is the hot kill switch
+  only. It opens nothing alone.
+- The image on the box is gate WS43-G2, and the broker unit is WS43-G1
+  (`maf_coding_engine.md` §12). The scope flip is gate WS43-G3. The gates of
+  the remote box are in `agent_sandbox.md` §13.
+
+| Order | Slice | Task | Tier | Needs | State |
+|---|---|---|---|---|---|
+| 1 | DOC-1: the `convert` worker. A broker target runs one office converter in a sealed container | 4027 | HIGH | SBX-15a | Not built |
+| 2 | DOC-2: `convert_to_pdf` in the chat, for one `.xlsx` or `.docx` of the chat folder | 4028 | HIGH | DOC-1 | Not built |
+| 3 | DOC-3: `edit_document`. Cell values and formulas of a `.xlsx`, and text of a `.docx` | 4029 | HIGH | DOC-1 | Not built |
+| 4 | DOC-4: the result goes on an email draft in the same turn | 4030 | STANDARD | DOC-2 | Not built |
+| 5 | The demo of the rung, on production | 4031 | none | DOC-2 to DOC-4 | Not built |
+
+#### Acceptance
+
+- **DOC-1.** A `.docx` and a `.xlsx` fixture each give a PDF on a local stack.
+  A socket probe in the container fails. The container environment holds no
+  secret. A file past the size cap, a run past the time limit and an output of
+  another type are each refused, with plain words. A macro does not run. A
+  workbook with an external link fetches nothing.
+- **DOC-1, limits.** The slice sets a size cap, a page cap and a time limit, and
+  it records the size of the image. It uses the org lock of the remote box
+  (SBX-15a), so one org at a time runs there. Orgs still share the box in turn.
+  The open risk of an escape that stays on the box (§0c of that spec) applies,
+  and a worker that opens hostile files raises its weight.
+- **DOC-2.** The tool takes a file of the current chat only. A file of another
+  chat, member or organization answers "not found". A busy or absent worker
+  gives plain words, and no claim of a file.
+- **DOC-3.** The tool takes a list of edits, and refuses an unknown edit kind.
+  It writes a new file. A real workbook with a formula keeps the formula, and
+  the PDF of DOC-2 shows its new value. A part that the edit cannot keep is
+  named in the answer (rule 5).
+- **DOC-4.** "Change the total, make a PDF and put it on a draft to X" gives one
+  draft with the PDF attached. Nothing is sent. The member sees the file name on
+  the draft card.
+- **Verify.** Each slice names its test file in its pull request. DOC-1 runs its
+  container tests with the marker `sandbox_docker`.
+
+#### Where the converter runs (DECIDED 2026-11-26, §7 item 14)
+
+**The owner chose option (a)** on task 3979: the sandbox worker
+`aroh-sandbox-1`, through the broker.
+
+| Option | What it means | Cost |
+|---|---|---|
+| **(a) Chosen.** The sandbox worker `aroh-sandbox-1` (D231), through the broker | The broker sends the file over `docker-remote` to a sealed container under `runsc`. The gateway box opens no file. The sandbox API door of §5.2 is not used, because the worker calls nothing | It waits for the box and its gates |
+| (b) A converter service on the gateway box | It is faster to ship | A hostile file runs beside the keys of the gateway. This goes against the reason for D85 |
+| (c) An outside conversion service | No image to run | Customer files leave Metorite, and a new processor needs the owner |
+
+The owner did not choose (b) or (c). This answer opens no gate. The gates of
+the rules above still bind each slice.
+
 ## 7. Decisions
 
 These decisions are local to this spec. They take no D-number of
@@ -893,6 +1232,10 @@ he approves the merge.
    Home tools of PAR-8b.
    Add `people` before the demo of rung 7 (task 3907). It holds the four
    reads of P-5b-1.
+    Add `studio-apps` before the demo of rung 8 (task 3908). It holds the six
+    Custom Apps tools of PAR-9.
+    Add `calendar-connections` before the demo of rung 4 (task 3904). It holds
+    the act of P-1c.
 2. **The previews.** Approve the preview of each new card: the invite, the
    Knowledge writes, and the Admin, Settings and Integrations writes. Approve
    too the stricter rule of PAR-4a: the chat gives no right that the caller
@@ -913,3 +1256,35 @@ he approves the merge.
    the person answers.
 8. **The Customer Console for seats.** The seat writes of PAR-4 need it wired
    on production (`customer_console.md` §8, gates 7 and 8).
+9. **P-1c: the layout. DECIDED.** The owner answered on task 3923 (comment
+   aa02d28f, 2026-11-23 04:11 UTC): "A new small pack, calendar-connections".
+   On 2026-11-25 the orchestrator kept the list read in `calendar-day`, so no
+   tool that works today moves. The pack holds only the act.
+10. **P-1c: Disconnect and C-04. DECIDED by the orchestrator, 2026-11-25 13:32
+    UTC.** The owner gave no answer. The C-04 eval
+    (`evals/trajectories/test_my_tasks_quality_trajectory.py`) lets no My
+    Tasks tool be destructive. So the chat does not disconnect a calendar, and
+    the row `DELETE /api/calendar/connections/{}` stays debt. The C-04 eval does
+    not change. Only the owner may amend C-04.
+11. **P-1c: the owner of the pack. DECIDED by the owner, 2026-11-26 08:40 UTC
+    (task 3923, answer 5bc98d70).** The owner picked option (a). A dark pack of
+    `projects-assistant` took the Projects reach away in every chat, because
+    the loader reaches an owner only when each pack of that owner is allowed.
+    The three options were these.
+    - (a) A pack-only owner, `org-admin`, as for `people`. It changes no
+      loader rule, and a later change can undo it.
+    - (b) The loader skips a pack that is not allowed when it tests the reach.
+      This changes a shared seam.
+    - (c) A `FOLLOWS` entry, so the pack follows a parent. Then the pack is
+      not dark.
+12. **P-1c: the `TOOL_PACKS` line.** The pack reaches no chat until the owner's
+    line names `calendar-connections`. Until then, "sync my google calendar"
+    loads no pack, as on main, and the chat cannot sync or switch.
+13. **P-1c: the defaults.** Each act asks on a card, though the page has no
+    confirm step. A held chat drops the act, also while
+    `HELD_CARD_WRITES_ORGS` is empty. The switch says that the task blocks go
+    to the Metorite calendar when calendar write-out is on. It promises no
+    delivery, because the tool cannot read `CALENDAR_SYNC_WRITE`.
+14. **The documents rung (§6.6). ANSWERED 2026-11-26 (task 3979).** The
+    converter runs on the sandbox worker `aroh-sandbox-1`, through the broker,
+    which is option (a).

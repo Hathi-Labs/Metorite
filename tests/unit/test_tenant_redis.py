@@ -615,6 +615,44 @@ async def test_delete_unless_refuses_a_raw_string_and_another_tenant() -> None:
     assert fake.calls == []
 
 
+# 5c-2. delete_if and replace_if (HRD-17a): the one-use claim of a send. Each
+# is a FIXED script on one typed key, as delete_unless is.
+
+async def test_delete_if_and_replace_if_send_the_fixed_script_and_one_key() -> None:
+    fake = _EvalRecorder()
+    client = TenantRedis(fake)
+    with organization_scope(ORG_A):
+        k = client.key("send-once", "t1", "m", "id12345678")
+        assert await client.delete_if(k, "v") == 1
+        assert await client.replace_if(k, "old", "new", 86400) == 1
+    raw = f"{KEY_ROOT}:{ORG_A}:send-once:t1:m:id12345678"
+    assert fake.calls == [
+        (tr._DELETE_IF_LUA, 1, raw, "v"),
+        (tr._REPLACE_IF_LUA, 1, raw, "old", "new", 86400),
+    ]
+    for script in (tr._DELETE_IF_LUA, tr._REPLACE_IF_LUA):
+        assert "KEYS[1]" in script and "KEYS[2]" not in script
+    assert list(inspect.signature(TenantRedis.delete_if).parameters) == ["self", "k", "value"]
+    assert list(inspect.signature(TenantRedis.replace_if).parameters) == [
+        "self", "k", "expected", "value", "seconds"]
+
+
+async def test_delete_if_and_replace_if_refuse_a_raw_string_and_another_tenant() -> None:
+    fake = _EvalRecorder()
+    client = TenantRedis(fake)
+    with organization_scope(ORG_A), pytest.raises(TypeError, match="TenantKey"):
+        await client.delete_if("cc:send-once:t1", "x")  # type: ignore[arg-type]
+    with organization_scope(ORG_A), pytest.raises(TypeError, match="TenantKey"):
+        await client.replace_if("cc:send-once:t1", "x", "y", 1)  # type: ignore[arg-type]
+    with organization_scope(ORG_A):
+        stolen = key("send-once", "t1")
+    with organization_scope(ORG_B), pytest.raises(TenantMismatch):
+        await client.delete_if(stolen, "x")
+    with organization_scope(ORG_B), pytest.raises(TenantMismatch):
+        await client.replace_if(stolen, "x", "y", 1)
+    assert fake.calls == []
+
+
 # ---------------------------------------------------------------------------
 # 5d. Sorted sets (WS-58 MD-5b) — the My Day active set, same key discipline.
 # ---------------------------------------------------------------------------

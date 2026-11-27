@@ -47,6 +47,9 @@ Mutations (R7), each turns the named test red. ``P`` is
   ``test_only_a_version_clash_is_retried``. Read the message text in
   ``_pg_error`` instead of the driver fields: ``test_the_driver_names_the_version_index``.
 * P12 (F7). Drop a name from ``FLAGS_NOT_YET``. ``test_each_flag_is_a_setting_or_not_yet``.
+* P13 (SW-45). ``P`` ``flag_raw``: drop the ``FLAGS_NOT_YET`` test, or drop
+  ``agent_claim_scope_modes`` from the list.
+  ``test_the_claim_scope_flag_is_not_read_by_the_store``.
 """
 
 from __future__ import annotations
@@ -170,10 +173,21 @@ def test_the_flag_name_is_owner_only() -> None:
     assert env_guard.is_platform_env("AGENT_POLICY_ORGS")
 
 
+#: The names on ``FLAGS_NOT_YET`` that are a ``Settings`` field already, each
+#: with its reason. Another slice reads the field, and the store must not.
+FIELDS_THE_STORE_DOES_NOT_READ: dict[str, str] = {
+    "agent_claim_scope_modes": (
+        "SW-45 reads it in acb_auth.agent_oauth.claim_scope_mode, its one reader."
+        " The claim does not read the key claim_scope_mode. SW-46 wires the key."),
+}
+
+
 def test_each_flag_is_a_setting_or_not_yet() -> None:
     """Each master flag that a key names is a ``Settings`` field, or it is on
     the named list ``FLAGS_NOT_YET``. A name on that list is not a field yet,
-    so the slice that adds the field must take the name off the list."""
+    so the slice that adds the field must take the name off the list. The
+    one exception is a field that another slice reads and that the store
+    must not read (:data:`FIELDS_THE_STORE_DOES_NOT_READ`)."""
     from acb_common.settings import Settings
 
     fields = set(Settings.model_fields)
@@ -181,7 +195,9 @@ def test_each_flag_is_a_setting_or_not_yet() -> None:
     assert named, "no key names a master flag"
     missing = sorted(n for n in named if n not in fields and n not in agent_policies.FLAGS_NOT_YET)
     assert missing == [], f"flags that are neither a setting nor on FLAGS_NOT_YET: {missing}"
-    stale = sorted(n for n in agent_policies.FLAGS_NOT_YET if n in fields or n not in named)
+    stale = sorted(n for n in agent_policies.FLAGS_NOT_YET
+                   if (n in fields and n not in FIELDS_THE_STORE_DOES_NOT_READ)
+                   or n not in named)
     assert stale == [], f"FLAGS_NOT_YET names that are a setting now, or that no key names: {stale}"
     assert "agent_policy_orgs" in fields
 
@@ -233,12 +249,28 @@ def test_flag_mode_reads_a_map_from_org_to_mode(monkeypatch: pytest.MonkeyPatch)
 
 def test_flag_warn_and_policy_refuse_is_warn(monkeypatch: pytest.MonkeyPatch) -> None:
     org = str(uuid.uuid4())
-    spec = agent_policies.REGISTRY["claim_scope_mode"]
-    flags = {"agent_claim_scope_modes": f"{org}=warn"}
+    spec = agent_policies.REGISTRY["lane_mode"]
+    flags = {"agent_lane_modes": f"{org}=warn"}
     monkeypatch.setattr(agent_policies, "flag_raw", lambda n: flags.get(n, ""))
     assert agent_policies.under_the_flag(spec, org, "refuse", found=True) == "warn"
     assert agent_policies.under_the_flag(spec, org, "off", found=True) == "off"
     assert agent_policies.under_the_flag(spec, org, None, found=False) == "warn"
+
+
+def test_the_claim_scope_flag_is_not_read_by_the_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SW-45. ``AGENT_CLAIM_SCOPE_MODES`` has one reader,
+    ``agent_oauth.claim_scope_mode``. The key ``claim_scope_mode`` of the store
+    reads as off under it, because the claim does not read the key."""
+    from acb_auth.agent_oauth import claim_scope_mode
+
+    org = str(uuid.uuid4())
+    monkeypatch.setattr(get_settings(), "agent_claim_scope_modes", f"{org}=warn")
+    spec = agent_policies.REGISTRY["claim_scope_mode"]
+    assert spec.flag in agent_policies.FLAGS_NOT_YET
+    assert agent_policies.flag_raw("agent_claim_scope_modes") == ""
+    assert agent_policies.under_the_flag(spec, org, "refuse", found=True) == "off"
+    assert agent_policies.under_the_flag(spec, org, None, found=False) == "off"
+    assert claim_scope_mode(org) == "warn"
 
 
 # ── R8: the helpers ─────────────────────────────────────────────────────────
@@ -428,8 +460,8 @@ def world(promoted):  # noqa: F811 — a fixture
 @pytest.fixture
 def flags(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     """The flags that the module reads, with the store on for each org. A test
-    sets a master flag here. The master flags of SW-46, SW-67 and SW-95 are
-    not ``Settings`` fields yet, so the test sets the one reader."""
+    sets a master flag here. The store reads no master flag of
+    ``FLAGS_NOT_YET`` yet, so the test sets the one reader."""
     values = {"agent_policy_orgs": "*"}
     monkeypatch.setattr(agent_policies, "flag_raw", lambda name: values.get(name, ""))
     return values
@@ -779,18 +811,20 @@ async def test_the_actor_order_is_box_member_lane_org(world, flags) -> None:
 @_DB_GATE
 async def test_the_flag_is_the_ceiling(world, flags) -> None:
     """A policy cannot turn on what a flag turns off. Flag ``warn`` with policy
-    ``refuse`` gives ``warn``. The flag is the default of the org."""
+    ``refuse`` gives ``warn``. The flag is the default of the org. SW-45: the
+    key ``lane_mode`` shows the rule, because the store does not read the
+    flag of ``claim_scope_mode`` (``FLAGS_NOT_YET``)."""
     w = world
     _reset(w)
     async with _session(w.p) as call:
-        no_row_off = await call.task(w.a, w.task_p2, "claim_scope_mode")
-        await call(w.admin_u, _body("claim_scope_mode", "project", w.p1, "refuse"))
-        flag_off = await call.task(w.a, w.task_p2, "claim_scope_mode")
-        flags["agent_claim_scope_modes"] = f"{w.a}=warn"
-        flag_warn = await call.task(w.a, w.task_p2, "claim_scope_mode")
-        no_row_warn = await call.task(w.a, w.task_other, "claim_scope_mode")
-        flags["agent_claim_scope_modes"] = "*=refuse"
-        flag_refuse = await call.task(w.a, w.task_p2, "claim_scope_mode")
+        no_row_off = await call.task(w.a, w.task_p2, "lane_mode")
+        await call(w.admin_u, _body("lane_mode", "project", w.p1, "refuse"))
+        flag_off = await call.task(w.a, w.task_p2, "lane_mode")
+        flags["agent_lane_modes"] = f"{w.a}=warn"
+        flag_warn = await call.task(w.a, w.task_p2, "lane_mode")
+        no_row_warn = await call.task(w.a, w.task_other, "lane_mode")
+        flags["agent_lane_modes"] = "*=refuse"
+        flag_refuse = await call.task(w.a, w.task_p2, "lane_mode")
         await call(w.admin_u, _body("budget_mode", "organization", None, "stop"))
         flags["agent_budget_modes"] = f"{w.a}=warn"
         budget = await call.actor(w.a, w.a, "budget_mode", member=w.member)

@@ -33,6 +33,13 @@
  * not change. The order holds during a visit, and new cards wait behind the
  * "N new" pill (§7 rule 4). Later draws folded, with its count.
  *
+ * **Why am I seeing this** (WS-58 MD-9, LOOP-4b, `proactive_loop.md` §7.2
+ * W4). A card with `why_seen` has that item last in its menu. It opens
+ * `WhyBox`, one sentence of the server on each line, and "Hide" gives the
+ * focus back to the control that opened the menu. The item calls no server,
+ * and a card with no `why_seen` has no item. The box follows the why line of a
+ * card, and it closes the section of a row.
+ *
  * **Handled** (WS-58 MD-2c, §6.7) draws folded after Later, as "Handled
  * today" and its count. Each row names the entity, who closed it and the
  * time. It is never a card: no menu, no act, no sighting, and no place in
@@ -911,8 +918,16 @@ export function HandledRow({ entry, nowMs }: { entry: HandledEntry; nowMs: numbe
 /** An id that is safe in `id` and `aria-labelledby`: no spaces, no odd marks. */
 const safeId = (raw: string) => raw.replace(/[^A-Za-z0-9_:-]/g, "-");
 
-/** The menu's items (§4.2 item 6, MD-2b): Snooze and its four choices, then Dismiss and "Not useful". */
-export function cardMenuItems(onMenu: (choice: MenuChoice) => void): CtxItem[] {
+/** The words of the menu item that opens `WhyBox` (LOOP-4b). */
+export const WHY_LABEL = "Why am I seeing this";
+
+/**
+ * The menu's items (§4.2 item 6, MD-2b): Snooze and its four choices, then
+ * Dismiss and "Not useful". With `onWhy` (LOOP-4b), "Why am I seeing this" is
+ * last, after a separator. It is no `MENU_CHOICES` row, because it writes
+ * nothing.
+ */
+export function cardMenuItems(onMenu: (choice: MenuChoice) => void, onWhy?: () => void): CtxItem[] {
   const item = (c: MenuChoice): CtxItem => ({
     kind: "item",
     label: c.label,
@@ -924,7 +939,37 @@ export function cardMenuItems(onMenu: (choice: MenuChoice) => void): CtxItem[] {
     ...MENU_CHOICES.filter((c) => c.action === "snooze").map(item),
     { kind: "sep" },
     ...MENU_CHOICES.filter((c) => c.action !== "snooze").map(item),
+    ...(onWhy
+      ? ([{ kind: "sep" }, { kind: "item", label: WHY_LABEL, icon: themedIcon("Info"), onSelect: onWhy }] satisfies CtxItem[])
+      : []),
   ];
+}
+
+/**
+ * The box of "Why am I seeing this" (LOOP-4b, W4): one sentence of the server
+ * on each line, and "Hide". It draws the words it gets and calls no server.
+ * `className` is for layout only.
+ */
+export function WhyBox({ lines, onHide, className = "" }: { lines: readonly string[]; onHide: () => void; className?: string }) {
+  return (
+    <div
+      role="region"
+      aria-label={WHY_LABEL}
+      data-feed-why-box=""
+      className={`flex min-w-0 items-start gap-2 rounded-lg border border-border bg-secondary/50 py-2 pr-2 pl-3 ${className}`}
+    >
+      <ul className="flex min-w-0 flex-1 flex-col gap-1 py-1 text-xs text-foreground">
+        {lines.map((line) => (
+          <li key={line} className="break-words">
+            {line}
+          </li>
+        ))}
+      </ul>
+      <Button variant="ghost" size="sm" className="shrink-0" onClick={onHide}>
+        Hide
+      </Button>
+    </div>
+  );
 }
 
 /**
@@ -940,6 +985,8 @@ export function phoneMenuItems(
   onMenu?: (choice: MenuChoice) => void,
   /** EA-18e. An act that opens inside its card runs `onAct`, as a tap does. */
   expandHere: (act: FeedAct) => boolean = () => false,
+  /** LOOP-4b. Open "Why am I seeing this". It joins the card's own menu. */
+  onWhy?: () => void,
 ): CtxItem[] {
   const items: CtxItem[] = acts.map((a) => ({
     kind: "item",
@@ -947,7 +994,7 @@ export function phoneMenuItems(
     icon: themedIcon(a.way === "tap" ? (a.act === "done" ? "Check" : "CheckCheck") : "ArrowRight"),
     onSelect: () => (a.way === "tap" || expandHere(a) ? onAct(a) : go(a.href ?? card.href)),
   }));
-  const menu = onMenu ? cardMenuItems(onMenu) : [];
+  const menu = onMenu ? cardMenuItems(onMenu, onWhy) : [];
   return items.length > 0 && menu.length > 0 ? [...items, { kind: "sep" }, ...menu] : [...items, ...menu];
 }
 
@@ -965,6 +1012,7 @@ function PhoneRowMenu({
   onAct,
   onMenu,
   expandHere,
+  onWhy,
   onClose,
 }: {
   x: number;
@@ -974,6 +1022,7 @@ function PhoneRowMenu({
   onAct: (act: FeedAct) => void;
   onMenu?: (choice: MenuChoice) => void;
   expandHere?: (act: FeedAct) => boolean;
+  onWhy?: () => void;
   onClose: () => void;
 }) {
   const go = useMyDayGo();
@@ -982,7 +1031,7 @@ function PhoneRowMenu({
       x={x}
       y={y}
       autoFocus
-      items={phoneMenuItems(card, acts, onAct, go, onMenu, expandHere)}
+      items={phoneMenuItems(card, acts, onAct, go, onMenu, expandHere, onWhy)}
       onClose={onClose}
     />
   );
@@ -990,8 +1039,8 @@ function PhoneRowMenu({
 
 /**
  * One card of the feed (§4.2): the source line, the headline as the door,
- * the why line, the acts and the menu. It draws what it gets. Its one state
- * is whether its menu is open.
+ * the why line, the acts and the menu. It draws what it gets. Its state is
+ * what is open: its menu, an expand act and the box of "Why am I seeing this".
  *
  * The source line ends with a dot for a `new` card, and "Updated" or "Still
  * open" (§6.3 rules 3 and 4). The menu is `ContextMenu`, THE menu, and a card
@@ -1052,6 +1101,19 @@ export function FeedCard({
   const acts = drawnActs(card).filter((a) => !marked || !actSpent(a, marked));
   const mark = stateMark(card);
   const withMenu = !!onMenu && sendable(card);
+  // "Why am I seeing this" (LOOP-4b). The box shows only while the card still
+  // carries its sentences. "Hide" gives the focus back to the control that
+  // opened the menu (`opener`).
+  const [whyOpen, setWhyOpen] = useState(false);
+  const whyLines = card.why_seen ?? [];
+  // A card that loses its sentences closes the box, so the box never comes
+  // back with no click. React renders again at once, with no effect.
+  if (whyOpen && whyLines.length === 0) setWhyOpen(false);
+  const onWhy = whyLines.length > 0 ? () => setWhyOpen(true) : undefined;
+  const hideWhy = () => {
+    setWhyOpen(false);
+    opener.current?.focus();
+  };
   const closeMenu = () => {
     setMenuAt(null);
     const from = opener.current;
@@ -1273,7 +1335,7 @@ export function FeedCard({
           </span>
         ) : null}
         {withMenu && menuAt && !menuPhone ? (
-          <ContextMenu x={menuAt.x} y={menuAt.y} autoFocus items={cardMenuItems(onMenu)} onClose={closeMenu} />
+          <ContextMenu x={menuAt.x} y={menuAt.y} autoFocus items={cardMenuItems(onMenu, onWhy)} onClose={closeMenu} />
         ) : null}
         {menuAt && menuPhone ? (
           <PhoneRowMenu
@@ -1284,12 +1346,15 @@ export function FeedCard({
             onAct={(a) => (expandHere(a) ? setExpanded((v) => !v) : onAct(a, opener.current ?? document.body))}
             expandHere={expandHere}
             onMenu={withMenu ? onMenu : undefined}
+            onWhy={onWhy}
             onClose={closeMenu}
           />
         ) : null}
         <div id={expandedId} className="basis-full empty:hidden" hidden={!expanded}>
           {expanded ? renderExpand?.(card, () => { setExpanded(false); toggle.current?.focus(); }) : null}
         </div>
+        {/* The why line sits in a truncated line, so the box closes the row. */}
+        {whyOpen && whyLines.length > 0 ? <WhyBox lines={whyLines} onHide={hideWhy} className="basis-full" /> : null}
       </section>
     );
   }
@@ -1306,6 +1371,7 @@ export function FeedCard({
           <span>{card.why}</span>
         </p>
       ) : null}
+      {whyOpen && whyLines.length > 0 ? <WhyBox lines={whyLines} onHide={hideWhy} className="mx-2 mb-1" /> : null}
       {acts.length > 0 ? (
         <div className="flex flex-wrap items-center gap-2 px-2 pt-1 pb-1">
           {/* §4.2 item 5, by POSITION and never by way: act 0 is the one
@@ -1369,7 +1435,7 @@ export function FeedCard({
         </p>
       ) : null}
       {withMenu && menuAt ? (
-        <ContextMenu x={menuAt.x} y={menuAt.y} autoFocus items={cardMenuItems(onMenu)} onClose={closeMenu} />
+        <ContextMenu x={menuAt.x} y={menuAt.y} autoFocus items={cardMenuItems(onMenu, onWhy)} onClose={closeMenu} />
       ) : null}
     </HomeCard>
   );
