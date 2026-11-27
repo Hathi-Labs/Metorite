@@ -899,6 +899,14 @@ class FlagRegistry(BaseSettings):
     # Spec: find_engine.md section 8.
     find_orgs: str = ""
 
+    # WS-MDC CC-5a: FOCUS_LOG_ORGS lists the org ids that may use the
+    # focus-session log (/projects/my/focus-sessions). `*` opens every org.
+    # Empty opens none, and each route then answers 404 before any database
+    # work. Reader: `gateway.routes.projects.flags.focus_log_allowed`. A flip
+    # on a box is gate `enforcement-flip`. Spec: my_day_command_centre.md
+    # section 9.3.
+    focus_log_orgs: str = ""
+
     # ── The App for each organization (WS-MCP SW-53, agent_coordination.md) ─
     #
     # A comma list of organization ids, or `*` for each one. The master

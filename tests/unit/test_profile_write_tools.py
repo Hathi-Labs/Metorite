@@ -427,12 +427,45 @@ class TestSet:
         assert _refused(out, "not_your_words") == pt.LANGUAGE_FIXED_REFUSED
         assert own_chat.writes() == []
 
+    def test_a_list_cannot_carry_the_mark_past_the_members_words(
+            self, own_chat, monkeypatch) -> None:
+        # PZ-52: the list wins at the gateway, so its first tag is the one
+        # that the member's words must name.
+        monkeypatch.setattr(pt, "_member_words",
+                            lambda: "give me the answer in English, not Hindi")
+        out = _run(pt.profile_set(
+            "style", {"language": "en", "languages": ["kn"], "language_fixed": True}))
+        assert _refused(out, "not_your_words") == pt.LANGUAGE_FIXED_REFUSED
+        assert own_chat.writes() == []
+
     def test_a_language_mark_passes_on_the_members_words(self, own_chat, monkeypatch) -> None:
         monkeypatch.setattr(pt, "_member_words",
                             lambda: "give me the answer in English, not Hindi")
         _run(pt.profile_set("style", {"language": "en", "language_fixed": True}))
         (put,) = own_chat.writes()
         assert json.loads(put.content)["value"]["language_fixed"] is True
+
+    @pytest.mark.parametrize(("typed", "languages", "kept"), [
+        # A new first language that the member did not order drops the mark.
+        ("please summarise this mail", ["hi", "en"], False),
+        # Naming a language with no order about answers is not an order.
+        ("I also speak Hindi", ["hi", "en"], False),
+        # The member's typed order keeps the mark.
+        ("reply in Hindi from now on", ["hi", "en"], True),
+        # The same first language keeps it, in any case of the tag.
+        ("please summarise this mail", ["EN", "hi"], True),
+        # An empty or a null list has no first language.
+        ("please summarise this mail", [], False),
+        ("please summarise this mail", None, False),
+    ])
+    def test_a_new_list_keeps_the_mark_only_for_an_ordered_first_language(
+            self, own_chat, monkeypatch, typed, languages, kept) -> None:
+        own_chat.profile["style"] = {
+            "language": "en", "languages": ["en"], "language_fixed": True}
+        monkeypatch.setattr(pt, "_member_words", lambda: typed)
+        _run(pt.profile_set("style", {"languages": languages}))
+        (put,) = own_chat.writes()
+        assert json.loads(put.content)["value"].get("language_fixed", False) is kept
 
     def test_it_merges_and_puts_the_whole_sub_object(self, own_chat) -> None:
         out = _run(pt.profile_set("style", {"length": "detailed"}))
@@ -1561,7 +1594,9 @@ def test_a_written_out_address_asks_in_the_tool(own_chat) -> None:
 ])
 def test_a_language_tag_with_a_digit_run_is_refused(tag, ok) -> None:
     if ok:
-        assert ap._clean_style({"language": tag}) == {"language": tag}
+        # PZ-52: a lone language also gives a list of one, in lower case.
+        assert ap._clean_style({"language": tag}) == {
+            "language": tag, "languages": [tag.lower()]}
     else:
         with pytest.raises(ValueError, match="BCP 47"):
             ap._clean_style({"language": tag})

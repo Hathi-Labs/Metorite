@@ -630,6 +630,9 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # STU-E12a: CORE_EVENTS_ORGS opens the core app events for an org, so a
     # tenant that set it could open them for every org on the box.
     "CORE_",
+    # WS-MDC CC-5a: FOCUS_LOG_ORGS opens the focus-session log for an org,
+    # so a tenant that set it could open the log for every org on the box.
+    "FOCUS_LOG_",
     # WS-OB GD-5a: GUIDE_ORGS opens the tour's entries for an org, so a
     # tenant that set it could open them for every org on the box.
     "GUIDE_",
