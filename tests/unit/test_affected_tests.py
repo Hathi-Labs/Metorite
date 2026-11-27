@@ -930,6 +930,9 @@ _SITE_NOT_A_SEAM = {
     # docstring. It opens no connection: the caller's session binds the tenant.
     # Its R8 suite imports it.
     _AC_REAL + "member_actions.py": "reads the binding, binds none",
+    # It reads the binding in its read SQL and names `tenant_session(` in a
+    # docstring. Its Redis keys go through the tenant wrapper. It binds nothing.
+    _AC_REAL + "member_habits.py": "reads the binding, binds none",
 }
 # A seam that holds no site of the pattern. Each one says why it is a seam.
 _SEAM_WITHOUT_SITE = {
