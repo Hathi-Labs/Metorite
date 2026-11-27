@@ -585,6 +585,19 @@ class TestCountsAgree:
         plain = (await _ok(live, AB, "/projects/search?q=heron")).json()
         assert _row_ids(plain) == set(heron.tasks)
 
+    async def test_a_partial_search_stays_inside_the_team(self, live):
+        """HRD-4 ``most_words``: no task holds both words, so the search reads
+        the tasks that hold one. That second read takes the team clause too.
+        With no team it finds both spaces: the positive control."""
+        kestrel, heron = live.spaces["K"], live.spaces["H"]
+        path = "/projects/search?q=kestrel%20heron&most_words=true&limit=50"
+        plain = (await _ok(live, AB, path)).json()
+        assert _row_ids(plain) == set(kestrel.tasks) | set(heron.tasks)
+        assert plain.get("partial") is True
+        for slug, space in (("team-a", kestrel), ("team-b", heron)):
+            scoped = (await _ok(live, AB, f"{path}&team={slug}")).json()
+            assert _row_ids(scoped) == set(space.tasks), slug
+
     async def test_the_archived_task_is_in_no_count(self, live):
         """The archived task of Osprey is a real row, and no team counts it."""
         osprey = live.spaces["O"]

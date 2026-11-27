@@ -508,12 +508,15 @@ async def search_tasks(
                 text(_PARTIAL_SQL.format(
                     held=held,
                     any_word=any_word,
-                    visible=task_visibility_clause(vis),
+                    # The clause of the first read, so the team scope of T-1
+                    # narrows the partial hits too.
+                    visible=visible,
                     triage="TRUE" if include_triage else triage_exclusion_clause(),
                     exclude=exclude_sql,
                 )),
                 {
                     **vis.params,
+                    **team_params,
                     **exclude_params,
                     **word_params,
                     "needles": list(dict.fromkeys(words)),
