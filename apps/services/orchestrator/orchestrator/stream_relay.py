@@ -22,6 +22,10 @@ Streams expire after 1 hour (configurable via ``STREAM_TTL_SECONDS``).
 If a client reconnects after the stream expired, it falls back to the
 existing Postgres polling recovery path.
 
+D-RES-7 (``chat_run_continuity.md`` §4.12.8, RESUME-2b): the stream of a run
+that a park ended lives 24 hours (``PARKED_STREAM_TTL_SECONDS``,
+:func:`keep_parked_stream`). So a late Approve can go on in the same reply.
+
 Usage::
 
     from orchestrator.stream_relay import (
@@ -85,6 +89,21 @@ RUN_FLOOR_PREFIX = "cc:runfloor"
 STREAM_MAXLEN = int(os.environ.get("STREAM_RELAY_MAXLEN", "50000"))
 STREAM_TTL_SECONDS = 3600  # 1 hour
 
+#: D-RES-7 (``chat_run_continuity.md`` §4.12.8, RESUME-2b): the stream of a
+#: parked run lives 24 hours after the park. A late Approve in that time goes
+#: on in the same reply (case A). After it, the Approve opens a new reply.
+PARKED_STREAM_TTL_SECONDS = 24 * 3600
+#: The threads whose stream a park in THIS process ended, oldest first.
+#: :func:`mark_inactive` keeps their 24 hours, and the next
+#: :func:`mark_active` of the thread drops the entry. The park and both
+#: ``mark_inactive`` calls of the run (the executor's and the drain's) run in
+#: one process, so the map needs no Redis.
+_PARKED_STREAMS: dict[str, None] = {}
+_PARKED_STREAMS_KEEP = 1000
+#: How many entries at the head of a stream :func:`parked_end_of` reads to
+#: find the run's ``RUN_STARTED``. The executor sends it as its first event.
+_PARKED_HEAD_SCAN = 20
+
 
 def _stream_key(thread_id: str) -> str:
     return f"{STREAM_PREFIX}:{thread_id}"
@@ -130,6 +149,17 @@ class SupersedeRefused(RuntimeError):
         self.thread_id = thread_id
         self.owner = owner
         self.actor = actor
+
+
+class ParkedStreamGone(SupersedeRefused):
+    """RESUME-2b: ``start_detached(keep_stream=True)`` found no parked end.
+
+    The stream of the parked run expired, a Stop added another end, or a new
+    run reset it, after the gateway chose the same reply (case A). It raises
+    BEFORE any state changes. The gateway then starts the continuation as a
+    new reply (case B), under the same claim. A subclass of
+    :class:`SupersedeRefused`, so a caller that knows only the parent still
+    reads it as a refusal (fail closed)."""
 
 
 # Shared, process-wide async Redis client with an internal connection pool.
@@ -242,10 +272,13 @@ async def replay_events(
         events: list[dict[str, Any]] = []
         cursor = since_id
         while True:
+            # No BLOCK argument: XREAD then returns at once when no entry
+            # follows the cursor. `block=0` sent BLOCK 0, which waits
+            # forever, so a read past the last entry (a missing stream, or a
+            # stream of exactly `count` entries) never returned (HRD-17a).
             raw = await r.xread(
                 {_stream_key(thread_id): cursor},
                 count=count,
-                block=0,  # don't block — return immediately if no new events
             )
             if not raw:
                 break
@@ -402,6 +435,9 @@ async def mark_active(
                    previous run's actor (``test_concurrent_run_guard.py``).
     """
     r = await _get_client()
+    # D-RES-7: a run on the thread ends the 24 hours of a parked stream. The
+    # stream then follows the life of a live run again.
+    _PARKED_STREAMS.pop(thread_id, None)
     try:
         if reset:
             await r.delete(_stream_key(thread_id))
@@ -517,9 +553,112 @@ async def mark_inactive(thread_id: str) -> None:
 
         await release_run(thread_id)
         # Also refresh the stream TTL so late reconnectors can still replay.
-        await r.expire(_stream_key(thread_id), STREAM_TTL_SECONDS)
+        # D-RES-7: a stream that a park ended keeps its 24 hours. The run
+        # calls this twice after a park (the executor, then the drain), so
+        # each call must keep it.
+        await r.expire(_stream_key(thread_id), _stream_ttl(thread_id))
     finally:
         pass  # shared pooled client — never closed per-call
+
+
+def _stream_ttl(thread_id: str) -> int:
+    """The life of *thread_id*'s stream after its run ends: 24 hours when a
+    park in this process ended it (D-RES-7), else :data:`STREAM_TTL_SECONDS`."""
+    return PARKED_STREAM_TTL_SECONDS if thread_id in _PARKED_STREAMS else STREAM_TTL_SECONDS
+
+
+async def keep_parked_stream(thread_id: str) -> None:
+    """D-RES-7 (RESUME-2b): a park ended the stream of *thread_id*, so it
+    lives :data:`PARKED_STREAM_TTL_SECONDS`.
+
+    ``orchestrator.pending_ask.park`` is the one caller, right after it sends
+    the parked ``RUN_FINISHED``, and only when ``CHAT_RESUME_ORGS`` and
+    ``CHAT_LATE_APPROVE_ORGS`` both name the org of the run. The map keeps
+    the thread, so the two :func:`mark_inactive` calls that follow keep the
+    24 hours too. The next :func:`mark_active` of the thread ends it. A Redis
+    fault raises, and the caller suppresses it. Fences:
+    ``tests/unit/test_resume_continuation.py``,
+    ``tests/unit/test_resume_continuation_r8.py`` (R8)."""
+    if not thread_id:
+        return
+    _PARKED_STREAMS.pop(thread_id, None)
+    _PARKED_STREAMS[thread_id] = None
+    while len(_PARKED_STREAMS) > _PARKED_STREAMS_KEEP:
+        _PARKED_STREAMS.pop(next(iter(_PARKED_STREAMS)))
+    r = await _get_client()
+    await r.expire(_stream_key(thread_id), PARKED_STREAM_TTL_SECONDS)
+
+
+def _event_of(fields: Any) -> dict[str, Any]:
+    """The event of one stream entry, or ``{}``."""
+    try:
+        evt = json.loads((fields or {}).get("event", "{}"))
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        return {}
+    return evt if isinstance(evt, dict) else {}
+
+
+async def parked_end_of(thread_id: str, run_id: str) -> str | None:
+    """The entry id of the parked ``RUN_FINISHED`` of run *run_id*, when it
+    is the LAST entry of *thread_id*'s stream (RESUME-2b), else None.
+
+    Case A goes on in this stream only when both hold. The last entry is a
+    ``RUN_FINISHED`` with ``parked: true``, so no Stop, no new run and no
+    other end came after the park. The head holds part one's own start
+    (:func:`part_one_at_head`), so the stream is the parked run's own and no
+    trim took part one. A stream that expired, a trimmed head, and each other
+    shape give None. The two reads cost O(1) and
+    O(:data:`_PARKED_HEAD_SCAN`). A Redis fault raises."""
+    if not thread_id or not run_id:
+        return None
+    r = await _get_client()
+    key = _stream_key(thread_id)
+    tail = await r.xrevrange(key, count=1)
+    if not tail:
+        return None
+    end_id, end_fields = tail[0]
+    end = _event_of(end_fields)
+    if end.get("type") != "RUN_FINISHED" or end.get("parked") is not True:
+        return None
+    head = [_event_of(fields) for _eid, fields in await r.xrange(key, count=_PARKED_HEAD_SCAN)]
+    return str(end_id) if part_one_at_head(head, run_id) else None
+
+
+def part_one_at_head(events: list[dict[str, Any]], run_id: str) -> bool:
+    """True when the first ``RUN_STARTED`` in the head of *events* is part
+    one's own start: the run *run_id*, with no ``resumed`` mark (RESUME-2b,
+    review round 2, P2-a).
+
+    A continuation of case A keeps the run id, and the executor marks its
+    start ``resumed``. So a head whose first start carries the mark lost part
+    one to a trim. The head is the first :data:`_PARKED_HEAD_SCAN` events.
+    ``parked_end_of`` and ``gateway.chat_fold.same_reply_events`` both ask
+    this one rule."""
+    for evt in events[:_PARKED_HEAD_SCAN]:
+        if evt.get("type") == "RUN_STARTED":
+            return bool(run_id) and str(evt.get("runId") or "") == run_id \
+                and evt.get("resumed") is not True
+    return False
+
+
+async def stream_head_ms(thread_id: str) -> int | None:
+    """The start of the run in *thread_id*'s stream, in epoch ms, or None.
+
+    RESUME-2d (D-RES-10, ``chat_run_continuity.md`` §4.12.7). Each run
+    resets the stream (``mark_active(reset=True)``), and a continuation of
+    case A keeps the run id and the stream. So one stream holds one run, and
+    the id of its first entry (``<ms>-<seq>``) gives the start of the run.
+    The clock is the clock of the Redis server. ``None`` means no stream, or
+    an entry id of another shape. ⚠️ ``STREAM_MAXLEN`` trims the oldest
+    entries of a very long run. The first entry that stays is then later than
+    the true start. One read, O(1). A Redis fault raises.
+    """
+    r = await _get_client()
+    head = await r.xrange(_stream_key(thread_id), count=1)
+    if not head:
+        return None
+    ms, _, _seq = str(head[0][0]).partition("-")
+    return int(ms) if ms.isdigit() else None
 
 
 async def is_active(thread_id: str) -> bool:
@@ -622,6 +761,7 @@ async def register_live_run(
     token: str,
     run_id: str | None = None,
     keep_run_facts: bool = False,
+    message_id: str | None = None,
 ) -> None:
     """Record a starting run in its organization's live-run index.
 
@@ -640,6 +780,12 @@ async def register_live_run(
     register wrote them. A ``startedAt`` that moved mid-run read as a NEW run
     in the browser (re-review of #1171). An entry of ANOTHER run (its
     ``runId`` differs) is never kept.
+
+    *message_id* (RESUME-3d): the reply row of a continuation run. Only the
+    continuation start of RESUME-2a gives it (``start_detached``). The entry
+    carries it as ``messageId``, so a tab that did not get the 200 replays
+    the run into that row. A plain run gives none, and its entry stays as
+    before. A re-register of the same run keeps it.
     """
     if not organization_id or not thread_id:
         return
@@ -656,6 +802,7 @@ async def register_live_run(
             k = _live_runs_key(organization_id)
             started = datetime.now(UTC).isoformat()
             rid = (run_id or "").strip() or None
+            mid = (message_id or "").strip() or None
             if keep_run_facts:
                 held: dict = {}
                 with contextlib.suppress(Exception):
@@ -667,6 +814,9 @@ async def register_live_run(
                 if held and (held_rid is None or rid is None or held_rid == rid):
                     started = str(held.get("startedAt") or started)
                     rid = held_rid or rid
+                    held_mid = held.get("messageId")
+                    if mid is None and isinstance(held_mid, str) and held_mid:
+                        mid = held_mid
             fields: dict = {
                 "actor": (actor or "").strip().lower(),
                 "startedAt": started,
@@ -674,6 +824,8 @@ async def register_live_run(
             }
             if rid:
                 fields["runId"] = rid
+            if mid:
+                fields["messageId"] = mid
             await r.hset(k, thread_id, json.dumps(fields))
             await r.expire(k, LIVE_RUNS_TTL_SECONDS)
             # The run cap's reservation for this thread is done: the entry
@@ -745,6 +897,10 @@ async def refresh_live_runs(organization_id: str | None) -> None:
 async def list_live_runs(organization_id: str) -> list[dict[str, str]]:
     """The live runs of ONE organization: ``threadId``, ``actor``, ``startedAt``, ``runId``.
 
+    An entry of a continuation run also gives ``messageId``, its reply row
+    (RESUME-3d). Every other entry has no such key. The caller decides who
+    may read it (``routes/chat.py`` ``list_active_sessions``).
+
     Reads one hash. It never scans the keyspace. A field whose ``cc:active``
     flag is gone is pruned and left out. Raises on a Redis error, so the caller
     can tell "no runs" from "could not ask".
@@ -770,12 +926,16 @@ async def list_live_runs(organization_id: str) -> list[dict[str, str]]:
                     meta = {}
             except (json.JSONDecodeError, TypeError):
                 meta = {}
-            out.append({
+            entry = {
                 "threadId": tid,
                 "actor": str(meta.get("actor") or ""),
                 "startedAt": str(meta.get("startedAt") or ""),
                 "runId": str(meta.get("runId") or ""),
-            })
+            }
+            mid = meta.get("messageId")
+            if isinstance(mid, str) and mid:
+                entry["messageId"] = mid
+            out.append(entry)
         if dead:
             with contextlib.suppress(Exception):
                 await r.hdel(k, *dead)
@@ -935,6 +1095,30 @@ async def latest_step(thread_id: str) -> str | None:
         if isinstance(ev, dict):
             events.append(ev)
     return step_from_events(events)
+
+
+async def stream_head(thread_id: str, count: int = 5) -> list[dict[str, Any]]:
+    """The first *count* events of the thread's stream, oldest first.
+
+    ONE ``XRANGE``, which never blocks. A missing stream gives ``[]``. The
+    send-once check (``orchestrator.send_once``, HRD-17a) reads the
+    ``RUN_STARTED`` of the run that the stream holds here.
+    """
+    r = await _get_client()
+    try:
+        entries = await r.xrange(_stream_key(thread_id), "-", "+", count=count)
+    except aioredis.ResponseError:
+        return []
+    events: list[dict[str, Any]] = []
+    for eid, fields in entries or []:
+        try:
+            evt = json.loads(fields.get("event", "{}"))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(evt, dict):
+            evt["_stream_id"] = eid
+            events.append(evt)
+    return events
 
 
 async def stream_exists(thread_id: str) -> bool:
@@ -1346,6 +1530,8 @@ async def start_detached(  # noqa: C901 — the body of run_detached before RESU
     organization_id: str | None = None,
     record: dict[str, Any] | None = None,
     exclusive: bool = False,
+    keep_stream: bool = False,
+    continuation: bool = False,
 ) -> asyncio.Task[None]:
     """Start *gen* (an SSE-line async generator) in a DETACHED background
     task, and return the task. It needs no HTTP reader.
@@ -1396,12 +1582,30 @@ async def start_detached(  # noqa: C901 — the body of run_detached before RESU
                    refuses while ANY run is in flight on this thread, of any
                    party, and when the check fails. A continuation is no
                    member turn, so it never supersedes a run.
+        keep_stream: RESUME-2b, case A. The continuation goes on in the
+                   stream of the parked run ``record["runId"]``: no reset.
+                   It first checks that the stream still ends in that run's
+                   parked ``RUN_FINISHED`` (:func:`parked_end_of`). Then it
+                   deletes that entry (XDEL) BEFORE it marks the thread
+                   active, so a tab that attaches reads one run with a pause
+                   in it. It implies *exclusive*. It writes the id of the
+                   deleted end into *record* (``parkedEndId``), so the fold
+                   can cut the stream there.
+        continuation: RESUME-3d. True for a continuation run (RESUME-2a).
+                   Its live-run entry then names its reply row, the
+                   ``messageId`` of *record*. In case A that is the parked
+                   reply, and in case B the new one. A plain run's entry
+                   names no reply row.
 
     Raises:
         SupersedeRefused: when a DIFFERENT party's run is in flight on this
             thread.  Starting would delete a transcript this caller does not
             own, so it does not start. With *exclusive*, when any run is in
             flight. It raises before any state changes.
+        ParkedStreamGone: with *keep_stream*, when the stream has no parked
+            end of the run, when the XDEL does not delete exactly that one
+            entry, or when a check fails. It raises before the thread reads
+            as active.
     """
     # ── §5.2, the inner layer: the destructive reset is UNREACHABLE by anyone
     # but a legitimate superseder. ────────────────────────────────────────────
@@ -1427,7 +1631,19 @@ async def start_detached(  # noqa: C901 — the body of run_detached before RESU
                 owner=_owner[:20], actor=actor[:20],
             )
             raise SupersedeRefused(thread_id, _owner, actor)
-    if exclusive:
+    _parked_end: str | None = None
+    if keep_stream:
+        # RESUME-2b: the check of the parked end comes BEFORE the exclusive
+        # check, so no await falls between that check and the cancel below.
+        _run_key = str((record or {}).get("runId") or "")
+        try:
+            _parked_end = await parked_end_of(thread_id, _run_key)
+        except Exception:  # fail closed: the gateway starts a new reply
+            _parked_end = None
+        if _parked_end is None:
+            _log.info("stream_relay.parked_stream_gone", thread_id=thread_id[:12])
+            raise ParkedStreamGone(thread_id, "no parked stream", actor or "")
+    if exclusive or keep_stream:
         try:
             _busy = await is_active(thread_id)
         except Exception:  # fail closed: start nothing
@@ -1449,11 +1665,38 @@ async def start_detached(  # noqa: C901 — the body of run_detached before RESU
         except BaseException:  # noqa: BLE001
             pass
 
+    if _parked_end is not None:
+        # RESUME-2b, case A: delete the parked end BEFORE the thread reads as
+        # active. A subscriber stops at the first RUN_FINISHED, so a tab that
+        # attaches once the run is active must not find it. The XDEL must
+        # delete exactly that one entry (review of 2026-11-17, P2-1). A count
+        # of 0 means that a trim or another party took it after the check,
+        # so the stream is not the parked run's any more. That, and a fault,
+        # refuse before the thread reads as active: the gateway starts a new
+        # reply.
+        try:
+            r = await _get_client()
+            _deleted = await r.xdel(_stream_key(thread_id), _parked_end)
+        except Exception:
+            _deleted = 0
+        if _deleted != 1:
+            _log.info("stream_relay.parked_end_taken", thread_id=thread_id[:12])
+            raise ParkedStreamGone(thread_id, "no parked stream", actor or "")
+        # Review round 3, P2-1: the id of the deleted end goes into the
+        # caller's run record (``parkedEndId``), so the record of the run
+        # below carries it too. Each event of this run has a larger id. The
+        # fold of the run and the restart sweep cut the stream there when no
+        # start of this run landed (``gateway.chat_fold.same_reply_events``).
+        if record is not None:
+            record["parkedEndId"] = _parked_end
+
     # Fresh run boundary: clear previous events so replay-from-0 is exact.
     # NOTE this DELETES the previous run's event log — reaching this line means
     # the guard above has confirmed the caller owns what it is about to erase.
+    # RESUME-2b, case A (*keep_stream*): no reset. The continuation goes on in
+    # the parked run's stream, and the fold reads the whole run from it.
     await mark_active(
-        thread_id, reset=True, actor=actor, source=source, floor=floor,
+        thread_id, reset=not keep_stream, actor=actor, source=source, floor=floor,
     )
     # The org's live-run index (``/chat/active-sessions``). Server-side org and
     # actor only. The token lets this run's ``finally`` remove its OWN entry.
@@ -1464,6 +1707,9 @@ async def start_detached(  # noqa: C901 — the body of run_detached before RESU
         # The run's own id, written once here. The executor's re-register
         # keeps it and startedAt (`keep_run_facts`, chat_run_continuity §4.10).
         run_id=str((record or {}).get("runId") or "") or None,
+        # RESUME-3d: a continuation's live entry names its reply row, from
+        # the run record. A plain run's entry stays as before.
+        message_id=(str((record or {}).get("messageId") or "") or None) if continuation else None,
     )
     # What a later process needs to close this run if THIS process dies
     # (orchestrator.run_liveness, incident 2026-10-09). The executor

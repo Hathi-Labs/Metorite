@@ -194,8 +194,12 @@ class TestTheLongPoll:
         # its items keeps the limit of TOOL_TIMEOUT_S.
         assert tools.call_timeout(tools.UPDATE_TASKS, {"wait_seconds": 20}) == (
             tools.BULK_TOOL_TIMEOUT_S)
+        # MCP-P1b-2: `app_write` waits for the member and then sends the
+        # approved change, two requests in one call, so it has its own limit.
+        assert tools.call_timeout(tools.APP_WRITE, {"wait_seconds": 20}) == (
+            tools.APP_WRITE_TIMEOUT_S)
         for name, tool in tools.TOOLS.items():
-            if name not in ("get_agent_run", "update_tasks"):
+            if name not in ("get_agent_run", "update_tasks", "app_write"):
                 assert tools.call_timeout(tool, {"wait_seconds": 20}) == tools.TOOL_TIMEOUT_S
 
     def test_the_other_limits_stay(self):

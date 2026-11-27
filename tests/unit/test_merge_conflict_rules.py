@@ -214,7 +214,10 @@ def test_resolve_merge_resolves_a_real_merge_and_names_each_file(tmp_path, monke
 
 def test_p0_the_selection_of_a_one_file_resolution_is_small():
     """The tests that a resolution reaches, not the scanners and the safety floor."""
-    for path in ("project-docs/specs/ci_velocity.md", "tests/unit/test_merge_bot.py"):
+    # The one-file example is test_premerge.py, not a file that OVER_BUDGET names. test_scanner_budget.py
+    # holds the path of each listed file, so a conflict in one of them reaches it by name (CIV-33b,
+    # 2026-11-19). That is small and right, and it is no scanner run.
+    for path in ("project-docs/specs/ci_velocity.md", "tests/unit/test_premerge.py"):
         sel = rules.select_tests([path], ROOT)
         assert sel["full"] is False
         assert len(sel["files"]) <= 20, (path, len(sel["files"]))
@@ -222,8 +225,8 @@ def test_p0_the_selection_of_a_one_file_resolution_is_small():
         # A scanner (a test that lists files) is never in it.
         assert "tests/unit/test_scanner_budget.py" not in sel["files"]
     assert (
-        "tests/unit/test_merge_bot.py"
-        in rules.select_tests(["tests/unit/test_merge_bot.py"], ROOT)["files"]
+        "tests/unit/test_premerge.py"
+        in rules.select_tests(["tests/unit/test_premerge.py"], ROOT)["files"]
     )
 
 

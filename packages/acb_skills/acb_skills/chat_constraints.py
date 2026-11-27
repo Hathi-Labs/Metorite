@@ -403,23 +403,18 @@ def cached_constraints(ctx: Mapping[str, Any] | None = None) -> list[dict[str, s
     return _cache_get(slot) or []
 
 
-async def load_constraints(
-    ctx: Mapping[str, Any] | None = None,
-) -> list[dict[str, str]]:
-    """The list of this frame's chat: the process cache, then Redis.
+def item_id(item: Mapping[str, Any]) -> str:
+    """A short stable id of a kept item, from its kind and text: what an Undo
+    chip names (HRD-12b). It holds no part of the text."""
+    body = f"{item.get('kind', '')}\n{item.get('text', '')}"
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:12]
 
-    Each item is ``{"kind", "text"}``. A stored list of plain strings, the
-    shape before HRD-12a, reads as limits (:func:`clean`). Never raises. A
-    frame with no slot, a miss, or a Redis fault gives ``[]``, and the turn
-    goes on as it did before this record existed.
-    """
-    slot = _slot(ctx)
-    if slot is None:
-        return []
-    hit = _cache_get(slot)
-    if hit is not None or _batch(ctx):
-        return hit or []
-    org, session, member = slot
+
+async def _read_redis(org: str, session: str, member: str) -> list[dict[str, str]] | None:
+    """The stored list of one chat and member, cleaned, or None on a fault.
+    ``[]`` is a list that is empty or never written. The org is the caller's
+    bound tenant (the run's, or the session's in a member route), never a
+    request value."""
     try:
         from acb_common.tenant_redis import key, organization_scope
 
@@ -430,14 +425,59 @@ async def load_constraints(
             )
     except Exception as exc:  # the class only: a value never reaches a log
         _log.warning("chat_constraints.read_failed", error=type(exc).__name__)
-        return []
+        return None
     if not raw:
         return []
     try:
-        items = clean(json.loads(raw))
+        return clean(json.loads(raw))
     except (TypeError, ValueError):
         return []
-    _cache_put(slot, items)
+
+
+async def _write_redis(org: str, session: str, member: str, data: list[dict[str, str]]) -> bool:
+    """Store *data* as the list of one chat and member. False on a fault."""
+    try:
+        from acb_common.tenant_redis import key, organization_scope
+
+        with organization_scope(org):
+            await asyncio.wait_for(
+                get_tenant_redis().setex(
+                    key(NAMESPACE, session, _member_part(member)), TTL_S,
+                    json.dumps(_stored(data), ensure_ascii=False)),
+                timeout=REDIS_TIMEOUT_S,
+            )
+    except Exception as exc:
+        _log.warning("chat_constraints.write_failed", error=type(exc).__name__)
+        return False
+    return True
+
+
+async def load_constraints(
+    ctx: Mapping[str, Any] | None = None, *, fresh: bool = False,
+) -> list[dict[str, str]]:
+    """The list of this frame's chat: the process cache, then Redis.
+
+    Each item is ``{"kind", "text"}``. A stored list of plain strings, the
+    shape before HRD-12a, reads as limits (:func:`clean`). Never raises. A
+    frame with no slot, a miss, or a Redis fault gives ``[]``, and the turn
+    goes on as it did before this record existed.
+
+    With *fresh* (HRD-12b), the process cache does not answer: Redis does, so
+    an Undo that a member made through the gateway (another process) takes
+    effect on the next turn. A fault of Redis then keeps the cached list.
+    """
+    slot = _slot(ctx)
+    if slot is None:
+        return []
+    hit = _cache_get(slot)
+    if (hit is not None and not fresh) or _batch(ctx):
+        return hit or []
+    org, session, member = slot
+    items = await _read_redis(org, session, member)
+    if items is None:
+        return hit or []
+    if items or hit is not None:
+        _cache_put(slot, items)
     return items
 
 
@@ -457,20 +497,111 @@ async def save_constraints(
     if _batch(ctx):
         return False
     org, session, member = slot
+    return await _write_redis(org, session, member, data)
+
+
+# ── The member's own read and Undo (HRD-12b) ───────────────────────────────
+#
+# The gateway route (`gateway/routes/admin/chat_decisions.py`) calls these. The org
+# and the member are the session's; only the chat id comes from the request,
+# and it is a part of a key under the member's own hash, so a member reaches
+# their own list and no one else's.
+
+LOCK_TTL_S = 5
+LOCK_TRIES = 25
+LOCK_WAIT_S = 0.05
+
+
+async def _lock(org: str, session: str, member: str) -> bool:
+    """Take the short lock of one chat and member, so two Undos never read
+    the same list and write it back one after the other. A SET NX with a
+    short TTL, so a crashed holder frees it. False when it stays held, or on
+    a fault of Redis."""
+    try:
+        from acb_common.tenant_redis import key, organization_scope
+
+        for _ in range(LOCK_TRIES):
+            with organization_scope(org):
+                got = await asyncio.wait_for(
+                    get_tenant_redis().set(
+                        key(NAMESPACE + "-lock", session, _member_part(member)),
+                        "1", nx=True, ex=LOCK_TTL_S),
+                    timeout=REDIS_TIMEOUT_S,
+                )
+            if got:
+                return True
+            await asyncio.sleep(LOCK_WAIT_S)
+    except Exception as exc:
+        _log.warning("chat_constraints.lock_failed", error=type(exc).__name__)
+    return False
+
+
+async def _unlock(org: str, session: str, member: str) -> None:
+    """Free the lock of :func:`_lock`. A fault is only logged: the TTL frees it."""
     try:
         from acb_common.tenant_redis import key, organization_scope
 
         with organization_scope(org):
             await asyncio.wait_for(
-                get_tenant_redis().setex(
-                    key(NAMESPACE, session, _member_part(member)), TTL_S,
-                    json.dumps(_stored(data), ensure_ascii=False)),
+                get_tenant_redis().delete(
+                    key(NAMESPACE + "-lock", session, _member_part(member))),
                 timeout=REDIS_TIMEOUT_S,
             )
     except Exception as exc:
-        _log.warning("chat_constraints.write_failed", error=type(exc).__name__)
-        return False
-    return True
+        _log.warning("chat_constraints.unlock_failed", error=type(exc).__name__)
+
+
+UNDONE = "undone"
+UNDO_NO_MATCH = "no_match"
+UNDO_UNAVAILABLE = "unavailable"
+
+
+async def decisions_of(org: str, session: str, member: str) -> list[dict[str, str]] | None:
+    """The kept DECISIONS of one chat, each with its ``id`` (:func:`item_id`),
+    or None when Redis cannot say. A limit is not listed: the card drop owns
+    it. With the flag off, ``[]``."""
+    if not chat_constraints_enabled():
+        return []
+    who = str(member or "").strip().lower()
+    if not (org and session and "@" in who):
+        return []
+    items = await _read_redis(org, session, who)
+    if items is None:
+        return None
+    return [{"id": item_id(i), "kind": i["kind"], "text": i["text"]}
+            for i in items if i["kind"] == DECISION]
+
+
+async def undo_decision(org: str, session: str, member: str, wanted: str) -> tuple[str, dict[str, str] | None]:
+    """Take back the kept decision *wanted* (an :func:`item_id`) of one chat.
+
+    ``(UNDONE, item)`` when it was kept and is now gone. ``(UNDO_NO_MATCH,
+    None)`` when no kept DECISION has that id (it is gone already, or it is a
+    limit). ``(UNDO_UNAVAILABLE, None)`` on a fault of Redis, or with the flag
+    off. Only a decision goes: a limit or a correction goes through the card
+    drop. The process cache of THIS process takes the new list, and the
+    orchestrator reads Redis again at the start of each turn
+    (``load_constraints(fresh=True)``)."""
+    who = str(member or "").strip().lower()
+    if not chat_constraints_enabled() or not (org and session and "@" in who):
+        return UNDO_UNAVAILABLE, None
+    if not await _lock(org, session, who):
+        return UNDO_UNAVAILABLE, None
+    try:
+        items = await _read_redis(org, session, who)
+        if items is None:
+            return UNDO_UNAVAILABLE, None
+        gone = next((i for i in items
+                     if i["kind"] == DECISION and item_id(i) == str(wanted or "")), None)
+        if gone is None:
+            return UNDO_NO_MATCH, None
+        kept = [i for i in items if i is not gone]
+        if not await _write_redis(org, session, who, kept):
+            return UNDO_UNAVAILABLE, None
+        _cache_put((org, session, who), kept)
+        return UNDONE, dict(gone)
+    finally:
+        await _unlock(org, session, who)
 
 
 def clear_cache() -> None:
@@ -704,6 +835,7 @@ __all__ = [
     "TOOLS",
     "TTL_S",
     "cached_constraints",
+    "carry_decisions",
     "chat_constraints_enabled",
     "clean",
     "clear_cache",
@@ -717,3 +849,44 @@ __all__ = [
     "struck",
     "texts",
 ]
+
+
+async def carry_decisions(org: str, source: str, target: str, member: str) -> int:
+    """Copy the DECISIONS of *member* in chat *source* to the new chat *target*
+    (HRD-19a, ``chat_failure_modes.md`` E3). Returns how many it copied.
+
+    It copies the member's own record key to key, in this store, and writes
+    no text into the new chat. Only the ``decision`` kind goes: a limit stays
+    with the old chat until the spec says otherwise. Each item passes
+    :func:`clean` again on the way. It copies nothing while
+    ``CHAT_CONSTRAINTS`` is off, and it never raises: a Redis fault copies
+    nothing, and the caller's route still answers. The caller gives the org
+    and the member from the verified session, never from a request field.
+    """
+    if not chat_constraints_enabled():
+        return 0
+    org, source, target = str(org or ""), str(source or ""), str(target or "")
+    member = str(member or "").strip().lower()
+    if not (org and source and target and member) or source == target:
+        return 0
+    try:
+        from acb_common.tenant_redis import key, organization_scope
+
+        part = _member_part(member)
+        with organization_scope(org):
+            redis = get_tenant_redis()
+            raw = await asyncio.wait_for(
+                redis.get(key(NAMESPACE, source, part)), timeout=REDIS_TIMEOUT_S)
+            if not raw:
+                return 0
+            items = [i for i in clean(json.loads(raw)) if i["kind"] == DECISION]
+            if not items:
+                return 0
+            await asyncio.wait_for(
+                redis.setex(key(NAMESPACE, target, part), TTL_S,
+                            json.dumps(_stored(items), ensure_ascii=False)),
+                timeout=REDIS_TIMEOUT_S)
+    except Exception as exc:  # the class only: a value never reaches a log
+        _log.warning("chat_constraints.carry_failed", error=type(exc).__name__)
+        return 0
+    return len(items)

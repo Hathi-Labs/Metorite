@@ -908,6 +908,9 @@ _SETTERS: dict[str, int] = {
     # in the background. Nobody watches that run, so its whole run is marked,
     # and an MCP write there is refused, never run with no card.
     "apps/services/gateway/gateway/routes/agent.py": 1,
+    # TOF-3b F4b: `run_suite` runs each skill test as a dry run. Nobody
+    # watches it, so the whole run is marked and it can ask no card.
+    "apps/services/gateway/gateway/studio/skill_tests.py": 1,
 }
 #: Who may read the mark: the seams of the refusals. No tool reads it.
 _READERS = frozenset({

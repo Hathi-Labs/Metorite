@@ -42,6 +42,12 @@ class Sandbox:
     mirrored: list[tuple[str, bytes]] = field(default_factory=list)
     deleted: list[str] = field(default_factory=list)
     cards: list[str] = field(default_factory=list)
+    #: The paths that the fake blob store holds, for the skill claim (H-245).
+    stored: set[str] = field(default_factory=set)
+    #: Each ask of the claim: ``(agent, prefix, instances)``.
+    store_asks: list[tuple[str, str, tuple[str, ...]]] = field(default_factory=list)
+    #: When set, the fake store raises it, as a store with no database does.
+    store_error: Exception | None = None
 
     def set_scope(self, monkeypatch: pytest.MonkeyPatch, scope: str) -> None:
         monkeypatch.setattr(self.env["settings"], "maf_coding_scope", scope)
@@ -104,6 +110,21 @@ def sandbox(monkeypatch: pytest.MonkeyPatch, short_tmp: Path) -> Sandbox:
     monkeypatch.setattr(write_artifact, "mirror_delete_from_blob_store", mirror_delete)
     monkeypatch.setattr(write_artifact, "announce_artifact", announce)
     monkeypatch.setattr(sandbox_tools, "announce_artifact", announce)
+
+    # ``agent_paths.claim_skill`` asks the store for rows under the folder
+    # (H-245 step 2). The fake answers from ``box.stored`` and opens no session.
+    from acb_memory import blob_store
+
+    def has_rows_under(
+        agent_name: str, prefix: str, *, instances: Any, organization_id: Any = None,
+    ) -> bool:
+        box.store_asks.append((agent_name, prefix, tuple(instances)))
+        if box.store_error is not None:
+            raise box.store_error
+        head = prefix.rstrip("/") + "/"
+        return any(p.startswith(head) for p in box.stored)
+
+    monkeypatch.setattr(blob_store, "has_rows_under", has_rows_under)
     return box
 
 

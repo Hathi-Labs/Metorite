@@ -17,6 +17,7 @@ from acb_common.studio_manifest import CONNECTION_NAME_RE
 from gateway.calendar_sync import connections as cal
 from gateway.kb_sources.registry import SOURCES as DRIVE_SOURCES
 from gateway.routes import integrations
+from gateway.routes import integrations_api_connect as api_connect
 from gateway.routes import integrations_connections as ic
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -43,6 +44,8 @@ def _ids() -> list[str]:
 def _flows() -> set[str]:
     """The provider ids that have a connect flow, derived from the code."""
     out = {"mailbox", "whatsapp", "zoho", "github", "mcp"}
+    # API-5: each API template with a connect flow (``api_connections.md`` §2.11).
+    out.add(api_connect.PROVIDER)
     out |= set(cal.SOURCES)
     out |= set(DRIVE_SOURCES)
     out |= {s.replace("-", "_") for s in integrations._SETUP_GUIDES if s not in _NOT_A_KEY_GUIDE}
@@ -72,7 +75,11 @@ def test_each_row_names_an_owning_app_or_the_console() -> None:
 
 def test_row_shape_and_values() -> None:
     for r in cl.connector_rows():
-        assert set(r) == _KEYS_OF_ROW, r["id"]
+        # API-5: an api: row carries one more key, the switch ``chat_reads``.
+        api = r["id"].startswith("api:")
+        assert set(r) == (_KEYS_OF_ROW | {cl.CHAT_READS} if api else _KEYS_OF_ROW), r["id"]
+        if api:
+            assert isinstance(r[cl.CHAT_READS], bool), r["id"]
         assert r["signin"] in cl.SIGNIN_KINDS
         assert r["scope"] in cl.SCOPES
         assert isinstance(r["built_in_app_shows_data"], bool)

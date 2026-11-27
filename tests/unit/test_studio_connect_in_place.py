@@ -384,12 +384,14 @@ def _registry_writers() -> dict[str, set[str]]:
     server. :func:`_writer_files` fails when a new writer module appears."""
     from gateway.connections import github as gh
     from gateway.connections import mcp as mcp_registry
+    from gateway.routes import integrations_api_connect as api_connect
     from gateway.routes.crm import connection as crm
     from gateway.routes.knowledge import sources as drive
     from gateway.routes.tasks import calendar_connections as cal_routes
 
     return {
         "apps/services/gateway/gateway/connections/github.py": {gh.PROVIDER},
+        "apps/services/gateway/gateway/routes/integrations_api_connect.py": {api_connect.PROVIDER},
         "apps/services/gateway/gateway/connections/mcp.py": {mcp_registry.PREFIX},
         "apps/services/gateway/gateway/routes/crm/connection.py": {crm.PROVIDER},
         "apps/services/gateway/gateway/routes/knowledge/sources.py": {drive.GOOGLE_DRIVE},
@@ -481,6 +483,23 @@ def test_each_listed_provider_has_a_registry_writer_or_an_outside_entry() -> Non
     from gateway.connections import mcp as mcp_registry
 
     assert written <= set(rows) | {mcp_registry.PREFIX}, sorted(written - set(rows))
+
+
+def test_the_api_connection_of_zoho_books_is_a_listed_org_row() -> None:
+    """API-5 (``api_connections.md`` §2.11, gap 4). The connect flow of API-2
+    writes ``api:zoho_books``, so the connector list holds it with no
+    exemption. It is an org connection of the console, and only a holder of
+    ``integrations:manage`` may connect it."""
+    from gateway.routes import integrations_api_connect as api_connect
+
+    row = cl.connector(api_connect.PROVIDER)
+    assert row is not None
+    assert (row["owning_app"], row["scope"], row["signin"]) == (
+        api_connect.OWNING_APP, "org", "admin_consent")
+    assert ic.setup_href_for(api_connect.PROVIDER) == "/integrations"
+    assert connections.checkable(api_connect.PROVIDER) is True
+    assert ic.may_connect(_user(grants=MEMBER), api_connect.PROVIDER) is False
+    assert ic.may_connect(_user(grants=ADMIN), api_connect.PROVIDER) is True
 
 
 def test_the_outside_set_is_computed_from_the_list_and_names_the_tables_the_console_reads() -> None:

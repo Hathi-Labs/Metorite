@@ -527,3 +527,12 @@ def test_the_sub_run_sends_the_mark_to_the_parent(monkeypatch, tenant) -> None:
     assert kinds.index("SUB_AGENT_TOOL_CALL_START") < kinds.index("SUB_AGENT_TEXT_DELTA")
     assert ecc.cached_working_set() == {"account_id": "acc-home"}
     bind_artifact_context()
+
+
+def test_an_id_label_is_not_kept_in_the_working_set() -> None:
+    uid = "41c0e817-fb4a-4e45-870a-2da9a953bf4b"
+    ws = ecc.update_working_set({}, [
+        _call("read_email", {"email_id": f"id={uid}", "thread_id": f"ID = {uid}",
+                             "account_id": "acc-work"}),
+    ])
+    assert ws == {"account_id": "acc-work", "email_id": uid, "thread_id": uid}

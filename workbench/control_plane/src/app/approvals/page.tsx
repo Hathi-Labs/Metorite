@@ -63,7 +63,7 @@ import {
   waitingCount,
   waitingRuns,
   type WaitingRun,
-} from "./lib/waitingForYou";
+} from "@/app/waiting/lib/waitingForYou";
 
 /**
  * The reader of `?action=<id>`. `useSearchParams` needs a Suspense boundary,
