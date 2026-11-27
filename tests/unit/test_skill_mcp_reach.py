@@ -230,8 +230,10 @@ async def test_a_run_with_no_grant_check_reaches_no_server(monkeypatch, reach: A
 @pytest.mark.parametrize("change", ["no_egress", "out_of_scope", "stdio", "disabled"])
 async def test_the_lookahead_rules_drop_the_skill(monkeypatch, change: str) -> None:
     """The rules of ``_mcp_may_attach``: ``no_egress``, the scope of the
-    server, an http transport and an enabled row. Mutation: drop one rule
-    from ``_mcp_reach_rows`` → red."""
+    server, an http transport and an enabled row. ``_mcp_reach_rows`` reads
+    them through ``_attachable_rows`` (``_row_may_attach``). Mutation: drop
+    the ``no_egress`` exit from ``_mcp_reach_rows``, or one rule from
+    ``_row_may_attach`` → red."""
     env = mcp_env(monkeypatch)
     reach = env.reach
     if change == "no_egress":
