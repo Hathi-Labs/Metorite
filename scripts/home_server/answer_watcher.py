@@ -9,6 +9,13 @@ with ``needs_agent`` true). For each run in the state ``answered`` or
 ``queued`` it starts ONE fresh headless session, with the run id in the
 prompt. The owner chose a fresh session for each run on 2026-11-06.
 
+**A run of a box lane wakes that lane (task 4062).** When the label of the
+run names a lane on ``~/lanes/keeper-lanes.txt``, and its host is this box,
+the watcher starts no session. It writes one ``answered`` event to
+``~/lanes/orch-events.log``, and lane-orch resumes that lane
+(``lanes/lane-orch.md``). The label is text that a client sent, so only a
+plain lane name on the list routes. Every other run gets a fresh session.
+
 **What it never does.**
 - It never reads an answer and never acts on one. The session that it starts
   reads the run itself.

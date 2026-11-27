@@ -464,6 +464,8 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # token is a read-only box token. A tenant must never save these.
     "METORITE_WATCHER_TOKEN", "METORITE_WATCHER_STATE", "METORITE_REPO",
     "METORITE_MCP_URL", "WATCHER_CLAUDE_CMD",
+    # Task 4062: the host name of the box lanes, for the answered route.
+    "METORITE_BOX_HOST",
     # MCP-G17g: the sign-in alarm of a dev machine (scripts/home_server). It
     # reads its channel, its files and the login to mention. A tenant must
     # never save these.
