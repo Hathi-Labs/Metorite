@@ -43,6 +43,16 @@ from gateway.routes.studio import actions, invoke
 
 from tests.unit.test_studio_builder_tools import MEMBER
 
+#: WS-24c slice 2: an empty internal token sends no ``Authorization`` header.
+#: These tests set one, and check the exact bearer.
+_INTERNAL = "test-internal-token"
+
+
+@pytest.fixture(autouse=True)
+def _internal_token_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", _INTERNAL)
+
+
 PID = str(uuid.uuid4())
 ACTIONS = [
     {"id": "find", "uses": "object:visit.list"},
@@ -154,9 +164,11 @@ def test_no_record_tool_takes_an_identity() -> None:
                 "member", "member_email", "user", "user_email", "email", "actor", "as_user",
                 "owner", "owner_email", "visibility", "confirm", "confirmed", "action",
                 "action_id", "record"}
-    assert len(st.STUDIO_RECORD_TOOLS) == 5
+    assert len(st.STUDIO_RECORD_TOOLS) == 6
     for fn in st.STUDIO_RECORD_TOOLS:
-        assert not set(inspect.signature(fn).parameters) & identity, fn.__name__
+        # STU-B2b-2c: studio_app_read picks a DECLARED action of the package by its id.
+        bar = identity - {"action"} if fn is st.studio_app_read else identity
+        assert not set(inspect.signature(fn).parameters) & bar, fn.__name__
         assert inspect.iscoroutinefunction(fn)
     # A read takes no body of a write.
     assert [fn.__name__ for fn in READS] == ["studio_package_get", "studio_record_list"]
@@ -188,7 +200,7 @@ async def test_the_package_list_reads_as_the_member_and_fences_the_name(gw) -> N
     assert out["packages"][0]["name"] == "«Field visits»"
     (call,) = gw.calls
     assert call[:2] == ("GET", "/studio/packages")
-    assert call[3]["X-User-Email"] == MEMBER and call[3]["Authorization"].startswith("Bearer ")
+    assert call[3]["X-User-Email"] == MEMBER and call[3]["Authorization"] == f"Bearer {_INTERNAL}"
 
 
 async def test_a_package_read_gives_objects_and_actions_in_the_grammar(gw) -> None:

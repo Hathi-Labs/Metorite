@@ -201,6 +201,25 @@ class TestTheFocusIsAWhereClause:
         assert len(rows) == 3  # the header and the two tasks
         assert bad.status_code == 422
 
+    async def test_held_and_free_split_the_tasks_by_the_lease(self, w):
+        """SW-5. ``held`` is a task that an open run keeps, ``free`` is the
+        rest. Together they cover every task, and neither names a member."""
+        org = w.p.org_a
+        held = b.task(w.p, org, A_EMAIL, w.proj)
+        b.run(w.p, org, held, A_EMAIL, "in_progress")
+        _old(w, held)
+        _filler(w)
+        status, got_held = await _list(w, w.a, "agent_focus=held")
+        assert status == 200, got_held
+        assert [r["id"] for r in got_held["rows"]] == [held] and got_held["total"] == 1
+        status, got_free = await _list(w, w.a, "agent_focus=free")
+        assert status == 200, got_free
+        assert held not in {r["id"] for r in got_free["rows"]}
+        assert got_free["total"] == FILLER
+        # Another member reads the same split: the lease names no caller.
+        _, other = await _list(w, w.other, "agent_focus=held")
+        assert other["total"] == 1
+
     async def test_an_unknown_focus_is_422(self, w):
         status, body = await _list(w, w.a, "agent_focus=nonsense")
         assert status == 422

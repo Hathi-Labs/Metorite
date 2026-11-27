@@ -1,6 +1,16 @@
 // The Assistant pane's pure rules (WS-63 PZ-7).
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  CAPS,
+  LANGUAGES,
+  addLanguage,
+  focusAfterRemove,
+  pickLanguageButton,
+  languageName,
+  languagesToAdd,
+  moveLanguage,
+  removeLanguage,
+  styleLanguages,
   EMPTY_PROFILE,
   ProfileError,
   chatHref,
@@ -60,6 +70,33 @@ describe("mergeStyle", () => {
   });
   it("drops an emptied notes list and a cleared language", () => {
     expect(mergeStyle({ notes: ["a"], language: "en", length: "short" }, { notes: [], language: "" })).toEqual({
+      length: "short",
+    });
+  });
+});
+
+describe("mergeStyle language_fixed", () => {
+  it("keeps the mark when the language changes", () => {
+    expect(mergeStyle({ language: "en", language_fixed: true }, { language: "hi" })).toEqual({
+      language: "hi",
+      languages: ["hi"],
+      language_fixed: true,
+    });
+  });
+  it("moves the mark to the new first language of a reorder (PZ-52)", () => {
+    const fixed = { language: "en", languages: ["en", "hi"], language_fixed: true };
+    expect(mergeStyle(fixed, { languages: ["hi", "en"] })).toEqual({
+      language: "hi",
+      languages: ["hi", "en"],
+      language_fixed: true,
+    });
+  });
+  it("drops the mark when the list is emptied (PZ-52)", () => {
+    const fixed = { language: "en", languages: ["en"], language_fixed: true, length: "short" as const };
+    expect(mergeStyle(fixed, { languages: [] })).toEqual({ length: "short" });
+  });
+  it("drops the mark when the language is cleared", () => {
+    expect(mergeStyle({ language: "en", language_fixed: true, length: "short" }, { language: "" })).toEqual({
       length: "short",
     });
   });
@@ -314,5 +351,100 @@ describe("Recent chats (PZ-35)", () => {
     );
     expect(DELETE_ONE_BODY).toBe("If you keep chatting in this chat, a new one can appear. You cannot undo this.");
     expect(deleteAllBody({ summaries: [one, one], more: true })).toContain("This deletes all 2 or more chat summaries.");
+  });
+});
+
+describe("languages I speak (PZ-52, PZ-53)", () => {
+  it("keeps the nine languages of the picker, and a cap of six", () => {
+    expect(Object.keys(LANGUAGES)).toHaveLength(9);
+    expect(CAPS.languages).toBe(6);
+  });
+  it("sets language to the first tag when the list changes", () => {
+    expect(mergeStyle({ length: "short" }, { languages: ["hi", "en"] })).toEqual({
+      length: "short",
+      language: "hi",
+      languages: ["hi", "en"],
+    });
+  });
+  it("clears both keys with an empty list", () => {
+    expect(mergeStyle({ language: "en", languages: ["en", "hi"], length: "short" }, { languages: [] })).toEqual({
+      length: "short",
+    });
+  });
+  it("a lone language replaces the list", () => {
+    expect(mergeStyle({ language: "en", languages: ["en", "hi"] }, { language: "kn" })).toEqual({
+      language: "kn",
+      languages: ["kn"],
+    });
+    expect(mergeStyle({ language: "en", languages: ["en", "hi"] }, { language: "" })).toEqual({});
+  });
+  it("keeps the pair when only the length changes", () => {
+    expect(mergeStyle({ language: "en", languages: ["en", "hi"] }, { length: "short" })).toEqual({
+      length: "short",
+      language: "en",
+      languages: ["en", "hi"],
+    });
+  });
+  it("reads an old style as a list of one", () => {
+    expect(styleLanguages({ language: "kn" })).toEqual(["kn"]);
+    expect(styleLanguages({ language: "kn", languages: ["kn", "en"] })).toEqual(["kn", "en"]);
+    expect(styleLanguages({})).toEqual([]);
+  });
+  it("names a tag, and shows an unknown tag bare", () => {
+    expect(languageName("kn")).toBe("Kannada");
+    expect(languageName("or-IN")).toBe("or-IN");
+  });
+  it("moves one row and leaves the input alone", () => {
+    const list = ["en", "hi", "kn"];
+    expect(moveLanguage(list, 2, 0)).toEqual(["kn", "en", "hi"]);
+    expect(moveLanguage(list, 0, 1)).toEqual(["hi", "en", "kn"]);
+    expect(moveLanguage(list, 0, 3)).toEqual(list);
+    expect(moveLanguage(list, 1, 1)).toEqual(list);
+    expect(list).toEqual(["en", "hi", "kn"]);
+  });
+  it("adds only a known language, once, up to the cap", () => {
+    expect(addLanguage(["en"], "hi")).toEqual(["en", "hi"]);
+    expect(addLanguage(["en"], "en")).toEqual(["en"]);
+    expect(addLanguage(["en"], "xx")).toEqual(["en"]);
+    const six = ["en", "hi", "kn", "ta", "te", "mr"];
+    expect(addLanguage(six, "bn")).toEqual(six);
+  });
+  it("removes one row", () => {
+    expect(removeLanguage(["en", "hi", "kn"], 1)).toEqual(["en", "kn"]);
+  });
+  it("offers the languages that the list lacks, in picker order", () => {
+    expect(languagesToAdd(["hi", "en"])).toEqual(["kn", "ta", "te", "mr", "bn", "gu", "ml"]);
+    expect(languagesToAdd(Object.keys(LANGUAGES))).toEqual([]);
+  });
+});
+
+describe("the focus after a change of the language list (PZ-53)", () => {
+  const button = (tag: string, act: string, disabled = false) => ({ dataset: { tag, act }, disabled });
+  const rows = [
+    button("en", "up", true), button("en", "down"), button("en", "remove"),
+    button("hi", "up"), button("hi", "down", true), button("hi", "remove"),
+  ];
+
+  it("wants the removed row (a failed save), then the next row, else the one before", () => {
+    expect(focusAfterRemove(["en", "hi", "kn"], 1).map((w) => w.tag)).toEqual(["hi", "kn"]);
+    expect(focusAfterRemove(["en", "hi"], 1)).toEqual([
+      { tag: "hi", act: "remove" },
+      { tag: "en", act: "remove" },
+    ]);
+    expect(focusAfterRemove(["en"], 0).map((w) => w.tag)).toEqual(["en"]);
+  });
+
+  it("takes the wanted button of the first wanted row that the list holds", () => {
+    expect(pickLanguageButton(rows, [{ tag: "hi", act: "up" }])).toBe(rows[3]);
+    expect(pickLanguageButton(rows, [{ tag: "kn", act: "remove" }, { tag: "en", act: "remove" }])).toBe(rows[2]);
+  });
+
+  it("takes another button of the row when the wanted one is disabled", () => {
+    expect(pickLanguageButton(rows, [{ tag: "en", act: "up" }])).toBe(rows[1]);
+  });
+
+  it("answers null when the list holds no wanted row", () => {
+    expect(pickLanguageButton(rows, [{ tag: "ta", act: "up" }])).toBeNull();
+    expect(pickLanguageButton([], focusAfterRemove(["en"], 0))).toBeNull();
   });
 });

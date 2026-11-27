@@ -36,7 +36,8 @@ from __future__ import annotations
 
 import functools
 import json
-from collections.abc import Awaitable, Callable, Iterable
+import re
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -44,10 +45,11 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from acb_auth import AgentScope, UserContext, require_feature_router
+from acb_auth import AgentScope, UserContext, get_current_user, require_feature_router
 from acb_auth.agent_oauth import ACTOR_VIA_PATTERN
 from acb_auth.permissions import normalize_grant_subject
 from acb_common import get_logger, get_settings
+from acb_common.tool_refusals import ARCHIVED_PROJECT_REFUSAL as _ARCHIVED_PROJECT_REFUSAL
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from gateway.db import tenant_session as _tenant_session  # noqa: F401
 
@@ -85,6 +87,7 @@ ACTOR_VIA: ContextVar[str] = ContextVar("projects_actor_via", default="")
 
 async def capture_actor_via(
     x_actor_via: str | None = Header(None, alias="X-Actor-Via"),
+    user: UserContext = Depends(get_current_user),
 ) -> None:
     """Bind the request's ``X-Actor-Via`` for :func:`record_activity`.
 
@@ -92,11 +95,22 @@ async def capture_actor_via(
     refuses: a bad value is dropped, because provenance is a courtesy on the
     row, not a gate on the act.
 
+    SBX-3a (``agent_sandbox.md`` §12.5 decision 5): a request of the sandbox
+    door (``user.sandbox`` set) binds ``user.sandbox.stamp``, the stamp of
+    its ticket, and ignores the header. The door refuses an ``X-Actor-Via``
+    header anyway. ``get_current_user`` is the cached dependency of the
+    request, so the identity step runs once.
+
     ⚠️ ``async``, and that is load-bearing. Starlette runs a SYNC dependency
     in a threadpool with a COPY of the request context, so a ContextVar set
     there never reaches the async handler. Measured 2026-09-22 by the fence
     in ``test_projects_actor_via.py``: the sync form bound nothing.
     """
+    sandbox = getattr(user, "sandbox", None)
+    if sandbox is not None:
+        stamp = sandbox.stamp
+        ACTOR_VIA.set(stamp if ACTOR_VIA_PATTERN.fullmatch(stamp) else "")
+        return
     value = x_actor_via.strip().lower() if isinstance(x_actor_via, str) else ""
     ACTOR_VIA.set(value if ACTOR_VIA_PATTERN.match(value) else "")
 
@@ -445,6 +459,54 @@ CLIENT_TASK_SOURCES: tuple[str, ...] = tuple(
 #: invariant (the migration-150 lesson).
 NODE_KINDS: tuple[str, ...] = ("project", "folder")
 
+#: WS-39 SP-3a (`project_management_app.md` §13.1, D195). The five work styles
+#: of the catalogue, in the order of the picker. `pm_projects.work_style` holds
+#: one of them. The migration CHECK holds only the length, so this tuple is the
+#: list. `workbench/.../app/projects/lib/workStyle.ts` keeps the same keys in
+#: the same order, and `tests/unit/test_project_work_style.py` holds the two
+#: equal.
+WORK_STYLES: tuple[str, ...] = ("flow", "sprints", "shape_up", "plan", "personal")
+#: The styles that a member can pick today. The other three show in the picker,
+#: disabled. A style becomes live when its blocks ship (the slices of WM).
+LIVE_WORK_STYLES: tuple[str, ...] = ("flow", "sprints")
+#: The style of a node that nobody set: the column DEFAULT of the migration.
+DEFAULT_WORK_STYLE = "flow"
+
+
+def validate_work_style(values: dict[str, Any]) -> None:
+    """422 on a work style that the picker cannot set, before any SQL runs.
+
+    A no-op when ``work_style`` is not in ``values``. ``null`` is refused: the
+    column is NOT NULL, and a node always has a style. An unknown value and a
+    style that is not live yet are refused with words that name the choices.
+    The message never echoes a long value back.
+    """
+    if "work_style" not in values:
+        return
+    style = values["work_style"]
+    if style is None:
+        raise HTTPException(
+            status_code=422,
+            detail="A node always has a work style. Pick Flow or Sprints.",
+        )
+    if not isinstance(style, str) or style not in WORK_STYLES:
+        shown = str(style)[:40]
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Unknown work style '{shown}'. One of: {list(WORK_STYLES)}."
+            ),
+        )
+    if style not in LIVE_WORK_STYLES:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"The work style '{style}' is not available yet. Pick one of: "
+                f"{list(LIVE_WORK_STYLES)}."
+            ),
+        )
+
+
 #: The depth cap on PROJECT generations: space=1, project=2, subproject=3.
 #: Folders are transparent to this count and never extend it.
 MAX_PROJECT_GENERATIONS = 3
@@ -565,6 +627,71 @@ def assert_not_archived(node: Any, *, then: str) -> None:
             detail=f"{name} is archived. {then} an active project, or "
                    f"unarchive this one first.",
         )
+
+
+#: ARC-2b (spec ``one_projects_app.md`` §9b.6 rule 2). The one sentence that a
+#: task write into an archived project answers, over HTTP 409. Chat and MCP
+#: reach the same routes and so show the same words.
+ARCHIVED_PROJECT_REFUSAL = _ARCHIVED_PROJECT_REFUSAL
+
+
+def assert_project_open_for_writes(project: Any) -> None:
+    """Refuse a task write into a project with ``archived_at`` (ARC-2b).
+
+    ``archive_node`` stamps ``archived_at`` on every project of the subtree,
+    so the project row alone decides. No ancestor walk. Call it AFTER the
+    visibility load, so a caller who cannot see the project gets 404 (R5).
+    It does not live inside ``load_visible_task`` or ``load_visible_project``,
+    because those also serve reads. A member's own overlay
+    (``pm_task_personal``) and the agent-run routes are not project work and
+    never call it. The one exception is the reopen of a closed task
+    (``personal.reopen_if_closed``), because it changes the status. The
+    subtree acts skip or refuse a subtask in an archived project
+    (``cascade.in_archived_project``).
+    """
+    if getattr(project, "archived_at", None) is not None:
+        raise HTTPException(status_code=409, detail=ARCHIVED_PROJECT_REFUSAL)
+
+
+async def project_is_archived(db: Any, project_id: str) -> bool:
+    """True when the project row carries ``archived_at`` (ARC-2b)."""
+    row = (await db.execute(
+        text(
+            "SELECT archived_at FROM pm_projects "
+            "WHERE id = CAST(:project_id AS uuid)"
+        ),
+        {"project_id": str(project_id)},
+    )).fetchone()
+    return row is not None and row.archived_at is not None
+
+
+async def assert_task_id_project_open(db: Any, task_id: str) -> None:
+    """:func:`assert_project_open_for_writes` for the project of a task id.
+
+    For a route that holds a task id and no task row, such as the edit of a
+    comment. The caller has already proved that they may see the task.
+    """
+    row = (await db.execute(
+        text(
+            "SELECT p.archived_at FROM pm_tasks t "
+            "JOIN pm_projects p ON p.id = t.project_id "
+            "WHERE t.id = CAST(:task_id AS uuid)"
+        ),
+        {"task_id": str(task_id)},
+    )).fetchone()
+    if row is not None:
+        assert_project_open_for_writes(row)
+
+
+async def assert_task_project_open(db: Any, task: Any) -> None:
+    """:func:`assert_project_open_for_writes` for the project of *task*.
+
+    *task* is a row that ``load_visible_task`` returned. One extra read of
+    ``archived_at`` on the task's own project, with no visibility clause: the
+    caller already proved they may see the task.
+    """
+    if await project_is_archived(db, str(task.project_id)):
+        raise HTTPException(status_code=409, detail=ARCHIVED_PROJECT_REFUSAL)
 
 
 def assert_holds_tasks(node: Any, *, then: str) -> None:
@@ -833,6 +960,9 @@ class ProjectModel(BaseModel):
     archive_after_months: int | None = None
     close_after_months: int | None = None
     timezone: str = "UTC"
+    #: WS-39 SP-3a (migration 505). How the team of this node works: one of
+    #: :data:`WORK_STYLES`. A row from before the column reads the default.
+    work_style: str = DEFAULT_WORK_STYLE
     created_by: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -841,6 +971,13 @@ class ProjectModel(BaseModel):
     #: when archived directly, an ancestor when swept in with its subtree. It is
     #: what makes unarchive reversible; see the migration header.
     archived_root_id: str | None = None
+
+    @field_validator("work_style", mode="before")
+    @classmethod
+    def _null_style_is_the_default(cls, value: Any) -> str:
+        # `row_to_model` reads a column a row lacks as NULL: a fake row, or a
+        # read that named its columns. The column itself is NOT NULL.
+        return value if value else DEFAULT_WORK_STYLE
 
 
 class ProjectIn(BaseModel):
@@ -862,6 +999,9 @@ class ProjectIn(BaseModel):
     archive_after_months: int | None = None
     close_after_months: int | None = None
     timezone: str | None = None
+    # WS-39 SP-3a — any node, set by hand, no inheritance. The write path
+    # checks it with `validate_work_style` before any SQL runs.
+    work_style: str | None = None
 
 
 class TaskModel(BaseModel):
@@ -943,6 +1083,10 @@ class TaskModel(BaseModel):
     #: `response` or `elicitation` of that run, at most 140 characters, for the
     #: hover of the pill. Filled by ``attach_agent_state``, as the three above.
     agent_note: str | None = None
+    #: WS-MCP SW-7b. The display label that the agent gave its session, at
+    #: most 40 characters, for "Claude Code (backend-worker-3)" on the card.
+    #: Display data only. Filled by ``attach_agent_state``, as the four above.
+    agent_label: str | None = None
     #: WS-55 EA-13d (EA3-48). The ONE pull request chip of the task:
     #: ``{repo, number, state, checks_state, checks_summary, url, title,
     #: merged_at, more}``, or ``None``. ``filters.attach_pr_chip`` fills it in
@@ -3129,6 +3273,84 @@ async def status_users(db: Any, owner_ids: list[str]) -> dict[str, int]:
     return {str(r.owner_id): int(r.used_by) for r in rows}
 
 
+#: The projects below one root that hold tasks: the N of a root-local tag,
+#: custom field or task type (HRD-9a, ``chat_failure_modes.md`` §6, C5).
+#:
+#: ⚠️ NOT :data:`_STATUS_USERS_SQL`. A status set stops at a node that owns
+#: its own set, and a vocabulary row does not. A root-local row is the root's
+#: (D-PM-16), so it reaches every task of the tree, a subproject that owns
+#: its statuses too. So the walk has no ``owns_statuses`` test.
+#:
+#: The walk goes THROUGH a folder, and the count leaves the folder out,
+#: because a folder holds no tasks (:func:`node_kind`). A NULL kind reads as
+#: a project (R6 expand). The root is not counted here, because a team space
+#: holds no tasks. :func:`vocabulary_reach` adds a root that holds tasks.
+#:
+#: ``depth`` bounds the walk at :data:`MAX_DEPTH`, as the climbs are bounded.
+#: Each row of the recursive arm names the root's organization, beside RLS:
+#: two independent fences, as :func:`vocabulary_scope` composes them. A
+#: project that the caller cannot see still counts, because a change of the
+#: row changes its tasks too. Fence: ``tests/unit/test_shared_vocab_reach_r8.py``.
+_TREE_PROJECTS_SQL = """
+WITH RECURSIVE tree_projects AS (
+    SELECT p.id, p.kind, p.organization_id, 0 AS depth
+      FROM pm_projects p WHERE p.id = CAST(:root AS uuid)
+    UNION ALL
+    SELECT c.id, c.kind, c.organization_id, t.depth + 1
+      FROM pm_projects c
+      JOIN tree_projects t ON c.parent_project_id = t.id
+     WHERE c.organization_id = t.organization_id AND t.depth < :max_depth
+)
+SELECT count(*) FILTER (
+           WHERE depth > 0 AND COALESCE(kind, 'project') <> 'folder'
+       ) AS below
+  FROM tree_projects
+"""
+
+
+async def vocabulary_reach(db: Any, vis: Visibility, project_id: str) -> dict:
+    """The root of ``project_id``'s tree, and N (HRD-9a).
+
+    ``projects`` is N: each project in the root's tree that holds tasks. A
+    folder and a team space do not count, and a personal root does
+    (:func:`holds_lanes`). A hidden project counts.
+
+    The node anchors the read, so a node that the caller cannot see, or a
+    node of another organization, is 404 (R5). The root comes from
+    :func:`root_project_id`, as ``tags._root_for`` finds it. ``root_name``
+    is ``None`` when the caller cannot see the root, so the answer never
+    names a hidden space (``chat_failure_modes.md`` §8, Q5). Nothing here
+    takes a tenant or an identity from the request.
+    """
+    await load_visible_project(db, vis, project_id)
+    root_id = await root_project_id(db, project_id)
+    root = (await db.execute(
+        text(
+            "SELECT id, name, kind, parent_project_id, personal_owner "
+            "  FROM pm_projects WHERE id = CAST(:root AS uuid)"
+        ),
+        {"root": root_id},
+    )).fetchone()
+    if root is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    seen = (await db.execute(
+        text(
+            "SELECT 1 FROM pm_projects "
+            f" WHERE id = CAST(:root AS uuid) AND {vis.project_clause()}"
+        ),
+        {"root": root_id, **vis.params},
+    )).fetchone()
+    below = (await db.execute(
+        text(_TREE_PROJECTS_SQL), {"root": root_id, "max_depth": MAX_DEPTH},
+    )).scalar()
+    return {
+        "root_id": root_id,
+        "root_name": root.name if seen is not None else None,
+        "root_kind": "personal" if getattr(root, "personal_owner", None) else "space",
+        "projects": int(below or 0) + (1 if holds_lanes(root) else 0),
+    }
+
+
 #: Where a task lands when its lane is not in the set it now resolves to.
 #:
 #: Name first, then the same category, then the first lane that is not triage.
@@ -3853,6 +4075,7 @@ def _checked_completed_at(task: Any, when: datetime) -> datetime:
 async def apply_status_transition(
     db: Any, task: Any, new_status_id: str, *, created_by: str,
     automation: bool = False, completed_at: datetime | None = None,
+    closer: Any | None = None,
 ) -> dict[str, Any]:
     """Move a task to a new status. **Three effects, one helper.**
 
@@ -3871,6 +4094,17 @@ async def apply_status_transition(
     closing category: Undo of a Reopen passes the date the task held. It may
     not be in the future or before ``task.created_at`` (422). Every other
     caller leaves it ``None`` and gets the stamp ``now()``.
+
+    ``closer`` (H-409 item 1, task 748) is the caller of a member door, the
+    PATCH today. On the crossing INTO a closing category it ends each open
+    agent run of the task in this transaction
+    (``agent_runs.end_runs_of_closed_task``), and the result carries
+    ``runs_cleared``. A caller that passes no closer ends no run: the sweep
+    closes such a run after its lease (spec §12.6). Fix round 1: on the
+    crossing OUT of a closing category (an Undo, a reopen) on a task that
+    is not archived, the same caller puts back the run that the close
+    ended, inside the undo window
+    (``agent_runs.reopen_run_of_reopened_task``).
     """
     old_status = await require_row(
         db, "pm_task_statuses", str(task.status_id), "Status",
@@ -3924,10 +4158,120 @@ async def apply_status_transition(
 
         successor = await spawn_successor(db, row, actor_id=created_by)
 
+    runs_cleared = (
+        await _runs_follow_the_task(db, row, old_status, new_status, closer)
+        if closer is not None and was_closed != is_closed else []
+    )
+
     return {
         "row": row, "from": old_status, "to": new_status,
-        "recurred_to": successor,
+        "recurred_to": successor, "runs_cleared": runs_cleared,
     }
+
+
+# ── The lane of a stage (task 3648) ─────────────────────────────────────────
+
+#: The owner's four stages, as the categories a lane holds. ``lane_for_stage``
+#: picks ONE lane of the project for a stage, by the category first and then
+#: by the NAME of the lane. A board may hold several lanes in one category
+#: (task 3648): "To do" and "Ready" are both ``todo``. This is the one helper
+#: for it. ``claim_task`` picks the started lane by position with
+#: :func:`load_default_status`, and the release of an agent run picks the
+#: others here.
+LANE_STAGE_TODO = "todo"
+LANE_STAGE_REVIEW = "review"
+
+#: A ``todo`` lane named "To do", "Todo", "To-do", "Ready" or "Next".
+_TODO_LANE_NAME = re.compile(r"^\s*(?:to[\s_-]?do|ready|next)(?:\W|$)", re.IGNORECASE)
+#: An in-progress lane named "Review", "In review" or "Code review". The
+#: board has no review CATEGORY, so a review lane is a started lane by name.
+_REVIEW_LANE_NAME = re.compile(r"\breview", re.IGNORECASE)
+
+
+def pick_lane(lanes: Sequence[Any], stage: str) -> Any | None:
+    """The lane of *stage* among *lanes*, or ``None``. Pure.
+
+    *lanes* are rows of ``pm_task_statuses`` of ONE board, in lane order
+    (:func:`status_order_sql`). For ``todo``: a ``todo`` lane named like "To
+    do", "Ready" or "Next", else the first ``todo`` lane. A board with no
+    ``todo`` lane gives ``None``: the caller keeps the task where it is, and
+    never falls back to backlog. For ``review``: an in-progress lane named
+    like "Review", else ``None`` (a board with no review lane has none)."""
+    if stage == LANE_STAGE_TODO:
+        pool = [lane for lane in lanes if lane.category == "todo"]
+        named = [lane for lane in pool if _TODO_LANE_NAME.match(str(lane.name or ""))]
+        return (named or pool or [None])[0]
+    if stage == LANE_STAGE_REVIEW:
+        for lane in lanes:
+            if lane.category == STARTED_CATEGORY and _REVIEW_LANE_NAME.search(
+                str(lane.name or ""),
+            ):
+                return lane
+        return None
+    raise ValueError(f"unknown stage: {stage!r}")
+
+
+async def board_lanes(db: Any, project_id: str) -> list[Any]:
+    """The lanes of the board of *project_id* (the owner of its statuses), in
+    lane order."""
+    home = await status_owner_id(db, str(project_id))
+    return list((await db.execute(
+        text(
+            "SELECT * FROM pm_task_statuses WHERE project_id = CAST(:root AS uuid)"
+            f" ORDER BY {status_order_sql()}"
+        ),
+        {"root": home},
+    )).fetchall())
+
+
+async def lane_for_stage(db: Any, project_id: str, stage: str) -> Any | None:
+    """The lane of *stage* on the board of *project_id*, or ``None``."""
+    return pick_lane(await board_lanes(db, project_id), stage)
+
+
+def lane_like(lanes: Sequence[Any], name: str | None, category: str | None) -> Any | None:
+    """The lane that a task LEFT, found again: the lane of that name in that
+    category, else :func:`pick_lane` for a ``todo`` category, else the first
+    lane of the category. ``None`` when the category holds no lane or is
+    unknown. Never a closing or triage lane."""
+    if not category or category in CLOSING_CATEGORIES or category == TRIAGE_CATEGORY:
+        return None
+    pool = [lane for lane in lanes if lane.category == category]
+    wanted = str(name or "").strip().lower()
+    for lane in pool:
+        if wanted and str(lane.name or "").strip().lower() == wanted:
+            return lane
+    if category == "todo":
+        return pick_lane(lanes, LANE_STAGE_TODO)
+    return pool[0] if pool else None
+
+
+async def _runs_follow_the_task(
+    db: Any, row: Any, old_status: Any, new_status: Any, closer: Any,
+) -> list[str]:
+    """H-409 item 1 and fix round 1 (task 748). The agent run follows a
+    member door's crossing, in the caller's transaction. INTO a closing
+    category: the task's open run ends (``end_runs_of_closed_task``). OUT of
+    one: the run that the close ended comes back inside the undo window
+    (``reopen_run_of_reopened_task``). Imported here for the reason of
+    ``spawn_successor`` above. It returns the members whose question bells
+    moved, so the caller moves their My Day after its commit."""
+    from gateway.routes.projects.agent_runs import (
+        end_runs_of_closed_task,
+        reopen_run_of_reopened_task,
+    )
+
+    if new_status.category in CLOSING_CATEGORIES:
+        return await end_runs_of_closed_task(
+            db, str(row.id), str(new_status.category), closer,
+            status_id=str(new_status.id),
+        )
+    # Fix round 2: the marker decides. A task that stays archived is not
+    # open, so a matching close waits for its unarchive.
+    return await reopen_run_of_reopened_task(
+        db, str(row.id), status_id=str(old_status.id),
+        task_open=getattr(row, "archived_at", None) is None,
+    )
 
 
 # ── The task row lock of a claim (WS-55 EA-6b) ──────────────────────────────
@@ -3953,7 +4297,9 @@ _LOCK_TASK_SQL = (
 
 async def lock_task(db: Any, task_id: str) -> Any:
     """Lock one task row until the transaction ends, and return the row as
-    the lock read it. Four callers, each after its own visibility load, so
+    the lock read it. Task 3648: ``agent_runs._settle_task_lane`` is a fifth
+    caller, in the release of a run (a member's "Close the run" too), after
+    the run lock. Four more callers, each after its own visibility load, so
     the lock reads by id only: ``claim_task``; ``tasks.agent_delete_task``
     (WS-55 EA-6h, so the version and title checks hold until the delete);
     ``activities._load_agent_comment`` (WS-55 MCP-G9 fix round 3, so no new

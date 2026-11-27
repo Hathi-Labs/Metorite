@@ -1,6 +1,6 @@
 # Rules for Gemini
 
-kit_version: 1
+kit_version: 2
 
 This file points to the core rule file. It holds no copy of the rules.
 

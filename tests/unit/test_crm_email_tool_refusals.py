@@ -345,8 +345,12 @@ async def test_the_aggregate_with_no_group_prints_one_line(monkeypatch) -> None:
         field_filters={"Invoice_Date.from": "2026-10-01", "Invoice_Date.to": "2026-10-31"},
     )
     # WS-53 §18.16 part 7: the total, then each filter that it read.
+    # CRM-Q25e part 4: a total of a lakh and more gets its display value
+    # in the number system of the run (indian outside a run).
     assert out == ("Invoices, sum of Total_Invoice_Amount: INR 123,456 across 42 matching "
-                   "records.\nFilters: Invoice_Date from 2026-10-01 to 2026-10-31.")
+                   "records.\nDisplay: ₹1,23,456 (₹1.23\xa0L). Quote this display value for "
+                   "the total, as written.\n"
+                   "Filters: Invoice_Date from 2026-10-01 to 2026-10-31.")
     sent = next(c["params"] for c in calls if c["path"] == "/crm/aggregate")
     assert "group_by" not in sent and "group_field" not in sent
     assert sent["field.Invoice_Date.from"] == "2026-10-01"
@@ -379,6 +383,93 @@ async def test_the_aggregate_with_no_group_says_an_empty_field_has_no_values(
     monkeypatch.setattr(_T, "_current_user_email", lambda: MEMBER)
     out = await _T.crm_aggregate("module:Invoices", measure="sum", field="Total")
     assert out == "Invoices, sum of Total: no values recorded for Total."
+
+
+def _answering(monkeypatch, body: dict) -> None:
+    def answer(_call: dict) -> Any:
+        return body if _call["path"] == "/crm/aggregate" else []
+
+    monkeypatch.setattr(_T, "httpx", SimpleNamespace(
+        AsyncClient=lambda **_kw: FakeClient([], answer)))
+    monkeypatch.setattr(_T, "_current_user_email", lambda: MEMBER)
+
+
+async def test_a_total_whose_filters_match_no_record_says_so(monkeypatch) -> None:
+    """CRM-Q34-3 item 1: records 0 with a filter is no match, never "no
+    values recorded". A field filter adds the exact-match line."""
+    _answering(monkeypatch, {"entity": "module:Invoices", "measure": "sum", "groups": [],
+                             "total": None, "values": 0, "records": 0,
+                             "field_type": "currency"})
+    out = await _T.crm_aggregate("module:Invoices", measure="sum", field="Total",
+                                 field_filters={"Client": "Acme"})
+    assert out == ("Invoices, sum of Total: No record matches these filters.\n"
+                   f"{_T.EXACT_FILTER_LINE}\n"
+                   "Filters: Client is Acme.")
+    assert "no values recorded" not in out and "0 of 0" not in out
+
+
+async def test_a_range_with_no_match_has_no_exact_match_line(monkeypatch) -> None:
+    _answering(monkeypatch, {"entity": "module:Invoices", "measure": "count", "groups": [],
+                             "total": 0, "records": 0})
+    out = await _T.crm_aggregate("module:Invoices", field_filters={
+        "Invoice_Date.from": "2026-10-01", "Invoice_Date.to": "2026-10-31"})
+    assert out == ("Invoices, count: No record matches these filters.\n"
+                   "Filters: Invoice_Date from 2026-10-01 to 2026-10-31.")
+
+
+async def test_a_grouped_total_whose_filters_match_no_record_says_so(monkeypatch) -> None:
+    _answering(monkeypatch, {"entity": "module:Invoices", "measure": "sum", "groups": [],
+                             "total": None, "values": 0, "records": 0, "omitted": 0,
+                             "field_type": "currency"})
+    out = await _T.crm_aggregate("module:Invoices", group_by="owner", measure="sum",
+                                 field="Total", field_filters={"Client": "Acme"})
+    assert out == ("Invoices, sum of Total by owner: No record matches these filters.\n"
+                   f"{_T.EXACT_FILTER_LINE}\n"
+                   "Filters: Client is Acme.")
+    assert "no values recorded" not in out
+
+
+async def test_records_with_an_empty_field_still_say_no_values(monkeypatch) -> None:
+    """The filters matched records, and the field is empty in each."""
+    _answering(monkeypatch, {"entity": "module:Invoices", "measure": "sum", "groups": [],
+                             "total": None, "values": 0, "records": 4,
+                             "field_type": "currency"})
+    out = await _T.crm_aggregate("module:Invoices", measure="sum", field="Total",
+                                 field_filters={"Client": "Acme"})
+    assert out.startswith("Invoices, sum of Total: no values recorded for Total.")
+    assert _T.NO_MATCH_LINE not in out
+
+
+async def test_a_total_with_no_filter_keeps_its_old_text(monkeypatch) -> None:
+    """With no filter, records 0 means the module is empty: no filter is the
+    cause, so the text is the text of before."""
+    _answering(monkeypatch, {"entity": "module:Invoices", "measure": "sum", "groups": [],
+                             "total": None, "values": 0, "records": 0,
+                             "field_type": "currency"})
+    out = await _T.crm_aggregate("module:Invoices", measure="sum", field="Total")
+    assert out == "Invoices, sum of Total: no values recorded for Total."
+
+
+async def test_status_on_a_module_names_the_status_field_filter(monkeypatch) -> None:
+    """CRM-Q34-3 item 3: the client refusal names the step that works, in
+    the words of the overlay sentence, and reads no gateway."""
+    calls: list[dict] = []
+    monkeypatch.setattr(_T, "httpx", SimpleNamespace(
+        AsyncClient=lambda **_kw: FakeClient(calls, lambda _c: {})))
+    monkeypatch.setattr(_T, "_current_user_email", lambda: MEMBER)
+    out = await _T.crm_aggregate("module:Invoices", status="Paid")
+    assert out.startswith("Refused:")
+    assert ("To filter by status, call crm_aggregate with entity 'module:Invoices' "
+            "and field_filters {'@status': 'Paid'}.") in out
+    assert "Drop the status filter" not in out
+    assert calls == []
+
+
+def test_the_docstring_names_a_number_range() -> None:
+    """CRM-Q34-3 item 5: a number field takes a range, as a date does."""
+    doc = " ".join((_T.crm_aggregate.__doc__ or "").split())
+    assert "{'key.from': N, 'key.to': M} for a number field" in doc
+    assert "text such as 'NA' counts as no value" in doc
 
 
 def test_the_docstring_says_the_group_is_optional() -> None:
@@ -429,7 +520,7 @@ def test_a_422_of_the_field_scope_names_the_choices() -> None:
         exc.value.detail["message"])
     with pytest.raises(HTTPException) as exc:
         fs.module_where(scope, "Invoices", [("Circle.from", "2026-10-01")], zone="UTC")
-    assert "date fields of module:Invoices are: Invoice_Date" in exc.value.detail["message"]
+    assert "date and number fields of module:Invoices are: Invoice_Date" in exc.value.detail["message"]
 
 
 def test_the_choices_are_capped() -> None:
@@ -483,12 +574,12 @@ def test_the_translator_marks_a_refusal_failed_and_keeps_its_text() -> None:
 
 
 def test_the_tier2_shim_asks_the_same_function_before_the_steer() -> None:
-    """The shim of ``executor.py`` marks a refusal failed, and it asks before
-    the steer text joins the result (that text could come first)."""
+    """The shim of ``executor.py`` marks a refusal failed. Since task 2494 no
+    steer text joins a tool result, so the shim asks on the tool's own text."""
     source = (REPO / "apps" / "services" / "orchestrator" / "orchestrator"
               / "executor.py").read_text(encoding="utf-8")
-    at = source.index("refused = is_refusal(result)")
-    assert at < source.index("result = decorate_tool_result(result, thread_id)", at)
+    assert "refused = is_refusal(result)" in source
+    assert "decorate_tool_result" not in source
     assert '"success": not refused,' in source
     assert '"success": not _is_refusal(result),' in source
 
@@ -549,3 +640,19 @@ async def test_a_guessed_id_of_a_crm_agent_tool_is_text_and_sends_nothing(
     out = await tools["get_record"]("invoices", "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d")
     assert out.startswith(f"{REFUSED} Unknown CRM record type 'invoices'.")
     assert calls == [] and asked == []
+
+
+def test_crm_aggregate_costs_no_more_tokens_than_when_main_was_green() -> None:
+    """Main went red on 2026-11-17: the Studio chat at the pack cap
+    (``test_one_assistant_measure_search``) fits its found tools in 30,000
+    schema tokens, and a 49-token growth of this one tool broke it. 687 is
+    the size at the last green batch (99f1afcfe). A longer text must cut
+    words elsewhere, or raise the budget on purpose (R7)."""
+    import json
+
+    from acb_llm.context import count_message_tokens
+    from acb_skills.skill_families import tool_json_schema
+
+    used = count_message_tokens(
+        [{"role": "system", "content": json.dumps(tool_json_schema(_T.crm_aggregate))}])
+    assert used <= 687, used

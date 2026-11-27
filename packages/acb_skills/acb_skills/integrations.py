@@ -428,7 +428,10 @@ def build_integrations(
         except IntegrationMisconfiguredError as exc:
             reason = str(exc)
             unavailable[service_name] = reason
-            level = "error" if is_mandatory else "warning"
+            # Task 3715: a miss of an OPTIONAL service is a fact of the setup,
+            # not a fault, and it came on every run of the agent. It logs at
+            # info level. A mandatory miss stays an error.
+            level = "error" if is_mandatory else "info"
             getattr(_log, level)(
                 "integrations.misconfigured",
                 service=service_name,

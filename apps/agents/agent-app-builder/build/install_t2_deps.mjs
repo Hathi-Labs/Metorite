@@ -25,6 +25,12 @@
 // enforce: node_modules lands inside THIS app's own workspace directory,
 // which is already the durability/build/publish unit for exactly one app —
 // nothing here is shared with, or reachable from, any other app's workspace.
+//   4. Task 2464: a dependency that npm takes from disk can do that. A
+//      `file:` or `link:` spec, a path, a `workspaces` field, or a lock
+//      entry that is a link makes npm link or copy another dir into
+//      node_modules. So the app's package.json and lock file may name only
+//      registry versions (`localDepRefusal`). build_t2.mjs refuses a link
+//      that leads out of the app dir as well.
 //
 // Once a workspace has its own node_modules, build_t2.mjs switches from the
 // shared vendor cache + import allowlist to standard npm resolution rooted
@@ -35,7 +41,7 @@
 // Usage: node install_t2_deps.mjs <workspace-dir> <package-spec> [<package-spec> ...]
 // Exit 0 + what was installed on stdout on success; exit 1 + reason on stderr.
 
-import { existsSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -48,9 +54,59 @@ const SPEC_RE = /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*(@[\w.^~*<>=|-]+
 // eating a meaningful fraction of the VPS's disk, not to police normal use.
 const MAX_NODE_MODULES_BYTES = 300 * 1024 * 1024;
 
+// A registry version, range or tag: no ":" (file:, link:, git+, http:,
+// npm:, workspace:), no "/" or "\" (a path, user/repo), no leading ".".
+const REGISTRY_RANGE_RE = /^(?!\s*\.)[\w.^~*<>=|\s-]*$/;
+const DEP_FIELDS = [
+  "dependencies",
+  "devDependencies",
+  "optionalDependencies",
+  "peerDependencies",
+  "overrides",
+];
+
 function fail(message) {
   process.stderr.write(`install_t2_deps: ${message}\n`);
   process.exit(1);
+}
+
+function readJsonOrNull(path) {
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, "utf-8"));
+  } catch {
+    return undefined; // present but unreadable
+  }
+}
+
+/** Why npm may not install for this app, or null (task 2464). npm takes a
+ * `file:` or `link:` dependency, a path, or a `workspaces` entry from disk,
+ * and links or copies it into node_modules. Such a dir can be another app's. */
+function localDepRefusal(workspace) {
+  const pkg = readJsonOrNull(join(workspace, "package.json"));
+  if (pkg === undefined) return "package.json is not valid JSON";
+  if (pkg) {
+    if (pkg.workspaces !== undefined) return "package.json has a workspaces field";
+    for (const field of DEP_FIELDS) {
+      for (const [name, spec] of Object.entries(pkg[field] || {})) {
+        if (typeof spec !== "string" || !REGISTRY_RANGE_RE.test(spec)) {
+          return `package.json ${field} names ${JSON.stringify(name)} as ${JSON.stringify(spec)}`;
+        }
+      }
+    }
+  }
+  for (const lockName of ["package-lock.json", "npm-shrinkwrap.json"]) {
+    const lock = readJsonOrNull(join(workspace, lockName));
+    if (lock === undefined) return `${lockName} is not valid JSON`;
+    for (const [key, entry] of Object.entries((lock && lock.packages) || {})) {
+      if (key === "" || !entry || typeof entry !== "object") continue;
+      const resolved = typeof entry.resolved === "string" ? entry.resolved : "";
+      if (entry.link || (resolved && !resolved.startsWith("https://"))) {
+        return `${lockName} takes ${JSON.stringify(key)} from disk`;
+      }
+    }
+  }
+  return null;
 }
 
 function dirSize(dir) {
@@ -92,6 +148,14 @@ if (rejected.length > 0) {
   fail(
     `rejected package spec(s): ${rejected.join(", ")} — plain names only ` +
       `("name", "name@version", or "@scope/name@version"), no flags, no URLs.`,
+  );
+}
+
+const localDeps = localDepRefusal(workspace);
+if (localDeps) {
+  fail(
+    `${localDeps}. An app can install only registry packages, by name and version. ` +
+      `Remove the dependency that names a file, a link, a path or a URL, then install again.`,
   );
 }
 

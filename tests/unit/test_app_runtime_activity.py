@@ -9,7 +9,7 @@ another's (stack-inferred attribution collapses every custom app into one
 generic "apps" bucket — see ``acb_llm.context._infer_app_source``).
 
 DB-touching seams (``_tenant_session``/``get_app_or_404``/``_month_ai_usage``/
-``record_app_audit``) and the LLM call itself are monkeypatched with fakes —
+``record_app_audit_bound``) and the LLM call itself are monkeypatched with fakes —
 no live Postgres, no live model — mirroring ``test_app_actions.py``'s
 conventions (``_tenant_session`` swapped in as an ``asynccontextmanager``,
 the H2 seam shape).
@@ -94,7 +94,7 @@ def _patch_common(monkeypatch: pytest.MonkeyPatch, *, used_tokens: int = 0,
     monkeypatch.setattr(runtime, "_month_ai_usage", _month_ai_usage)
     monkeypatch.setattr(runtime, "resolve_ai_budget", lambda _manifest: budget)
     monkeypatch.setattr(runtime, "resolve_ai_tier", lambda _tier, _manifest: "tier-fast")
-    monkeypatch.setattr(runtime, "record_app_audit", _record_app_audit)
+    monkeypatch.setattr(runtime, "record_app_audit_bound", _record_app_audit)
 
 
 @pytest.mark.asyncio
@@ -184,7 +184,7 @@ async def test_ai_complete_with_no_text_is_an_error_not_a_200(
     async def _audit(**kw: Any) -> None:
         audits.append(kw)
 
-    monkeypatch.setattr(runtime, "record_app_audit", _audit)
+    monkeypatch.setattr(runtime, "record_app_audit_bound", _audit)
     seen: dict[str, Any] = {}
 
     async def _blank(**kwargs: Any) -> tuple[Any, str]:

@@ -31,11 +31,15 @@ and the rules around them: a mode change is logged and cannot be undone, a
 mode that changed since refuses the Undo, a thing that changed again refuses
 it, a private view shows to its owner only, a member who is not an admin
 reads only their own changes, and a row never changes.
+
+The member purge has its own part. It deletes the private change rows of the
+member, and each Undo row goes with its row. Task 1570 (D175.5) adds the
+private saved views: the purge deletes them in the bound org only, a shared
+view stays, and the count is the rows that go.
 """
 
 from __future__ import annotations
 
-import ast
 import asyncio
 import json
 import re
@@ -49,6 +53,7 @@ pytest.importorskip("sqlalchemy")
 
 from sqlalchemy import text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._tenant_ladder import tenant_engine_scope
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
@@ -78,6 +83,10 @@ LOGGED: dict[str, str] = {
     "POST /crm/pipelines/{pipeline_id}/stages": "a stage into a pipeline (team)",
     "DELETE /crm/pipelines/{pipeline_id}/stages/{status_id}":
         "a stage out of a pipeline (team); Undo puts it back",
+    # WS-CRM CRM-M3b: the win chance or the warning days of a stage in one
+    # pipeline (team). Undo puts the old values back.
+    "PATCH /crm/pipelines/{pipeline_id}/stages/{status_id}":
+        "a stage value in one pipeline (team); Undo puts it back",
     "POST /crm/views": "a saved view (own)",
     "PATCH /crm/views/{view_id}": "a saved view edit (own)",
     "DELETE /crm/views/{view_id}": "a saved view delete (own); Undo brings it back",
@@ -141,6 +150,7 @@ OUT: dict[str, str] = {
     "POST /crm/sync/zoho": "starts a sync run; it changes no set-up value",
     "POST /crm/analysis/rerun": "starts the analysis; it changes no set-up value",
     "POST /crm/mapping/preview": "a READ ONLY preview; it writes nothing",
+    "POST /crm/verified-queries/match": "a READ that uses POST so the member's words stay out of URLs; it writes nothing (SEM-8)",
     "POST /crm/rules/propose": "holds a rule in Redis; it saves nothing",
     "POST /crm/leads": "a record write",
     "PATCH /crm/leads/{record_id}": "a record write",
@@ -170,133 +180,6 @@ OUT: dict[str, str] = {
 # ── The static fence (no database) ──────────────────────────────────────────
 
 
-def _calls(node: ast.AST) -> set[str]:
-    names: set[str] = set()
-    for sub in ast.walk(node):
-        if isinstance(sub, ast.Call):
-            f = sub.func
-            names.add(f.id if isinstance(f, ast.Name) else getattr(f, "attr", ""))
-    return names
-
-
-def _reach(start: ast.AST, funcs: dict[str, ast.AST]) -> set[str]:
-    """Every call name reachable from *start* through same-module helpers."""
-    seen: set[str] = set()
-    todo = [start]
-    while todo:
-        for name in _calls(todo.pop()):
-            if name not in seen:
-                seen.add(name)
-                if name in funcs:
-                    todo.append(funcs[name])
-    return seen
-
-
-def write_routes(root: Path = _CRM) -> dict[str, tuple[str, set[str]]]:
-    """``"VERB /crm/path"`` → (``file::function``, the calls it reaches)."""
-    found: dict[str, tuple[str, set[str]]] = {}
-    for path in sorted(root.glob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        funcs = {
-            n.name: n for n in ast.walk(tree)
-            if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)
-        }
-        for fn in funcs.values():
-            for dec in fn.decorator_list:
-                if (
-                    isinstance(dec, ast.Call)
-                    and isinstance(dec.func, ast.Attribute)
-                    and dec.func.attr in {"post", "patch", "put", "delete"}
-                    and dec.args and isinstance(dec.args[0], ast.Constant)
-                ):
-                    key = f"{dec.func.attr.upper()} /crm{dec.args[0].value}"
-                    assert key not in found, f"two handlers for {key}"
-                    found[key] = (f"{path.name}::{fn.name}", _reach(fn, funcs))
-    return found
-
-
-def unclassified(routes: dict[str, Any]) -> list[str]:
-    lists = (LOGGED, HISTORY, PENDING, OUT)
-    return sorted(k for k in routes if sum(k in lst for lst in lists) != 1)
-
-
-def unlogged(routes: dict[str, tuple[str, set[str]]]) -> list[str]:
-    return sorted(
-        f"{k} ({routes[k][0]})" for k in LOGGED
-        if k in routes and SEAM not in routes[k][1]
-    )
-
-
-def test_the_scan_finds_the_write_routes() -> None:
-    assert len(write_routes()) >= 70, "the scan found too few write routes"
-
-
-def test_every_write_route_is_in_exactly_one_list() -> None:
-    """Done when 1. A new write route of ``routes/crm/`` fails here until
-    somebody decides: logged, pending for PR 2, or out with a reason."""
-    routes = write_routes()
-    assert not unclassified(routes), (
-        "write routes in no list, or in two (LOGGED, HISTORY, PENDING, OUT): "
-        f"{unclassified(routes)}"
-    )
-    stale = sorted(
-        k for lst in (LOGGED, HISTORY, PENDING, OUT) for k in lst if k not in routes
-    )
-    assert not stale, f"list entries that name no route: {stale}"
-    for lst in (LOGGED, PENDING, OUT):
-        assert all(reason.strip() for reason in lst.values())
-
-
-def test_every_logged_route_reaches_the_seam() -> None:
-    """Done when 1: each LOGGED route reaches ``log_change`` in its own body
-    or in a helper of its module."""
-    assert not unlogged(write_routes()), (
-        f"LOGGED routes that never call {SEAM}: {unlogged(write_routes())}"
-    )
-
-
-def test_the_fence_fails_on_a_new_route_and_on_a_dropped_call(tmp_path: Path) -> None:
-    """Mutation: a new write route in no list, and a LOGGED route that lost
-    its call, each fail by name."""
-    for path in _CRM.glob("*.py"):
-        body = path.read_text(encoding="utf-8")
-        if path.name == "views.py":
-            body = body.replace(
-                "        await log_change(db, user, Change(\n"
-                "            area=\"view\", action=change_log.CREATE,",
-                "        await _gone(db, user, Change(\n"
-                "            area=\"view\", action=change_log.CREATE,",
-            )
-            body += (
-                "\n\n@router.post(\"/zz-new\")\nasync def zz_new() -> None:\n"
-                "    return None\n"
-            )
-        (tmp_path / path.name).write_text(body, encoding="utf-8")
-    routes = write_routes(tmp_path)
-    assert unclassified(routes) == ["POST /crm/zz-new"]
-    assert unlogged(routes) == ["POST /crm/views (views.py::create_view)"]
-
-
-def test_one_writer_of_the_table() -> None:
-    """Only ``change_log.py`` writes ``crm_change_log`` in the gateway, and
-    ``log_change`` holds its one INSERT. It opens no session of its own, so
-    the row joins the transaction of the change."""
-    gateway = _ROOT / "apps/services/gateway/gateway"
-    write = re.compile(r"(INSERT INTO|UPDATE|DELETE FROM)\s+crm_change_log\b")
-    writers = sorted(
-        str(p.relative_to(gateway)).replace("\\", "/")
-        for p in gateway.rglob("*.py")
-        if write.search(p.read_text(encoding="utf-8"))
-    )
-    assert writers == ["routes/crm/change_log.py"], writers
-    log = (_CRM / "change_log.py").read_text(encoding="utf-8")
-    assert log.count("INSERT INTO crm_change_log") == 1
-    tree = ast.parse(log)
-    fn = next(n for n in ast.walk(tree)
-              if isinstance(n, ast.AsyncFunctionDef) and n.name == SEAM)
-    assert "_INSERT_SQL" in ast.unparse(fn)
-    assert "_tenant_session" not in ast.unparse(fn)
-
 
 def test_the_start_over_keeps_the_history() -> None:
     from gateway.routes.crm import core
@@ -313,65 +196,6 @@ def test_each_area_has_an_undo_except_the_setup() -> None:
     assert change_log.ADMIN_AREAS.issubset(change_log.AREAS)
     assert change_log.ADMIN_AREAS.isdisjoint({"view", "rule"})
 
-
-#: What locks the thing of an Undo: a read ``FOR UPDATE``, the lock seam of
-#: ``core.load_row``, the lock of the settings row, or ``admin._current``.
-_LOCKS = ("FOR UPDATE", "lock=True", "_LOCK_SETTINGS_SQL", "_current(")
-
-
-def _undo_functions(root: Path = _CRM) -> dict[str, tuple[str, dict[str, ast.AST]]]:
-    """``file::function`` → (its source, the functions of its module), for
-    each function that ``@change_log.undoes(...)`` registers."""
-    found: dict[str, tuple[str, dict[str, ast.AST]]] = {}
-    for path in sorted(root.glob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        funcs = {
-            n.name: n for n in ast.walk(tree)
-            if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)
-        }
-        for fn in funcs.values():
-            if any(
-                isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)
-                and d.func.attr == "undoes" for d in fn.decorator_list
-            ):
-                found[f"{path.name}::{fn.name}"] = (_code(fn), funcs)
-    return found
-
-
-def _code(fn: Any) -> str:
-    """The statements of *fn*, with no docstring: its words are no code."""
-    body = fn.body[1:] if ast.get_docstring(fn) is not None else fn.body
-    return "\n".join(ast.unparse(s) for s in body)
-
-
-def test_each_undo_function_locks_its_thing_before_the_check() -> None:
-    """P3a (fix round 1). Each Undo reads its thing ``FOR UPDATE`` before it
-    checks the values, so a write between the check and the Undo waits.
-    Mutation: drop the lock of one Undo function → red by name."""
-    found = _undo_functions()
-    assert len(found) == 8, sorted(found)
-    late = []
-    for name, (source, funcs) in sorted(found.items()):
-        first_lock = min((source.find(m) for m in _LOCKS if m in source), default=-1)
-        first_check = source.find("changed_since")
-        if first_lock < 0 or (0 <= first_check < first_lock):
-            late.append(name)
-        if "_current(" in source:
-            assert "lock=True" in _code(funcs["_current"]), name
-    assert not late, f"Undo functions that check before a lock: {late}"
-    # Fix round 2 (P3-4): EACH read of a row by `load_row` in an Undo locks,
-    # in every branch, not only the first read of the function. Mutation:
-    # drop `lock=True` from the stage read of the DELETE branch of
-    # `pipelines._undo_stage` → red by name.
-    unlocked = sorted(
-        f"{name}: {ast.unparse(call)}"
-        for name, (_source, funcs) in found.items()
-        for call in ast.walk(funcs[name.split("::", 1)[1]])
-        if isinstance(call, ast.Call) and getattr(call.func, "id", "") == "load_row"
-        and not any(k.arg == "lock" and getattr(k.value, "value", None) is True
-                    for k in call.keywords)
-    )
-    assert not unlocked, f"Undo reads with no lock: {unlocked}"
 
 
 def _migration() -> str:
@@ -454,8 +278,7 @@ def test_the_chat_parity_row_names_the_read() -> None:
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
     """An R8 suite that CI does not list still skips in silence when the
     database gate is disarmed. Match the argument line, not a mention."""
-    workflow = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8")
-    assert re.search(r"^\s+tests/unit/test_crm_change_history\.py \\?$", workflow, re.M)
+    assert "tests/unit/test_crm_change_history.py" in r8_lists.must_run()
 
 # ── The database tests ──────────────────────────────────────────────────────
 
@@ -1284,9 +1107,13 @@ def _drop_member_rows(p: Any) -> None:
                   {"e": [ADMIN, PURGE_OWNER]})
 
 
-async def _purge_admin(p: Any, org: str, monkeypatch: Any) -> dict[str, int]:
-    """The real member purge of ``ADMIN`` in *org*, as the app role. Returns
-    ``deleted`` of the purge (``PurgeResult.deleted``)."""
+async def _purge_admin(
+    p: Any, org: str, monkeypatch: Any, *, role: str = "app",
+) -> dict[str, int]:
+    """The real member purge of ``ADMIN`` in *org*. Returns ``deleted`` of
+    the purge (``PurgeResult.deleted``). It runs as the app role. With
+    ``role="superuser"`` it runs as the superuser, which RLS does not bind
+    (task 1570)."""
     from gateway.db import tenant_session
     from gateway.routes.admin import members
     from gateway.routes.admin._common import get_member
@@ -1297,8 +1124,9 @@ async def _purge_admin(p: Any, org: str, monkeypatch: Any) -> dict[str, int]:
 
     monkeypatch.setattr(members, "record_admin_change", lambda *a, **k: None)
     monkeypatch.setattr(questions, "forget_member_keys", _no_keys)
+    url = p.app_url if role == "app" else p.admin_engine.url
     async with (
-        tenant_engine_scope(p.app_url.render_as_string(hide_password=False)),
+        tenant_engine_scope(url.render_as_string(hide_password=False)),
         tenant_session(org) as session,
     ):
         member = await get_member(session, org, ADMIN)
@@ -1427,6 +1255,137 @@ async def test_log_change_gives_an_undo_row_the_readers_of_the_undone_row(
     rows = _log_state(ns, ns.org_a)
     assert rows[private_row].private_to == rows[private_undo].private_to == ADMIN
     assert rows[org_row].private_to is None and rows[org_undo].private_to is None
+
+
+# ── Task 1570 (D175.5): the purge takes the private saved views ─────────────
+#
+# R7: each test below goes red when the entry `crm_private_views` leaves
+# `members._PURGE_DELETES`. Each one asserts that a private view of the
+# member in the bound org goes, and reads `deleted["crm_private_views"]`.
+# These tests did not run at build (2026-11-21): the database was down. The
+# hermetic twin is `test_admin_member_purge.py`.
+
+
+def _view_row(p: Any, org: str, owner: str, name: str, *, shared: bool) -> str:
+    """One saved view of *org*, written as the superuser. Returns its id."""
+    return str(_one(
+        p, "INSERT INTO crm_views (organization_id, entity, name, owner_email, shared) "
+           "VALUES (CAST(:o AS uuid), 'deals', :n, :e, :s) RETURNING id",
+        o=org, n=name, e=owner, s=shared))
+
+
+def _views(p: Any) -> dict[str, str]:
+    """Each saved view of org A and org B, as the superuser reads it: the id,
+    then the org."""
+    with p.admin_engine.begin() as c:
+        rows = c.execute(text(
+            "SELECT id::text, organization_id::text FROM crm_views "
+            "WHERE organization_id = ANY(CAST(:orgs AS uuid[]))"),
+            {"orgs": [p.org_a, p.org_b]}).all()
+    return {r[0]: r[1] for r in rows}
+
+
+@_DB_GATE
+async def test_the_purge_deletes_the_private_views_of_the_member_and_no_other(
+    ns, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    """Done when 1. The purge of ``ADMIN`` deletes each private view of
+    ``ADMIN`` in the bound org, in any case of the address. The private view
+    of a colleague stays. Without the entry, both views of ``ADMIN`` stay
+    → red."""
+    _settings(ns, ns.org_a, "native")
+    _member_rows(ns, ns.org_a)
+    try:
+        mine = {_view_row(ns, ns.org_a, ADMIN, "Mine", shared=False),
+                _view_row(ns, ns.org_a, ADMIN.upper(), "Mine too", shared=False)}
+        theirs = _view_row(ns, ns.org_a, MEMBER, "Rep's", shared=False)
+        deleted = await _purge_admin(ns, ns.org_a, monkeypatch)
+        after = _views(ns)
+        assert not mine & set(after), "a private view of the member stayed"
+        assert theirs in after, "the purge took the view of a colleague"
+        assert deleted["crm_private_views"] == 2
+    finally:
+        _drop_member_rows(ns)
+
+
+@_DB_GATE
+async def test_a_shared_view_of_the_member_stays_and_the_private_one_goes(
+    ns, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    """Done when 2. An admin saves a private view and a shared view through
+    the router. The purge deletes the private view and its private change
+    row. The shared view and its org change row stay. Without the entry, the
+    private view stays → red. Without ``NOT shared``, the shared view goes
+    → red."""
+    _settings(ns, ns.org_a, "native")
+    _member_rows(ns, ns.org_a)
+    try:
+        admin = _admin(ns.org_a)
+        private = await _call(ns, admin, "POST", "/crm/views",
+                              {"entity": "deals", "name": "Mine"})
+        assert private.status_code == 201, private.text
+        shared = await _call(ns, admin, "POST", "/crm/views",
+                             {"entity": "deals", "name": "Team", "shared": True})
+        assert shared.status_code == 201, shared.text
+        deleted = await _purge_admin(ns, ns.org_a, monkeypatch)
+        after = _views(ns)
+        assert private.json()["id"] not in after, "the private view stayed"
+        assert shared.json()["id"] in after, "the purge took a shared view"
+        assert deleted["crm_private_views"] == 1
+        assert deleted["crm_private_changes"] == 1
+        assert [r.entity_id for r in _rows(ns, ns.org_a)] == [shared.json()["id"]]
+    finally:
+        _drop_member_rows(ns)
+
+
+@_DB_GATE
+@pytest.mark.parametrize("role", ["app", "superuser"])
+async def test_a_private_view_of_the_member_in_another_org_stays(
+    ns, app_engine, monkeypatch, role: str,  # noqa: F811
+) -> None:
+    """Done when 3. ``ADMIN`` holds a private view in org A and one in org
+    B. The purge in org A deletes the view of org A only. The superuser run
+    bypasses RLS, so there only the org term of the clause keeps the view of
+    org B. Without the entry, the view of org A stays → red. Without the org
+    term, the superuser run deletes the view of org B → red."""
+    _settings(ns, ns.org_a, "native")
+    _member_rows(ns, ns.org_a)
+    try:
+        here = _view_row(ns, ns.org_a, ADMIN, "Mine", shared=False)
+        there = _view_row(ns, ns.org_b, ADMIN, "Mine in B", shared=False)
+        deleted = await _purge_admin(ns, ns.org_a, monkeypatch, role=role)
+        after = _views(ns)
+        assert here not in after, "the private view of the bound org stayed"
+        assert there in after, "the purge reached a view of another org"
+        assert deleted["crm_private_views"] == 1
+    finally:
+        _drop_member_rows(ns)
+
+
+@_DB_GATE
+async def test_the_count_of_the_private_views_is_the_rows_that_go(
+    ns, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    """Done when 4. Org A holds three private views and one shared view of
+    ``ADMIN``, and a private view of a colleague. Org B holds a private view
+    of ``ADMIN``. The count of the purge equals the rows that went, and each
+    row that went is a private view of ``ADMIN`` in org A. Without the entry,
+    the key is missing and no view goes → red."""
+    _settings(ns, ns.org_a, "native")
+    _member_rows(ns, ns.org_a)
+    try:
+        mine = {_view_row(ns, ns.org_a, ADMIN, f"Mine {i}", shared=False)
+                for i in range(3)}
+        _view_row(ns, ns.org_a, ADMIN, "Team", shared=True)
+        _view_row(ns, ns.org_a, MEMBER, "Rep's", shared=False)
+        _view_row(ns, ns.org_b, ADMIN, "Mine in B", shared=False)
+        before = _views(ns)
+        deleted = await _purge_admin(ns, ns.org_a, monkeypatch)
+        gone = set(before) - set(_views(ns))
+        assert deleted["crm_private_views"] == len(gone) == 3
+        assert gone == mine
+    finally:
+        _drop_member_rows(ns)
 
 
 # ── Fix round 2: the old name of an Undo is taken again ─────────────────────

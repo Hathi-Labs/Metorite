@@ -94,6 +94,10 @@ class UserSettingsModel(BaseModel):
     # Recurring day-templates (migration 94): flexible block/focus windows —
     # [{days:[0..6], start_hour, end_hour, kind:'block'|'focus', label, theme}].
     day_templates: list[dict] = []
+    # Today's focus (migration 507, WS-MDC CC-2, D-MD-3): how many tasks the
+    # member may mark for one day. NULL reads as 3, and a read clamps to 1..10
+    # (`projects.today_rule.clamp_focus_cap`).
+    today_focus_cap: int = 3
 
 
 class UserSettingsPatch(BaseModel):
@@ -120,6 +124,8 @@ class UserSettingsPatch(BaseModel):
     lunch_start_hour: int | None = None
     lunch_end_hour: int | None = None
     day_templates: list[dict] | None = None
+    #: WS-MDC CC-2. A write clamps it to 1..10. No control sends it until CC-7.
+    today_focus_cap: int | None = None
 
 
 async def task_models(db: Any, user_id: str) -> dict[str, str]:
@@ -258,6 +264,7 @@ async def _load(db: Any, user_id: str, *, any_case: bool = False) -> UserSetting
         lunch_start_hour=_int_or_none(getattr(row, "lunch_start_hour", None)),
         lunch_end_hour=_int_or_none(getattr(row, "lunch_end_hour", None)),
         day_templates=_day_templates(getattr(row, "day_templates", None)),
+        today_focus_cap=clamp_focus_cap(getattr(row, "today_focus_cap", None)),
     )
 
 
@@ -371,6 +378,13 @@ def _bare_token(header: str) -> str:
     if t[:2] in ("W/", "w/"):
         t = t[2:]
     return t.strip().strip('"')
+def clamp_focus_cap(value: Any) -> int:
+    """The cap of today's focus, 1..10, by the one rule of
+    ``projects.today_rule.clamp_focus_cap``. A lazy import: the projects
+    package imports this one."""
+    from gateway.routes.projects.today_rule import clamp_focus_cap as clamp
+
+    return clamp(value)
 
 
 def _int_or(v: Any, default: int) -> int:
@@ -523,8 +537,9 @@ async def write_member_settings(
 ) -> None:
     """The one write of a member's settings row (upsert of ``fields``).
 
-    ``PUT /tasks/settings`` and ``PUT /auth/me/zone`` (RX-7) both call it, so
-    a second writer of the row never exists. ``uid`` is the session's address
+    ``PUT /tasks/settings``, ``PUT /auth/me/zone`` (RX-7) and
+    ``PUT /auth/me/appearance`` (PKG-20) call it, so a second writer of the row
+    never exists. ``uid`` is the session's address
     and the tenant is the bound one. Neither comes from a request body.
 
     ``if_match`` (CAL-3, task 1677) is a compare-and-set on ``day_templates``.
@@ -536,8 +551,11 @@ async def write_member_settings(
     if not fields:
         return
     import json
-    _jsonb_cols = {"energy_windows", "day_templates"}
+    _jsonb_cols = {"energy_windows", "day_templates", "appearance"}
     fields = dict(fields)
+    if "appearance" in fields and not isinstance(fields["appearance"], str):
+        # The route gives the whole record as a dict. Encode it for JSONB.
+        fields["appearance"] = json.dumps(fields["appearance"])
     if "day_templates" in fields:
         fields["day_templates"] = json.dumps(
             _day_templates(fields["day_templates"]))
@@ -545,6 +563,9 @@ async def write_member_settings(
         # Validate + JSON-encode for the JSONB column.
         fields["energy_windows"] = json.dumps(
             _energy_windows(fields["energy_windows"]))
+    if "today_focus_cap" in fields:
+        # WS-MDC CC-2: the cap of today's focus, clamped to 1..10 on the way in.
+        fields["today_focus_cap"] = clamp_focus_cap(fields["today_focus_cap"])
     # JSONB columns need an explicit ::jsonb cast on the bind param.
     # The space before the cast matters — SQLAlchemy's bind-param
     # scanner mis-parses a bind name immediately followed by a
