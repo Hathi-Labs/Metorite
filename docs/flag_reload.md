@@ -887,15 +887,19 @@ Task 4086. Run `scripts/flag_flip.sh` on the box as `acb`, from `/opt/acb/app`:
     bash scripts/flag_flip.sh DECIDE_FEATURE_MODES --add '<org id>=warn' --task <n>
     bash scripts/flag_flip.sh CRM_ORGS --off --task <n> --dry-run
 
-The tool refuses a name that is not in `acb_common/flag_registry.py`. It refuses
-a flag in `OWNER_ONLY_FLAGS` without `--owner-approved <answer id>`. It refuses
-before any write.
+The tool refuses a name that is not in `acb_common/flag_registry.py`. It
+refuses a flag in `OWNER_ONLY_FLAGS` without `--owner-approved <answer id>`.
+`--off` and `--remove` need no answer id, because closing a flag is the safe
+way. Each refusal comes before any write.
 
-The tool writes the key into the root `.env`, and into each other env file
-that already holds the key. The edge reads only `apps/services/agent_edge/.env`.
+The tool takes the deploy lock, because a release writes `.env` too. It writes
+each env file in place, so the file keeps its inode. It writes the root `.env`.
+For a flag in `EDGE_FLAGS`, it also writes `apps/services/agent_edge/.env`,
+because the edge reads only that file.
+
 Then the tool sends the SIGHUP above, and waits for the `flags.reloaded` line
-that names the key. It restarts `acb-agent-edge` only when the edge file
-changed.
+that names the key. It restarts `acb-agent-edge` when the edge file changed,
+and checks the env of the new process.
 
-The tool prints the rollback commands, and it appends one line to
-`.flag_flips.log`. Fence: `tests/unit/test_flag_flip.py`.
+The tool prints the rollback commands. It appends one line to
+`/opt/acb/acb-flag-flips.log`. Fence: `tests/unit/test_flag_flip.py`.

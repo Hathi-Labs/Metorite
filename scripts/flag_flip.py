@@ -54,7 +54,6 @@ Fence: ``tests/unit/test_flag_flip.py``.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import datetime as dt
 import fcntl
 import json
@@ -369,7 +368,8 @@ def flip(a: argparse.Namespace) -> int:
         os.close(lock_fd)
 
 
-def _flip_locked(a: argparse.Namespace, key: str, app: Path, root: Path) -> int:
+def target_files(app: Path, key: str) -> list[Path]:
+    """The env files that the flip writes: the root .env, and the edge's for an edge flag."""
     for rel, unit in UNMANAGED_ENVS.items():
         if (app / rel).is_file() and read_key(app / rel, key) is not None:
             raise Refused(f"{rel} holds {key}, and this tool does not restart {unit}")
@@ -377,12 +377,22 @@ def _flip_locked(a: argparse.Namespace, key: str, app: Path, root: Path) -> int:
     edge_held = edge.is_file() and read_key(edge, key) is not None
     if key in EDGE_FLAGS and not edge.is_file():
         raise Refused(f"{key} is read by the edge, and {EDGE_ENV} is missing")
-    files = [root] + ([edge] if key in EDGE_FLAGS or edge_held else [])
+    return [app / ROOT_ENV] + ([edge] if key in EDGE_FLAGS or edge_held else [])
+
+
+def current_value(app: Path, key: str, files: list[Path]) -> str:
+    """The one value of *key* over *files*. A file with no key line counts only when it is the root."""
     values = {str(f.relative_to(app)): read_key(f, key) for f in files}
-    seen = {v or "" for f, v in zip(files, values.values(), strict=True) if v is not None or f == root}
+    seen = {v or "" for f, v in zip(files, values.values(), strict=True) if v is not None or f == files[0]}
     if len(seen) > 1:
         raise Refused(f"{key} differs between env files {values}. Fix it with --set")
-    old_raw = seen.pop() if seen else ""
+    return seen.pop() if seen else ""
+
+
+def _flip_locked(a: argparse.Namespace, key: str, app: Path, root: Path) -> int:
+    files = target_files(app, key)
+    edge = app / EDGE_ENV
+    old_raw = current_value(app, key, files)
     cur = parse(key, old_raw)
     operation = "off" if a.off else "set" if a.set is not None else "add" if a.add is not None else "remove"
     new = new_items(key, cur, operation, a.set if a.set is not None else a.add if a.add is not None else a.remove)
@@ -422,6 +432,18 @@ def _flip_locked(a: argparse.Namespace, key: str, app: Path, root: Path) -> int:
     except RuntimeError as exc:
         result, code = f"not proved: {exc}", 3
 
+    _record(app, t0, a, key, old_raw, new_raw, files, result)
+    _print_report(evidence, baks, edge_changed)
+    if code:
+        print(f"flag_flip: FLIP NOT PROVED: {result[len('not proved: '):]}", file=sys.stderr)
+        return code
+    print(f"flag_flip: OK {key} flipped and proved at {stamp}.")
+    return _smoke_after(a, app)
+
+
+def _record(app: Path, t0: float, a: argparse.Namespace, key: str, old_raw: str, new_raw: str,
+            files: list[Path], result: str) -> None:
+    """Append one audit line, outside the checkout."""
     audit = "\t".join([
         dt.datetime.fromtimestamp(t0, dt.UTC).isoformat(timespec="seconds"), a.task, key, old_raw or "-",
         new_raw or "-", ",".join(str(f.relative_to(app)) for f in files), result.split(":")[0],
@@ -431,6 +453,8 @@ def _flip_locked(a: argparse.Namespace, key: str, app: Path, root: Path) -> int:
     with open(audit_log, "a", encoding="utf-8") as fh:
         fh.write(audit + "\n")
 
+
+def _print_report(evidence: list[str], baks: dict[Path, Path], edge_changed: bool) -> None:
     for line in evidence:
         print(f"flag_flip: evidence: {line}")
     if ROOT_ENV_OTHERS:
@@ -439,11 +463,9 @@ def _flip_locked(a: argparse.Namespace, key: str, app: Path, root: Path) -> int:
     for f, bak in baks.items():
         print(f"  cat {bak} > {f}")
     print(f"  sudo systemctl kill -s HUP --kill-whom=main {GATEWAY}" + (f" && sudo systemctl restart {EDGE}" if edge_changed else ""))
-    if code:
-        print(f"flag_flip: FLIP NOT PROVED: {result[len('not proved: '):]}", file=sys.stderr)
-        return code
-    print(f"flag_flip: OK {key} flipped and proved at {stamp}.")
 
+
+def _smoke_after(a: argparse.Namespace, app: Path) -> int:
     if not a.no_smoke and smoke_on(app):
         print("flag_flip: the chat-turn smoke runs (task 4061).")
         if not run_smoke(app):
