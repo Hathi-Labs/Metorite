@@ -14,8 +14,11 @@
   SBX-2 is built dark and merged (2026-11-26, §12.2, `209884bac`): only tests
   mint, and `SANDBOX_DOOR_ORGS` is empty. SBX-13 is built and merged
   (2026-11-26, §12.3, `0dc23db0f`). SBX-4a (task 3803, PR 2862) is open. §12.4
-  holds the spec of SBX-4b (task 3986). No other build slice of this spec is on
-  `main` (read 2026-11-26 at `3064753ee`). The SBX-1 audit (2026-11-26, §12.1)
+  holds the spec of SBX-4b (task 3986). Parts (a), (b) and (c) of SBX-4b1 are
+  built dark on branch `mt-d0a57ed5-sbx4b1-abc` (2026-11-26, task 3986):
+  the door refusal counter, `user_tool_runs` (migration 506) and the reserved
+  agent names. The step engine of SBX-4b1 is not built. No other build slice
+  of this spec is on `main` (read 2026-11-26 at `3064753ee`). The SBX-1 audit (2026-11-26, §12.1)
   splits SBX-1 into SBX-1a and SBX-1b.
   **D233** (2026-11-26, §0d) unpauses AI Studio, and adds the build in the same
   chat turn (SBX-20, SBX-21).
@@ -1982,7 +1985,7 @@ the A2 model.
 | **SBX-2** (task 3801) | The run capability (§5.1), the door with reads only (§5.2), `SANDBOX_ROUTES` and its coverage fence. 🔨 **BUILT dark** (2026-11-26, branch `mt-37f6b3b8-sbx2-door`, §12.2): migration 503, `acb_auth/sandbox_capabilities.py`, the sibling of branch 0, `gateway/sandbox_door.py` and the 68 rows. Fences SBX-F1, SBX-F2, SBX-F6 and SBX-F29. The digest pin names the Opus diff-reviewer review and the independent verification of `external_agent_access.md` §10.1 (2026-11-26). §12.2 holds the full slice | SBX-1, SBX-Q6 | AGENT-SAFE. Dark |
 | **SBX-3** (task 3802) | Writes held for a card (§5.3), the batch card, `meta.via` | SBX-2 | AGENT-SAFE. Dark |
 | **SBX-4a** (task 3803) | (D227) **The `tools` target, inert** (§0c item 4). `TOOLS_TARGET` and the broker agent name `user-tool` join `MAF_CODING_TARGETS`, so a `tools:` entry of `MAF_CODING_SCOPE` parses and every other target stays on. `acquire()` refuses the target, and `docker-remote` refuses it too, because `REMOTE_TARGETS` still holds `code_task` only. A `tools` agent is never covered, so the D85 seam keeps its host shell withheld. 🔨 **Built dark on PR 2862, not merged** (2026-11-26). **Done when:** SBX-F24 (part) in `tests/unit/test_sandbox_scope_all_orgs.py`, `tests/unit/test_sandbox_broker_tools.py`, and the SBX-F11 test `test_the_tools_target_never_falls_back_to_the_host` pass, and each fails before the change | None | AGENT-SAFE. Dark |
-| **SBX-4b** (tasks 3986 and 4049) | `build_tool`, the build session and the smoke test (§6.2, §6.3), on the Docker backend. (§12.1 decision 9) The table `user_tool_runs` (§7.3). The gap id in the answer of the no-match path. The reserved agent names `user-tool` and `compute`. **§12.4 holds the full slice.** Two PRs: SBX-4b1 (task 3986), the step engine with a fixture package, and SBX-4b2 (task 4049), the chat tool and the build session. Parts (a) to (c) of SBX-4b1 can start now. The step engine waits for PR 2862 and PR 2887. HIGH. **Done when:** the list of §12.4 | SBX-4a, SBX-1a (a gap id, SBX-F8), SBX-2, SBX-13 (D187), WS-43g1 (task 4009, PR 2887) for the proxy and the door name | AGENT-SAFE. Dark. No production container (task 3786) |
+| **SBX-4b** (tasks 3986 and 4049) | `build_tool`, the build session and the smoke test (§6.2, §6.3), on the Docker backend. (§12.1 decision 9) The table `user_tool_runs` (§7.3). The gap id in the answer of the no-match path. The reserved agent names `user-tool` and `compute`. **§12.4 holds the full slice.** Two PRs: SBX-4b1 (task 3986), the step engine with a fixture package, and SBX-4b2 (task 4049), the chat tool and the build session. Parts (a) to (c) of SBX-4b1 can start now. The step engine waits for PR 2862 and PR 2887. HIGH. **Done when:** the list of §12.4. 🔨 **Parts (a), (b) and (c) BUILT dark** (2026-11-26, task 3986, branch `mt-d0a57ed5-sbx4b1-abc`): the door refusal counter and `door_counts`, `user_tool_runs` (migration 506) with its store, and the reserved names. Done-when 1 to 7 pass. The step engine (decisions 1 to 8) and done-when 8 to 27 are not built | SBX-4a, SBX-1a (a gap id, SBX-F8), SBX-2, SBX-13 (D187), WS-43g1 (task 4009, PR 2887) for the proxy and the door name | AGENT-SAFE. Dark. No production container (task 3786) |
 | **SBX-5** (task 3804) | (D187) `run_tool`, persist on success as a Studio package, and reuse (§6.4 to §6.6). The `app_versions.files` columns, the CHECK and the trigger (§7.2). `publish_version` writes the files, and `rollback` copies them. (SBX-4b) SBX-5 is the single owner of the package rules of `ai_studio.md` §19.5 (age, advisory, licence and layer), and it closes the residual of §12.4 decision 9. **Done when** (part): a tool whose lock breaks a §19.5 rule does not persist, and a test proves it | SBX-3, SBX-4, `ai_studio.md` B7 | AGENT-SAFE. Dark |
 | **SBX-6** (task 3805) | (D187) (D227) The setting `user_tool_disabled_orgs`, which takes `*` (§0c, Gap A). The review controls through the package host: share, approve with `studio:publish`, pin, pause, archive and audit (§8) | SBX-5, `package_host.md` PKG-11, `ai_studio.md` J2 | AGENT-SAFE. Dark |
 | **SBX-7** (task 3806) | Metering (§10). (D227) A step is refused when the `sandbox` price row is missing (SBX-F16) | SBX-5, SBX-Q4 | AGENT-SAFE. Dark |
@@ -2954,7 +2957,10 @@ hold all of it in one round. Each half has its own proof.
   `sandbox.tool.build`.
 
 **What can start now.** Parts (a), (b) and (c) of SBX-4b1 need no open PR. A
-builder can dispatch them now. Part (c) pins the literal `"user-tool"`
+builder can dispatch them now. **Status:** parts (a), (b) and (c) are built
+dark on branch `mt-d0a57ed5-sbx4b1-abc` (2026-11-26, task 3986). Done-when 1
+to 7 pass. The store digest changed, and the commit that updates the pin
+needs a named Opus diff-reviewer review. The step engine is not built. Part (c) pins the literal `"user-tool"`
 until PR 2862 merges, and then uses `USER_TOOL_AGENT`. The step engine
 (decisions 1 to 8) waits for PR 2862 and PR 2887. SBX-4b2 waits for SBX-4b1.
 
@@ -3665,3 +3671,9 @@ here, and each needs its own check before anyone acts on it.
   mounts use their own subfolder. The door counts a refusal by token. The
   run rows keep a deleted chat as NULL. §5.1, §5.5, §6.1, §6.2, §6.9 and the
   SBX-5 row follow §12.4.
+- 2026-11-26 — SBX-4b1 parts (a), (b) and (c) built dark (task 3986, branch
+  `mt-d0a57ed5-sbx4b1-abc`). The door counts each of the four refusals by
+  token hash before it sends the status, and `door_counts` reads the counts.
+  Migration 506 adds `user_tool_runs` with FORCE RLS, its one store and its
+  member purge entry. `register_agent` refuses `user-tool` and `compute`. The
+  store digest changed, and its pin waits for a named Opus review.

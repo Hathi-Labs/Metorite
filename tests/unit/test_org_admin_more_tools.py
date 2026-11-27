@@ -935,6 +935,7 @@ _PURGE_LOSSES: dict[str, str] = {
     "private_chat_sessions": "chats", "chat_topics": "chats", "chat_pending_asks": "chats",
     "crm_member_rules": "crm", "crm_private_changes": "crm", "crm_private_views": "crm",
     "studio_skill_runs": "studio", "studio_skills": "studio", "studio_private_views": "studio",
+    "user_tool_runs": "studio",
     "knowledge_favorites": "own", "reminders": "own", "brief_runs": "own",
     "goal_records": "own", "member_settings": "own", "push_devices": "own",
     "calendar_entries": "own", "calendar_attendances": "own", "connection_asks": "own",

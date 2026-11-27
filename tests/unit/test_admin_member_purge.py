@@ -536,6 +536,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "sandbox_capabilities": 0,
         # SBX-1a: the fake holds no tool gap of the member.
         "tool_gaps": 0,
+        # SBX-4b1: the fake holds no tool run row of the member.
+        "user_tool_runs": 0,
         "private_chat_sessions": 2,
         "sign_in_requests": 1,
         # WS-53 CRM-Q33: the fake holds no CRM rule of the member.
@@ -2220,3 +2222,25 @@ def test_the_tool_gaps_of_the_member_go_before_her_chats() -> None:
     keys = [r.key for r in _PURGE_DELETES]
     assert keys.index("tool_gaps") < keys.index("private_chat_sessions")
     assert "tool_gaps" in cascade_closure("chat_session")
+
+
+def test_the_tool_run_rows_of_the_member_go_in_the_bound_org_only() -> None:
+    """SBX-4b1 (``agent_sandbox.md`` §7.3, §12.4 decision 10): a
+    ``user_tool_runs`` row holds the address of the member. A Delete of a
+    chat sets its ``thread_id`` to NULL and keeps it, so no chat cascade takes
+    it. The purge deletes each row of hers in the bound org.
+    ``test_user_tool_registry.py::test_the_member_purge_deletes_run_rows``
+    runs this entry on a real database.
+
+    Mutation: drop the entry, and this and the count dict above fail, and so
+    does ``test_every_table_keyed_by_a_member_email_is_in_the_purge``."""
+    from gateway.routes.admin.members import _PURGE_DELETES, _PURGE_KEEPS
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    from tests.unit._schema_cascade import cascade_closure
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "user_tool_runs"]
+    assert rows.key == "user_tool_runs"
+    assert rows.where == f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"
+    assert "user_tool_runs" not in {r.table for r in _PURGE_KEEPS}
+    assert "user_tool_runs" not in cascade_closure("chat_session")
