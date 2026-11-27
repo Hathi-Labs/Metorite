@@ -108,6 +108,7 @@ def test_both_email_families_name_the_email_assistant_as_owner() -> None:
         "projects-reminders", "projects-reports", "projects-authority", "calendar-day",
         "mail-tasks", "projects-cycles", "studio", "studio-more", "studio-workflows", "studio-repair",
         "studio-apps", "studio-share", "org-admin", "people", "calendar-connections", "notes",
+        "agent-registry",
     )
     for slug in ("email", "email-setup"):
         assert sf.SKILL_FAMILIES[slug]["owner"] == EA
@@ -892,10 +893,12 @@ def test_studio_more_follows_the_core_and_studio_workflows_stays_dark() -> None:
     # the dark org-admin pack comes after them all. P-5b-1 (task 3114): the dark
     # people pack of the same owner comes next. P-1c (task 3923): the dark
     # calendar-connections pack of that owner comes after it. Task 3963: the dark
-    # notes pack of that owner comes last. PAR-9: the dark Custom Apps pack comes
-    # before the share pack.
-    assert list(tp.PACKS)[-10:-4] == list(STUDIO_PACKS)
-    assert list(tp.PACKS)[-4:] == ["org-admin", "people", "calendar-connections", "notes"]
+    # notes pack of that owner comes next. Task 3970: the dark agent-registry pack
+    # of that owner comes last. PAR-9: the dark Custom Apps pack comes before the
+    # share pack.
+    assert list(tp.PACKS)[-11:-5] == list(STUDIO_PACKS)
+    assert list(tp.PACKS)[-5:] == ["org-admin", "people", "calendar-connections", "notes",
+                                   "agent-registry"]
     assert "studio-share" not in tp.FOLLOWS
     assert "studio-repair" not in tp.FOLLOWS
     assert "studio-apps" not in tp.FOLLOWS
@@ -1439,12 +1442,14 @@ def test_the_org_admin_family_equals_the_owners_own_tool_scope() -> None:
     cfg = json.loads((REPO / ORG_ADMIN_DIR / "config.json").read_text(encoding="utf-8"))
     # P-5b-1 (task 3114): the same owner holds the people pack too. P-1c (task
     # 3923): and the one act of the dark calendar-connections pack. Task 3963:
-    # and the six reads of the notes pack.
+    # and the six reads of the notes pack. Task 3970: and the seven tools of the
+    # agent-registry pack.
     assert set(cfg["own_tool_scope"]) == (set(ORG_ADMIN_TOOLS) | set(PEOPLE_TOOLS)
                                           | {"my_tasks_calendar_connection"}
-                                          | set(NOTES_TOOLS))
+                                          | set(NOTES_TOOLS)
+                                          | set(sf.SKILL_FAMILIES["agent-registry"]["tools"]))
     assert tp.owner_packs(ORG_ADMIN) == ("org-admin", "people", "calendar-connections",
-                                         "notes")
+                                         "notes", "agent-registry")
     for slug, fam in sf.SKILL_FAMILIES.items():
         if slug != "org-admin":
             assert not set(ORG_ADMIN_TOOLS) & set(fam["tools"]), slug

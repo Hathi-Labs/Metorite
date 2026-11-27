@@ -401,6 +401,14 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "notes_templates": ("list the meeting templates",),
     "notes_glossary": ("show my notes glossary",),
     "notes_copilot_instructions": ("show my copilot instructions",),
+    # -- agent-registry: the Agent Registry and its office view (task 3970) --
+    "agent_registry_list": ("list the agents of the agent registry", "show the registered agents"),
+    "agent_registry_skills": ("show the agent skill switches of the sales agent",),
+    "agent_registry_config": ("read the agent config.json of acme/sales-agent",),
+    "agent_registry_mutations": ("show the mutation queue", "show the pending commit diff"),
+    "agent_registry_office": ("show the agent roster", "what is the ai cost this week"),
+    "agent_registry_runs": ("show the agent run history of the sales agent",),
+    "agent_registry_set_avatar": ("change the avatar of the agent sales to exec-f",),
     # -- studio-repair: the repair of a skill (TOF-3a F12c) --
     "studio_skill_repair": ("fix my skill, it failed", "the skill was wrong, repair the skill"),
     "studio_skill_undo": ("undo my skill to the version before",),

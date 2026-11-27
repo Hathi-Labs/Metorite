@@ -850,9 +850,10 @@ def test_the_pack_holds_the_two_writes_of_the_studio_owner() -> None:
     # PAR-2a: the org-admin pack of another owner comes after them. P-5b-1 (task
     # 3114): the people pack of that owner comes next. P-1c (task 3923): the
     # calendar-connections pack of that owner comes after it. Task 3963: the
-    # notes pack of that owner comes last of all.
+    # notes pack of that owner comes next. Task 3970: the agent-registry pack of
+    # that owner comes last of all.
     # PAR-9: the Custom Apps pack of the studio owner comes before the share pack.
-    assert sf.pack_slugs()[-10:-4] == ("studio", "studio-more", PACK, "studio-repair",
+    assert sf.pack_slugs()[-11:-5] == ("studio", "studio-more", PACK, "studio-repair",
                                        "studio-apps", "studio-share"), (
         "after studio, so the cap drops it first")
     assert tp.owner_packs(STUDIO) == ("studio", "studio-more", PACK, "studio-repair",

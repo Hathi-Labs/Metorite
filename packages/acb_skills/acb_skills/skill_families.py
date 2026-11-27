@@ -1276,6 +1276,42 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # Task 3970 (chat_parity.md wave P-6, PAR-10 part a): the Agent Registry
+    # and its office view, the agent registry tools. Each calls the route of
+    # the UI as the member, so the gate of each route decides. Six tools read.
+    # One gives an agent a character of the avatar library. The pack follows
+    # the example of "notes": owned by org-admin, which never runs as an
+    # agent, and NOT in FOLLOWS. A run loads it where the owner lists it in the
+    # pack list of the box, or where the list is "*" (tool_packs.packs_on).
+    # Fence: test_agent_registry_read_tools.py.
+    "agent-registry": {
+        "label": "Agent Registry",
+        "summary": (
+            "Read the agents, their skill switches, an agent repository's config, the "
+            "self-mutation queue, the office roster, the AI cost, the activity and the run "
+            "history, and give an agent an avatar."
+        ),
+        "description": (
+            "A tool pack: the Agent Registry and its office view, for the main assistant "
+            "to load when a turn asks about the agents of the organization. Each tool "
+            "calls the routes as the member. No tool registers, changes or removes an "
+            "agent, or reviews a commit. A run loads a pack only where tool packs are on, "
+            "so until then this switch has no effect."
+        ),
+        "tools": (
+            "agent_registry_list",
+            "agent_registry_skills",
+            "agent_registry_config",
+            "agent_registry_mutations",
+            "agent_registry_office",
+            "agent_registry_runs",
+            "agent_registry_set_avatar",
+        ),
+        "owner": "org-admin",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
 }
 
 

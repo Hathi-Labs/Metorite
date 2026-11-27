@@ -100,6 +100,10 @@ WHEN = {
     # Task 3963: the notes pack of the same owner.
     "notes": (
         "Load for your meetings, a meeting transcript or the Note Taker settings."),
+    # Task 3970: the agent-registry pack of the same owner.
+    "agent-registry": (
+        "Load for the agents of the Agent Registry, the mutation queue, the office roster, "
+        "the AI cost, the run history or an agent avatar."),
 }
 
 
