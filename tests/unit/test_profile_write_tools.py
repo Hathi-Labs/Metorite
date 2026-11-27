@@ -427,6 +427,17 @@ class TestSet:
         assert _refused(out, "not_your_words") == pt.LANGUAGE_FIXED_REFUSED
         assert own_chat.writes() == []
 
+    def test_a_list_cannot_carry_the_mark_past_the_members_words(
+            self, own_chat, monkeypatch) -> None:
+        # PZ-52: the list wins at the gateway, so its first tag is the one
+        # that the member's words must name.
+        monkeypatch.setattr(pt, "_member_words",
+                            lambda: "give me the answer in English, not Hindi")
+        out = _run(pt.profile_set(
+            "style", {"language": "en", "languages": ["kn"], "language_fixed": True}))
+        assert _refused(out, "not_your_words") == pt.LANGUAGE_FIXED_REFUSED
+        assert own_chat.writes() == []
+
     def test_a_language_mark_passes_on_the_members_words(self, own_chat, monkeypatch) -> None:
         monkeypatch.setattr(pt, "_member_words",
                             lambda: "give me the answer in English, not Hindi")

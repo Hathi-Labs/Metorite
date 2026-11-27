@@ -179,3 +179,44 @@ def test_profile_set_merge_replaces_the_list_when_one_language_is_named() -> Non
     # The gateway then lets the list win, so ``language`` follows its first tag.
     assert ap._clean_style(_merge_style(prior, {"languages": ["kn", "en"]})) == {
         "language": "kn", "languages": ["kn", "en"], "length": "short"}
+
+
+# ── The answer order of task 3131 meets the list ───────────────────────────
+
+
+def test_a_fixed_list_names_the_order_and_the_answer_language() -> None:
+    style = {"language": "hi", "languages": ["hi", "en", "kn"], "language_fixed": True}
+    line = ap._style_line(style, [])
+    assert line == (
+        "Languages: Hindi (hi), then English (en), then Kannada (kn). "
+        "Answer in Hindi, even when the member writes in English or another language.")
+    assert ap.block_language(line) == "hi"
+
+
+def test_the_store_keeps_the_mark_beside_the_list() -> None:
+    style = {"language": "en", "languages": ["en", "hi"], "language_fixed": True}
+    assert _clean(**style) == style
+    assert _read(style) == style
+    assert _read({"language": "en", "language_fixed": True}) == {
+        "language": "en", "languages": ["en"], "language_fixed": True}
+
+
+def test_an_answer_order_moves_the_language_first_and_keeps_the_list() -> None:
+    from acb_skills.profile_tools import _merge_style
+
+    prior = {"language": "hi", "languages": ["hi", "en", "kn"]}
+    merged = _merge_style(prior, {"language": "en", "language_fixed": True})
+    assert ap._clean_style(merged) == {
+        "language": "en", "languages": ["en", "hi", "kn"], "language_fixed": True}
+    full = {"language": "hi", "languages": ["hi", "en", "kn", "ta", "te", "mr"]}
+    merged = _merge_style(full, {"language": "bn", "language_fixed": True})
+    assert merged["languages"] == ["bn", "hi", "en", "kn", "ta", "te"]
+
+
+def test_the_same_language_in_another_case_keeps_the_list() -> None:
+    from acb_skills.profile_tools import _merge_style
+
+    prior = {"language": "en-IN", "languages": ["en-in", "hi"]}
+    assert _merge_style(prior, {"language": "en-IN"}) == prior
+    assert _merge_style(prior, {"language": "EN-in"}) == prior
+

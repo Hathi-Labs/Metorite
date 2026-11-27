@@ -77,8 +77,21 @@ describe("mergeStyle language_fixed", () => {
   it("keeps the mark when the language changes", () => {
     expect(mergeStyle({ language: "en", language_fixed: true }, { language: "hi" })).toEqual({
       language: "hi",
+      languages: ["hi"],
       language_fixed: true,
     });
+  });
+  it("moves the mark to the new first language of a reorder (PZ-52)", () => {
+    const fixed = { language: "en", languages: ["en", "hi"], language_fixed: true };
+    expect(mergeStyle(fixed, { languages: ["hi", "en"] })).toEqual({
+      language: "hi",
+      languages: ["hi", "en"],
+      language_fixed: true,
+    });
+  });
+  it("drops the mark when the list is emptied (PZ-52)", () => {
+    const fixed = { language: "en", languages: ["en"], language_fixed: true, length: "short" as const };
+    expect(mergeStyle(fixed, { languages: [] })).toEqual({ length: "short" });
   });
   it("drops the mark when the language is cleared", () => {
     expect(mergeStyle({ language: "en", language_fixed: true, length: "short" }, { language: "" })).toEqual({

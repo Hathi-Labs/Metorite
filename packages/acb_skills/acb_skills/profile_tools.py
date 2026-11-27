@@ -144,6 +144,7 @@ from acb_common.assistant_profile import (
     FACT_MAX,
     INTERVIEW_STATES,
     LANGUAGE_NAMES,
+    LANGUAGES_MAX,
     NO_ANSWER,
     NO_ANSWER_TEXT,
     NOT_YOUR_WORDS,
@@ -1231,14 +1232,21 @@ def _merge(prior: dict[str, Any], value: dict[str, Any]) -> dict[str, Any]:
 def _merge_style(prior: dict[str, Any], value: dict[str, Any]) -> dict[str, Any]:
     """:func:`_merge` for ``style``, with the language pair kept in step
     (PZ-52). The member says ONE language to the chat, so a ``language`` that
-    differs from the first saved tag replaces the list with a list of one. A
-    ``language`` set to null clears the list too. The gateway lets
-    ``languages`` win when a write holds both, so the stale list must go."""
+    differs from the first saved tag replaces the list with a list of one. An
+    ORDER about the answer language (``language_fixed``, task 3131) is not a
+    new list: the ordered language moves to the first place and the others
+    stay. A ``language`` set to null clears the list too. The gateway lets
+    ``languages`` win when a write holds both, so a stale list must go."""
     merged = _merge(prior, value)
     if "languages" not in value and "language" in value:
         held, one = prior.get("languages"), value["language"]
-        if isinstance(one, str) and isinstance(held, list) and bool(held) and held[0] == one:
+        if not (isinstance(one, str) and isinstance(held, list) and held):
+            merged.pop("languages", None)
+        elif str(held[0]).lower() == one.lower():
             merged["language"] = prior.get("language", one)
+        elif value.get("language_fixed") is True:
+            rest = [t for t in held if str(t).lower() != one.lower()]
+            merged["languages"] = [one.lower(), *rest][:LANGUAGES_MAX]
         else:
             merged.pop("languages", None)
     elif "languages" in value and value["languages"] is None:
@@ -1335,7 +1343,13 @@ async def profile_set(key: Literal["address", "style", "celebrations"], value: d
     if key == "style" and value.get("language_fixed") is True and not _confirming():
         # Task 3131: the mark is an order of the member, so their own typed
         # words of this turn must hold it. A mail or a page cannot set it.
-        language = value.get("language") or prior.get("language") or ""
+        # PZ-52: a list in the same write wins at the gateway, so the words
+        # must name its first language.
+        listed = value.get("languages")
+        if isinstance(listed, list) and listed:
+            language = listed[0]
+        else:
+            language = value.get("language") or prior.get("language") or ""
         if not language or not _language_order_typed(str(language)):
             raise _Refused(LANGUAGE_FIXED_REFUSED, "not_your_words")
     free = _free_text(key, value, prior)

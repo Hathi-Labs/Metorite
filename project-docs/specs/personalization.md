@@ -732,20 +732,33 @@ drops, and the cap counts the tags that are left. A lone `language` sets
 `languages` to a list of one and keeps its own case, while the list is lower
 case. `_stored_style` is the one reader: a lone `language` reads as a list of
 one, and a `language` that differs from `languages[0]` wins. The chat tool
-`profile_set` replaces the list when the member names one language. The undo
+`profile_set` replaces the list when the member names one language and gives
+no answer order. The undo
 areas treat `language` and `languages` as one.
 
 The Settings control reorders by drag, by the arrow buttons and by Alt with
 the arrow keys. It saves the whole list on each change.
+
+**The answer order meets the list (merge with task 3131).** The mark
+`style.language_fixed` (§5.3) orders the first language of the list. With two
+languages or more, the line reads as follows. `Languages: Hindi (hi), then
+English (en). Answer in Hindi, even when the member writes in English or
+another language.` When the member orders an answer language in the chat,
+`profile_set` moves that language to the first place and keeps the others. A
+full list drops its last tag. The member's typed words must name the first
+language of the write. In Settings, a reorder keeps the mark, so the mark
+moves to the new first language. An empty list drops the mark. Fences:
+`tests/unit/test_assistant_profile_languages.py`,
+`tests/unit/test_profile_write_tools.py` and `profile.test.ts`.
 
 PZ-52 goes first. PZ-53 follows. VOX-8, when it opens, reads
 `style.languages` from the profile, so it needs PZ-52. No slice adds a flag,
 because an empty list changes nothing. The existing voice routing switch turns
 the mic path off.
 
-Numbers: `PZ-51` is taken (PR 2031). No branch uses `PZ-52` or `PZ-53`.
-`VOX-7` may be held by branch `mt-ae7b5305-wave`, so this section takes `VOX-8`.
-Re-check all three at merge (R1).
+Numbers: `PZ-51` is taken (PR 2031). `VOX-7` is in `main` (PR 2718), so this
+section takes `VOX-8`. `PZ-52` and `PZ-53` are slice ids. The decision
+`D-PZ-52` of §19.12 is a separate id. Re-check all three at merge (R1).
 
 #### Owner calls
 
