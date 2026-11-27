@@ -1074,7 +1074,7 @@ each slice. Each flip or `on` mode is OWNER-GATE.
 | 3b | 1 | LBB-3b the sweeper's actions | (to make) | HIGH (merge path) | `LANDING_SWEEPER_MODE=on` | §7b.5 rules | NO-GO until metorite-78 takes the two decisions of §7b.5 |
 | 4 | 2 | LBB-1 done means live | 4044 | STANDARD | `LIVE_CHECK_MODE` | `GET /version`, the merger steps of `lane-merge.md` | build AGENT-SAFE, `on` is `deploy` |
 | 5 | 2 | LBB-6 built, not live, in My Day and the review | 4045 | STANDARD, UI | `BUILT_NOT_LIVE_ORGS` | `.claude/commands/delivery-review.md`, My Day "Needs you" (WS-58) | build AGENT-SAFE, D145 preview before the flip |
-| 6 | 2 | LBB-5 merge capacity follows build capacity | 4046 | HIGH (merge path) | `PREMERGE_MERGE_TEST=auto` | `scripts/premerge.sh` step 4 | build AGENT-SAFE, the default flip is the owner's |
+| 6 | 2 | LBB-5a the merge test runs where pr-check is blind (§7b.9) | 4046 | HIGH (merge path) | `PREMERGE_MERGE_TEST=auto` | `scripts/premerge.sh` step 4 | build AGENT-SAFE (owner, task 4046, 2026-11-27), the default flip is the owner's |
 
 Rung 1 stops new orphans and lands the old ones. Rung 2 shows the owner what
 is live and makes merges cheaper. The demo of rung 1: on production, a lane
@@ -1448,6 +1448,89 @@ dark behind `BUILT_NOT_LIVE_ORGS`, with a D145 owner preview before the flip.**
 ```
 PYTEST_ADDOPTS="-o timeout_method=thread" uv run pytest -p no:cacheprovider   tests/unit/test_delivery_metrics.py
 ```
+
+### 7b.9 LBB-5a: the merge test runs where pr-check is blind (task 4046)
+
+**Status.** Spec, 2026-11-27. The owner chose "build auto now, default
+unchanged" on task 4046 (answer a5af3552, 06:59 UTC). Tier HIGH: the merge
+path.
+
+**Today.** `premerge.sh` has two modes. The default runs the merge test: the
+tests that both sides can affect, on the merge result, when the head is
+behind main. `--no-tests` (or `PREMERGE_MERGE_TEST=0`) runs the fences only.
+lane-merge runs `--no-tests` on almost every merge, so it tests nothing on
+the merge result, not even a migration.
+
+**The new mode.** `PREMERGE_MERGE_TEST=auto`, or the flag `--auto-tests`. It
+changes nothing until a merger chooses it. The default stays `1`. The owner
+alone makes `auto` the default.
+
+In `auto`, a head that holds main exits at once, as today. A head that is
+behind main gets the trial merge and every fence, as today. Then the merge
+test runs only when one of these is true:
+- **M, a migration.** Either side, since the merge base, adds or changes a
+  file under `infra/postgres/`.
+- **R, an R8 suite.** The picker's list (`sel.txt`) holds a file that
+  `affected_tests.py --r8` lists. pr-check runs no R8 suite, so this is where
+  it is blind.
+
+When neither is true, `auto` skips the tests and prints one line: "auto: no
+migration and no R8 suite in the merge, so the clean trial merge and the
+green pr-check decide". It exits 0 when the fences pass.
+
+When M or R is true, `auto` runs the merge test of the default mode, under
+the same time budget. The line names the reason: `auto: migration <file>` or
+`auto: R8 suite <file>` (the first of each).
+
+**R needs a database.** An R8 file skips when its database variable is
+unset, and then the test proves nothing. So when R is true and neither
+`CUSTOMER_CONSOLE_DATABASE_URL` nor `TENANT_LADDER_DATABASE_URL` is set,
+`auto` FAILs. The text says: "auto: the merge touches R8 suites, and no
+database is exported. Run `eval "$(bash scripts/dev_db.sh --export)"` and
+run premerge again." It never passes an R8 merge on skipped tests.
+
+**Why `auto` is never looser than the merger's practice.** Against
+`--no-tests`, it adds tests and adds nothing that passes more. Against the
+default mode, it skips the merge test only when no migration and no R8 suite
+is in the merge. Then pr-check on the head has run the same unit tests, and
+the trial merge was clean.
+
+**Not in this slice.** A change to the default. A change to `merge_bot.sh`
+or to `lane-merge.md`. A merger switches to `auto` by its own choice, and
+metorite-78 writes that step in `lane-merge.md` after one week of `auto` lines.
+
+**Fences.** `tests/unit/test_premerge.py`, with a temp git repo and stub
+commands, as its other tests do:
+1. `auto` with a PR that adds `infra/postgres/NNN_x.sql`: the merge test runs.
+2. `auto` with a main side that adds a migration: the merge test runs.
+3. `auto` with a picker list that holds an R8 file, and a database variable
+   set: the merge test runs.
+4. `auto` with a picker list that holds an R8 file, and no database variable:
+   FAIL, with the text above.
+5. `auto` with neither: no test runs, the skip line prints, and the exit is 0.
+6. The default and `--no-tests` behave as before: the existing tests pass
+   unchanged.
+7. An unknown value of `PREMERGE_MERGE_TEST` keeps its current meaning, and
+   `--auto-tests` with `--no-tests` gives the last flag, as the flags do today.
+
+**Done when.**
+1. Fences 1 to 7 pass, and every existing `test_premerge.py` test passes
+   unchanged.
+2. The header comment of `premerge.sh` names the three modes.
+3. A mutation that runs the tests in `auto` with neither M nor R, and a
+   mutation that passes R with no database, each turn a test red.
+
+**Verify with.**
+
+```
+PYTEST_ADDOPTS="-o timeout_method=thread" uv run pytest -p no:cacheprovider \
+  tests/unit/test_premerge.py tests/unit/test_premerge_select.py \
+  tests/unit/test_release_freeze.py tests/unit/test_auto_revert.py
+bash -n scripts/premerge.sh
+```
+
+**Tier.** HIGH (the merge path): the spec-auditor, an Opus builder, an
+independent verifier and an Opus diff-review.
 
 ## 8. What to fix before customer #1 — in order
 
