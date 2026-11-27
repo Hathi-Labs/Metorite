@@ -115,6 +115,7 @@ def world(monkeypatch):
 
     w = _World()
     steer._PENDING_GUIDANCE.clear()
+    steer._SEEN_STEER_IDS.clear()
     steer._CLOSED.clear()
 
     async def _get_client():
@@ -188,6 +189,7 @@ def world(monkeypatch):
     monkeypatch.setattr(acb_memory, "add_episode", _noop)
     yield w
     steer._PENDING_GUIDANCE.clear()
+    steer._SEEN_STEER_IDS.clear()
     steer._CLOSED.clear()
 
 
@@ -434,6 +436,7 @@ def test_a_buffered_steer_survives_the_owner_dying(world):
     _steer_then_buffer(world, "t-crash", "and the owner")
     # The owner process dies: its buffer is gone, nothing gave it back.
     steer._PENDING_GUIDANCE.clear()
+    steer._SEEN_STEER_IDS.clear()
     world.active = False
     asyncio.run(stream_relay.push_event("t-crash", {"type": "RUN_FINISHED", "interrupted": True}))
     code, _ = _post(_body("t-crash", "", followup=True))

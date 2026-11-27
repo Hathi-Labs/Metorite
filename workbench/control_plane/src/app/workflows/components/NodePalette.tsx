@@ -79,11 +79,14 @@ export default function NodePalette({
   catalog,
   onAdd,
   studioWriteOffered = false,
+  fill = false,
 }: {
   catalog: Catalog | null;
   onAdd: (drop: PaletteDrop) => void;
   /** True for the owner of the workflow only: the step runs as the owner. */
   studioWriteOffered?: boolean;
+  /** E7a: a phone draws the palette alone, at the full width. A desktop keeps its fixed width. */
+  fill?: boolean;
 }) {
   const [open, setOpen] = useState<Record<string, boolean>>({
     agent: true, tool: true, module: true, logic: true, output: false,
@@ -208,7 +211,7 @@ export default function NodePalette({
   const integrations = catalog?.integrations ?? [];
 
   return (
-    <div className="w-52 sm:w-60 shrink-0 overflow-y-auto scrollbar-thin p-2">
+    <div className={`${fill ? "w-full min-w-0" : "w-52 sm:w-60 shrink-0"} overflow-y-auto scrollbar-thin p-2`}>
       {/* Search — the front door once the catalog is big */}
       <div className="relative mb-2">
         <AppIcon name="Search" className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />

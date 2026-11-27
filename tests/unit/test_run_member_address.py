@@ -142,6 +142,7 @@ def _tools() -> list[Any]:
     from acb_skills import crm_tools as ct
     from acb_skills import integrations_admin_tools as ia
     from acb_skills import knowledge_tools as kt
+    from acb_skills import notes_read_tools as nt
     from acb_skills import org_admin_tools as oa
     from acb_skills import people_tools as pt
     from acb_skills import profile_tools as pf
@@ -171,6 +172,20 @@ def _tools() -> list[Any]:
                      id="people.people_me"),
         pytest.param(pf.resolve_person, ("Asha",), pf.SHARED_ROOM,
                      id="profile.resolve_person"),
+        pytest.param(nt.notes_settings, (), {"ok": False, "error": nt._SHARED_ROOM},
+                     id="notes_read.notes_settings"),
+        pytest.param(nt.notes_meetings, (), {"ok": False, "error": nt._SHARED_ROOM},
+                     id="notes_read.notes_meetings"),
+        pytest.param(pt.update_my_profile, (), {"ok": False, "error": pt._W_SHARED},
+                     id="people.update_my_profile"),
+        pytest.param(pt.set_my_skills, (["python"],), {"ok": False, "error": pt._W_SHARED},
+                     id="people.set_my_skills"),
+        pytest.param(pt.set_my_credentials, ([{"kind": "education", "title": "BEng"}],),
+                     {"ok": False, "error": pt._W_SHARED}, id="people.set_my_credentials"),
+        pytest.param(pt.add_my_absence, ("2027-03-01", "2027-03-02", "holiday"),
+                     {"ok": False, "error": pt._W_SHARED}, id="people.add_my_absence"),
+        pytest.param(pt.remove_my_absence, ("00000000-0000-0000-0000-000000000001",),
+                     {"ok": False, "error": pt._W_SHARED}, id="people.remove_my_absence"),
     ]
 
 

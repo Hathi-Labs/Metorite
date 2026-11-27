@@ -38,11 +38,16 @@ from datetime import UTC, datetime
 from typing import Any
 
 from acb_auth import (
+    EffectiveAccess,
     UserContext,
+    build_access,
     get_current_user,
     invalidate_access,
     permission_matches,
 )
+from acb_auth.access import IntegrationRules
+from acb_auth.integration_access import Narrowed
+from acb_auth.integration_access import narrow as narrow_by_rules
 
 # WS-29 H6 (DARK): the identity-shadow mirror lives in `acb_auth.access` (NOT
 # `console_resolve`, whose importer set is capped by a farmable-seat fence). It is
@@ -811,6 +816,189 @@ async def provision_member(
     # is durable — so the shadow only ever mirrors an `app_user` write that
     # actually landed. See `acb_auth.access` and §H6.
     return member, [slug for _rid, slug in role_ids]
+
+
+# ── Integration access rules (ACC-1, integrations_console.md §3.9) ──────────
+
+#: The rules of one org. ``organization`` carries no row security, so the
+#: statement names the org, and the org comes from :func:`get_org_id` (R5).
+#: ``routes/admin/integration_access.py`` and the group gates read it here.
+#: The resolver reads the same key with the member's groups
+#: (``acb_auth.access._INTEGRATION_RULES_SQL``).
+ORG_INTEGRATION_RULES_SQL = (
+    "SELECT settings -> 'integration_access' AS rules "
+    "  FROM organization WHERE id = CAST(:org AS uuid)"
+)
+
+
+#: The row locks that a read of the rules can take (ACC-1 fix round 1).
+#:
+#: * ``share`` is for a write that a rule can name: a member write to a group,
+#:   and a group delete. Many such writes can run at once.
+#: * ``update`` is for a write of the rules: the PUT, and the scrub of a
+#:   member purge. It waits for each ``share`` holder, and each waits for it.
+#:
+#: Each caller takes the lock as the FIRST row lock of its transaction. So
+#: the order is always the org row, then the other rows, and no deadlock
+#: cycle can form. ``FOR NO KEY UPDATE`` is the lock of a plain ``UPDATE``,
+#: so the later write of the same row takes no stronger lock. The app role
+#: holds ``UPDATE`` on ``organization``, and a row lock needs it.
+ORG_RULE_LOCKS = {"share": " FOR SHARE", "update": " FOR NO KEY UPDATE"}
+
+
+async def org_integration_rules(db: Any, org_id: str, *, lock: str | None = None) -> Any:
+    """The stored rules of *org_id* (raw JSONB, or ``None``). Raises on a fault.
+
+    *lock* is a key of :data:`ORG_RULE_LOCKS`, or ``None`` for a plain read.
+    The lock holds to the end of the caller's transaction.
+    """
+    sql = ORG_INTEGRATION_RULES_SQL + (ORG_RULE_LOCKS[lock] if lock else "")
+    row = (
+        await db.execute(text(sql), {"org": org_id})
+    ).mappings().first()
+    return None if row is None else row["rules"]
+
+
+def integration_access_allowed(organization_id: str | None) -> bool:
+    """True when ``INTEGRATION_ACCESS_ORGS`` holds the org, or holds ``*``.
+
+    The one reader of the flag. It gates three routes only: the two routes of
+    ``integration_access.py`` and ``GET /auth/me/integrations``
+    (``my_integrations.py``, ACC-3). The resolver applies a rule that exists,
+    whatever the flag says, so a flag change never widens access. The org
+    comes from the session. A fault reads as off. Default empty, so OFF.
+    """
+    org = str(organization_id or "").strip().lower()
+    if not org:
+        return False
+    try:
+        from acb_common import get_settings
+
+        raw = str(getattr(get_settings(), "integration_access_orgs", "") or "")
+    except Exception:
+        return False
+    listed = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    return "*" in listed or org in listed
+
+
+# ── The access of one member, with the integration rules (ACC-3) ────────────
+
+
+async def _load_overrides(db: Any, user_id: str) -> list[dict[str, Any]]:
+    """The per-member overrides of one ``app_user`` row, by permission."""
+    rows = (
+        await db.execute(
+            text(
+                "SELECT permission, effect, reason, set_by, set_at "
+                "  FROM user_permission_override "
+                " WHERE user_id = CAST(:uid AS uuid) ORDER BY permission"
+            ),
+            {"uid": user_id},
+        )
+    ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+async def _role_permission_map(db: Any, user_id: str) -> dict[str, list[str]]:
+    """``{role_slug: [permission, ...]}`` for the member's assigned roles."""
+    rows = (
+        await db.execute(
+            text(
+                "SELECT r.slug AS slug, rp.permission AS permission "
+                "  FROM user_role ur "
+                "  JOIN org_role r            ON r.id = ur.role_id "
+                "  JOIN org_role_permission rp ON rp.role_id = r.id "
+                " WHERE ur.user_id = CAST(:uid AS uuid)"
+            ),
+            {"uid": user_id},
+        )
+    ).mappings().all()
+    out: dict[str, list[str]] = {}
+    for r in rows:
+        out.setdefault(r["slug"], []).append(r["permission"])
+    return out
+
+
+def member_rule_access(
+    role_perms: dict[str, list[str]],
+    overrides: list[dict[str, Any]],
+    *,
+    roles: Any,
+    is_active: bool,
+    email: str,
+    rules: IntegrationRules,
+) -> tuple[EffectiveAccess, Narrowed]:
+    """``(base, narrowed)``: the access of one member before and after the rules.
+
+    The ONE base-and-narrow step (ACC-3). Two routes call it: the admin
+    preview ``GET /admin/members/{email}/access`` and the self view
+    ``GET /auth/me/integrations``. So the two never give two reasons for one
+    answer. *base* is ``build_access`` of the roles and the overrides.
+    *narrowed* is ``acb_auth.integration_access.narrow`` of *base*, the same
+    function that the resolver calls. *rules* is the
+    ``acb_auth.access.IntegrationRules`` of ``read_integration_rules``.
+    Pure: no database read. Fences: ``test_auth_me_integrations.py``,
+    ``test_integration_access_rules.py``.
+    """
+    base = build_access(
+        [p for perms in role_perms.values() for p in perms],
+        [(o["permission"], o["effect"]) for o in overrides],
+        roles=roles,
+        is_active=is_active,
+    )
+    narrowed = narrow_by_rules(
+        base, rules.raw, email=email, groups=rules.groups, read_failed=rules.failed,
+    )
+    return base, narrowed
+
+
+async def assert_group_rule_gate(
+    db: Any, org_id: str, slug: str, admin: UserContext, *, deleting: bool = False,
+) -> None:
+    """The two group-write rules of §3.9.2, for a group that a rule names.
+
+    1. A member write to such a group also needs ``admin:access:manage``,
+       because the team then decides who keeps an integration (403).
+    2. Nobody deletes such a group (409).
+
+    A value that the code cannot read counts as naming the group, and a failed
+    read is 503. Neither rule depends on ``INTEGRATION_ACCESS_ORGS``, because a
+    stored rule binds whatever the flag says.
+
+    ACC-1 fix round 1: the read takes ``FOR SHARE`` on the org row, and the
+    lock holds until the caller's transaction ends. The caller does the group
+    write on the same session. So a PUT that names the group waits for that
+    commit, and it then reads the new members. Call this before any other row
+    lock of the transaction (:data:`ORG_RULE_LOCKS` says why).
+    """
+    from acb_auth.integration_access import rules_name_group
+
+    try:
+        raw = await org_integration_rules(db, org_id, lock="share")
+    except Exception as exc:
+        _log.warning("group_rule_gate_read_failed", error=type(exc).__name__)
+        raise HTTPException(
+            status_code=503,
+            detail="Could not read who can use each integration. Try again.",
+        ) from exc
+    if not rules_name_group(raw, slug):
+        return
+    if deleting:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"A rule of who can use an integration names the team '{slug}'. "
+                "Change that rule first."
+            ),
+        )
+    if not admin.has_permission("admin:access:manage"):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"A rule of who can use an integration names the team '{slug}', "
+                "so a change of its members needs 'admin:access:manage'."
+            ),
+        )
 
 
 def invalidate_for(*emails: str | None) -> None:
