@@ -271,9 +271,11 @@ def test_no_pending_steers_is_an_empty_list_not_an_error(fake_redis):
 @pytest.fixture(autouse=True)
 def _clean_guidance():
     steer._PENDING_GUIDANCE.clear()
+    steer._SEEN_STEER_IDS.clear()
     steer._CLOSED.clear()
     yield
     steer._PENDING_GUIDANCE.clear()
+    steer._SEEN_STEER_IDS.clear()
     steer._CLOSED.clear()
 
 

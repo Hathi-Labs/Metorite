@@ -1,6 +1,7 @@
 """LBB-2 — the claim gate of "land before build" (R8).
 
-Spec: ``project-docs/specs/engineering_practice.md`` §7b.2, task 4041.
+Spec: ``project-docs/specs/engineering_practice.md`` §7b.2, task 4041, and
+§7b.8, task 4056.
 
 Run::
 
@@ -26,12 +27,28 @@ The acceptance ("Done when" of §7b.2):
 4. ``my_work`` lists the ``land_your_pr`` row (its place: the edge file).
 5. ``hand_over.sh`` prints the call (``test_hand_over.py``).
 
+LBB-2b (§7b.8, task 4056): a PR belongs to its owner run, the run that held
+the task when the reference was added (:class:`TestTheOwnerRun`, one test for
+each of cases 1 to 4 and 6). Each fixture run is in the production shape: a
+run in a terminal status has ``ended_at``, and the run of ``_old`` starts
+before its PR.
+
 Mutations (R7). ``G`` is ``apps/services/gateway/gateway/routes/projects``.
 
 * C1. ``G/claim_gate.py`` ``_counted_sql`` drops the label test.
   ``test_another_label_is_not_counted``.
-* C2. ``G/claim_gate.py`` ``_counted_sql`` reads the OLDEST run.
-  ``test_the_newest_run_decides_the_label``.
+* C2. ``G/claim_gate.py`` ``_counted_sql`` drops ``n.created_at <=
+  f.created_at`` from the owner read.
+  ``test_case1_a_merger_after_a_hand_over_never_takes_the_pr`` and
+  ``test_a_run_that_starts_after_the_reference_never_owns_it``.
+* C11. ``G/claim_gate.py`` ``_counted_sql`` drops the ``ended_at`` test from
+  the owner read.
+  ``test_case4_a_reference_with_no_owner_run_counts_for_nobody[github_between_runs]``.
+* C12. ``G/claim_gate.py`` ``_counted_sql`` orders the owner read by
+  ``n.created_at ASC``: the tie-break test turns red.
+  ``test_when_two_runs_qualify_the_later_start_owns_the_pr``.
+* C13. ``G/claim_gate.py`` ``_counted_sql`` orders the owner read by
+  ``n.id ASC``. ``test_on_an_equal_start_the_highest_id_owns_the_pr``.
 * C3. ``G/claim_gate.py`` ``_counted_sql`` drops the ``awaiting`` test.
   ``test_a_task_that_waits_on_a_person_is_not_counted``.
 * C4. ``G/claim_gate.py`` ``_counted_sql`` drops the queued expiry.
@@ -185,26 +202,43 @@ def _number(world, task: str) -> int:
                              {"t": task}).scalar())
 
 
+#: The run statuses that end a run. Production sets ``ended_at`` on each one
+#: (a release and a finish), and the owner rule of §7b.8 reads it.
+_TERMINAL = frozenset({"completed", "stopped", "failed", "stale", "abandoned", "released"})
+
+
 def _run(world, task: str, *, label: str | None, member: str = MEMBER,
          status: str = "completed", days_ago: float = 3.0, answered: bool = False,
-         connection: str | None = None) -> str:
-    """One run on *task*. ``answered``: a member's answer is its newest
-    activity, and no agent activity follows it."""
+         connection: str | None = None, ended_hours: float | None = None) -> str:
+    """One run on *task*, in the production shape. ``answered``: a member's
+    answer is its newest activity, and no agent activity follows it.
+
+    A run in a terminal status gets ``ended_at``: *ended_hours* ago, or 30
+    seconds ago by default, so it ends after each PR of a test. An open run
+    keeps ``ended_at`` NULL."""
+    ended = None
+    if status in _TERMINAL:
+        ended = 30.0 if ended_hours is None else ended_hours * 3600
+    else:
+        assert ended_hours is None, "an open run has no end"
     return str(world.seeder.one(
         "INSERT INTO pm_agent_runs (task_id, member_email, client_via, status, started_by,"
-        " connection_id, agent_label, created_at, last_activity_at, last_agent_activity_at)"
+        " connection_id, agent_label, created_at, last_activity_at, last_agent_activity_at,"
+        " ended_at)"
         " VALUES (CAST(:t AS uuid), :m, :via, :st, :via, CAST(:cid AS uuid),"
         " CAST(:label AS text), now() - make_interval(secs => :ago),"
-        " now() - make_interval(secs => :act), now() - make_interval(secs => :agent))"
+        " now() - make_interval(secs => :act), now() - make_interval(secs => :agent),"
+        " CASE WHEN CAST(:ended AS float8) IS NOT NULL"
+        "      THEN now() - make_interval(secs => CAST(:ended AS float8)) END)"
         " RETURNING id",
         t=task, m=member, via=w.R8_VIA, st=status, cid=connection, label=label,
         ago=days_ago * 86400, act=60 if answered else 3600,
-        agent=3600 if answered else 60))
+        agent=3600 if answered else 60, ended=ended))
 
 
 def _pr(world, task: str, number: int, *, hours: float = 60, state: str | None = "open",
         kind: str = "pull_request", merged: bool = False, landing: str | None = None,
-        landing_hours: float = 1) -> str:
+        landing_hours: float = 1, via: str = "ui") -> str:
     url = f"https://github.com/Hathi-Labs/Metorite/pull/{number}"
     if kind == "issue":
         url = f"https://github.com/Hathi-Labs/Metorite/issues/{number}"
@@ -213,20 +247,24 @@ def _pr(world, task: str, number: int, *, hours: float = 60, state: str | None =
     return str(world.seeder.one(
         "INSERT INTO pm_task_refs (task_id, kind, provider, ref, url, state, via, created_by,"
         " created_at, merged_at, landing_state, landing_at, landing_by) VALUES"
-        " (CAST(:t AS uuid), :kind, 'github', :ref, :url, :state, 'ui', :by,"
+        " (CAST(:t AS uuid), :kind, 'github', :ref, :url, :state, :via, :by,"
         " now() - make_interval(secs => :age),"
         " CASE WHEN CAST(:merged AS boolean) THEN now() END, CAST(:landing AS text),"
         " CASE WHEN CAST(:landing AS text) IS NOT NULL"
         "      THEN now() - make_interval(secs => :lage) END,"
         " CASE WHEN CAST(:landing AS text) IS NOT NULL THEN :by END) RETURNING id",
-        t=task, kind=kind, ref=ref, url=url, state=state, by=MEMBER, age=hours * 3600,
-        merged=merged, landing=landing, lage=landing_hours * 3600))
+        t=task, kind=kind, ref=ref, url=url, state=state, via=via, by=MEMBER,
+        age=hours * 3600, merged=merged, landing=landing, lage=landing_hours * 3600))
 
 
 def _old(world, label: str | None, number: int, **kw: Any) -> str:
-    """A task with an open PR of *label* older than the gate's 48 hours."""
+    """A task with an open PR of *label* older than the gate's 48 hours.
+
+    The run of *label* owns the PR (§7b.8): it starts before the PR (3 days
+    ago, or 1 hour before an older PR) and it ends after it."""
     task = _task(world, f"old {number}", status=kw.pop("status", "doing"))
-    _run(world, task, label=label)
+    hours = float(kw.get("hours", 60))
+    _run(world, task, label=label, days_ago=max(3.0, (hours + 1) / 24))
     _pr(world, task, number, **kw)
     return task
 
@@ -377,7 +415,8 @@ class TestTheRefusal:
         flags(refuse=True)
         label = _label()
         old = _task(clean, "answered", status="doing")
-        _run(clean, old, label=label, status="in_progress", days_ago=0.5, answered=True)
+        # The run starts before the PR, so it owns it (§7b.8).
+        _run(clean, old, label=label, status="in_progress", days_ago=3, answered=True)
         _pr(clean, old, 103)
         [pr] = _refused(await _claim(clean, _task(clean, "new"), label))
         assert pr["next"] == "answer"
@@ -424,15 +463,18 @@ class TestTheRefusal:
         _pr(clean, task, 403)
         assert (await _claim(clean, _task(clean, "new"), label)).status_code == 200
 
-    async def test_the_newest_run_decides_the_label(self, clean, flags):
+    async def test_a_run_that_starts_after_the_reference_never_owns_it(self, clean, flags):
+        # LBB-2b turns the old "newest run" test around (§7b.8). The later
+        # run is the newest, but it starts after the PR, so the PR stays with
+        # the run that held the task when the reference was added.
         flags(refuse=True)
-        mine, adopter = _label(), _label()
+        mine, later = _label(), _label()
         task = _task(clean, "adopted", status="doing")
         _run(clean, task, label=mine, days_ago=5)
-        _run(clean, task, label=adopter, days_ago=1)
+        _run(clean, task, label=later, days_ago=1)
         _pr(clean, task, 404)
-        assert (await _claim(clean, _task(clean, "new"), mine)).status_code == 200
-        [pr] = _refused(await _claim(clean, _task(clean, "new 2"), adopter))
+        assert (await _claim(clean, _task(clean, "new"), later)).status_code == 200
+        [pr] = _refused(await _claim(clean, _task(clean, "new 2"), mine))
         assert pr["pr_number"] == 404
 
     async def test_a_young_pr_is_not_counted(self, clean, flags):
@@ -500,6 +542,150 @@ def _project_of_its_own(world, task: str) -> str:
         " status_id = CAST(:s AS uuid) WHERE id = CAST(:t AS uuid) RETURNING id",
         p=project, s=lane, t=task)
     return project
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# LBB-2b: the owner run of a PR (§7b.8, task 4056)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def _landing(world, label: str | None) -> list[int]:
+    """The PR numbers that ``my_work`` gives *label* (the gateway read)."""
+    query = f"agent_label={label}" if label is not None else ""
+    r = await _send(world, "GET", "/projects/agent-work/landing", query=query)
+    assert r.status_code == 200, r.text
+    return [row["landing"]["pr_number"] for row in r.json()["rows"]]
+
+
+class TestTheOwnerRun:
+    """Each case of §7b.8 "Who is bound, case by case". The times are hours
+    apart, because each insert reads its own ``now()``."""
+
+    pytestmark = _DB_GATE
+
+    async def test_case1_a_merger_after_a_hand_over_never_takes_the_pr(self, clean, flags):
+        flags(refuse=True)
+        lane, merger = _label(), _label()
+        task = _task(clean, "case 1", status="doing")
+        # L opens PR N in run A (the webhook adds the reference) and releases.
+        _run(clean, task, label=lane, status="released", days_ago=4, ended_hours=50)
+        _pr(clean, task, 901, via="github")
+        # The merger claims (run B), comments and releases.
+        _run(clean, task, label=merger, status="released", days_ago=1, ended_hours=23)
+        assert (await _claim(clean, _task(clean, "merger work"), merger)).status_code == 200
+        assert await _landing(clean, merger) == []
+        [pr] = _refused(await _claim(clean, _task(clean, "lane work"), lane))
+        assert (pr["pr_number"], pr["task_id"]) == (901, task)
+        assert await _landing(clean, lane) == [901]
+
+    async def test_case2_the_owning_lane_after_a_back_keeps_the_pr(self, clean, flags):
+        flags(refuse=True)
+        lane, merger = _label(), _label()
+        task = _task(clean, "case 2", status="doing")
+        _run(clean, task, label=lane, status="released", days_ago=4, ended_hours=50)
+        _pr(clean, task, 902)
+        _run(clean, task, label=merger, status="released", days_ago=1, ended_hours=23)
+        # L claims again (run C) to fix PR N after the bot sent it back.
+        _run(clean, task, label=lane, status="in_progress", days_ago=0.5)
+        assert (await _claim(clean, _task(clean, "merger work"), merger)).status_code == 200
+        [pr] = _refused(await _claim(clean, _task(clean, "lane work"), lane))
+        assert pr["pr_number"] == 902
+
+    async def test_case3_a_landing_lane_that_adopts_the_pr_does_not_own_it(
+            self, clean, flags):
+        flags(refuse=True)
+        lane, adopter = _label(), _label()
+        task = _task(clean, "case 3", status="doing")
+        _run(clean, task, label=lane, status="released", days_ago=4, ended_hours=50)
+        _pr(clean, task, 903)
+        before = _ref_row(clean, task, 903).created_at
+        # Lane D claims the task and adds the same URL again, with no landing.
+        _run(clean, task, label=adopter, status="in_progress", days_ago=0.5)
+        assert (await _add(clean, task, 903, None)).status_code == 200
+        assert _ref_row(clean, task, 903).created_at == before
+        assert (await _claim(clean, _task(clean, "adopter work"), adopter)).status_code == 200
+        [pr] = _refused(await _claim(clean, _task(clean, "lane work"), lane))
+        assert pr["pr_number"] == 903
+        # D's queued mark keeps the created_at, and exempts the PR for 24 hours.
+        assert (await _add(clean, task, 903, "queued")).status_code == 200
+        assert _ref_row(clean, task, 903).created_at == before
+        assert (await _claim(clean, _task(clean, "lane work 2"), lane)).status_code == 200
+        assert (await _claim(clean, _task(clean, "adopter 2"), adopter)).status_code == 200
+
+    @pytest.mark.parametrize("how", ["text_no_run", "github_between_runs",
+                                     "ui_after_the_last_run"])
+    async def test_case4_a_reference_with_no_owner_run_counts_for_nobody(
+            self, clean, flags, how):
+        flags(refuse=True)
+        first, second = _label(), _label()
+        task = _task(clean, f"case 4 {how}", status="doing")
+        if how == "text_no_run":
+            _pr(clean, task, 904, via="text")
+        elif how == "github_between_runs":
+            # Run A ended before the webhook added the reference, and run B
+            # started after it. No run held the task at that time.
+            _run(clean, task, label=first, status="released", days_ago=5, ended_hours=96)
+            _pr(clean, task, 904, via="github")
+            _run(clean, task, label=second, status="released", days_ago=1, ended_hours=23)
+        else:
+            # A person adds it by hand after the only run ended.
+            _run(clean, task, label=first, status="completed", days_ago=5, ended_hours=96)
+            _pr(clean, task, 904, via="ui")
+        for label in (first, second, None):
+            r = await _claim(clean, _task(clean, f"work {label}"), label)
+            assert r.status_code == 200, (label, r.text)
+            assert await _landing(clean, label) == []
+
+    async def test_case6_a_new_reference_inside_a_mergers_run_is_the_mergers(
+            self, clean, flags):
+        flags(refuse=True)
+        lane, merger = _label(), _label()
+        task = _task(clean, "case 6", status="doing")
+        _run(clean, task, label=lane, status="released", days_ago=5, ended_hours=96)
+        _pr(clean, task, 905, hours=108)
+        # The merger opens its own PR in its run B.
+        _run(clean, task, label=merger, status="released", days_ago=3.5, ended_hours=23)
+        _pr(clean, task, 906, hours=60)
+        [mine] = _refused(await _claim(clean, _task(clean, "lane work"), lane))
+        assert mine["pr_number"] == 905
+        [theirs] = _refused(await _claim(clean, _task(clean, "merger work"), merger))
+        assert theirs["pr_number"] == 906
+
+    async def test_when_two_runs_qualify_the_later_start_owns_the_pr(self, clean, flags):
+        # The tie-break of §7b.8: the highest created_at wins. Run A is open
+        # with no label (the shape of a reopen), and run B ended after the PR.
+        # Both qualify, and B started later, so B owns the PR.
+        flags(refuse=True)
+        label = _label()
+        task = _task(clean, "two qualify", status="doing")
+        _run(clean, task, label=None, status="in_progress", days_ago=5)
+        _run(clean, task, label=label, status="released", days_ago=4, ended_hours=50)
+        _pr(clean, task, 907, hours=60)
+        [pr] = _refused(await _claim(clean, _task(clean, "labelled work"), label))
+        assert pr["pr_number"] == 907
+        r = await _claim(clean, _task(clean, "bare work"), None)
+        assert r.status_code == 200, r.text
+
+    async def test_on_an_equal_start_the_highest_id_owns_the_pr(self, clean, flags):
+        # The second tie-break of §7b.8: on an equal created_at, the highest id.
+        flags(refuse=True)
+        first, second = _label(), _label()
+        task = _task(clean, "equal start", status="doing")
+        a = _run(clean, task, label=first, status="released", days_ago=4)
+        b = _run(clean, task, label=second, status="released", days_ago=4)
+        with clean.admin.begin() as c:
+            c.execute(text(
+                "UPDATE pm_agent_runs SET created_at = (SELECT created_at FROM pm_agent_runs"
+                " WHERE id = CAST(:a AS uuid)) WHERE id = CAST(:b AS uuid)"), {"a": a, "b": b})
+            top = str(c.execute(text(
+                "SELECT id FROM pm_agent_runs WHERE id IN (CAST(:a AS uuid), CAST(:b AS uuid))"
+                " ORDER BY id DESC LIMIT 1"), {"a": a, "b": b}).scalar())
+        owner, other = (first, second) if top == a else (second, first)
+        _pr(clean, task, 908, hours=60)
+        [pr] = _refused(await _claim(clean, _task(clean, "owner work"), owner))
+        assert pr["pr_number"] == 908
+        r = await _claim(clean, _task(clean, "other work"), other)
+        assert r.status_code == 200, r.text
 
 
 # ═══════════════════════════════════════════════════════════════════════════

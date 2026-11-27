@@ -68,6 +68,8 @@ import { DraftPinContext, draftPin, draftsOf } from "@/lib/pinnedDraft";
 import { withEmailSteps } from "@/lib/delegatedSteps";
 import { mailboxMarksOf } from "@/lib/mailboxMark";
 import MailboxMark from "@/components/MailboxMark";
+import PackSwitchMark from "@/components/PackSwitchMark";
+import { packSwitchesOf } from "@/lib/packSwitch";
 import ContinueOffer from "@/components/ContinueOffer";
 import { newestOfferId, type ContinueOpened } from "@/lib/chatContinue";
 import { ANSWER_CAPTION, typedAnswers, typedAnswerTarget } from "@/lib/typedAnswer";
@@ -99,7 +101,7 @@ import {
   type KeptDraft,
   type SentVersion,
 } from "@/lib/redraftCard";
-import { sendRespondInputResult } from "@/lib/respondInput";
+import { resendsAnswer, sendRespondInputResult } from "@/lib/respondInput";
 import { createRejectHold } from "@/lib/rejectHold";
 import {
   CONFIRMATION_UNDO,
@@ -1431,8 +1433,9 @@ export default function AgentChat({
           postRespondInput(
             { request_id: reqId, answer: message, was_freeform: true },
             () => submitText(message, HOLD_WORDS),
-            // Any failure sends the answer as a message, so it is never lost.
-            (outcome) => { if (outcome === "drop") submitText(message, HOLD_WORDS); },
+            // A "drop" sends the answer as a message, so it is never lost.
+            // "answered" (HRD-16) sends nothing: someone answered it first.
+            (outcome) => { if (resendsAnswer(outcome)) submitText(message, HOLD_WORDS); },
           );
         } else {
           submitText(message, HOLD_WORDS);
@@ -1647,13 +1650,21 @@ export default function AgentChat({
   // with an app update. The gateway hands back the question and the answer
   // as ONE message, and this sends it, with a notice that says why. The
   // caller then hears "resent" and sends nothing of its own.
+  //
+  // A 409 `answered_once` (HRD-16, owner decision 2026-11-23): a run already
+  // took an answer for this card, from another device or a double tap. The
+  // caller hears "answered" and sends NOTHING: no message, no run. A notice
+  // says that someone answered it, unless the card's own line says so
+  // (`answeredLine`, the confirmation receipt).
   const postRespondInput = useCallback(
     (
       payload: { request_id: string; answer: string; was_freeform: boolean; declined?: boolean },
       restoreCard: (reason?: string) => void,
-      settle?: (outcome: "ok" | "drop" | "resent", reason?: string) => void,
+      settle?: (outcome: "ok" | "drop" | "resent" | "answered", reason?: string) => void,
       /** A held Reject sends for the session that held it (`lib/rejectHold.ts`). */
       sessionOverride?: string,
+      /** The card draws its own "someone answered it" line, so no notice. */
+      answeredLine?: boolean,
     ) => {
       const forSession = sessionOverride ?? sessionIdRef.current;
       // The account this tab drew the card for. The route refuses the answer
@@ -1685,6 +1696,18 @@ export default function AgentChat({
         // The card says why, beside its buttons (UXD-3). An other-account
         // refusal has its own notice above.
         if (outcome === "retry") { restoreCard(otherAccount ? undefined : reason); return; }
+        if (outcome === "answered") {
+          if (!answeredLine) {
+            setMessages((prev) => [...prev.filter((m) => m.id !== `answered-once-${payload.request_id}`), {
+              id: `answered-once-${payload.request_id}`,
+              role: "system",
+              content: `__ERROR__${JSON.stringify({ code: "answered_once", ref: null, raw: "" })}`,
+              timestamp: Date.now(),
+            }]);
+          }
+          settle?.("answered", reason);
+          return;
+        }
         if (resend) {
           // The model reads the envelope. The member reads the answered
           // card (owner report, 2026-10-13, `lib/cardAnswer.ts`). An old
@@ -2276,7 +2299,8 @@ export default function AgentChat({
       postRespondInput(
         { request_id: requestId, answer, was_freeform: true },
         () => submitText(answer, hold),
-        (outcome) => { if (outcome === "drop") submitText(answer, hold); },
+        // HRD-16: only a "drop" sends the answer. "answered" sends nothing.
+        (outcome) => { if (resendsAnswer(outcome)) submitText(answer, hold); },
       );
     },
     [postRespondInput, submitText]
@@ -2462,6 +2486,8 @@ export default function AgentChat({
         (outcome, reason) => dispatchConfirmation(
           outcome === "resent" ? settleAnswer(card, "drop") : settleAnswer(card, outcome, reason)),
         heldFor,
+        // HRD-16: the receipt line says "someone answered it" for this card.
+        true,
       );
     };
     if (!rejecting) { send(); return; }
@@ -2530,7 +2556,9 @@ export default function AgentChat({
           // A card redrawn from the log may be one the run already
           // took an answer for: a refusal then is no lost answer,
           // and a steer would send it twice (review of #1171, P1).
-          if (outcome !== "drop") return;
+          // HRD-16: "answered" sends nothing. The words go back to the box.
+          if (outcome === "answered") { giveBack?.(); return; }
+          if (!resendsAnswer(outcome)) return;
           if (!redrawnRef.current.all.has(reqId)) submitText(answer, heldBack(giveBack));
           else giveBack?.();
         },
@@ -2552,7 +2580,9 @@ export default function AgentChat({
       (outcome) => {
         if (outcome === "ok") return;
         setUserInput((prev) => (prev?.requestId === card.requestId ? null : prev));
-        if (outcome !== "drop" || !answer) return;
+        // HRD-16: "answered" sends nothing. The words go back to the box.
+        if (outcome === "answered") { giveBack?.(); return; }
+        if (!resendsAnswer(outcome) || !answer) return;
         if (!redrawnRef.current.all.has(card.requestId)) submitText(answer, heldBack(giveBack));
         else giveBack?.();
       },
@@ -2959,6 +2989,12 @@ export default function AgentChat({
                 {msg.role === "assistant" &&
                   mailboxMarksOf(msg.customEvents).map((label, k) => (
                     <MailboxMark key={`mbx-run-${msg.id}-${k}`} label={label} />
+                  ))}
+                {/* WT-4: this turn loaded a tool pack that the last turn did not
+                    hold. One plain line, no tap. Saved with the turn. */}
+                {msg.role === "assistant" &&
+                  packSwitchesOf(msg.customEvents).map((label, k) => (
+                    <PackSwitchMark key={`psw-${msg.id}-${k}`} label={label} />
                   ))}
                 <MessageBubble message={msg} sessionId={sessionId} onChoice={handleChoice}
                   onHitlRespond={handleGenUiHitl}
