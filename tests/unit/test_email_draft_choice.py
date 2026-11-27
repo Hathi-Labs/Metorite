@@ -483,13 +483,17 @@ async def test_an_imap_store_that_is_not_ok_raises():
     server.list.return_value = ("OK", [b'(\\HasNoChildren) "/" Trash'])
     server.capability.return_value = ("OK", [b"IMAP4rev1 UIDPLUS"])
     server.select.return_value = ("OK", [b"1"])
+    # Task 4095: the trash reads the Message-ID of UID 42 before the copy.
+    head = (b"1 (UID 42 BODY[HEADER.FIELDS (MESSAGE-ID)] {20}",
+            b"Message-ID: <m@x>\r\n\r\n")
     server.uid.side_effect = lambda cmd, *_a: {
         "SEARCH": ("OK", [b"42"]), "COPY": ("OK", [b""]),
+        "FETCH": ("OK", [head, b")"]),
     }.get(cmd, ("NO", [b"no such message"]))
     imap = IMAPProvider({})
     imap._get_imap = AsyncMock(return_value=server)  # type: ignore[method-assign]
     with pytest.raises(RuntimeError, match="STORE"):
-        await imap.trash_message("42")
+        await imap.trash_message("42", message_id="<m@x>")
 
 
 @pytest.mark.asyncio

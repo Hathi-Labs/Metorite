@@ -16,7 +16,7 @@ from acb_common.tool_refusals import strip_id_label
 from email_ingestion import html_tier
 from email_ingestion import storage as ingest_storage
 from email_ingestion.body_backfill import _html_to_text
-from email_ingestion.providers.base import canonical_folder, local_folder_after_move
+from email_ingestion.providers.base import canonical_folder, local_folder_after_move, trash_checked
 from fastapi import Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 from gateway.routes.email.account_ref import resolve_account_filter
@@ -43,6 +43,7 @@ from gateway.routes.email.core import (
     _row_to_message,
     _savepoint,
     _tenant_session,
+    _trash_message_id,
     _truncate_body,
     folder_scope,
     router,
@@ -1427,10 +1428,12 @@ async def delete_message(
         # The provider for the push. The build makes no network call.
         built: tuple[Any, str, str, Any] | None = None
         push_error: Exception | None = None
+        stored_mid: str | None = None  # task 4095: the IMAP trash checks it
         try:
             built = await _provider_for_message(
                 db, message_id, user.email or "anonymous"
             )
+            stored_mid = await _trash_message_id(db, built[0], message_id)
         except Exception as exc:  # noqa: BLE001
             push_error = exc
 
@@ -1445,7 +1448,7 @@ async def delete_message(
         new_pid = None
         try:
             if await provider.authenticate():
-                new_pid = await provider.trash_message(provider_msg_id)
+                new_pid = await trash_checked(provider, provider_msg_id, stored_mid)
                 confirmed = True
                 discarded = provider_msg_id in getattr(provider, "discarded_drafts", ())
         except Exception as exc:  # noqa: BLE001

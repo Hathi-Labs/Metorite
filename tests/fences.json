@@ -66,6 +66,8 @@
       "tests/unit/test_email_draft_decline.py",
       "tests/unit/test_email_follow_up_scan.py",
       "tests/unit/test_email_imap_trash.py",
+      "tests/unit/test_email_imap_trash_uidvalidity.py",
+      "tests/unit/test_email_imap_trash_uidvalidity_r8.py",
       "tests/unit/test_email_markdown_mail.py",
       "tests/unit/test_email_owner_scope_fence.py",
       "tests/unit/test_email_retry_and_uncategorized.py",

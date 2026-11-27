@@ -1,6 +1,6 @@
 # Email App — Master Plan (single source of truth)
 
-> **Dated 2026-11-27, the IMAP trash moves the right mail (task 4025, §18.13.3).** Built, not merged. No flag, because it fixes a data loss.
+> **Dated 2026-11-27, the IMAP trash moves the right mail (task 4025, §18.13.3).** Merged in #2923. Task 4095 adds a check of the Message-ID, so a stale UID moves no mail. It is built on branch `imap4095`, not merged. No flag, because it fixes a data loss.
 >
 > **Dated 2026-11-26, Mark done (task 3995, §6.6).** Built with fix rounds 3 and 4, owner approved 2026-11-27. A Done by hand stays until new inbound mail. Dark behind `EMAIL_MARK_DONE_ORGS`.
 >
@@ -22176,8 +22176,9 @@ writes nothing into the record.
 
 #### 18.13.3 The IMAP trash moves the right mail (2026-11-27, task 4025)
 
-**Status:** BUILT on branch `imap4025`, not merged. No migration and no flag, because this is a
-fix of a data loss (rung 0).
+**Status:** MERGED in #2923 (task 4025). Task 4095, the check of the Message-ID below, is BUILT on
+branch `imap4095`, not merged. No migration and no flag, because each is a fix of a data loss
+(rung 0).
 
 **The defect.** `IMAPProvider.trash_message` ran UID COPY with the Trash folder selected. A UID
 names a mail in one folder only, so the copy read a Trash mail, not the INBOX mail. Then it
@@ -22221,6 +22222,72 @@ code also deleted when no Trash folder existed or the copy failed.
 and a selected folder. The test failed on the code of before (17 of 18 cases).
 
 **Verify with.** `uv run pytest tests/unit/test_email_imap_trash.py -q`
+
+**Task 4095: a stale UID after a change of UIDVALIDITY.** A server can rebuild INBOX. Then its
+UIDVALIDITY changes, and each mail gets a new UID. The sync then reads only the newest 100 UIDs,
+and the upsert keys on `(account_id, provider_message_id)`. So an older row keeps its old UID,
+and that UID can name another mail. The trash of before moved that other mail to Trash.
+
+The rule now:
+
+1. `IMAPProvider.trash_message` takes the stored Message-ID of the row as `message_id=`. It is
+   an optional keyword, so the base signature and Gmail and Outlook stay as they are.
+2. After the UID SEARCH, the provider reads the Message-ID at the UID with
+   `UID FETCH <uid> (BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])`. The PEEK sets no flag. The read
+   keeps only the parts of the answer for that UID.
+3. The two values must match, or the trash raises, and nothing moves or gets a flag.
+4. Each caller calls the trash through `base.trash_checked`. It passes `message_id=` only to a
+   provider with `TRASH_CHECKS_MESSAGE_ID`, and only IMAP sets it. `bulk_apply` takes a
+   keyword `message_ids`, a map of provider id to the stored Message-ID.
+5. The gateway reads the stored value with `core._trash_message_id` (one row) or
+   `core._trash_message_ids` (one mailbox). It reads `internet_message_id`, and else
+   `thread_id`, because the IMAP sync keeps the Message-ID as the thread id. It reads only for
+   IMAP, so a Gmail or an Outlook trash makes no extra read.
+
+The decided cases:
+
+| Case | What the trash does | Why |
+|---|---|---|
+| The stored row has no Message-ID | It raises before any command | It cannot know which mail the UID names. It fails closed. |
+| A caller passes no `message_id` | It raises before any command | A caller that forgets fails closed. |
+| The mail at the UID has no Message-ID | It raises, and nothing moves | It cannot prove that the mail is the same. |
+| Header folding, white space, a comment after the id | They match | The compare key removes white space and keeps the first `<...>` id. |
+| Angle brackets on one side only | They match | The key drops the brackets. |
+| Another case of letters | No match, so it raises | Both values come from the same header bytes on one server. |
+| Two mails with one Message-ID | The mail at the UID moves | It is a copy of the same mail, and it goes to Trash. No mail is lost. |
+
+**The stored UIDVALIDITY is not a second check.** A row stores no UIDVALIDITY. The account cursor
+(`history_id`) holds only the current value, and the first sync after the change moves it. So a
+row cannot say under which UIDVALIDITY it was read. A value for each row needs a migration and a
+second mechanism. The check of the Message-ID covers each case without it.
+
+**The callers.**
+
+| Caller | What it passes |
+|---|---|
+| `messages.delete_message` | The stored value of the row, from `core._trash_message_id` |
+| `senders._bulk_reconcile_provider` | `message_ids` from `core._trash_message_ids`, for a trash only |
+| `actions._apply_rule_actions`, TRASH | The stored value of the row, from `core._trash_message_id` |
+| `drafting._cleanup_thread_drafts`, `_resolve_existing_thread_draft`, `trash_chat_draft` | The `thread_id` that selected the row |
+| `drafting.send_draft_endpoint`, the fallback send | `drow.thread_id` |
+| `drafting._update_provider_draft`, the fallback | Nothing, so an IMAP trash fails closed and the old draft stays |
+
+**Known limits of task 4095.** These are not fixed here.
+
+- A row of a mail with no Message-ID stores its In-Reply-To as the thread id. If its stale UID
+  names exactly that parent mail, the parent goes to Trash. This needs a mail with no
+  Message-ID, a rebuild of INBOX, and that one UID. The member can get the mail back from Trash.
+- `modify_message` writes flags on a UID with the same stale shape. No caller reaches it for
+  IMAP, because `apply_flags` is a no-op for IMAP.
+- `get_message`, `get_attachment` and `get_reply_to` read by UID too. `get_reply_to` checks the
+  Message-ID already. The other two read the mail of the same mailbox and change nothing.
+
+**Fence.** `tests/unit/test_email_imap_trash_uidvalidity.py`. The test failed on the code of
+before: the route moved the mail at the stale UID. `tests/unit/test_email_imap_trash_uidvalidity_r8.py`
+runs the two reads under FORCE RLS on a real Postgres.
+
+**Verify with.** `uv run pytest tests/unit/test_email_imap_trash_uidvalidity.py -q`, and with a
+database, `uv run pytest tests/unit/test_email_imap_trash_uidvalidity_r8.py -q -rs`
 
 ## 19. Send later (2026-10-21)
 

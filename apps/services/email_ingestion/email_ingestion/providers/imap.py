@@ -700,7 +700,12 @@ class IMAPProvider(BaseEmailProvider):
 
         await asyncio.to_thread(_modify)
 
-    async def trash_message(self, provider_message_id: str) -> None:
+    #: Task 4095 (§18.13.3): the trash checks the stored Message-ID.
+    TRASH_CHECKS_MESSAGE_ID = True
+
+    async def trash_message(
+        self, provider_message_id: str, *, message_id: str | None = None,
+    ) -> None:
         """Move one INBOX message to the Trash folder, by its UID.
 
         Task 3977 (§18.13): a draft that Metorite saved has the id
@@ -718,12 +723,22 @@ class IMAPProvider(BaseEmailProvider):
         exists, when the UID is not in INBOX, or when the copy or the move
         is not OK. A caller then knows that nothing was trashed. It answers
         None: the Trash copy has a new UID, but an IMAP id always names a
-        message of INBOX (``sync_messages``)."""
+        message of INBOX (``sync_messages``).
+
+        Task 4095 (§18.13.3): ``message_id`` is the stored Message-ID of the
+        row. After a change of UIDVALIDITY, a stored UID can name another
+        mail. So the trash reads the Message-ID of the mail at the UID with
+        ``BODY.PEEK``, and it raises, and moves nothing, when the two differ,
+        when the mail has none, or when ``message_id`` is empty. Call it
+        through ``base.trash_checked``."""
         uid = str(provider_message_id or "")
         if not uid.isdigit():
             raise ValueError("IMAP trash needs the UID of an INBOX message")
+        wanted = _message_id_key(message_id)
+        if not wanted:
+            raise ValueError("IMAP trash needs the stored Message-ID of the mail")
         imap = await self._get_imap()
-        await asyncio.to_thread(_trash_inbox_uid, imap, uid)
+        await asyncio.to_thread(_trash_inbox_uid, imap, uid, wanted)
 
     async def sync_messages(
         self,
@@ -924,11 +939,54 @@ def _capabilities(imap: Any) -> set[str]:
     return {w.upper() for w in words}
 
 
-def _trash_inbox_uid(imap: Any, uid: str) -> None:
+def _message_id_key(value: Any) -> str:
+    """The compare key of one Message-ID, or "" when it holds none.
+
+    Task 4095 (§18.13.3). The key removes folding and white space, keeps the
+    first ``<...>`` id with no brackets, and drops a comment after it. It
+    keeps the case, because both values come from the same header bytes on
+    one server. So a change of case is another id, and the trash fails
+    closed."""
+    text = re.sub(r"\s+", "", str(value or ""))
+    m = re.search(r"<([^<>]+)>", text)
+    if m:
+        return m.group(1)
+    return "" if "<" in text or ">" in text else text
+
+
+def _message_id_at(imap: Any, uid: str) -> set[str]:
+    """The compare keys of each Message-ID of INBOX message ``uid``.
+
+    It reads with ``BODY.PEEK``, so the mail stays unread. It keeps only the
+    parts of the answer for this UID, because a server can add a FETCH line
+    for another mail. A server can name the UID before the header or after
+    it, so the check reads the line of the literal and the line after it."""
+    typ, data = imap.uid(
+        "FETCH", uid, "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
+    if typ != "OK":
+        raise RuntimeError(f"IMAP UID FETCH answered {typ}")
+    parts = list(data or [])
+    raw = b""
+    for i, part in enumerate(parts):
+        if not (isinstance(part, tuple) and len(part) >= 2
+                and isinstance(part[1], bytes)):
+            continue
+        after = parts[i + 1] if i + 1 < len(parts) else b""
+        around = b" ".join(x for x in (part[0], after) if isinstance(x, bytes))
+        if re.search(rf"\bUID\s+{uid}\b", around.decode("ascii", errors="replace")):
+            raw += part[1]
+    headers = email_lib.message_from_bytes(raw)
+    keys = {_message_id_key(v) for v in headers.get_all("Message-ID") or []}
+    return {k for k in keys if k}
+
+
+def _trash_inbox_uid(imap: Any, uid: str, wanted: str) -> None:
     """Move INBOX message ``uid`` to the Trash folder, or raise.
 
     It runs in one worker thread, so no other command can select another
-    folder between the steps. It never sends a plain EXPUNGE."""
+    folder between the steps. It never sends a plain EXPUNGE. ``wanted`` is
+    the compare key of the stored Message-ID (``_message_id_key``). The mail
+    at the UID must hold that one Message-ID, or nothing moves (task 4095)."""
     trash = _find_trash_folder(imap)
     if not trash:
         raise RuntimeError("The IMAP account has no Trash folder")
@@ -943,6 +1001,12 @@ def _trash_inbox_uid(imap: Any, uid: str) -> None:
     found = b" ".join(d for d in (data or []) if isinstance(d, bytes)).split()
     if typ != "OK" or uid.encode() not in found:
         raise RuntimeError(f"IMAP UID {uid} is not in INBOX")
+    keys = _message_id_at(imap, uid)
+    if not keys:
+        raise RuntimeError(f"IMAP UID {uid} has no Message-ID to check")
+    if keys != {wanted}:
+        # A rebuild of INBOX gave the UID to another mail (task 4095).
+        raise RuntimeError(f"IMAP UID {uid} names another mail now")
 
     target = _imap_quote(trash)
     if "MOVE" in caps:

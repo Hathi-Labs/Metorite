@@ -994,7 +994,8 @@ async def test_the_imap_fallback_sends_each_to_cc_and_bcc(
     sent = imap.send_message.await_args.kwargs
     assert sent["to"] == [RAVI, "meera@contoso-em-g3a.test"]
     assert sent["cc"] == [LEAD] and sent["bcc"] == [AUDIT]
-    imap.trash_message.assert_awaited_once_with("draft-Drafts")
+    # Task 4095: the IMAP trash gets the thread id of the row as its Message-ID.
+    imap.trash_message.assert_awaited_once_with("draft-Drafts", message_id="t-1")
 
 
 def _forwarded_draft(name: str | None) -> bytes:
