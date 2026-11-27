@@ -13,8 +13,10 @@
  *   Expand control. No control drops an item unanswered (WD-D2);
  * - the ONE scroll box of the dock: the body of the open item, under the cap
  *   (`lib/waitingDock.ts` `dockCap`). That is the one amendment to C3;
- * - one polite live region: "N items wait for you" when the count goes up.
- *   The arrival of an item never takes the focus (`AgentChat` holds K1).
+ * - beside it, `WaitingDockLive`: one polite live region, "N items wait for
+ *   you" when the count goes up. The chat mounts it while the flag is on, so
+ *   the region exists before the first item arrives. The arrival of an item
+ *   never takes the focus (`AgentChat` holds K1).
  *
  * The fold is the dock's own, beside `RollupCard`, which never folds a card
  * that waits (audit rule 8). With the phone's keyboard up and no field of the
@@ -41,8 +43,6 @@ export interface WaitingDockProps {
   children: (folded: boolean, unfold: () => void) => ReactNode;
   /** Tests and the visual rig: start folded. */
   initialFolded?: boolean;
-  /** Tests: what the live region said last. */
-  initialLive?: string;
 }
 
 /**
@@ -61,7 +61,7 @@ function measure(root: HTMLElement | null, body: HTMLElement | null): { chat: nu
   };
 }
 
-export default function WaitingDock({ count, phone, children, initialFolded = false, initialLive = "" }: WaitingDockProps) {
+export default function WaitingDock({ count, phone, children, initialFolded = false }: WaitingDockProps) {
   const rootRef = useRef<HTMLElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const [manual, setManual] = useState(initialFolded);
@@ -72,15 +72,6 @@ export default function WaitingDock({ count, phone, children, initialFolded = fa
   const [over, setOver] = useState(false);
   const vp = useVisualViewport();
 
-  // The live region speaks when the count goes up, and only then. React's
-  // adjust-state-during-render pattern, so a render that runs twice agrees.
-  const [prev, setPrev] = useState(count);
-  const [live, setLive] = useState(initialLive);
-  if (prev !== count) {
-    setPrev(count);
-    const said = liveAnnouncement(prev, count);
-    if (said) setLive(said);
-  }
 
   const kbUp = keyboardUp({ phone, viewport: vp?.height ?? null, layout });
   const folded = dockFolded({ manual, keyboardUp: kbUp, cardFieldFocus: fieldFocus });
@@ -159,9 +150,6 @@ export default function WaitingDock({ count, phone, children, initialFolded = fa
       onBlur={onFocusOut}
       className="max-w-3xl mx-auto mb-2"
     >
-      <p role="status" aria-live="polite" className="sr-only" data-dock-live="">
-        {live}
-      </p>
       {!folded && (
         <div className="flex items-center justify-end gap-1 pb-1" data-dock-controls="">
           {(over || expanded) && (
@@ -199,5 +187,28 @@ export default function WaitingDock({ count, phone, children, initialFolded = fa
         {children(folded, unfold)}
       </div>
     </section>
+  );
+}
+
+/**
+ * The one polite live region of the dock (the a11y line of §24.11). It says
+ * "N items wait for you" when the count goes up, and nothing when it goes
+ * down. The chat mounts it while the flag is on, before any item waits, so a
+ * screen reader hears the first arrival too. It starts from 0.
+ */
+export function WaitingDockLive({ count }: { count: number }) {
+  const [prev, setPrev] = useState(0);
+  const [live, setLive] = useState("");
+  // React's adjust-state-during-render pattern, so a render that runs twice
+  // reaches the same words.
+  if (prev !== count) {
+    setPrev(count);
+    const said = liveAnnouncement(prev, count);
+    if (said) setLive(said);
+  }
+  return (
+    <p role="status" aria-live="polite" className="sr-only" data-dock-live="">
+      {live}
+    </p>
   );
 }

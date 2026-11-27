@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { cardKind, cutLabel, pickLevel, type TabLevel, KIND_ICON, personName, tabLabel, TAB_LABEL_MAX, restoredFirst, tabKeyTarget, tabsCount, tabsLabel } from "./cardTabs";
+import { cardKind, countWordsFor, questionTabLabel, cutLabel, pickLevel, type TabLevel, KIND_ICON, personName, tabLabel, TAB_LABEL_MAX, restoredFirst, tabKeyTarget, tabsCount, tabsLabel } from "./cardTabs";
 
 const read = (rel: string) => readFileSync(join(__dirname, "..", rel), "utf-8");
 
@@ -16,6 +16,18 @@ describe("the tabs of one approval card (owner, 2026-11-03, D173)", () => {
     expect(tabsCount(0, 1)).toBe("Updating 1 draft");
     expect(tabsCount(0, 2)).toBe("Updating 2 drafts");
     expect(tabsLabel(0, "approvals", 2)).toBe("Updating 2 drafts. Use the arrow keys to see each one.");
+  });
+
+  it("§24.11 (WD-1): the count words, today's by default, 'N waiting' for a row with a question", () => {
+    expect(tabsCount(3, 0, "approve")).toBe("3 to approve");
+    expect(tabsCount(3, 0, "waiting")).toBe("3 waiting");
+    expect(tabsCount(0, 1, "waiting")).toBe("Updating 1 draft");
+    expect(tabsLabel(2, "approvals", 0, "waiting")).toBe("2 items wait for you. Use the arrow keys to see each one.");
+    expect(countWordsFor(["send", "task"])).toBe("approve");
+    expect(countWordsFor(["send", "question"])).toBe("waiting");
+    expect(questionTabLabel("Which depot should the June run ship from?")).toBe("Question: Which depot s…");
+    expect(questionTabLabel("Which depot should the June run ship from?").length).toBeLessThanOrEqual(TAB_LABEL_MAX);
+    expect(questionTabLabel("  ")).toBe("Question");
   });
 
   it("the arrow keys, Home and End move, and the ends do not wrap", () => {

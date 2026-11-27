@@ -15,13 +15,15 @@
  */
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }), usePathname: () => "/chat" }));
 
-import ConfirmationQueue, { type DockQuestion } from "@/components/ConfirmationQueue";
+import ConfirmationQueue, { pickShown, reconcileShown, type DockQuestion } from "@/components/ConfirmationQueue";
 import ElicitationCard from "@/components/ElicitationCard";
-import WaitingDock from "@/components/WaitingDock";
+import WaitingDock, { WaitingDockLive } from "@/components/WaitingDock";
 import { questionTabLabel } from "@/lib/cardTabs";
 import type { PendingConfirmation } from "@/lib/confirmationQueue";
 
@@ -43,13 +45,12 @@ const question = (key: string, text: string): DockQuestion => ({
     }),
 });
 
-function dock(opts: { cards?: PendingConfirmation[]; questions?: DockQuestion[]; folded?: boolean; count?: number; live?: string }) {
+function dock(opts: { cards?: PendingConfirmation[]; questions?: DockQuestion[]; folded?: boolean; count?: number }) {
   return renderToStaticMarkup(
     createElement(WaitingDock, {
       count: opts.count ?? 2,
       phone: false,
       initialFolded: opts.folded,
-      initialLive: opts.live,
       children: (folded: boolean, unfold: () => void) =>
         createElement(ConfirmationQueue, {
           cards: opts.cards ?? [approval],
@@ -132,10 +133,19 @@ describe("the frame", () => {
     expect(html).not.toMatch(/aria-label="(Close|Dismiss)/);
   });
 
-  it("one polite live region that says what waits", () => {
-    const html = dock({ live: "2 items wait for you" });
-    expect(html.match(/aria-live="polite"/g)?.length).toBeGreaterThanOrEqual(1);
-    expect(html).toMatch(/data-dock-live="">2 items wait for you</);
+  it("one polite live region: the first arrival speaks, and an empty dock says nothing", () => {
+    // It starts from 0, so a region that mounts with the first item speaks.
+    const live = (count: number) => renderToStaticMarkup(createElement(WaitingDockLive, { count }));
+    expect(live(2)).toMatch(/role="status" aria-live="polite"[^>]*data-dock-live="">2 items wait for you</);
+    expect(live(1)).toContain(">1 item waits for you<");
+    expect(live(0)).toMatch(/data-dock-live=""><\/p>/);
+    // The dock itself draws no second region.
+    expect(dock({})).not.toContain("data-dock-live");
+  });
+
+  it("the chat mounts the region while the flag is on, outside the dock", () => {
+    const chat = readFileSync(join(__dirname, "AgentChat.tsx"), "utf-8");
+    expect(chat).toContain("{dockOn && <WaitingDockLive count={dockN} />}");
   });
 
   it("the body is the one scroll box, with a cap", () => {
@@ -155,5 +165,24 @@ describe("the flag off: the queue draws as before", () => {
     expect(html).not.toContain("data-dock-queue");
     expect(html).toContain("2 to approve");
     expect(html).not.toContain("waiting");
+  });
+});
+
+describe("auto-advance and the shown tab across both kinds (audit rule 3)", () => {
+  it("a new approval never takes the view from the question the member reads", () => {
+    const q = new Set(["ask:q1"]);
+    const next = reconcileShown(["ask:q1"], [{ key: "c1" }, { key: "ask:q1" }], { key: "ask:q1", index: 0 }, q);
+    expect(next.shown.key).toBe("ask:q1");
+  });
+
+  it("an Undo of an approval still opens the restored card", () => {
+    const q = new Set(["ask:q1"]);
+    const next = reconcileShown(["c2", "ask:q1"], [{ key: "c1" }, { key: "c2" }, { key: "ask:q1" }], { key: "ask:q1", index: 1 }, q);
+    expect(next.shown.key).toBe("c1");
+  });
+
+  it("an answered question hands the view to the next tab, as for an approval", () => {
+    const items = [{ key: "c1" }, { key: "ask:q2" }];
+    expect(pickShown(items, { key: "ask:q1", index: 1 })).toBe(1);
   });
 });

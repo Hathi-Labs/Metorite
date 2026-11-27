@@ -148,12 +148,14 @@ describe("K1 and K2: an arrival never moves the focus while the member types", (
     expect(arrivalBlursBox({ ...idle, boxFocused: false })).toBe(false);
   });
 
-  it("picks only: an approval of any kind, or a question card with options and no free text", () => {
+  it("picks only (audit rule 6): an approval of any kind, or a question card where every question has options", () => {
     expect(picksOnly({ kind: "approval" })).toBe(true);
     expect(picksOnly({ kind: "question", questions: [{ options: ["a"], allowFreeformInput: false }] })).toBe(true);
-    expect(picksOnly({ kind: "question", questions: [{ options: ["a"], allowFreeformInput: true }] })).toBe(false);
-    expect(picksOnly({ kind: "question", questions: [{ options: ["a"], allowFreeformInput: false }, { options: null }] })).toBe(false);
-    expect(picksOnly({ kind: "question", questions: userInputShape({ choices: ["Yes", "No"], allowFreeform: false }) })).toBe(true);
+    // The optional "Other" field does not make a text item.
+    expect(picksOnly({ kind: "question", questions: [{ options: ["a"], allowFreeformInput: true }] })).toBe(true);
+    expect(picksOnly({ kind: "question", questions: [{ options: ["a"] }, { options: null }] })).toBe(false);
+    expect(picksOnly({ kind: "question", questions: [{ options: [] }] })).toBe(false);
+    expect(picksOnly({ kind: "question", questions: userInputShape({ choices: ["Yes", "No"], allowFreeform: true }) })).toBe(true);
     expect(picksOnly({ kind: "question", questions: userInputShape({ choices: [], allowFreeform: true }) })).toBe(false);
   });
 });

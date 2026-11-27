@@ -145,15 +145,20 @@ export function pickShown(cards: readonly Pick<PendingConfirmation, "key">[], sh
  */
 /** The mark of a slot in the keys of `reconcileShown`. No card id holds it. */
 const SLOT_MARK = "\u0000slot";
+const NO_KEYS: ReadonlySet<string> = new Set();
 
 export function reconcileShown(
   prevKeys: readonly string[],
   cards: readonly Pick<PendingConfirmation, "key" | "redraft">[],
   shown: Shown,
+  questionKeys: ReadonlySet<string> = NO_KEYS,
 ): { keys: readonly string[]; shown: Shown } {
   const keys = cards.map((c) => (c.redraft ? `${c.key}${SLOT_MARK}` : c.key));
   if (keys.length === prevKeys.length && keys.every((k, i) => k === prevKeys[i])) return { keys: prevKeys, shown };
-  const plain = (list: readonly string[]) => list.map((k) => k.replace(SLOT_MARK, ""));
+  // The dock (§24.11): a question tab sits after the approvals, so a new
+  // approval lands before it. Only the approvals tell a restored card.
+  const plain = (list: readonly string[]) =>
+    list.flatMap((k) => (questionKeys.has(k.replace(SLOT_MARK, "")) ? [] : [k.replace(SLOT_MARK, "")]));
   const opened = restoredFirst(plain(prevKeys), plain(keys));
   if (opened !== null) return { keys, shown: { key: opened, index: 0 } };
   const showing = cards.find((c) => c.key === shown.key);
@@ -184,7 +189,7 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
   const items: readonly Pick<PendingConfirmation, "key" | "redraft">[] = questions
     ? [...cards, ...questions.map((q) => ({ key: q.key }))]
     : cards;
-  const next = reconcileShown(prevKeys, items, shown);
+  const next = reconcileShown(prevKeys, items, shown, questions ? new Set(questions.map((q) => q.key)) : NO_KEYS);
   if (next.keys !== prevKeys) setPrevKeys(next.keys);
   if (next.shown !== shown) setShown(next.shown);
   if (items.length === 0) return null;
@@ -337,7 +342,7 @@ function DockQueue({
         <div data-dock-fold-row="" className={`${CARD_FRAME_CLASS} glass:rounded-[16px] glass:border-primary/35 glass:p-3`}>
           {tabbed ? (
             // The open tab's label is the title of the open item.
-            <div className="[&>[data-card-tabs]]:mb-0 [&>[data-card-tabs]]:border-b-0">{row(unfold)}</div>
+            <div className="[&>[data-card-tabs]]:!m-0 [&>[data-card-tabs]]:!px-0 [&>[data-card-tabs]]:border-b-0">{row(unfold)}</div>
           ) : (
             <div className="flex min-w-0 items-center gap-2">
               <Icon name={active.icon} size={14} className="shrink-0 text-muted-foreground" />

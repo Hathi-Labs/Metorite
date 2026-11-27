@@ -92,13 +92,14 @@ export function unfoldLabel(kind: DockKind): string {
 /**
  * Picks only: the member answers with a press, and no keyboard is needed. An
  * approval of any kind is picks only (its fields are optional edits). A
- * question card is picks only when every question has options and no free
- * text. Any other card is a text item.
+ * question card is picks only when every question has options (audit rule
+ * 6). Its "Other" field is optional, and opens a keyboard only on a tap (K3).
+ * A card with any question that has no options is a text item.
  */
 export function picksOnly(item: { kind: DockKind; questions?: readonly DockQuestionShape[] }): boolean {
   if (item.kind === "approval") return true;
   const qs = item.questions ?? [];
-  return qs.length > 0 && qs.every((q) => (q.options?.length ?? 0) > 0 && q.allowFreeformInput === false);
+  return qs.length > 0 && qs.every((q) => (q.options?.length ?? 0) > 0);
 }
 
 /** The questions of the `ask_user` card, in the shape `picksOnly` reads. */

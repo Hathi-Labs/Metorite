@@ -52,7 +52,7 @@ import ConfirmationQueue, { type ConfirmationAnswer } from "@/components/Confirm
 import { DELETE_EARLIER_ANSWER } from "@/lib/replyCard";
 import ConfirmationReceipts from "@/components/ConfirmationReceipts";
 import AskPin from "@/components/AskPin";
-import WaitingDock from "@/components/WaitingDock";
+import WaitingDock, { WaitingDockLive } from "@/components/WaitingDock";
 import { scrollToEnd } from "@/lib/scrollWithin";
 import { HITL_TARGET, pendingAsk, waitingTargets } from "@/lib/askPin";
 import {
@@ -2700,7 +2700,10 @@ export default function AgentChat({
       });
       if (blur) box.blur();
     } else if (dockN === 0 && prev > 0) {
-      focusQuietly();
+      // Only when the focus is nowhere else: a member who types in another
+      // field of the page keeps it (an app rail beside its app).
+      const at = typeof document === "undefined" ? null : document.activeElement;
+      if (!at || at === document.body || !!box?.form?.contains(at)) focusQuietly();
     }
   }, [dockOn, dockN, dockPicksOnly, phoneChrome, focusQuietly]);
   const renderDockCards = (folded: boolean, unfold: () => void): React.ReactNode => (
@@ -3248,6 +3251,7 @@ export default function AgentChat({
         {dockOn ? <AskPin ask={genUiWaiting} threadRef={threadRef} /> : <AskPin ask={waiting} threadRef={threadRef} />}
         {/* WD-1 (§24.11): the dock is the one card in the form. Each card
             that waits draws here, as a tab of ONE card, outside the thread. */}
+        {dockOn && <WaitingDockLive count={dockN} />}
         {showDock && (
           <WaitingDock count={dockN} phone={phoneChrome || touchKeyboard()}>
             {renderDockCards}
