@@ -586,7 +586,8 @@ async def request_network_access(reason: str, hosts: list[str]) -> str:
         return f"{_NETWORK_TOOL} refused: {exc} No card was shown. The network stays off."
     why = " ".join(str(reason or "").split())
     allowed, code = _audit_decision(
-        _NETWORK_TOOL, "", {"reason": why[:_REASON_MAX], "hosts": list(names)},
+        # `why` is one line of text, not a list of rows (test_read_tool_paging).
+        _NETWORK_TOOL, "", {"reason": str(why)[:_REASON_MAX], "hosts": list(names)},
     )
     if not allowed:
         return f"[blocked by permission policy: {code}]"
@@ -646,7 +647,8 @@ async def _ask_and_grant(
     except sb.SandboxError as exc:
         return f"{_NETWORK_TOOL} failed: {exc} The network stays off."
     try:
-        grant = await broker.grant_egress(handle, why[:_REASON_MAX], names)
+        # `why` is one line of text, not a list of rows (test_read_tool_paging).
+        grant = await broker.grant_egress(handle, str(why)[:_REASON_MAX], names)
     except sb.SandboxError as exc:
         return f"{_NETWORK_TOOL} failed: {exc} The network stays off."
     finally:
