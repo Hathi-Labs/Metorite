@@ -330,19 +330,19 @@ moves a chat, and answers 404 with the org off. The chat list sends
 the answer to the client as `chat_topics`, so a tab shows a change at its
 next shell read.
 
-`CLAIM_GATE_SHADOW_ORGS` turns on the shadow of the claim gate
-(`engineering_practice.md` §7b.2, LBB-2). For each listed org, an agent's
-claim of a new task that the gate would refuse logs `claim.gate would_refuse`
-with the PR numbers, and the claim goes on. `my_work` lists the
-`land_your_pr` rows. `*` lists every org, and the default is empty. Its one
-reader is `gateway.routes.projects.claim_gate.claim_gate_shadow_on`.
-
 `CLAIM_GATE_ORGS` turns on the claim gate. For each listed org, the gateway
 refuses an agent's claim, self-assign or run start on a new task with 422
 `land_your_pr` while its member and label hold an open PR older than 48 hours
 that no merger queued. The gate logs `claim.gate refused`. `*` lists every
 org, and the default is empty. Its one reader is
 `gateway.routes.projects.claim_gate.claim_gate_on`.
+
+`CLAIM_GATE_SHADOW_ORGS` turns on the shadow of the claim gate
+(`engineering_practice.md` §7b.2, LBB-2). For each listed org, an agent's
+claim of a new task that the gate would refuse logs `claim.gate would_refuse`
+with the PR numbers, and the claim goes on. `my_work` lists the
+`land_your_pr` rows. `*` lists every org, and the default is empty. Its one
+reader is `gateway.routes.projects.claim_gate.claim_gate_shadow_on`.
 
 The three doors and the route of `my_work` ask the two readers at each call,
 so a reload applies at the next request. With both lists empty, no claim

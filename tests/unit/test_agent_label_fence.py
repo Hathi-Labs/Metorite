@@ -317,6 +317,13 @@ _LABEL_WRITES = frozenset({
     ("apps/services/gateway/gateway/routes/projects/agent_runs.py", "_CLEAR_LABEL_SQL"),
 })
 
+#: A display read, named word for word: the map of SW-113/AMR-4 lists the labels
+#: of the child runs of a node (``FILTER (WHERE c.agent_label IS NOT NULL)`` inside
+#: an ``array_agg``). It shows names, and it chooses no run, holder or session.
+_LABEL_DISPLAY = frozenset({
+    ("apps/services/gateway/gateway/routes/projects/agent_summary.py", "_MAP_CHILD_COUNTS_SQL"),
+})
+
 
 def _label_where_readers(source: str) -> list[str]:
     """Each top-level statement of *source* whose string constants, joined,
@@ -449,7 +456,7 @@ class TestTheLabelGrantsNothing:
         ``agent_label`` after a ``WHERE``. The two writes of the label itself
         are named, word for word. The gate's own read holds the label test, so
         the fence cannot pass on a gate that no longer reads it."""
-        bad, writes, gate = [], set(), []
+        bad, writes, displays, gate = [], set(), set(), []
         for base in ("apps", "packages"):
             for path in sorted((_REPO / base).rglob("*.py")):
                 if ".venv" in path.parts or "node_modules" in path.parts:
@@ -463,12 +470,15 @@ class TestTheLabelGrantsNothing:
                         gate.append(owner)
                     elif (rel, owner) in _LABEL_WRITES:
                         writes.add((rel, owner))
+                    elif (rel, owner) in _LABEL_DISPLAY:
+                        displays.add((rel, owner))
                     else:
                         bad.append(f"{rel}::{owner}")
         assert not bad, (
             "LBB-2 (agent_coordination.md §3.7): only claim_gate.py may read agent_label"
             f" for a decision. Remove it from: {bad}")
         assert writes == set(_LABEL_WRITES), sorted(set(_LABEL_WRITES) - writes)
+        assert displays == set(_LABEL_DISPLAY), sorted(set(_LABEL_DISPLAY) - displays)
         assert gate == ["_counted_sql"], gate
         assert "nr.agent_label IS NOT DISTINCT FROM CAST(:label AS text)" in _read(
             _REPO / _DECISION_READER)
