@@ -134,6 +134,9 @@ class Snapshot:
     #: card reads as new and a missing card reads as gone, so nothing may be
     #: planned or logged from this read (review of RE-1a, P2).
     complete: bool = True
+    #: The feed sources whose cards are a floor: the feed cut the read, so
+    #: more records exist than the cards show (``brief.gather``, BR-4c).
+    capped: frozenset[str] = frozenset()
 
     @property
     def local_date(self) -> date:
@@ -150,7 +153,11 @@ async def snapshot(org: str, user: Any, now: datetime | None = None) -> Snapshot
     working = await feed._working_day(user, day.feed_day(run.now))
     complete = bool(run.joined.ok) and not any(
         v not in ("ok", "absent") for v in run.sources.values())
-    return Snapshot(list(run.cards), run.now, day, working, complete)
+    # A source is cut when it says so, or when its total is above its rows:
+    # the mail count past the cap sets the total and not ``capped``.
+    capped = frozenset(run.capped) | frozenset(
+        key for key, found in run.found.items() if found.total > len(found.rows))
+    return Snapshot(list(run.cards), run.now, day, working, complete, capped)
 
 
 async def resolve(org: str, member: str) -> Any | str:

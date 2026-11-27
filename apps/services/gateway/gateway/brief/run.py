@@ -26,8 +26,10 @@ The order, for the run of *member* on *local_date*:
    that is past ``planned`` ends the job with no second gather.
 6. ``loop.snapshot``. An incomplete read raises, so the queue retries, and
    no claim comes from a read that lost a source.
-7. One claim for each shown card (``gather.claims``), then ``gathered``, the
-   template lead (``plan.brief_lead``), and ``ready``. With the in-app
+7. One claim for each shown card (``gather.claims``), then at most 3 counts
+   of the ``numbers`` section (``gather.number_claims``, BR-4c), only when a
+   line exists. Then ``gathered``, the template lead (``plan.brief_lead``),
+   and ``ready``. With the in-app
    surface on (``flags.in_app``), the run then moves ``ready`` to
    ``delivered`` (guarded) and stamps ``delivered_at``. Off, it stays
    ``ready``. No card: ``empty``, no lead and no claims. The writes and
@@ -68,13 +70,15 @@ never opens the app still has ``delivered_at``. BR-2d compares
 
 **The phrase step** (BR-2a-2, ``core_brief.md`` §4.4). It runs only when
 ``flags.compose(org)`` is on, the run has ``phrase.MIN_CLAIMS`` claims or
-more, and ``acb_llm.routed.routing_is_on()``. Else step 7 is as above, byte
-for byte, and no call runs. On:
+more (a count of ``numbers`` does not count), and
+``acb_llm.routed.routing_is_on()``. Else step 7 is as above, byte for byte,
+and no call runs. On:
 
 7a. ONE session commits the claims, ``gathered``, the template lead, and
     ``phrasing`` with ``model_request_id`` (``store.mark_phrasing``, the
     intent mark). The job stays claimed, and the session closes.
-7b. ``phrase.phrase`` makes the ONE call, with NO session open.
+7b. ``phrase.phrase`` makes the ONE call, with NO session open. It gets the
+    lines only (``gather.line_claims``), never a count of ``numbers``.
 7c. A new session holds the job claim, moves ``phrasing`` to ``ready``,
     writes the model lead with its claim ids, delivers when
     ``flags.in_app`` is on, and completes the job. A fence refusal
@@ -289,7 +293,12 @@ async def _gather(org: str, member: str, user: Any, run: store.Run, claim: queue
         claims = gather.claims(snap.cards, now)
         parts = plan.brief_parts(snap.cards, run.local_date, now=now)
         lead = plan.brief_lead(parts) if parts is not None else None
-    if claims and lead is not None and _composes(org, len(claims), run.kind):
+        if claims and lead is not None:
+            # BR-4c: the counts go after the lines, and only with a line. So a
+            # run with no line stays ``empty``.
+            claims += gather.number_claims(snap.cards, claims[-1].position + 1, snap.capped)
+    if claims and lead is not None and _composes(
+            org, len(gather.line_claims(claims)), run.kind):
         return await _gather_and_phrase(org, member, run, claim, claims, lead, now)
     async with tenant_session(org) as db:
         if not await queue.hold(db, claim):
@@ -371,7 +380,10 @@ async def _gather_and_phrase(org: str, member: str, run: store.Run, claim: queue
     # The session is closed: the call holds no connection and no lock.
     phrased: phrase.Phrased | None = None
     try:
-        phrased = await phrase.phrase(member, stored, ref=ref, block=block)
+        # BR-4c: the model reads and cites the lines only. The fence checks
+        # numbers, so a cited count could lose its "At least".
+        phrased = await phrase.phrase(member, gather.line_claims(stored), ref=ref,
+                                      block=block)
     except routed.RoutedRefusal as exc:
         _log.warning("brief.phrase_failed", error="RoutedRefusal", router_status=exc.status)
     except Exception as exc:
@@ -404,8 +416,9 @@ async def _ready(db: Any, org: str, member: str, run_id: str, now: datetime,
 def _stored_lead(run: store.Run, claims: list[store.Claim]) -> str | None:
     """The template lead of a run from its stored claims, as
     ``chat_brief.stored_parts`` reads a stored run: the date title, one
-    line for each claim, and no "more" count. None with no claim."""
-    lines = [c.text for c in sorted(claims, key=lambda c: c.position)]
+    line for each claim, and no "more" count. A count of the ``numbers``
+    section is not a line. None with no line."""
+    lines = [c.text for c in sorted(gather.line_claims(claims), key=lambda c: c.position)]
     if not lines:
         return None
     title = f"Your day, {plan._date_words(run.local_date)}"

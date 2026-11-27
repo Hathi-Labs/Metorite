@@ -528,7 +528,9 @@ async def _read_brief(member: str, kind: str) -> dict[str, Any]:
               "app": c.get("source_app"), "href": c.get("href")} for c in claims]
     await _mark_read(len(rows))
     return _framed("BRIEF", rows, BRIEF_NOTE, view=kind, date=data.get("local_date"),
-                   state=data.get("state"), count=len(claims))
+                   state=data.get("state"),
+                   # A count of the `numbers` section is not a line of the brief.
+                   count=sum(1 for c in claims if c.get("section") != "numbers"))
 
 
 async def _read_find(member: str, words: Any) -> dict[str, Any]:

@@ -20,6 +20,20 @@ for each ``Closed`` row of Handled, and ``moved`` is one for each shown open
 card. The brief's :func:`claim_of` still refuses a section outside
 ``plan.BRIEF_GROUPS``: the close-out passes its own section as an argument.
 
+**The numbers** (BR-4c, ``core_brief.md`` §4.3) make the section ``numbers``
+with :func:`number_claims`: at most :data:`MAX_NUMBERS` counts of the open
+cards of the snapshot, in this order: threads that wait for a reply
+(``needs_reply``), tasks due today (``due_today``) and promises due
+(``promise_due``). A card counts when the kind is its main kind or a folded
+kind. A count claim has ``source_kind`` ``count``, a ``value`` and the
+``value_path`` ``count``. Its ``source_ids`` hold the counted signal ids, at
+most 50. The first id is the first of those cards in the feed's order, and
+the ``source_id`` and ``href`` of the claim are those of that card. When
+the feed cut the source of a kind, the cards are a floor, and the line says
+"At least". A count with no usable card makes no claim. A count is NOT a
+line of the brief: :func:`line_claims` drops it, and the phrase step gets no
+count, because its fence checks numbers and cannot keep "At least".
+
 **The acts** (BR-7b-2, ``core_brief.md`` §8) make the section ``acted``
 with :func:`acted_claims`: one claim for each allow-listed ``audit_event``
 act (``audit:<id>``) and each sent ``reach_outbox`` row (``reach:<id>``).
@@ -127,6 +141,72 @@ def claims(cards: list[dict[str, Any]], now: datetime) -> list[store.ClaimIn]:
         if claim is not None:
             out.append(claim)
     return out
+
+
+#: The section, the ``source_kind`` and the ``value_path`` of a count (BR-4c).
+NUMBERS = "numbers"
+COUNT_KIND = "count"
+COUNT_PATH = "count"
+#: At most this many counts (``core_brief.md`` §4.3).
+MAX_NUMBERS = 3
+#: The counts, in order: the card kind, the feed source that gives the kind,
+#: and the line for 1 and for many.
+_COUNTS: tuple[tuple[str, str, str, str], ...] = (
+    ("needs_reply", "email", "1 thread waits for your reply",
+     "{n} threads wait for your reply"),
+    ("due_today", "tasks", "1 task is due today", "{n} tasks are due today"),
+    ("promise_due", "email_followups", "1 promise you made falls due",
+     "{n} promises you made fall due"),
+)
+
+
+def count_claim(cards: list[dict[str, Any]], kind: str, one: str, many: str,
+                position: int, *, floor: bool = False) -> store.ClaimIn | None:
+    """The count claim of the open cards that hold *kind*, or None. The kind
+    may be the main kind of a card or a folded one, because a promise folds
+    into the card of its task. A card with no known source prefix or no
+    in-app href is not counted, because the count must open a record. No
+    usable card gives None. *floor* says that the feed cut the source, so
+    the line says "At least"."""
+    held = [c for c in cards
+            if kind in (c.get("kind"), *(c.get("folded") or ())) and plan.is_open(c)]
+    if not held:
+        return None
+    usable = [c for c in held if source_app(c.get("signal_id")) is not None
+              and in_app_href(c.get("href")) is not None]
+    if not usable:
+        _log.info("brief.claim_skipped", kind=COUNT_KIND, reason="no_source")
+        return None
+    # The feed's order picks the first record, so a retry agrees on the link.
+    first = plan.first_card(usable)
+    ids = tuple(dict.fromkeys(str(c["signal_id"]) for c in [first, *usable]))
+    n = len(ids)
+    line = one if n == 1 else many.format(n=n)
+    return store.ClaimIn(
+        position=position, section=NUMBERS, text=f"At least {line}" if floor else line,
+        source_app=str(source_app(ids[0])), source_kind=COUNT_KIND, source_id=ids[0],
+        source_ids=ids[:store.MAX_SOURCE_IDS], href=str(first["href"]), value=n,
+        value_path=COUNT_PATH)
+
+
+def number_claims(cards: list[dict[str, Any]], start: int,
+                  capped: frozenset[str] = frozenset()) -> list[store.ClaimIn]:
+    """The ``numbers`` claims of *cards*, from position *start*, at most
+    :data:`MAX_NUMBERS`. *capped* names the feed sources whose cards are a
+    floor (``reach.loop.Snapshot.capped``)."""
+    out: list[store.ClaimIn] = []
+    for kind, source, one, many in _COUNTS[:MAX_NUMBERS]:
+        claim = count_claim(cards, kind, one, many, start + len(out), floor=source in capped)
+        if claim is not None:
+            out.append(claim)
+    return out
+
+
+def line_claims(claims: list[Any]) -> list[Any]:
+    """*claims* without the counts of the ``numbers`` section. A count is not
+    a line of the brief: it adds no chat pill, no "thing" to a count of the
+    lead and nothing to the phrase threshold, and the model never reads it."""
+    return [c for c in claims if c.section != NUMBERS]
 
 
 #: The ``source_kind`` of a ``done`` claim: the row came from Handled.

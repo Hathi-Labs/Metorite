@@ -208,7 +208,10 @@ def _app(gw: Gateway, monkeypatch: pytest.MonkeyPatch) -> Any:  # noqa: C901  (o
                               state="ready", lead=f"Good morning. {PLANTED}",
                               lead_source="model", ready_at=None)
         claims = [SimpleNamespace(position=1, section="today", text=f"Pay rent {PLANTED}",
-                                  source_app="tasks", source_kind="task", href="/projects")]
+                                  source_app="tasks", source_kind="task", href="/projects"),
+                  # BR-4c: a count of the `numbers` section, after the lines.
+                  SimpleNamespace(position=2, section="numbers", text="1 task is due today",
+                                  source_app="tasks", source_kind="count", href="/projects")]
         return run, claims
 
     async def _send_push(_org: str, _email: str, _msg: Any) -> Any:
@@ -439,6 +442,8 @@ async def test_the_brief_read_and_a_missing_closeout(gw: Gateway) -> None:
     assert [c["query"] for c in gw.calls] == [{"kind": "brief"}, {"kind": "closeout"}]
     assert got["ok"] and got["count"] == 1 and got["date"] == "2026-11-23"
     assert PLANTED in got["block"] and PLANTED not in _outside_block(got)
+    # The count reaches the chat with its link, and it is no line of the brief.
+    assert "1 task is due today" in got["block"]
     assert not none["ok"] and "close-out" in none["message"]
 
 
