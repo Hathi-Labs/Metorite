@@ -24,10 +24,13 @@
  * The rules are `lib/redraftCard.ts`.
  */
 
-import { useId, useReducer, useState } from "react";
+import { useId, useReducer, useState, type ReactNode } from "react";
 
 import ConfirmationCard, { cardSummary } from "@/components/ConfirmationCard";
+import Icon from "@/components/Icon";
+import Button from "@/components/ui/Button";
 import CardTabs, { cardPanelId, cardTabId, type CardTab } from "@/components/ui/CardTabs";
+import { CARD_FRAME_CLASS } from "@/components/ui/Collapsible";
 import {
   NO_TICKS,
   earlierOf,
@@ -39,11 +42,12 @@ import {
   type PendingConfirmation,
   type RowsApproval,
 } from "@/lib/confirmationQueue";
-import { cardKind, KIND_ICON, restoredFirst, tabLabel } from "@/lib/cardTabs";
+import { cardKind, countWordsFor, KIND_ICON, restoredFirst, tabLabel } from "@/lib/cardTabs";
 import { unfenced } from "@/lib/fencedText";
 import type { CardDraft } from "@/lib/redraftCard";
 import { DELETE_EARLIER_ANSWER, isNewMail, type EarlierDraft, type NewMailEdits, type ReplyApproval } from "@/lib/replyCard";
 import type { TaskCardEdits, TaskEditApproval } from "@/lib/taskEditCard";
+import { unfoldLabel } from "@/lib/waitingDock";
 
 /** A plain answer, an Approve that names the ticked rows of a card with
  *  rows (WS-46 P13 one-card), or the Send or Save of a reply card (EM-CR).
@@ -74,6 +78,31 @@ interface ConfirmationQueueProps {
   savedEdits?: (key: string) => FormEdit | undefined;
   /** A form reports the member's edits, by key. */
   onEdits?: (key: string, edits: FormEdit) => void;
+  /**
+   * The waiting dock (§24.11 WD-D3): the question cards that wait, as tabs of
+   * this ONE card, after the approvals. With it set, the queue draws in the
+   * dock's shape: every question card stays mounted (hidden when its tab is
+   * not open), so its picks and typed text live through a change of tab and
+   * a fold. Without it, the queue draws as before.
+   */
+  questions?: readonly DockQuestion[];
+  /** The dock is folded to one row: the tabs, the title and one button that
+   *  only opens the card (audit rule 2). */
+  folded?: boolean;
+  /** Open the folded dock. The fold row's one button calls it. */
+  onUnfold?: () => void;
+}
+
+/** A question card as a tab of the dock's one card (§24.11). */
+export interface DockQuestion {
+  /** Stable for the card's life: its request id. */
+  key: string;
+  /** The tab's words (`questionTabLabel`). */
+  label: string;
+  /** The whole question, for the tooltip and the fold row. */
+  title: string;
+  /** Draw the card, with the tab row and the panel when it is the open tab. */
+  render: (slot: { tabs?: ReactNode; tabPanel?: { id: string; labelledBy: string } }) => ReactNode;
 }
 
 /** The index the queue shows: the one asked for, held inside the list. */
@@ -96,7 +125,7 @@ export interface Shown {
  * card under the cursor, and the next Approve would sign it. When the card
  * itself leaves (it was answered), the card now at its place takes over.
  */
-export function pickShown(cards: PendingConfirmation[], shown: Shown): number {
+export function pickShown(cards: readonly Pick<PendingConfirmation, "key">[], shown: Shown): number {
   const found = shown.key === null ? -1 : cards.findIndex((c) => c.key === shown.key);
   return found >= 0 ? found : shownIndex(shown.index, cards.length);
 }
@@ -119,7 +148,7 @@ const SLOT_MARK = "\u0000slot";
 
 export function reconcileShown(
   prevKeys: readonly string[],
-  cards: PendingConfirmation[],
+  cards: readonly Pick<PendingConfirmation, "key" | "redraft">[],
   shown: Shown,
 ): { keys: readonly string[]; shown: Shown } {
   const keys = cards.map((c) => (c.redraft ? `${c.key}${SLOT_MARK}` : c.key));
@@ -132,7 +161,7 @@ export function reconcileShown(
   return { keys, shown: live >= 0 ? { key: cards[live].key, index: live } : shown };
 }
 
-export default function ConfirmationQueue({ cards, errors, onAnswer, initialIndex = 0, onSuggest, onDraftChange, carriesEdits, savedEdits, onEdits }: ConfirmationQueueProps) {
+export default function ConfirmationQueue({ cards, errors, onAnswer, initialIndex = 0, onSuggest, onDraftChange, carriesEdits, savedEdits, onEdits, questions, folded = false, onUnfold }: ConfirmationQueueProps) {
   const [shown, setShown] = useState<Shown>({ key: null, index: initialIndex });
   // The member's ticks of every card with rows, by key. The queue holds
   // them, so a page away and back keeps them (PR #691 review). The logic is
@@ -150,19 +179,26 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
   // A card that comes back first (Undo of a Reject) opens, so the member
   // sees what they tried to answer. Any other change keeps the member's card.
   // (React's adjust-state-during-render pattern, as for `shown` below.)
-  const next = reconcileShown(prevKeys, cards, shown);
+  // The dock (§24.11): the question cards are tabs after the approvals, in
+  // ONE list with ONE shown rule. Without the dock, the list is the queue.
+  const items: readonly Pick<PendingConfirmation, "key" | "redraft">[] = questions
+    ? [...cards, ...questions.map((q) => ({ key: q.key }))]
+    : cards;
+  const next = reconcileShown(prevKeys, items, shown);
   if (next.keys !== prevKeys) setPrevKeys(next.keys);
   if (next.shown !== shown) setShown(next.shown);
-  if (cards.length === 0) return null;
-  const at = pickShown(cards, shown);
-  const card = cards[at];
-  if (shown.key !== card.key || shown.index !== at) {
+  if (items.length === 0) return null;
+  const at = pickShown(items, shown);
+  const item = items[at];
+  if (shown.key !== item.key || shown.index !== at) {
     // Pin the card on screen (React's adjust-state-during-render pattern).
-    setShown({ key: card.key, index: at });
+    setShown({ key: item.key, index: at });
   }
-  const go = (to: number) => setShown({ key: cards[to].key, index: to });
+  const go = (to: number) => setShown({ key: items[to].key, index: to });
+  const tabbed = items.length > 1;
+  // The one approval card that shows, with the tab row in its frame or none.
+  const approvalCard = (card: PendingConfirmation, slot: { tabs: ReactNode; tabPanel: { id: string; labelledBy: string } } | null) => {
   const view = rowsView(card, ticks);
-  const tabbed = cards.length > 1;
   const shownCard = (
     <ConfirmationCard
       // A new key per card: a long body scrolled on one card does not stay
@@ -211,15 +247,121 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
         : {})}
       {...(card.before ? { before: card.before } : {})}
       // The tab row sits inside the card's frame, and the card is its panel.
-      {...(tabbed
-        ? {
-            tabs: <CardTabs uid={uid} index={at} onGo={go} tabs={cards.map((c) => ({ ...cardTab(c), unseen: !seen.has(c.key) }))} />,
-            tabPanel: { id: cardPanelId(uid), labelledBy: cardTabId(uid, at) },
-          }
-        : {})}
+      {...(slot ?? {})}
     />
   );
   return shownCard;
+  };
+  if (questions) {
+    return (
+      <DockQueue
+        cards={cards}
+        questions={questions}
+        at={at}
+        go={go}
+        uid={uid}
+        seen={seen}
+        folded={folded}
+        onUnfold={onUnfold}
+        approvalCard={at < cards.length ? (tabs) => approvalCard(cards[at], tabs) : null}
+      />
+    );
+  }
+  return approvalCard(cards[at], tabbed
+    ? {
+        tabs: <CardTabs uid={uid} index={at} onGo={go} tabs={cards.map((c) => ({ ...cardTab(c), unseen: !seen.has(c.key) }))} />,
+        tabPanel: { id: cardPanelId(uid), labelledBy: cardTabId(uid, at) },
+      }
+    : null);
+}
+
+/**
+ * The queue in the waiting dock (§24.11): approvals and question cards as the
+ * tabs of ONE card. The open tab draws its card. Each question card stays
+ * mounted, hidden while its tab is closed, so its picks and typed text live
+ * through a change of tab and a fold. A folded dock draws one row: the tabs,
+ * the title of the open item and one button that ONLY opens the card. It
+ * never approves, rejects or sends (audit rule 2): the consent is on the card.
+ */
+function DockQueue({
+  cards,
+  questions,
+  at,
+  go,
+  uid,
+  seen,
+  folded,
+  onUnfold,
+  approvalCard,
+}: {
+  cards: PendingConfirmation[];
+  questions: readonly DockQuestion[];
+  at: number;
+  go: (to: number) => void;
+  uid: string;
+  seen: ReadonlySet<string>;
+  folded: boolean;
+  onUnfold?: () => void;
+  approvalCard: ((slot: { tabs: ReactNode; tabPanel: { id: string; labelledBy: string } } | null) => ReactNode) | null;
+}) {
+  const tabs: CardTab[] = [
+    ...cards.map((c) => ({ ...cardTab(c), unseen: !seen.has(c.key) })),
+    ...questions.map((q) => ({ key: q.key, label: q.label, title: q.title, icon: KIND_ICON.question, unseen: !seen.has(q.key) })),
+  ];
+  const words = countWordsFor([...cards.map(cardKind), ...questions.map(() => "question" as const)]);
+  const tabbed = tabs.length > 1;
+  const isApproval = at < cards.length;
+  const kind = isApproval ? "approval" : "question";
+  // The fold row's one button only opens the card. Never a consent.
+  const unfold = (
+    <Button
+      type="button"
+      size="sm"
+      variant="secondary"
+      onClick={onUnfold}
+      data-dock-unfold={kind}
+      className="ml-2 shrink-0 self-center"
+    >
+      {unfoldLabel(kind)}
+    </Button>
+  );
+  // The tab row: in the open card, or in the fold row. Never both, so each
+  // DOM id is drawn once.
+  const row = (trailing?: ReactNode) =>
+    tabbed ? <CardTabs uid={uid} index={at} onGo={go} tabs={tabs} words={words} trailing={trailing} /> : null;
+  const slot = !folded && tabbed ? { tabs: row(), tabPanel: { id: cardPanelId(uid), labelledBy: cardTabId(uid, at) } } : null;
+  const active = tabs[at];
+  return (
+    <div data-dock-queue="" data-dock-folded={folded ? "" : undefined}>
+      {folded && (
+        <div data-dock-fold-row="" className={`${CARD_FRAME_CLASS} glass:rounded-[16px] glass:border-primary/35 glass:p-3`}>
+          {tabbed ? (
+            // The open tab's label is the title of the open item.
+            <div className="[&>[data-card-tabs]]:mb-0 [&>[data-card-tabs]]:border-b-0">{row(unfold)}</div>
+          ) : (
+            <div className="flex min-w-0 items-center gap-2">
+              <Icon name={active.icon} size={14} className="shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground" title={active.title ?? active.label}>
+                {active.label}
+              </span>
+              {unfold}
+            </div>
+          )}
+        </div>
+      )}
+      <div hidden={folded}>
+        {approvalCard?.(slot)}
+        {questions.map((q, i) => {
+          const open = at === cards.length + i;
+          return (
+            <div key={q.key} hidden={!open} data-dock-question={q.key}>
+              {q.render(open ? (slot ?? {}) : {})}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 /**

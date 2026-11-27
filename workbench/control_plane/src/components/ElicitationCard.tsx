@@ -62,7 +62,7 @@
  * and `e2e/genui-option-picker.spec.ts`.
  */
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 
 import GenUiText from "@/components/GenUiText";
 import Icon from "@/components/Icon";
@@ -143,6 +143,11 @@ interface ElicitationCardProps {
    * picks stay: the card does not remount.
    */
   retryToken?: number;
+  /** The tab row of the waiting dock (§24.11 WD-D3), drawn inside the card
+   *  frame above its header, when two items or more wait. */
+  tabs?: ReactNode;
+  /** The tab panel: the card is the panel the tabs control. */
+  tabPanel?: { id: string; labelledBy: string };
 }
 
 export default function ElicitationCard({
@@ -156,6 +161,8 @@ export default function ElicitationCard({
   hint = SUBMIT_HINT,
   title: openTitle,
   retryToken = 0,
+  tabs,
+  tabPanel,
 }: ElicitationCardProps) {
   const [answers, setAnswers] = useState<ElicitationAnswers>({});
   const [freeformTexts, setFreeformTexts] = useState<Record<string, string>>({});
@@ -233,7 +240,9 @@ export default function ElicitationCard({
         aria-label={title}
         data-elicitation-card={declined ? "declined" : isAnswered ? "answered" : "open"}
         className={`${CARD_FRAME_CLASS} ${glassFrame}`}
+        {...(tabPanel ? { id: tabPanel.id, role: "tabpanel", "aria-labelledby": tabPanel.labelledBy } : {})}
       >
+        {tabs}
         {canDecline ? (
           <div className="flex min-w-0 items-center gap-1.5">
             <div className="min-w-0 flex-1">

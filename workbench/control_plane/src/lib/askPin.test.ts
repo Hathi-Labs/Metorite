@@ -129,4 +129,23 @@ describe("the bar", () => {
     expect(form).toContain("<AskPin ask={waiting} threadRef={threadRef} />");
     expect(src).toContain(`data-chat-ask={HITL_TARGET}`);
   });
+
+  it("§24.11 (WD-1): with the dock on, the bar names no item of the dock", () => {
+    const src = readFileSync(fileURLToPath(new URL("../components/AgentChat.tsx", import.meta.url)), "utf8");
+    const form = src.slice(src.indexOf("<form onSubmit={handleSubmit}"));
+    // Flag off: the bar of today. Flag on: the bar of a generative-UI ask only.
+    expect(form).toContain(
+      "{dockOn ? <AskPin ask={genUiWaiting} threadRef={threadRef} /> : <AskPin ask={waiting} threadRef={threadRef} />}",
+    );
+    expect(src).toContain("pendingAsk({ ...askSources, confirmations: [], elicitation: null, userInput: null })");
+  });
+
+  it("§24.11 (WD-1): the dock's sources taken out, a generative-UI ask still pins, and nothing else", () => {
+    const queue = [{ key: "c1", title: "Create this task?" }];
+    const all = sources({ confirmations: queue, userInput: { question: "Which day?" } });
+    expect(pendingAsk(all)?.kind).toBe("confirm");
+    const dockOff = { ...all, confirmations: [], elicitation: null, userInput: null };
+    expect(pendingAsk(dockOff)).toMatchObject({ kind: "choice", target: "genui:req-tags-1" });
+    expect(pendingAsk({ ...dockOff, messages: [] })).toBeNull();
+  });
 });

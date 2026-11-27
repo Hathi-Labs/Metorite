@@ -52,7 +52,7 @@ describe("the tabs of one approval card (owner, 2026-11-03, D173)", () => {
     // never by the title. Mutation: return "reply" for every form → red.
     expect(kind("Email to sharat@x.test", { kind: "new" })).toBe("new");
     expect(kind("Reply to 1 recipient?", { kind: "new" })).toBe("new");
-    expect(KIND_ICON).toEqual({ send: "Mail", reply: "Reply", new: "Mail", task: "CheckSquare", reminder: "Bell", other: "ShieldCheck" });
+    expect(KIND_ICON).toEqual({ send: "Mail", reply: "Reply", new: "Mail", task: "CheckSquare", reminder: "Bell", other: "ShieldCheck", question: "MessageCircleQuestion" });
   });
 
   it("a tab is a kind word and a short object, at most 24 characters", () => {
@@ -134,7 +134,7 @@ describe("the tabs of one approval card (owner, 2026-11-03, D173)", () => {
     expect(tabs).toContain("new ResizeObserver");
     expect(tabs).toContain("ro.disconnect()");
     expect(tabs).toContain("aria-label={slim");
-    expect(tabs).toContain("const words = tabsCount(waiting, updating);");
+    expect(tabs).toContain("const words = tabsCount(waiting, updating, countWords);");
     expect(tabs).toContain("aria-label={words}");
   });
 

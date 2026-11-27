@@ -81,4 +81,14 @@ describe("no card pins above the composer (owner report, 2026-10-23)", () => {
     expect(form).not.toContain("renderHitlCards()");
     expect(form).not.toMatch(/Draft(Result)?Card|ConfirmationCard|ElicitationCard/);
   });
+
+  it("§24.11 (WD-1): with the flag on, only the dock pins above the composer", () => {
+    // The dock is the one card above the box, and only with the flag on.
+    expect(form.match(/<WaitingDock\b/g)?.length).toBe(1);
+    expect(chat).toContain("const showDock = dockShown(dockOn, dockSources);");
+    // With the flag on, the thread keeps one line, not the cards.
+    expect(chat).toContain("if (dockOn) return renderDockThreadPart();");
+    // With the flag off, the cards still draw after the last message.
+    expect(chat).toContain("{msg.id === hitlAnchorId && renderHitlCards()}");
+  });
 });

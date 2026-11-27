@@ -47,6 +47,14 @@ describe("C3: a chat card holds no scroll box", () => {
     });
   }
 
+  it("§24.11 (WD-1): the dock's body is its one scroll box, and it holds no other", () => {
+    const dock = src("components/WaitingDock.tsx");
+    expect(dock.match(/overflow-y-auto/g)?.length).toBe(1);
+    expect(dock).toMatch(/data-dock-body=""\s+className="overflow-y-auto/);
+    // The fold of the dock's queue adds no scroll box to the queue.
+    expect(src("components/ConfirmationQueue.tsx")).not.toMatch(/overflow-(y-)?auto/);
+  });
+
   it("ShowMore cuts with a fade and opens in place, never with a scroll box", () => {
     const s = src("components/ui/ShowMore.tsx");
     expect(s).not.toMatch(/overflow-(y-)?auto/);
@@ -61,6 +69,16 @@ describe("C1: the composer form draws no card", () => {
   it("no waiting card and no draft pins above the box", () => {
     expect(form).not.toContain("renderHitlCards()");
     expect(form).not.toMatch(/<(Pinned\w*|Draft\w*Card|ConfirmationCard|ElicitationCard|ConfirmationQueue)\b/);
+  });
+
+  it("§24.11 (WD-1): with the flag on, the dock is the one card path in the form", () => {
+    // One dock, and only while the flag is on and an item waits.
+    expect(form.match(/<WaitingDock\b/g)?.length).toBe(1);
+    expect(form).toContain("{showDock && (");
+    expect(form).toContain("{renderDockCards}");
+    expect(chat).toContain("const showDock = dockShown(dockOn, dockSources);");
+    // Flag off: the thread draws the cards as before.
+    expect(chat).toContain("if (dockOn) return renderDockThreadPart();");
   });
 
   it("the Todos panel opens folded on a phone", () => {
