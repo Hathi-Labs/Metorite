@@ -44,6 +44,13 @@ def _load():
 
 aw = _load()
 
+
+@pytest.fixture(autouse=True)
+def _no_real_box_token(monkeypatch, tmp_path):
+    """No test may read the real box token of the machine (task 4062)."""
+    monkeypatch.setattr(aw, "BOX_HELPER", str(tmp_path / "no-helper"))
+    monkeypatch.setattr(aw, "BOX_ENV", str(tmp_path / "no-box.env"))
+
 R1 = "11111111-1111-4111-8111-111111111111"
 R2 = "22222222-2222-4222-8222-222222222222"
 R3 = "33333333-3333-4333-8333-333333333333"
@@ -514,3 +521,51 @@ def test_keeper_lanes_reads_plain_names_and_skips_comments(tmp_path):
                                                encoding="utf-8")
     assert aw.keeper_lanes(tmp_path) == frozenset({"lane-merge", "lane-devx"})
     assert aw.keeper_lanes(tmp_path / "missing") == frozenset()
+
+
+# ── Task 4062: the box token through the headers helper ─────────────────────
+
+
+def _helper(tmp_path, body: str) -> str:
+    h = tmp_path / "helper"
+    h.write_text("#!/bin/sh\n" + body)
+    h.chmod(0o755)
+    return str(h)
+
+
+def test_the_helper_token_is_read(tmp_path):
+    h = _helper(tmp_path, "printf '{\"Authorization\":\"Bearer mbt_abc123\"}\\n'\n")
+    assert aw.token_from_helper(h, "box.env") == "mbt_abc123"
+
+
+@pytest.mark.parametrize("body", [
+    "printf '{\"Authorization\":\"Bearer box-token-helper-refused\"}\\n'\n",  # the refusal
+    "echo not json\n",
+    "printf '{\"Authorization\":\"Basic abcdefgh12345\"}\\n'\n",  # long enough to leave a tail
+    "printf '{\"Authorization\":\"Bearer a b\"}\\n'\n",
+    "exit 3\n",
+])
+def test_a_refused_or_bad_helper_gives_no_token(tmp_path, body):
+    assert aw.token_from_helper(_helper(tmp_path, body), "box.env") == ""
+
+
+def test_a_missing_helper_gives_no_token(tmp_path):
+    assert aw.token_from_helper(str(tmp_path / "none"), "box.env") == ""
+
+
+def test_main_uses_the_helper_when_no_watcher_token(monkeypatch):
+    monkeypatch.delenv("METORITE_WATCHER_TOKEN", raising=False)
+    monkeypatch.setattr(aw, "token_from_helper", lambda: "")
+    assert aw.main() == 0  # no token at all: off, exit 0
+    seen = []
+    monkeypatch.setattr(aw, "token_from_helper", lambda: "mbt_x")
+    monkeypatch.setattr(aw, "open_session", lambda tok: seen.append(tok) or (_ for _ in ()).throw(RuntimeError("stop")))
+    assert aw.main() == 1 and seen == ["mbt_x"]
+
+
+def test_the_watcher_token_wins_over_the_helper(monkeypatch):
+    monkeypatch.setenv("METORITE_WATCHER_TOKEN", "from-env")
+    monkeypatch.setattr(aw, "token_from_helper", lambda: pytest.fail("the helper must not run"))
+    seen = []
+    monkeypatch.setattr(aw, "open_session", lambda tok: seen.append(tok) or (_ for _ in ()).throw(RuntimeError("stop")))
+    assert aw.main() == 1 and seen == ["from-env"]

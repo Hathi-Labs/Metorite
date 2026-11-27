@@ -45,7 +45,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from acb_auth import AgentScope, UserContext, require_feature_router
+from acb_auth import AgentScope, UserContext, get_current_user, require_feature_router
 from acb_auth.agent_oauth import ACTOR_VIA_PATTERN
 from acb_auth.permissions import normalize_grant_subject
 from acb_common import get_logger
@@ -87,6 +87,7 @@ ACTOR_VIA: ContextVar[str] = ContextVar("projects_actor_via", default="")
 
 async def capture_actor_via(
     x_actor_via: str | None = Header(None, alias="X-Actor-Via"),
+    user: UserContext = Depends(get_current_user),
 ) -> None:
     """Bind the request's ``X-Actor-Via`` for :func:`record_activity`.
 
@@ -94,11 +95,22 @@ async def capture_actor_via(
     refuses: a bad value is dropped, because provenance is a courtesy on the
     row, not a gate on the act.
 
+    SBX-3a (``agent_sandbox.md`` §12.5 decision 5): a request of the sandbox
+    door (``user.sandbox`` set) binds ``user.sandbox.stamp``, the stamp of
+    its ticket, and ignores the header. The door refuses an ``X-Actor-Via``
+    header anyway. ``get_current_user`` is the cached dependency of the
+    request, so the identity step runs once.
+
     ⚠️ ``async``, and that is load-bearing. Starlette runs a SYNC dependency
     in a threadpool with a COPY of the request context, so a ContextVar set
     there never reaches the async handler. Measured 2026-09-22 by the fence
     in ``test_projects_actor_via.py``: the sync form bound nothing.
     """
+    sandbox = getattr(user, "sandbox", None)
+    if sandbox is not None:
+        stamp = sandbox.stamp
+        ACTOR_VIA.set(stamp if ACTOR_VIA_PATTERN.fullmatch(stamp) else "")
+        return
     value = x_actor_via.strip().lower() if isinstance(x_actor_via, str) else ""
     ACTOR_VIA.set(value if ACTOR_VIA_PATTERN.match(value) else "")
 

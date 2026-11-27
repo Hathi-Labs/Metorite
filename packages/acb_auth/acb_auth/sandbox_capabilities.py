@@ -38,6 +38,16 @@ one of :data:`COUNTED_REFUSALS`. The middleware then calls
 :func:`count_refusal` before it forwards the status of the refusal.
 :func:`door_counts` reads the call count and the refusal count of one token.
 
+**The writes (SBX-3a, §12.5 decisions 4 and 6).** :func:`mint` takes a write
+scope of :data:`SANDBOX_WRITE_SCOPES` in the ``run`` phase only, and only with
+an app id and a version. A write reaches a route only through the batch route
+of the gateway (``gateway/sandbox_batch.py``). After the member approves a
+row, the gateway issues one ticket for it (:func:`issue_ticket`), and the
+sibling of branch 0 takes it once (:func:`take_ticket`). The ticket lives in
+tenant Redis for :data:`TICKET_TTL_S` seconds. It binds the token hash, the
+method, the path, the query, the SHA-256 of the body, the stamp and the held
+id of one row.
+
 **No secret in a log.** No line of this module holds the token, its hash, a
 header value or a query value. Fence: ``tests/unit/test_sandbox_door_log_lines.py``.
 """
@@ -45,6 +55,8 @@ from __future__ import annotations
 
 import contextvars
 import functools
+import hashlib
+import json
 import re
 import secrets
 import uuid
@@ -70,6 +82,13 @@ PHASES: tuple[str, ...] = ("build", "smoke", "run")
 
 #: The read scopes that a capability may hold (decision 7).
 SANDBOX_READ_SCOPES: frozenset[str] = app_manifests.SANDBOX_READ_SCOPES
+
+#: The write scopes that a capability of the ``run`` phase may hold (SBX-3a,
+#: §12.5 decision 6).
+SANDBOX_WRITE_SCOPES: frozenset[str] = app_manifests.SANDBOX_WRITE_SCOPES
+
+#: The one phase whose capability may hold a write scope (§12.5 decision 6).
+WRITE_PHASE = "run"
 
 #: The shape of the header value: the prefix and 43 URL-safe characters.
 TOKEN_PATTERN = re.compile(r"msbx_[A-Za-z0-9_-]{43}")
@@ -108,6 +127,22 @@ BAD_QUERY = "sandbox_bad_query"
 PAGE_CAP_CODE = "sandbox_page_cap"
 CALL_CAP_CODE = "sandbox_call_cap"
 TOO_LARGE = "sandbox_response_too_large"
+
+#: The fixed codes of the writes (SBX-3a, §12.5 decisions 4 and 6).
+BAD_BATCH = "sandbox_bad_batch"
+BATCH_CAP = "sandbox_batch_cap"
+WRITE_REFUSED = "sandbox_write_refused"
+APPROVAL_TIMEOUT = "sandbox_approval_timeout"
+NOT_RUN = "sandbox_not_run"
+TICKET = "sandbox_ticket"
+
+#: The tenant Redis namespace of a ticket, and its life in seconds (§12.5
+#: decision 4).
+TICKET_NAMESPACE = "sandbox_ticket"
+TICKET_TTL_S = 30
+
+#: The shape of a ticket: 32 lower-case hex digits.
+TICKET_PATTERN = re.compile(r"[0-9a-f]{32}")
 
 #: The refusals that the refusal counter counts (§12.4 decision 9). A 422 of
 #: the query and a 401 are not on it.
@@ -225,8 +260,11 @@ async def mint(*, org: str, member: str, run_id: str, thread_id: str,
 
     Raises ``ValueError`` before any SQL for a ``ttl_s`` below 1 or above
     :data:`MAX_TTL_S`, a phase outside :data:`PHASES`, a read scope outside
-    :data:`SANDBOX_READ_SCOPES`, any write scope (SBX-2 opens none), an
-    ``org`` that is not a UUID, and an empty member, run or thread.
+    :data:`SANDBOX_READ_SCOPES`, an ``org`` that is not a UUID, and an empty
+    member, run or thread. SBX-3a (§12.5 decision 6): it also raises for a
+    write scope outside :data:`SANDBOX_WRITE_SCOPES`, a write scope in a
+    phase other than ``run``, and a write scope with no ``app_id`` or no
+    ``version``.
 
     ⚠️ R5e: *org* and *member* come from the run binding, never from tool
     input or a request. The database clock sets ``created_at`` and
@@ -243,8 +281,12 @@ async def mint(*, org: str, member: str, run_id: str, thread_id: str,
     if any(scope not in SANDBOX_READ_SCOPES for scope in reads):
         raise ValueError("a read scope is not a scope of the sandbox door")
     writes = tuple(dict.fromkeys(write_scopes))
-    if writes:
-        raise ValueError("SBX-2 opens no write scope")
+    if any(scope not in SANDBOX_WRITE_SCOPES for scope in writes):
+        raise ValueError("a write scope is not a scope of the sandbox door")
+    if writes and phase != WRITE_PHASE:
+        raise ValueError("a write scope is for the run phase only")
+    if writes and (app_id is None or version is None):
+        raise ValueError("a write scope needs the app_id and the version")
     org_id = _canonical_uuid(org)
     if org_id is None:
         raise ValueError("org is not a UUID")
@@ -371,6 +413,84 @@ async def lookup(raw: str) -> Capability | None:
     )
     _note_lookup(capability)
     return capability
+
+
+# ── The ticket of one approved write (SBX-3a, §12.5 decision 4) ─────────────
+
+
+def ticket_well_formed(raw: object) -> bool:
+    """True when *raw* has the shape of an ``X-Sandbox-Ticket`` value."""
+    return isinstance(raw, str) and TICKET_PATTERN.fullmatch(raw) is not None
+
+
+def _query_text(query: bytes | str) -> str:
+    """The raw query as text. A query that is not ASCII reads as one that no
+    ticket holds."""
+    if isinstance(query, bytes):
+        return query.decode("ascii", errors="replace")
+    return str(query)
+
+
+async def issue_ticket(*, org: str, token_sha256: str, method: str, path: str,
+                       query: bytes | str, body: bytes, stamp: str, held_id: str) -> str:
+    """Write one ticket for one approved row, and give its value.
+
+    The batch handler of the gateway calls it after the member approved the
+    row, once for each row. ``SET NX`` with a life of :data:`TICKET_TTL_S`
+    seconds, in the tenant Redis wrapper bound to *org*, the org of the
+    capability row. The record holds the SHA-256 of the body, never the
+    body. A fault raises, and the row does not run.
+    """
+    ticket = secrets.token_hex(16)
+    record = json.dumps({
+        "token_sha256": token_sha256, "method": method, "path": path,
+        "query": _query_text(query), "body_sha256": hashlib.sha256(body).hexdigest(),
+        "stamp": stamp, "held": held_id,
+    })
+    client = tenant_redis.get_tenant_redis()
+    with tenant_redis.organization_scope(org):
+        done = await client.set(tenant_redis.key(TICKET_NAMESPACE, ticket), record,
+                                nx=True, ex=TICKET_TTL_S)
+    if not done:
+        raise RuntimeError("the ticket was not written")
+    return ticket
+
+
+async def take_ticket(capability: Capability, ticket: str, *, method: str, path: object,
+                      query: bytes | str, body: bytes | None) -> str | None:
+    """Take one ticket once (``GETDEL``), and give its stamp, or ``None``.
+
+    It reads in the tenant Redis wrapper bound to the org of the capability
+    row, so a ticket of another org is a miss. ``None`` for a miss, a second
+    use, a ticket of another capability, and a ticket of another method,
+    path, query or body. A body that the door could not read (``None``) never
+    matches. A fault of the store raises, and the door answers 503.
+    """
+    client = tenant_redis.get_tenant_redis()
+    with tenant_redis.organization_scope(capability.organization_id):
+        raw = await client.getdel(tenant_redis.key(TICKET_NAMESPACE, ticket))
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="replace")
+    if not isinstance(raw, str) or not raw or body is None:
+        return None
+    try:
+        record = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(record, dict):
+        return None
+    wire = {
+        "token_sha256": capability.token_sha256, "method": method, "path": path,
+        "query": _query_text(query), "body_sha256": hashlib.sha256(body).hexdigest(),
+    }
+    for name, value in wire.items():
+        held = record.get(name)
+        if not isinstance(held, str) or not isinstance(value, str):
+            return None
+        if not secrets.compare_digest(held.encode("utf-8"), value.encode("utf-8")):
+            return None
+    stamp = record.get("stamp")
+    return stamp if isinstance(stamp, str) else ""
 
 
 # ── The flag (decision 4) ───────────────────────────────────────────────────
@@ -571,16 +691,26 @@ def log_door_call(*, status: int, code: str, method: str, template: str | None,
 
 __all__ = [
     "ANSWER_CAP_BYTES",
+    "APPROVAL_TIMEOUT",
+    "BAD_BATCH",
+    "BATCH_CAP",
     "CALLS_NAMESPACE",
     "CALL_CAP",
     "COUNTED_REFUSALS",
     "MAX_TTL_S",
+    "NOT_RUN",
     "PAGE_CAP",
     "PAGE_KEYS",
     "PHASES",
     "REFUSALS_NAMESPACE",
     "SANDBOX_READ_SCOPES",
+    "SANDBOX_WRITE_SCOPES",
+    "TICKET",
+    "TICKET_NAMESPACE",
+    "TICKET_TTL_S",
     "TOKEN_PREFIX",
+    "WRITE_PHASE",
+    "WRITE_REFUSED",
     "Capability",
     "DoorCall",
     "DoorCounts",
@@ -591,6 +721,7 @@ __all__ = [
     "current_door_call",
     "door_counts",
     "door_orgs",
+    "issue_ticket",
     "log_door_call",
     "lookup",
     "mint",
@@ -599,5 +730,7 @@ __all__ = [
     "revoke",
     "revoke_step",
     "sweep",
+    "take_ticket",
+    "ticket_well_formed",
     "well_formed",
 ]

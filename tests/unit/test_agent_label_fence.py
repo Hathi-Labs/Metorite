@@ -949,9 +949,10 @@ class TestTheClean:
             assert get_args(literal) == agent_runs.AGENT_HOST_KINDS, model
 
     def test_the_body_models_take_the_label_with_one_bound(self) -> None:
-        from gateway.routes.projects.tasks import ClaimIn
+        from gateway.routes.projects.tasks import AssigneesIn, ClaimIn
 
-        for model in (ClaimIn, agent_runs.StartIn):
+        # LBB-2c (§7b.10): the PUT of the assignees takes it too.
+        for model in (ClaimIn, agent_runs.StartIn, AssigneesIn):
             field = model.model_fields["agent_label"]
             assert field.default is None and not field.is_required()
             bound = [m.max_length for m in field.metadata if hasattr(m, "max_length")]
@@ -963,7 +964,8 @@ class TestTheClean:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-_TAKES_LABEL = ("claim_task", "start_agent_run", "my_work")
+#: LBB-2c (§7b.10): ``set_assignees`` sends it to the claim gate of a self-add.
+_TAKES_LABEL = ("claim_task", "start_agent_run", "my_work", "set_assignees")
 #: SW-104. The two tools that take the machine, its kind and the model.
 _TAKES_PLACE = ("claim_task", "start_agent_run")
 #: SW-114. The one tool that takes a model and no host: a sub-agent's model.

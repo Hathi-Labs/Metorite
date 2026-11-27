@@ -15,6 +15,7 @@ from email_ingestion.llm_cap import LLMBudgetExhausted, automation_job
 from email_ingestion.post_sync import status_skips_rule_match, triage_once_per_cycle
 from fastapi import BackgroundTasks, Depends, Query
 from gateway import decide_features
+from gateway.routes.email import act_features
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.automation import mark_done
 from gateway.routes.email.automation.assistant import _load_assistant_about
@@ -75,6 +76,7 @@ async def _upsert_thread_status(
     db: Any, account_id: str, thread_id: str, status: str,
     msg_id: Any, msg_at: Any, reason: str, *, preserve_done: bool = False,
     guard: bool = False, seen_at: Any = None, keep_held: bool = False,
+    member_guard: bool = False, member_seen: Any = None,
 ) -> bool:
     """Write a thread's Reply Zero status. Returns True when it wrote the row.
 
@@ -97,8 +99,16 @@ async def _upsert_thread_status(
     Task 3995: an automated write (``preserve_done``, ``guard`` or
     ``keep_held``) keeps a HELD row, one that the member marked done by hand
     (``mark_done.upsert_expressions``). ``keep_held`` changes nothing else
-    in the statement."""
+    in the statement.
+
+    ``member_guard`` is for the label learner (§6.6, fix round 5, F2).
+    ``member_seen`` is the ``classified_at`` of the row that the learner
+    read, or None for no row. With the flag on, the statement then writes no
+    row that a member wrote after that read
+    (``mark_done.member_wrote_since_sql``), and this returns False. With the
+    flag off the statement is the old one."""
     automated = preserve_done or guard or keep_held
+    member_guard = member_guard and mark_done.mark_done_on()
     status_expr = "EXCLUDED.status"
     if preserve_done:
         status_expr = (
@@ -127,6 +137,12 @@ async def _upsert_thread_status(
     else:
         rows = "VALUES (:aid, :tid, :st, :mid, :mat, :reason, now())"
         returning = ""
+    where = ""
+    if member_guard:
+        where = (f"\n           WHERE NOT "
+                 f"{mark_done.member_wrote_since_sql('email_thread_status')}")
+        returning = "\n           RETURNING 1"
+        params["member_seen"] = member_seen
     result = await db.execute(text(
         f"""INSERT INTO email_thread_status
              (account_id, thread_id, status, last_message_id, last_message_at,
@@ -138,9 +154,9 @@ async def _upsert_thread_status(
              last_message_at = {at_expr},
              reason = {reason_expr}, classified_at = {classified_expr},
              -- Re-arm the follow-up reminder whenever the thread changes hands.
-             follow_up_reminded_at = {reminder_expr}{returning}"""
+             follow_up_reminded_at = {reminder_expr}{where}{returning}"""
     ), params)
-    if not guard:
+    if not (guard or member_guard):
         return True
     return result.fetchone() is not None
 
@@ -2429,7 +2445,7 @@ async def _reconcile_labels_bg(
 
 async def apply_thread_status_correction(
     account_id: str, thread_id: str, status_key: str, *,
-    automated: bool = False,
+    automated: bool = False, seen: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Force a thread's Reply Zero status to a user-corrected value (the Fix flow).
 
@@ -2453,6 +2469,11 @@ async def apply_thread_status_correction(
     ``{ok: False, held: True}``. Its block C asks the hold again after the
     provider I/O and puts "Done" back (``mark_done.recheck_after_io``). The
     Fix of the member leaves it False, so the Fix still ends the hold.
+
+    Fix round 5 (F2): ``seen`` is the map of ``mark_done.owned_and_seen``,
+    which the learner read before its loop. With it, block A writes no row
+    that a member wrote after that read, and the answer is
+    ``{ok: False, member: True}``. The Fix of the member passes no map.
     """
     rz_status, label = _THREAD_STATUS_MAP.get(
         _canon_status_key(status_key), ("", ""))
@@ -2465,11 +2486,14 @@ async def apply_thread_status_correction(
                 "WHERE account_id = :aid AND thread_id = :tid "
                 "ORDER BY received_at DESC NULLS LAST LIMIT 1"
             ), {"aid": account_id, "tid": thread_id})).fetchone()
-            await _upsert_thread_status(
+            wrote = await _upsert_thread_status(
                 db, account_id, thread_id, rz_status,
                 latest.id if latest else None,
                 latest.received_at if latest else None, "Fix correction",
-                keep_held=automated)
+                keep_held=automated, member_guard=seen is not None,
+                member_seen=(seen or {}).get(thread_id))
+            if not wrote:
+                return {"ok": False, "member": True}
             # The upsert holds the row lock, so this read stays true until
             # the block commits. No read with the flag off.
             held = automated and await mark_done.thread_is_held(
@@ -3180,7 +3204,9 @@ async def resolve_thread(
             await member_actions.record_act(
                 db, org=member_actions.org_of(user), member=user.email or "",
                 app="email", act="mark_done", via="app", item_kind="thread",
-                item_id=req.thread_id, mailbox_id=req.account_id)
+                item_id=req.thread_id, mailbox_id=req.account_id,
+                features=await act_features.of_thread(
+                    db, member_actions.org_of(user), req.account_id, req.thread_id))
         else:
             # Reopen: re-derive from the latest message's folder. Resolve the
             # latest message directly (don't rely on last_message_id, which may

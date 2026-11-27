@@ -1820,6 +1820,9 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
             "The edit guard of an outside agent (D-PM-20, WS-55 MCP-G2). A chat "
             "write reads the row first."
         ),
+        # LBB-2c (engineering_practice.md section 7b.10): the claim gate of a
+        # self-add reads the label of the session.
+        "agent_label": _AGENT_LABEL_REASON,
     },
     # one_assistant_context.md §9.4 WT-6a: the browser's Undo of a chat receipt.
     ("POST", "/projects/tasks/{task_id}/unarchive"): {

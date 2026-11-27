@@ -487,7 +487,16 @@ class MoveTask(BaseModel):
 
 
 class AssigneesIn(BaseModel):
+    """The body of ``PUT /tasks/{task_id}/assignees``.
+
+    LBB-2c (``engineering_practice.md`` §7b.10): an agent may send
+    ``agent_label``, the display name of its session, as ``ClaimIn`` takes it.
+    The claim gate of a self-add reads it. A person's body that names one is
+    422 (``agent_runs.agent_label_of``). The model ignores other keys, as
+    before."""
+
     assignees: list[str]
+    agent_label: str | None = Field(default=None, max_length=200)
 
 
 class TaskCreateIn(TaskIn):
@@ -2818,8 +2827,18 @@ async def set_assignees(
     has ``warning`` and ``outside_apps``. Mode ``refuse`` answers 403
     ``outside_apps`` and writes nothing. Only a task that already holds the
     session member is not checked. Another assignee is not a pass.
+
+    LBB-2c (``engineering_practice.md`` §7b.10). An agent may send
+    ``agent_label``, and the claim gate of a self-add checks the PRs of that
+    label. With no label, the gate checks the PRs bound to no label, as
+    before. A person's body that names a label is 422, before any read.
     """
+    from gateway.routes.projects import agent_runs
+
     agent_call = getattr(user, "agent", None) is not None
+    # LBB-2c: the display label of the agent's session, as `claim_task` reads
+    # it. A person's is 422.
+    label = agent_runs.agent_label_of(user, payload.agent_label)
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
@@ -2863,10 +2882,10 @@ async def set_assignees(
             else None
         )
         # LBB-2 (engineering_practice.md §7b.2): the claim gate, right after
-        # the scope check and before any write. The PUT carries no label, so
-        # a self-add is checked against the PRs bound to no label.
+        # the scope check and before any write. LBB-2c (§7b.10): the label of
+        # the PUT picks the bucket. With none, the PRs bound to no label.
         if self_add:
-            await check_claim_gate(db, user, task_id, vis, None)
+            await check_claim_gate(db, user, task_id, vis, label)
         assigned = await _write_assignees(
             db, user, task_id=task_id, project_id=str(task.project_id),
             wanted=wanted, current=current,

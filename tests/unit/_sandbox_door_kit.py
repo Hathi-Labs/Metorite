@@ -81,13 +81,74 @@ class FakePipeline:
 
 class FakeRedis:
     """The two commands of the call cap and the refusal count, the read of
-    the counts, and a switch for an outage."""
+    the counts, and a switch for an outage.
+
+    SBX-3a adds the commands of the held store and the ticket: ``set`` (with
+    ``nx`` and ``ex``), ``get``, ``getdel``, ``delete``, ``ttl``, ``rpush``,
+    ``expire`` and ``lrange``. Each key is the full tenant key text, so a
+    test reads which org a value lives under."""
 
     def __init__(self) -> None:
         self.counts: dict[str, int] = {}
         self.ttls: dict[str, int] = {}
+        self.values: dict[str, Any] = {}
+        self.lists: dict[str, list[Any]] = {}
         self.down = False
         self.pipelines = 0
+
+    def _up(self) -> None:
+        if self.down:
+            raise ConnectionError("redis is down")
+
+    async def set(self, k: Any, value: Any, nx: bool = False, ex: int | None = None) -> Any:
+        self._up()
+        name = str(k)
+        if nx and name in self.values:
+            return None
+        self.values[name] = value
+        if ex is not None:
+            self.ttls[name] = int(ex)
+        return True
+
+    async def get(self, k: Any) -> Any:
+        self._up()
+        return self.values.get(str(k))
+
+    async def getdel(self, k: Any) -> Any:
+        self._up()
+        self.ttls.pop(str(k), None)
+        return self.values.pop(str(k), None)
+
+    async def delete(self, *keys: Any) -> int:
+        self._up()
+        gone = 0
+        for k in keys:
+            gone += int(self.values.pop(str(k), None) is not None)
+            self.lists.pop(str(k), None)
+            self.ttls.pop(str(k), None)
+        return gone
+
+    async def ttl(self, k: Any) -> int:
+        self._up()
+        name = str(k)
+        if name not in self.values and name not in self.lists:
+            return -2
+        return self.ttls.get(name, -1)
+
+    async def rpush(self, k: Any, *values: Any) -> int:
+        self._up()
+        self.lists.setdefault(str(k), []).extend(values)
+        return len(self.lists[str(k)])
+
+    async def expire(self, k: Any, seconds: int) -> bool:
+        self._up()
+        self.ttls[str(k)] = int(seconds)
+        return True
+
+    async def lrange(self, k: Any, start: int, end: int) -> list[Any]:
+        self._up()
+        items = self.lists.get(str(k), [])
+        return items[start:] if end == -1 else items[start:end + 1]
 
     def pipeline(self, transaction: bool = False) -> FakePipeline:
         assert transaction, "the INCR and its expiry go in one MULTI block"

@@ -33,6 +33,13 @@ each of cases 1 to 4 and 6). Each fixture run is in the production shape: a
 run in a terminal status has ``ended_at``, and the run of ``_old`` starts
 before its PR.
 
+LBB-2c (§7b.10, task 4064): a PR does not count while an open run of another
+session holds its task (:class:`TestAnotherSession`), and ``set_assignees``
+checks the PRs of the label that its PUT sends (:class:`TestTheAssigneesLabel`).
+Two LBB-2b tests change: the case 3 test (the adopter's open run exempts the
+PR until it releases), and the tie-break test of C12 (its run A is reopened
+and released again, so no run is open).
+
 Mutations (R7). ``G`` is ``apps/services/gateway/gateway/routes/projects``.
 
 * C1. ``G/claim_gate.py`` ``_counted_sql`` drops the label test.
@@ -65,6 +72,17 @@ Mutations (R7). ``G`` is ``apps/services/gateway/gateway/routes/projects``.
   first statement. ``test_with_both_flags_off_no_door_reads_the_gate``.
 * C10. ``G/refs.py`` ``insert_ref`` writes the mark with no ``landing``.
   ``test_a_repeat_with_no_landing_changes_nothing``.
+* C14. ``G/claim_gate.py`` ``_counted_sql`` drops the ``NOT EXISTS`` of
+  another session's open run.
+  ``test_an_open_run_of_another_session_exempts_the_pr_until_it_releases``.
+* C15. ``G/claim_gate.py`` ``_counted_sql`` drops the member arm of that
+  clause (only the label compares).
+  ``test_an_open_run_of_another_member_with_the_same_label_exempts_the_pr``.
+* C16. ``G/claim_gate.py`` ``_counted_sql`` drops ``NOT holder_free_sql('o')``.
+  ``test_a_stale_open_run_of_another_session_does_not_exempt_the_pr``.
+* C17. ``G/tasks.py`` ``set_assignees`` passes no label to
+  ``check_claim_gate``.
+  ``test_a_labelled_self_add_checks_the_prs_of_its_label``.
 """
 from __future__ import annotations
 
@@ -209,18 +227,28 @@ _TERMINAL = frozenset({"completed", "stopped", "failed", "stale", "abandoned", "
 
 def _run(world, task: str, *, label: str | None, member: str = MEMBER,
          status: str = "completed", days_ago: float = 3.0, answered: bool = False,
-         connection: str | None = None, ended_hours: float | None = None) -> str:
+         connection: str | None = None, ended_hours: float | None = None,
+         idle_hours: float | None = None) -> str:
     """One run on *task*, in the production shape. ``answered``: a member's
     answer is its newest activity, and no agent activity follows it.
 
     A run in a terminal status gets ``ended_at``: *ended_hours* ago, or 30
     seconds ago by default, so it ends after each PR of a test. An open run
-    keeps ``ended_at`` NULL."""
+    keeps ``ended_at`` NULL.
+
+    LBB-2c: *idle_hours* sets the last activity, and the last agent activity,
+    that many hours ago. Over the lease of 7200 seconds, an open run no
+    longer holds its task (``filters.holder_free_sql``). By default the last
+    activity is 1 hour old, so an open run holds its task."""
     ended = None
     if status in _TERMINAL:
         ended = 30.0 if ended_hours is None else ended_hours * 3600
     else:
         assert ended_hours is None, "an open run has no end"
+    act, agent = (60, 3600) if answered else (3600, 60)
+    if idle_hours is not None:
+        assert not answered, "an idle run has no fresh answer"
+        act = agent = idle_hours * 3600
     return str(world.seeder.one(
         "INSERT INTO pm_agent_runs (task_id, member_email, client_via, status, started_by,"
         " connection_id, agent_label, created_at, last_activity_at, last_agent_activity_at,"
@@ -232,8 +260,7 @@ def _run(world, task: str, *, label: str | None, member: str = MEMBER,
         "      THEN now() - make_interval(secs => CAST(:ended AS float8)) END)"
         " RETURNING id",
         t=task, m=member, via=w.R8_VIA, st=status, cid=connection, label=label,
-        ago=days_ago * 86400, act=60 if answered else 3600,
-        agent=3600 if answered else 60, ended=ended))
+        ago=days_ago * 86400, act=act, agent=agent, ended=ended))
 
 
 def _pr(world, task: str, number: int, *, hours: float = 60, state: str | None = "open",
@@ -281,9 +308,11 @@ async def _claim(world, task: str, label: str | None, **kw: Any) -> Any:
                        headers={"If-Match": await _version(world, task)}, **kw)
 
 
-async def _self_add(world, task: str) -> Any:
-    return await _send(world, "PUT", f"/projects/tasks/{task}/assignees",
-                       body={"assignees": [MEMBER]},
+async def _self_add(world, task: str, label: str | None = None) -> Any:
+    body: dict[str, Any] = {"assignees": [MEMBER]}
+    if label is not None:
+        body["agent_label"] = label
+    return await _send(world, "PUT", f"/projects/tasks/{task}/assignees", body=body,
                        headers={"If-Match": await _version(world, task)})
 
 
@@ -304,6 +333,14 @@ def _assignees(world, task: str) -> list[str]:
         return sorted(r[0] for r in c.execute(text(
             "SELECT assignee FROM pm_task_assignees WHERE task_id = CAST(:t AS uuid)"),
             {"t": task}))
+
+
+def _release(world, run: str) -> None:
+    """End *run* as a release does in production: ``released``, with
+    ``ended_at`` now."""
+    world.seeder.one(
+        "UPDATE pm_agent_runs SET status = 'released', ended_at = now()"
+        " WHERE id = CAST(:r AS uuid) RETURNING id", r=run)
 
 
 def _runs_of(world, task: str) -> int:
@@ -600,10 +637,16 @@ class TestTheOwnerRun:
         _pr(clean, task, 903)
         before = _ref_row(clean, task, 903).created_at
         # Lane D claims the task and adds the same URL again, with no landing.
-        _run(clean, task, label=adopter, status="in_progress", days_ago=0.5)
+        d = _run(clean, task, label=adopter, status="in_progress", days_ago=0.5)
         assert (await _add(clean, task, 903, None)).status_code == 200
         assert _ref_row(clean, task, 903).created_at == before
         assert (await _claim(clean, _task(clean, "adopter work"), adopter)).status_code == 200
+        # LBB-2c (§7b.10, rule 1): while D's run is open, the PR does not
+        # count for L, because another session works on it.
+        r = await _claim(clean, _task(clean, "lane work 0"), lane)
+        assert r.status_code == 200, r.text
+        # D releases. The owner stays A, so the PR counts for L again.
+        _release(clean, d)
         [pr] = _refused(await _claim(clean, _task(clean, "lane work"), lane))
         assert pr["pr_number"] == 903
         # D's queued mark keeps the created_at, and exempts the PR for 24 hours.
@@ -652,13 +695,16 @@ class TestTheOwnerRun:
         assert theirs["pr_number"] == 906
 
     async def test_when_two_runs_qualify_the_later_start_owns_the_pr(self, clean, flags):
-        # The tie-break of §7b.8: the highest created_at wins. Run A is open
-        # with no label (the shape of a reopen), and run B ended after the PR.
-        # Both qualify, and B started later, so B owns the PR.
+        # The tie-break of §7b.8: the highest created_at wins. LBB-2c
+        # (§7b.10): run A was reopened (which cleared its label) and then
+        # released again, so it ended 30 seconds ago. Run B ended after the
+        # PR. Both are terminal, both windows hold the reference, and B
+        # started later, so B owns the PR. No run is open, so rule 1 of
+        # §7b.10 exempts nothing here.
         flags(refuse=True)
         label = _label()
         task = _task(clean, "two qualify", status="doing")
-        _run(clean, task, label=None, status="in_progress", days_ago=5)
+        _run(clean, task, label=None, status="released", days_ago=5)
         _run(clean, task, label=label, status="released", days_ago=4, ended_hours=50)
         _pr(clean, task, 907, hours=60)
         [pr] = _refused(await _claim(clean, _task(clean, "labelled work"), label))
@@ -686,6 +732,120 @@ class TestTheOwnerRun:
         assert pr["pr_number"] == 908
         r = await _claim(clean, _task(clean, "other work"), other)
         assert r.status_code == 200, r.text
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# LBB-2c: a PR that another session works on (§7b.10, task 4064)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestAnotherSession:
+    """Rule 1 of §7b.10. Lane L owns PR N (the run of ``_old``). Another
+    session holds an open run on the task of PR N. "Another session" is
+    another member, or another label (``IS DISTINCT FROM``)."""
+
+    pytestmark = _DB_GATE
+
+    @pytest.mark.parametrize("other_label", ["adopter", None])
+    async def test_an_open_run_of_another_session_exempts_the_pr_until_it_releases(
+            self, clean, flags, other_label):
+        flags(refuse=True)
+        lane = _label()
+        task = _old(clean, lane, 1001)
+        d_label = _label() if other_label else None
+        d = _run(clean, task, label=d_label, status="in_progress", days_ago=0.5)
+        r = await _claim(clean, _task(clean, "lane work"), lane)
+        assert r.status_code == 200, r.text
+        _release(clean, d)
+        [pr] = _refused(await _claim(clean, _task(clean, "lane work 2"), lane))
+        assert (pr["pr_number"], pr["task_id"]) == (1001, task)
+
+    async def test_the_landing_route_does_not_list_a_pr_another_session_holds(
+            self, clean, flags):
+        flags(shadow=True)
+        lane = _label()
+        task = _old(clean, lane, 1002)
+        d = _run(clean, task, label=_label(), status="in_progress", days_ago=0.5)
+        assert await _landing(clean, lane) == []
+        _release(clean, d)
+        assert await _landing(clean, lane) == [1002]
+
+    async def test_an_open_run_of_the_callers_member_and_label_does_not_exempt_the_pr(
+            self, clean, flags):
+        # L's own run C after a BACK (case 2 of §7b.8) is the same session.
+        flags(refuse=True)
+        lane = _label()
+        task = _old(clean, lane, 1003)
+        _run(clean, task, label=lane, status="in_progress", days_ago=0.5)
+        [pr] = _refused(await _claim(clean, _task(clean, "lane work"), lane))
+        assert pr["pr_number"] == 1003
+
+    async def test_an_open_run_of_another_member_with_the_same_label_exempts_the_pr(
+            self, clean, flags):
+        flags(refuse=True)
+        lane = _label()
+        task = _old(clean, lane, 1004)
+        _run(clean, task, label=lane, member=OTHER, status="in_progress", days_ago=0.5)
+        r = await _claim(clean, _task(clean, "lane work"), lane)
+        assert r.status_code == 200, r.text
+
+    async def test_a_stale_open_run_of_another_session_does_not_exempt_the_pr(
+            self, clean, flags):
+        # D's lease ended: no activity for 3 hours, over the 7200 seconds.
+        flags(refuse=True)
+        lane = _label()
+        task = _old(clean, lane, 1005)
+        _run(clean, task, label=_label(), status="in_progress", days_ago=0.5, idle_hours=3)
+        [pr] = _refused(await _claim(clean, _task(clean, "lane work"), lane))
+        assert pr["pr_number"] == 1005
+
+
+class TestTheAssigneesLabel:
+    """Item 2 of §7b.10. The ``set_assignees`` door reads the label of its PUT
+    (``agent_runs.agent_label_of``) and passes it to the claim gate."""
+
+    pytestmark = _DB_GATE
+
+    async def test_a_labelled_self_add_checks_the_prs_of_its_label(self, clean, flags):
+        flags(refuse=True)
+        label = _label()
+        # A PR of the bucket of no label does not refuse a self-add of Y.
+        _old(clean, None, 1101)
+        first = _task(clean, "add 1")
+        r = await _self_add(clean, first, label)
+        assert r.status_code == 200, r.text
+        assert _assignees(clean, first) == [MEMBER]
+        # A PR of Y refuses it, and the refusal names Y's PR only.
+        _old(clean, label, 1102)
+        second = _task(clean, "add 2")
+        prs = _refused(await _self_add(clean, second, label))
+        assert [p["pr_number"] for p in prs] == [1102]
+        assert _assignees(clean, second) == []
+
+    async def test_a_self_add_with_no_label_checks_the_bucket_of_no_label(
+            self, clean, flags):
+        flags(refuse=True)
+        _old(clean, None, 1103)
+        _old(clean, _label(), 1104)
+        new = _task(clean, "bare add")
+        prs = _refused(await _self_add(clean, new))
+        assert [p["pr_number"] for p in prs] == [1103]
+        assert _assignees(clean, new) == []
+
+    async def test_a_person_put_that_names_a_label_is_422(self, clean, flags):
+        flags(refuse=True)
+        new = _task(clean, "person add")
+        r = await _send(clean, "PUT", f"/projects/tasks/{new}/assignees",
+                        body={"assignees": [MEMBER], "agent_label": "lane-person"},
+                        signed=None)
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"] == "Only an agent sends agent_label, the name of its session."
+        assert _assignees(clean, new) == []
+        # The same PUT with no label writes, as before.
+        r = await _send(clean, "PUT", f"/projects/tasks/{new}/assignees",
+                        body={"assignees": [MEMBER]}, signed=None)
+        assert r.status_code == 200, r.text
+        assert _assignees(clean, new) == [MEMBER]
 
 
 # ═══════════════════════════════════════════════════════════════════════════

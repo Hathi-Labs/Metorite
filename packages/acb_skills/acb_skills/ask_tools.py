@@ -1885,6 +1885,27 @@ async def _record_approved_card(request_id: str | None, responder: str = "") -> 
         return
 
 
+async def _record_card_act(outcome: str, request_id: str | None, responder: str = "",
+                           *, late: bool = False) -> None:
+    """WS-PZ MM-1b (``personalization.md`` §19.4, ``proactive_loop.md``
+    §5.3): the member's own answer to a chat card, in the act record. The
+    outcome is a key of :data:`CARD_OUTCOMES`, and
+    ``orchestrator.card_act.record_card_act`` keeps only an approve and a
+    decline of the run's own member. *responder* is the gateway's session
+    member who answered, never a field of the answer. *late* is True only for
+    a late approve and the yes of a stored call. Dark behind
+    ``MEMBER_ACTIONS_ORGS``. No text of the card goes in. Never raises."""
+    try:
+        from orchestrator.card_act import record_card_act
+        from orchestrator.executor import resolve_relay_thread_id
+
+        tid = resolve_relay_thread_id() or ""
+        if tid:
+            await record_card_act(tid, request_id, outcome, responder, late=late)
+    except Exception:
+        return
+
+
 async def note_sent_message(message_id: str, recipients: Any = (), *,
                             request_id: str | None = None) -> bool:
     """CO-17 and task 3594: a send tool says what went, AFTER the provider
@@ -3104,6 +3125,8 @@ async def request_confirmation(
         # place of a closed card with the same act (task 3130).
         _card_opened(_CARD_CALL.get())
         await _record_approved_card(None)
+        # MM-1b: the late yes of the run's own member (the grant binds it).
+        await _record_card_act(CARD_APPROVED, None, late=True)
         return _noted(CARD_APPROVED, True)
     # HRD-6: the card is the sign of the wait. The tool call that shows it
     # gets no "Please wait" line, and a line that shows goes.
@@ -3285,6 +3308,11 @@ async def request_confirmation(
         # WT-6a: only an APPROVE of this card lets a later Undo name it.
         _APPROVED_CARD.set(
             (_rid, _publish) if _answer == "APPROVE" and not _other_member else None)
+        # MM-1b: the member's own approve or decline, in the act record. The
+        # outcome above decides the act, and the responder must be the run's
+        # own member.
+        await _record_card_act(_LAST_OUTCOME.get() or "", _rid,
+                               _responded[-1] if _responded else "")
         if _answer == "APPROVE":
             # CO-17: the durable record of an approved card. No card text.
             await _record_approved_card(_rid, _responded[-1] if _responded else "")
