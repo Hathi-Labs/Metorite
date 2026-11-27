@@ -356,6 +356,8 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/my/contexts", "my_contexts", "A"),
     # WS-46 P7 - the member's date and zone (`user_settings.timezone`). It is
     # my_work's read, and the tools that guess a day reach it as a composite.
+    # WS-MDC CC-2: `with_tasks=true` adds the Today set of the one predicate.
+    # The chat sends no `with_tasks` until CC-10 (FIELD_EXEMPT below).
     Route("GET", "/projects/my/today", "my_work", "A"),
     # WS-39 S6e — the projects I lead, with their open work and mine.
     Route("GET", "/projects/my/led", "my_led_projects", "A"),
@@ -482,6 +484,23 @@ MANIFEST: tuple[Route, ...] = (
     # PJP-6a: the plan engine's read. SP-12 gives it the chat tool `get_plan`
     # (class A), the same read that the MCP tool `get_plan` makes.
     Route("GET", "/projects/plan/analysis", "get_plan", "A"),
+    # WS-PKG PKG-14a: the extension values of a package on a task
+    # (package_fields.py, package_host.md §8.3). Dark behind PACKAGE_HOST_ORGS.
+    # PKG-14b adds the panel and the chat tool, and moves both rows.
+    Route(
+        "GET",
+        "/projects/tasks/{task_id}/package-fields",
+        "",
+        "X",
+        "A dark read with no chat tool yet. PKG-14b adds the tool with the task panel.",
+    ),
+    Route(
+        "PUT",
+        "/projects/tasks/{task_id}/package-fields/{install_id}/{field_key}",
+        "",
+        "X",
+        "A dark write with no chat tool yet. PKG-14b adds the tool with the task panel.",
+    ),
     Route("GET", "/projects/reports", "report_list", "A"),
     # WS-27bn R2 - the template gallery. It must sit ABOVE the
     # {report_id} row, because route_for takes the first match. R-final:
@@ -1265,6 +1284,8 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
         "waiting_on": "set_my_overlay.waiting_on",
         "delegated_at": "set_my_overlay.waiting_since",
         "expected_by": "set_my_overlay.expected_by",
+        # WS-MDC CC-2: today's focus, the member's today or null.
+        "focus_on": "set_my_overlay.todays_focus",
     },
     ("POST", "/projects/tasks/{task_id}/defer"): {"until": "defer.until"},
     ("GET", "/projects/my/calendar"): {"start": "calendar.start", "end": "calendar.end"},
@@ -1444,6 +1465,11 @@ _AUDIT_FILTER_REASON = (
     "An audit filter of the agent door (MCP-G19a). The chat gets it with "
     "the board count tool, Metorite task 2223."
 )
+#: MCP-G19c (task 2315). The type filters of the agent door.
+_AGENT_DOOR_TYPE_REASON = (
+    "A type filter of the agent door (MCP-G19c). The chat tool for it is "
+    "part of Metorite task 2223."
+)
 _STATS_ROUTE_REASON = (
     "A field of the board count route of the agent door (MCP-G19a). Its "
     "chat tool is Metorite task 2223."
@@ -1590,6 +1616,12 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "updated_after": _AUDIT_FILTER_REASON,
         "updated_before": _AUDIT_FILTER_REASON,
         "compact": "A row shape of the agent door (MCP-G19a), not a filter. The chat prints its own rows.",
+        "type_id": _AGENT_DOOR_TYPE_REASON,
+        "type_name": _AGENT_DOOR_TYPE_REASON,
+        "task_number": (
+            "A task number of the agent door (MCP-G19c). The chat finds a task by "
+            "its number through search."
+        ),
         "agent_focus": _AGENT_FILTER_REASON,
         "agent_worked": _AGENT_FILTER_REASON,
         "with_status_counts": (
@@ -1859,6 +1891,12 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
     ("GET", "/projects/my/calendar"): {
         "include_done": "Done work is read through my_work include_done.",
     },
+    ("GET", "/projects/my/today"): {
+        "with_tasks": (
+            "The Today set of My Day (my_day_command_centre.md §9.2, CC-2). The "
+            "chat reads the day with its plan tools in CC-10."
+        ),
+    },
     ("GET", "/projects/calendar"): {
         "status_id": _READ_FILTER_REASON,
         "status_category": _READ_FILTER_REASON,
@@ -2001,6 +2039,14 @@ UI_ACTIONS: dict[str, str] = {
     "projectsApi.deleteProject": "delete_project",
     "projectsApi.convertFolder": "convert_folder_to_project",
     "projectsApi.grants": "project_access",
+    # WS-MDC CC-2: the Today set (`GET /projects/my/today?with_tasks=true`) for
+    # the Today chip of My work. ⚠️ my_work has NO Today view: it reads this
+    # route for the member's day and zone only, and sends no `with_tasks`
+    # (FIELD_EXEMPT). The row names my_work because the fence takes no other
+    # shape: UI_PLANNED needs a class X route and a gap of
+    # `projects_agent_parity.md` §3.3, and UI_EXEMPT needs a class X route.
+    # The chat gets the set with its plan tools in CC-10 (task 1978).
+    "projectsApi.myTodaySet": "my_work",
     # ── projectsApi: the cycles of the Backlog canvas (WS-39 SP-3a) ──────
     # SP-5a (Metorite task 964) built each tool, so no row is debt.
     "projectsApi.cycles": "list_cycles",

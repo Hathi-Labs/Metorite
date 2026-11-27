@@ -30,6 +30,14 @@ call. The gateway middleware ``SandboxDoorLimits`` opens one for each request
 (:func:`open_door_call`). The door fills it at its last step
 (:func:`admit`). The middleware then caps the answer and writes the log line.
 
+**The refusal count (SBX-4b1, decision 9 of §12.4).** A tool can catch a
+``DoorError`` and still exit 0, so the smoke test needs a count that the code
+cannot hide. :func:`lookup` notes the hash, the org and the life of a live row
+on the open record. :func:`log_door_call` marks the record as refused for
+one of :data:`COUNTED_REFUSALS`. The middleware then calls
+:func:`count_refusal` before it forwards the status of the refusal.
+:func:`door_counts` reads the call count and the refusal count of one token.
+
 **No secret in a log.** No line of this module holds the token, its hash, a
 header value or a query value. Fence: ``tests/unit/test_sandbox_door_log_lines.py``.
 """
@@ -45,7 +53,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from acb_common import app_manifests, get_logger, get_settings
+from acb_common import app_manifests, get_logger, get_settings, tenant_redis
 
 from acb_auth import agent_tokens
 
@@ -75,6 +83,10 @@ CALLS_NAMESPACE = "sandbox_door_calls"
 #: The counter lives this long past the end of its capability.
 CALLS_GRACE_S = 60
 
+#: The tenant Redis namespace of the refusal counter (§12.4 decision 9). It
+#: has the life of the call counter.
+REFUSALS_NAMESPACE = "sandbox_door_refusals"
+
 #: The largest page that a query may ask for (decision 9).
 PAGE_CAP = 100
 
@@ -96,6 +108,10 @@ BAD_QUERY = "sandbox_bad_query"
 PAGE_CAP_CODE = "sandbox_page_cap"
 CALL_CAP_CODE = "sandbox_call_cap"
 TOO_LARGE = "sandbox_response_too_large"
+
+#: The refusals that the refusal counter counts (§12.4 decision 9). A 422 of
+#: the query and a 401 are not on it.
+COUNTED_REFUSALS: frozenset[str] = frozenset({READ_ONLY, ROUTE_EXCLUDED, ROUTE_UNKNOWN, SCOPE})
 
 
 # ── The rows ────────────────────────────────────────────────────────────────
@@ -339,7 +355,7 @@ async def lookup(raw: str) -> Capability | None:
     row = await agent_tokens._run(_work)
     if row is None:
         return None
-    return Capability(
+    capability = Capability(
         token_sha256=row.token_sha256,
         organization_id=str(row.organization_id),
         member_email=(row.member_email or "").strip().lower(),
@@ -353,6 +369,8 @@ async def lookup(raw: str) -> Capability | None:
         expires_at=row.expires_at,
         seconds_left=int(row.seconds_left),
     )
+    _note_lookup(capability)
+    return capability
 
 
 # ── The flag (decision 4) ───────────────────────────────────────────────────
@@ -414,6 +432,17 @@ class DoorCall:
     method: str = ""
     template: str = ""
     call_n: int = 0
+    #: The hash of the live row that :func:`lookup` read (§12.4 decision 9).
+    #: It keys the refusal counter only. It is never logged.
+    token_sha256: str = field(default="", repr=False)
+    #: The org of that row. The refusal counter binds it.
+    token_org: str = ""
+    #: The whole seconds to the end of that row.
+    token_seconds_left: int = 0
+    #: True when the door refused the call for a code of COUNTED_REFUSALS.
+    refused: bool = False
+    #: True when :func:`count_refusal` ran for this record.
+    refusal_counted: bool = False
 
 
 _DOOR_CALL: contextvars.ContextVar[DoorCall | None] = contextvars.ContextVar(
@@ -458,13 +487,82 @@ def current_door_call() -> DoorCall | None:
     return _DOOR_CALL.get()
 
 
+def _note_lookup(capability: Capability) -> None:
+    """Note the hash, the org and the life of a live row on the open record
+    (§12.4 decision 9). With no record open, it does nothing."""
+    holder = _DOOR_CALL.get()
+    if holder is None:
+        return
+    holder.token_sha256 = capability.token_sha256
+    holder.token_org = capability.organization_id
+    holder.token_seconds_left = capability.seconds_left
+
+
+async def count_refusal(holder: DoorCall) -> None:
+    """Add 1 to the refusal counter of the token of a refused call (§12.4
+    decision 9). The middleware calls it before it forwards the status.
+
+    The key is the token hash under :data:`REFUSALS_NAMESPACE`, in the tenant
+    Redis wrapper bound to the ROW's org. Its life is the life of the call
+    counter. It runs once for each record, and only for a record that
+    :func:`log_door_call` marked. A Redis failure loses this one count and
+    logs the class of the error only. SBX-5 closes that residual."""
+    if not holder.refused or holder.refusal_counted or not holder.token_sha256:
+        return
+    holder.refusal_counted = True
+    try:
+        client = tenant_redis.get_tenant_redis()
+        with tenant_redis.organization_scope(holder.token_org):
+            counter = tenant_redis.key(REFUSALS_NAMESPACE, holder.token_sha256)
+            pipe = client.pipeline(transaction=True)
+            pipe.incr(counter)
+            pipe.expire(counter, max(holder.token_seconds_left, 1) + CALLS_GRACE_S)
+            await pipe.execute()
+    except Exception as exc:
+        _log.warning("sandbox.door_refusal_count_failed", error=type(exc).__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class DoorCounts:
+    """The counts of one token: its admitted calls and its refusals."""
+
+    calls: int
+    refusals: int
+
+
+async def door_counts(org: str, token_sha256: str) -> DoorCounts:
+    """The call count and the refusal count of one token (§12.4 decision 9).
+
+    It reads the two keys in the tenant Redis wrapper of *org*. A missing key
+    counts 0. A read error raises, and the step engine fails the round on
+    it. *org* comes from the run binding, never from tool input (R5e)."""
+    org_id = _canonical_uuid(org)
+    if org_id is None:
+        raise ValueError("org is not a UUID")
+    if not isinstance(token_sha256, str) or not token_sha256:
+        raise ValueError("token_sha256 is required")
+    client = tenant_redis.get_tenant_redis()
+    with tenant_redis.organization_scope(org_id):
+        keys = [tenant_redis.key(CALLS_NAMESPACE, token_sha256),
+                tenant_redis.key(REFUSALS_NAMESPACE, token_sha256)]
+        calls, refusals = await client.mget(keys)
+    return DoorCounts(calls=int(calls or 0), refusals=int(refusals or 0))
+
+
 def log_door_call(*, status: int, code: str, method: str, template: str | None,
                   org: str = "", run_id: str = "", phase: str = "",
                   call_n: int | None = None, size: int = 0, warn: bool = False) -> None:
     """The line ``sandbox.door.call`` (decision 13). The door writes it for
     each refusal, and the middleware for each admitted call. A refusal
     before the lookup has no org and no run. No token, hash, header value,
-    query value or answer text."""
+    query value or answer text.
+
+    A refusal for a code of :data:`COUNTED_REFUSALS` marks the open record
+    as refused, when :func:`lookup` noted a row on it (§12.4 decision 9)."""
+    if code in COUNTED_REFUSALS:
+        holder = _DOOR_CALL.get()
+        if holder is not None and holder.token_sha256:
+            holder.refused = True
     log = _log.warning if warn else _log.info
     log("sandbox.door.call", org=org or None, run=run_id or None, phase=phase or None,
         method=method, template=template, status=status, code=code, call_n=call_n,
@@ -475,18 +573,23 @@ __all__ = [
     "ANSWER_CAP_BYTES",
     "CALLS_NAMESPACE",
     "CALL_CAP",
+    "COUNTED_REFUSALS",
     "MAX_TTL_S",
     "PAGE_CAP",
     "PAGE_KEYS",
     "PHASES",
+    "REFUSALS_NAMESPACE",
     "SANDBOX_READ_SCOPES",
     "TOKEN_PREFIX",
     "Capability",
     "DoorCall",
+    "DoorCounts",
     "Minted",
     "admit",
     "close_door_call",
+    "count_refusal",
     "current_door_call",
+    "door_counts",
     "door_orgs",
     "log_door_call",
     "lookup",

@@ -752,3 +752,203 @@ def test_the_head_names_no_zero_part():
     head, _, _ = draft_choice.report(
         draft_choice.Tally(others=[{"id": MAIL, "folder": "inbox"}]), lambda v, _n: v)
     assert head[0] == "Trashed 1 message(s): 1 other message(s)."
+
+
+# ── Task 4026: the gaps before the flag flip ─────────────────────────────────
+
+import re  # noqa: E402
+
+#: ``FIELD`` and ``TRUNCATED`` of ``parseCardBody`` in
+#: ``workbench/control_plane/src/components/ConfirmationCard.tsx``.
+_FIELD = re.compile(r"^([^:«»]{1,48}):\s(.*)$")
+_TRUNCATED = re.compile(r"^…\s*\[truncated")
+
+
+def _reads_as_rows(context: str) -> bool:
+    """True when the chat card draws *context* as a ``key: value`` grid. The
+    rule of ``parseCardBody``: at most one note, then every line a field."""
+    lines = [ln.rstrip() for ln in context.split("\n") if ln.strip()]
+    first = next((i for i, ln in enumerate(lines) if _FIELD.match(ln)), -1)
+    return 0 <= first <= 1 and all(
+        _FIELD.match(ln) or _TRUNCATED.match(ln.strip()) for ln in lines[first:])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cut", [False, True])
+async def test_the_plain_card_of_one_draft_reads_as_a_list(box, monkeypatch, cut):
+    """Item 1. "To people: subject" is a ``key: value`` line, so a card of one
+    draft read as a grid. Mutation: drop ``_plain_card_end`` -> red."""
+    box.total_extra = 300 if cut else 0
+    card = _card(monkeypatch, True)
+    await agents.manage_inbox("trash", [OTHER_DRAFT])
+    context = card.shown[0]["context"]
+    assert not card.shown[0].get("rows")
+    assert context.splitlines()[0] == "Each draft that moves to Trash:"
+    assert not _reads_as_rows(context)
+    assert context.splitlines()[-1] == (agents._MORE_CAN_EXIST if cut else agents._NONE_STAYS)
+    if not cut:  # the ONE_DRAFT text of ``draftTrashReceipt.test.ts``, which the chat parses
+        assert context == (
+            "Each draft that moves to Trash:\n"
+            "- To kim@client.test: Lunch · saved 2026-11-26 06:05 · starts: Dear Salil,\n"
+            "No other matching draft is in Drafts, as Metorite last synced it.")
+
+
+def test_the_rows_rule_mirror_sees_the_grid():
+    """The mirror of ``parseCardBody`` reads the card of before as rows."""
+    assert _reads_as_rows("Each draft that moves to Trash:\n- To kim@client.test: Lunch · saved")
+    assert not _reads_as_rows("Each draft:\n- To a: b\nThese stay in Drafts:\n- To c: d")
+
+
+@pytest.mark.asyncio
+async def test_two_long_subjects_in_trash_never_read_as_one_line(box, monkeypatch):
+    """Item 4. The cut of a line in Trash took what told two apart.
+    Mutation: ``unique`` before the cut in ``already_lines`` -> red."""
+    monkeypatch.setattr("acb_skills.ask_tools.rows_card_channel_open", lambda: False)
+    long = "Quarterly report " * 15
+    box.mail(MAIL, folder="trash", subject=long + "A")
+    box.mail(MAIL2, folder="trash", subject=long + "B")
+    card = _card(monkeypatch, False)
+    await agents.manage_inbox("trash", [CHAT_DRAFT, MAIL, MAIL2])
+    already = card.shown[0]["context"].split("Already in Trash, so nothing happens to them:")[1]
+    lines = [ln for ln in already.splitlines() if ln.startswith("- ")]
+    assert len(lines) == 2 and len(set(lines)) == 2
+
+
+@pytest.mark.asyncio
+async def test_two_long_draft_subjects_never_make_one_row(box, monkeypatch):
+    """Item 4, the rows card. Mutation: cut after ``unique`` -> red."""
+    long = "Re: Proposal for the full year " * 8
+    box.rows[CHAT_DRAFT]["subject"] = long + "A"
+    box.rows[MEMBER_DRAFT] = _draft(MEMBER_DRAFT, subject=long + "B")
+    card = _card(monkeypatch, frozenset())
+    await agents.manage_inbox("trash", [CHAT_DRAFT])
+    rows = [(r["label"], r["hint"]) for r in card.shown[0]["rows"]]
+    assert len(rows) == 2 and len(set(rows)) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_sender_name_with_a_colon_keeps_the_subject_on_a_short_line(box, monkeypatch):
+    """Item 6. ``_short_label`` split the joined label at the first ": ", so a
+    sender "Billing: …" took the subject off. Mutation: split the label -> red."""
+    monkeypatch.setattr("acb_skills.ask_tools.rows_card_channel_open", lambda: False)
+    sender = "Billing: " + "accounts.receivable." * 14 + "department@vendor.test"
+    mails = [f"77777777-7777-4777-8777-{n:012d}" for n in range(19)]
+    for n, mid in enumerate(mails):
+        box.mail(mid, subject=f"Invoice {n}", from_email=sender)
+    card = _card(monkeypatch, False)
+    await agents.manage_inbox("trash", [CHAT_DRAFT, *mails])
+    context = card.shown[0]["context"]
+    assert len(context) <= agents._CARD_CONTEXT_MAX
+    for n in range(19):
+        assert f": Invoice {n} ·" in context
+
+
+def test_the_short_label_cuts_each_part_by_itself():
+    assert agents._short_label("From A: " + "b" * 80, "Invoice 7") == (
+        f"From A: {'b' * 37}: Invoice 7")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count,unknown", [(25, 0), (25, 2), (3, 0)])
+async def test_a_long_bulk_card_counts_each_message_it_cuts(monkeypatch, count, unknown):
+    """Item 7, the flag-off card of before. ``request_confirmation`` clips the
+    context at 4000 characters with no count. Mutation: drop the loop -> red."""
+    rows = [{"id": f"m{n}", "from": "S" * 80 + str(n), "subject": "T" * 120}
+            for n in range(count)]
+
+    async def accounts() -> list[dict[str, Any]]:
+        return [{"id": BOX, "email_address": "jane@acme.test", "label": "Work"}]
+
+    async def post(path: str, body: dict[str, Any]) -> dict[str, Any]:
+        assert path == "/email/messages/summaries"
+        return {"summaries": rows}
+
+    monkeypatch.setattr(agents, "_accounts", accounts)
+    monkeypatch.setattr(agents, "_post", post)
+    ids = [r["id"] for r in rows] + [f"x{n}" for n in range(unknown)]
+    _mailbox, _where, context = await agents._inbox_card_parts(ids)
+    lines = context.splitlines()
+    assert len(context) <= agents._CARD_CONTEXT_MAX
+    listed = [ln for ln in lines if ln.startswith("- S")]
+    more = [int(m.group(1)) for ln in lines if (m := re.match(r"^\+(\d+) more$", ln))]
+    assert len(listed) + sum(more) == count
+    assert all(ln.endswith("T" * 120) for ln in listed)  # no line is clipped
+    if unknown:
+        assert lines[-1] == f"- {unknown} id(s) that name no message of yours"
+    if count == 3:  # a card that fits is the card of before, byte for byte
+        assert lines == ["Each message:", *[f"- {r['from'][:80]}: {r['subject']}" for r in rows]]
+
+
+class _ColumnsDb:
+    """A session that answers only the columns that the SQL names, so a column
+    that leaves the SELECT leaves the row too."""
+
+    def __init__(self) -> None:
+        self.sql = ""
+
+    async def execute(self, stmt: Any, params: dict[str, Any]) -> Any:
+        self.sql = str(stmt)
+        head = self.sql.split("FROM", 1)[0].replace("SELECT", "")
+        cols = {c.strip().split(".")[-1] for c in head.split(",")}
+        full = {"id": params["ids"][0], "thread_id": "T", "subject": "S",
+                "from_address": {"email": "a@b"}, "received_at": None, "is_read": True,
+                "has_attachments": False, "account_id": BOX, "folder": "drafts",
+                "to_addresses": '[{"email": "c@d"}]', "snippet": "Hi"}
+        row = SimpleNamespace(**{k: v for k, v in full.items() if k in cols})
+        return SimpleNamespace(fetchall=lambda: [row])
+
+
+@pytest.mark.asyncio
+async def test_the_summaries_route_selects_and_answers_the_draft_fields(monkeypatch):
+    """Item 3. ``_summary_extra`` reads the row, so a column that leaves the
+    SELECT gives an empty value with no error. Mutation: drop ``em.folder``
+    (or any of the four) from the SQL -> red."""
+    db = _ColumnsDb()
+    monkeypatch.setattr(route, "_tenant_session", _bind(db))
+    req = route.MessageSummariesRequest(ids=[CHAT_DRAFT])
+    [row] = (await route.message_summaries(req, USER))["summaries"]
+    assert row["account_id"] == BOX
+    assert row["folder"] == "drafts"
+    assert row["to_addresses"] == [{"email": "c@d"}]
+    assert row["snippet"] == "Hi"
+    assert "mailbox" not in row  # the route adds the four fields and no more
+    assert db.sql.count("em.account_id") >= 2  # the SELECT and the JOIN
+
+
+# Item 3: the in-Drafts rule of ``draft_choice.settle``.
+
+@pytest.mark.parametrize("outcome,still,where", [
+    # A draft that the provider confirmed but that is still in Drafts did not move.
+    (draft_choice.CONFIRMED, {CHAT_DRAFT}, "drafts_failed"),
+    (draft_choice.NOT_CONFIRMED, {CHAT_DRAFT}, "drafts_failed"),
+    (draft_choice.FAILED, {CHAT_DRAFT}, "drafts_failed"),
+    # A lost answer for a draft still in Drafts: it did not move.
+    (draft_choice.LOST, {CHAT_DRAFT}, "drafts_failed"),
+    # It left Drafts: the outcome of the provider decides.
+    (draft_choice.CONFIRMED, set(), "drafts"),
+    (draft_choice.NOT_CONFIRMED, set(), "drafts_unconfirmed"),
+    (draft_choice.LOST, set(), "lost"),
+    (draft_choice.FAILED, set(), "drafts_failed"),
+    # The read after failed: the confirmation alone counts (§18.13.1 rule 9a).
+    (draft_choice.CONFIRMED, None, "drafts"),
+    (draft_choice.LOST, None, "lost"),
+])
+def test_settle_counts_a_draft_only_when_it_left_drafts(outcome, still, where):
+    """Mutation: drop the ``in_drafts`` test of ``settle`` -> the first rows
+    turn red. Mutation: read ``still=None`` as in Drafts -> the last turn red."""
+    tally = draft_choice.Tally()
+    row = {"id": CHAT_DRAFT, "folder": "drafts"}
+    draft_choice.settle(tally, row, outcome, draft=True, still=still)
+    lists = ("drafts", "drafts_unconfirmed", "drafts_failed", "lost", "others",
+             "others_unconfirmed", "others_failed")
+    assert {name: getattr(tally, name) for name in lists if getattr(tally, name)} == {
+        where: [row]}
+
+
+def test_settle_never_reads_drafts_for_a_message_that_is_no_draft():
+    """A mail that is no draft keeps its outcome, also when an id of Drafts
+    is the same. Mutation: drop ``draft and`` from the in-Drafts test -> red."""
+    tally = draft_choice.Tally()
+    row = {"id": MAIL, "folder": "inbox"}
+    draft_choice.settle(tally, row, draft_choice.CONFIRMED, draft=False, still={MAIL})
+    assert tally.others == [row] and not tally.drafts_failed and not tally.others_failed

@@ -212,7 +212,7 @@ merges it. The other lanes keep building. Its role is in
 | File on the box | What it holds |
 |---|---|
 | `~/lanes/merge-bot-queue.tsv` | One line for each hand-over: pull request, task, worktree, lane, head SHA, tier, note. Tabs between the fields, under a `#` header line. Only `lane_handover.sh` writes it. A hand-over by PR number writes `-` as the worktree. |
-| `~/lanes/merge-bot.log` | One line for each result: `DONE <pull request> <sha>`, `RESOLVED <pull request> <rules>` or `BACK <pull request> <reason>`. Only the merge bot writes it. The bot also posts each BACK reason on the pull request as a comment. |
+| `~/lanes/merge-bot.log` | One line for each result: `DONE <pull request> <sha>`, `RESOLVED <pull request> <rules>`, `RENUMBERED <pull request> <old>-><new>[, ...]` or `BACK <pull request> <reason>`. Only the merge bot writes it. The bot also posts each BACK reason on the pull request as a comment. |
 | `~/lanes/merge-queue.tsv`, `~/lanes/merge-queue.log` | History of the lane-merge session, with HOLD, RED and NOTE lines that people wrote. Nothing reads them now. |
 
 A lane hands over a pull request only after three steps. The verifier passed,
@@ -330,6 +330,14 @@ It never uses force, and `rerere` stays off.
 
 The log then gets `RESOLVED <pull request> <rules>`, and the next pass waits
 for the new pr-check. The lane pulls its branch after a `RESOLVED` line.
+
+**Migration numbers** (CIV-RN, `ci_velocity.md` §8.10). lane-merge runs
+`~/lanes/merge-bot-src/scripts/home_server/merge_bot.sh --renumber <pull request> <sha>`
+before premerge. A migration at or below main's highest gets the next number
+of the ledger, and each later migration of the PR moves above it. The bot
+pushes the move with no force, and the log gets
+`RENUMBERED <pull request> <old>-><new>[, ...][ check by hand: <file>:<line>, ...]`.
+The lane pulls its branch after a `RENUMBERED` line.
 
 The log gets `BACK <pull request> conflict: ...` in these cases:
 
@@ -499,6 +507,9 @@ ships. `docs/box_connect.md` holds the box-token steps. A lane does not load
 `~/.local/bin/metorite-box-headers`, so `box.sh start` needs no change. The
 OWNER STEP about the project entry of `.mcp.json` (`docs/box_connect.md` §4)
 still applies.
+
+With a box token, the sign-in ends only through an org switch:
+`scripts/metorite_switch_org.sh` (`docs/box_connect.md` §7).
 
 ### 5.3 The sign-in alarm
 

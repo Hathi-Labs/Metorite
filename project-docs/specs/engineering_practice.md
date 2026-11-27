@@ -1057,6 +1057,105 @@ in this section when its builder starts, and its own spec-auditor run.
 **Out of scope.** Closing a PR (the owner closes, from the close list of task
 4019). A change to `TOOL_PACKS`. Any flag flip by a builder.
 
+### 7b.4 LBB-4: zero orphans at a stop (task 4042)
+
+**Status: built (dark, `STOP_DISPOSITION_PRS` unset = off). Disposition 3 stays off until PR 2898 is on main.** Tier STANDARD (a hook and a box script, no server
+code). It needs no `guard-write` grant: `stop-children.mjs` already calls the
+hook, so `.claude/settings.json` does not change.
+
+**Narrowed scope.** The box wind-down script cannot see which PR belongs to
+which lane: it holds no Metorite credential, and every lane pushes as one
+GitHub user. So the box part changes the message that the script sends, and
+the Stop hook does the check in each session.
+
+**The hook.** `.claude/hooks/stop-disposition.mjs` gains `openPrs(entries)`.
+It reads the same transcript entries as `openClaims`: `tool_use` blocks, and
+the `tool_result` blocks that answer them, with `is_error`. It never reads an
+exit code, and it orders events by the `tool_use` index, as `openClaims` does.
+
+- **A PR of the session** is a number N that one of these gives:
+  - a Bash `tool_use` whose command matches `gh pr create`, with a result that
+    is not an error and holds `github.com/<owner>/<repo>/pull/N`.
+  - an `add_task_reference` `tool_use` whose `url` is a pull request URL with N.
+- **A push to PR N** is a Bash `tool_use` whose command matches `git push`,
+  with a result that is not an error, and that names the head branch of PR N.
+  The hook learns that branch only from the transcript: the `--head` value of
+  `gh pr create`, or the `headRefName` in a result of `gh pr view N`. With
+  neither, a push proves nothing for N.
+- **A disposition of PR N** is one of these, at an index after the last push
+  to N (or after N first appears, with no push):
+  1. A Bash `tool_use` that runs `hand_over.sh N <task> <tier> <note>`, with a
+     result that is not an error and holds the line
+     `handed over: PR N (task ...` that `lane_handover.sh` prints. This means
+     queued with the merge bot, not merged.
+  2. A Bash `tool_use` whose command holds `REQUEUE`, `merge-queue.tsv` and N as
+     a word, with a result that is not an error. The line format is
+     `REQUEUE<TAB>pr<TAB>task<TAB>lane<TAB>note`, as in
+     `printf 'REQUEUE\t%s\t%s\t%s\t%s\n' N T lane 'note' >> ~/lanes/merge-queue.tsv`.
+     The box merger lane reads these lines for a HIGH PR (its lane notes,
+     `~/lanes/lane-merge-*.txt`, 2026-11-26). The merge bot does not read
+     them. `lane-merge.md` (~53) and `lane_handover.sh` (~35) still call this
+     file history. That text is stale, and task 4042 notes it for a fix.
+  3. An `add_task_reference` `tool_use` on the URL of N with `landing` set to
+     `queued`, `parked` or `gone`. This disposition exists only once PR 2898
+     (LBB-2) is on main. Before that, it is not counted.
+  4. A `release_task` `tool_use` whose handoff `next` holds `PR N` and a lane
+     name (`lane-` or `pc-` followed by letters, digits or dashes).
+  5. A result of `gh pr view N` that is not an error and shows the state
+     `MERGED` or `CLOSED`.
+- A bare `release_task` with no lane is not a disposition ("released for
+  other agents").
+- **The switch.** `STOP_DISPOSITION=off` and the background marker
+  (`CLAUDE_JOB_DIR`) apply first, as today. Then `STOP_DISPOSITION_PRS`:
+  `off` or unset (the default) checks nothing. `warn` writes the list to
+  stderr, and the Stop goes on. `block` blocks the Stop once
+  (`stop_hook_active` true passes).
+- **The signature.** `checkDisposition` returns `{ block, warn }`, each a
+  message or null. `main` in `stop-children.mjs` returns code 2 with `block`,
+  and prints `warn` to stderr with code 0. The existing tests change to read
+  `.block`.
+- **The message** names each PR and the two choices (queue it with a live
+  merger, or hand it to a named landing lane). It ends with
+  "To turn this check off: STOP_DISPOSITION_PRS=off".
+- **It fails open.** A transcript that the hook cannot parse gives no PR and
+  no block.
+
+**The wind-down message.** The box script `~/lanes/winddown.sh` is not in the
+repo. The lander puts its text in the task. LBB-4 adds
+`scripts/home_server/lanes/winddown.sh`: the same `wake()` loop, and the lane
+session ids come as arguments, not as fixed lines. Its message drops "queue a
+PR only if it is ready and green". It says: "For each open PR that you
+pushed, queue it with a live merger (hand_over.sh or a REQUEUE line), or hand
+it to a named landing lane in a NOTE and in the release_task handoff." The
+box copy moves to the repo copy by hand (AGENT-SAFE for the lane that owns the
+box script).
+
+**Done when** (each with a test in `.claude/hooks/stop-disposition.test.mjs`,
+or in `tests/unit/test_winddown.py` for item 5):
+1. With `STOP_DISPOSITION_PRS` unset, `checkDisposition` gives `block` null for
+   a transcript with an open PR, and every existing test still passes.
+2. With `block`, a transcript that ran `gh pr create` for PR N and ends with a
+   bare `release_task` gives a `block` message that names PR N.
+3. Each of the five dispositions clears PR N. A `git push` to the head branch
+   of N after the disposition brings N back.
+4. With `warn`, `main` prints the list to stderr and returns code 0.
+5. `scripts/home_server/lanes/winddown.sh` holds the new message, no fixed
+   session id (no match for `[0-9a-f]{8}` as a `wake` argument in the file),
+   and passes `bash -n`.
+
+**Verify with.**
+
+```
+node .claude/hooks/stop-disposition.test.mjs
+node .claude/hooks/stop-children.test.mjs
+PYTEST_ADDOPTS="-o timeout_method=thread" uv run pytest -p no:cacheprovider \
+  tests/unit/test_winddown.py tests/unit/test_task_routine.py
+```
+
+**Gate.** The build is AGENT-SAFE. `warn` and then `block` on the box lanes
+are gate `enforcement-flip` (a dated grant or the owner). `warn` comes first,
+then `block` after one day with no false block.
+
 ## 8. What to fix before customer #1 — in order
 
 This list names them so that nobody finds them again from zero. Each belongs
