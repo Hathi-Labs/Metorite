@@ -78,6 +78,7 @@ import { attachStickToBottom, nearAfterScroll, showJumpToBottom } from "@/lib/st
 import { segmentsForCache } from "@/lib/chatPlacement";
 import {
   CONFIRMATION_NOT_DONE,
+  CONFIRMATION_ROW_RESULTS,
   CONFIRMATION_RESOLVED,
   EMPTY_CONFIRMATIONS,
   NO_EDITS,
@@ -88,6 +89,7 @@ import {
   heldKeys,
   answerReceiptLabel,
   receiptLabel,
+  rowResultsFromEvent,
   settleAnswer,
   type FormEdit,
   type FormEdits,
@@ -1340,6 +1342,12 @@ export default function AgentChat({
       if (name === CONFIRMATION_NOT_DONE && value && typeof value === "object") {
         const rid = (value as Record<string, unknown>).request_id;
         if (rid) dispatchConfirmation({ type: "notDone", requestId: String(rid) });
+      }
+      // SBX-3b: the result of each row of a held sandbox card goes on the
+      // receipt line of that card.
+      if (name === CONFIRMATION_ROW_RESULTS) {
+        const results = rowResultsFromEvent(value);
+        if (results) dispatchConfirmation({ type: "rowResults", ...results });
       }
       if (name === CONFIRMATION_RESOLVED && value && typeof value === "object") {
         const rid = (value as Record<string, unknown>).request_id;

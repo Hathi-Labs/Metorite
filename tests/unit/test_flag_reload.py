@@ -196,12 +196,14 @@ def test_github_app_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> Non
 # CIV-HS slice 3 (task 3284): one line for each flag whose reader is `reader(org) -> bool`.
 # Keep the lines SORTED by flag name. A new flag adds one line here, at its sorted place.
 _READERS = {
+    "APP_LEAD_RUNS_ORGS": ("gateway.routes.projects.filters", "app_lead_runs_allowed"),
     "CORE_EVENTS_ORGS": ("gateway.core_events", "core_events_allowed"),
     "MEMBER_ACTIONS_ORGS": ("acb_common.member_actions", "enabled_for"),
     "STUDIO_DOOR_OPS_ORGS": ("gateway.routes.studio.flags", "door_ops_allowed"),
     "STUDIO_LOGIC_ORGS": ("gateway.routes.studio.flags", "logic_allowed"),
     "STUDIO_NUM_F8_ORGS": ("acb_common.studio_flags", "num_f8_allowed"),
     "STUDIO_SEARCH_ORGS": ("gateway.routes.studio.flags", "search_allowed"),
+    "TEAMS_ORGS": ("gateway.routes.projects.team_scope", "teams_allowed"),
     "WORKFLOW_STUDIO_GATE_ORGS": ("gateway.routes.workflows.core", "author_gate_on"),
 }
 
