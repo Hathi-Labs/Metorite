@@ -1095,7 +1095,7 @@ class TaskModel(BaseModel):
     #: WS-55 EA-13e (EA3-49). True when the agent-worked rule of
     #: ``agent_worked.py`` holds now. ``filters.attach_agent_worked`` fills it.
     agent_worked: bool | None = None
-    #: WS-39 WM-5 (migration 514). The Goal of this epic, across projects, or
+    #: WS-39 WM-5 (migration 516). The Goal of this epic, across projects, or
     #: ``None``. Only an epic carries it (:func:`assert_goal_link`).
     goal_task_id: str | None = None
 
@@ -1140,7 +1140,7 @@ class TaskPatchIn(TaskIn):
     #: write that sends it while ``agent_task_checks_enabled`` is off gets
     #: 422. Not on ``TaskIn``, so only this PATCH and ``POST /tasks`` take it.
     check_text: str | None = None
-    #: WS-39 WM-5 (migration 514). The Goal of this epic. ``None`` clears the
+    #: WS-39 WM-5 (migration 516). The Goal of this epic. ``None`` clears the
     #: link, also while the flag is off. :func:`assert_goal_link` holds the
     #: rules, and a write that sends a Goal while ``PROJECTS_GOALS_ORGS`` does
     #: not hold the org gets 422.
@@ -1174,7 +1174,7 @@ class TypeModel(BaseModel):
     #: and on the wire so a picker can tell a member WHY a type refuses a
     #: parent instead of surfacing it as an unexplained 422.
     is_epic: bool = False
-    #: WS-39 WM-5 (migration 514). A task of this type is a Goal. Read by
+    #: WS-39 WM-5 (migration 516). A task of this type is a Goal. Read by
     #: :func:`is_goal_type`, written through ``admin.create_type``/``patch_type``.
     is_goal: bool = False
 
@@ -3639,7 +3639,7 @@ async def assert_epic_has_no_parent(
         )
 
 
-# ── WS-39 WM-5 — the Goal type and the Goal of an epic (migration 514) ──────
+# ── WS-39 WM-5 — the Goal type and the Goal of an epic (migration 516) ──────
 #
 # Spec: ``project_management_app.md`` §13.6a row WM-5, D204.4, D199.6. A Goal
 # is a task whose type carries ``is_goal``. An epic points at its Goal with
