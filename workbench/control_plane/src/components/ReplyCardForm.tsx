@@ -240,7 +240,8 @@ export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${el.scrollHeight + 2}px`;
-  }, [body]);
+    // A hidden box has no height: it grows again when the dock shows it.
+  }, [body, dockMode]);
   // Owner report, 2026-11-03: the member can send or delete the card's draft
   // in the Email app while the card waits. The card reads that state, shows
   // one line, and stops its Send and Save. The gateway refuses both too

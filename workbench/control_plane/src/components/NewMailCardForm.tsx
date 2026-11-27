@@ -119,6 +119,8 @@ export interface NewMailCardFormProps {
   dockMode?: DockMode;
   /** The dock's Expand: Review in the Compact view calls it. */
   onExpand?: () => void;
+  /** The dock: the earlier-draft question opened or closed, so the card arms again. */
+  onAsking?: (asking: boolean) => void;
 }
 
 /**
@@ -236,6 +238,7 @@ export default function NewMailCardForm({
   onEdits,
   dockMode,
   onExpand,
+  onAsking,
 }: NewMailCardFormProps) {
   // A change of tab unmounts this form. Each state starts from the member's
   // edits, or an untick comes back ticked, and Send goes to that person.
@@ -304,6 +307,12 @@ export default function NewMailCardForm({
   const [asking, setAsking] = useState(false);
   // After Back, the Discard button takes the focus again.
   const [cameBack, setCameBack] = useState(false);
+  // Round 7: Collapse, a fold or another tab closes the question, so a later
+  // Review never shows Keep it under the member's press.
+  if (asking && dockMode === "compact") setAsking(false);
+  const tellAsking = useRef(onAsking);
+  useEffect(() => { tellAsking.current = onAsking; }, [onAsking]);
+  useEffect(() => { tellAsking.current?.(asking); }, [asking]);
   const discard = () => {
     const step = declineStep(armed, form.earlier, onDiscardEarlier);
     if (step === "ask") setAsking(true);

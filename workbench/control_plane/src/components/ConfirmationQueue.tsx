@@ -108,6 +108,8 @@ export interface DockSlot {
   headerAside?: ReactNode;
   /** A question card in the dock draws no X (WD-D2). Its Not now stays. */
   inDock?: boolean;
+  /** The card is on the screen: its tab open, the dock not folded (round 7). */
+  dockShown?: boolean;
 }
 
 /** A question card as a tab of the dock's one card (§24.11). */
@@ -154,6 +156,10 @@ export function pickShown(cards: readonly Pick<PendingConfirmation, "key">[], sh
  * React runs twice reaches the same state. The component calls it, and
  * `confirmationQueue.test.ts` runs it over a real Undo.
  *
+ * In the dock (`dock`, 24.11 rule 8, round 7), only an Undo moves the view:
+ * it puts one key first and keeps every other key. A redraft swaps a key in
+ * place, so it never takes the open tab.
+ *
  * One change does move the view (§18.11). The member looks at a slot, which
  * has no button, and the queue changes: a card arrives, or the shown card
  * turns into a slot. The view then goes to the FIRST live card, new or not
@@ -169,6 +175,7 @@ export function reconcileShown(
   cards: readonly Pick<PendingConfirmation, "key" | "redraft">[],
   shown: Shown,
   questionKeys: ReadonlySet<string> = NO_KEYS,
+  dock = false,
 ): { keys: readonly string[]; shown: Shown } {
   const keys = cards.map((c) => (c.redraft ? `${c.key}${SLOT_MARK}` : c.key));
   if (keys.length === prevKeys.length && keys.every((k, i) => k === prevKeys[i])) return { keys: prevKeys, shown };
@@ -176,8 +183,11 @@ export function reconcileShown(
   // approval lands before it. Only the approvals tell a restored card.
   const plain = (list: readonly string[]) =>
     list.flatMap((k) => (questionKeys.has(k.replace(SLOT_MARK, "")) ? [] : [k.replace(SLOT_MARK, "")]));
-  const opened = restoredFirst(plain(prevKeys), plain(keys));
-  if (opened !== null) return { keys, shown: { key: opened, index: 0 } };
+  const before = plain(prevKeys);
+  const now = plain(keys);
+  const opened = restoredFirst(before, now);
+  const restore = opened !== null && (!dock || before.every((k) => now.includes(k)));
+  if (restore) return { keys, shown: { key: opened, index: 0 } };
   const showing = cards.find((c) => c.key === shown.key);
   const live = showing?.redraft ? cards.findIndex((c) => !c.redraft) : -1;
   return { keys, shown: live >= 0 ? { key: cards[live].key, index: live } : shown };
@@ -208,7 +218,7 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
   const items: readonly Pick<PendingConfirmation, "key" | "redraft">[] = questions
     ? [...questions.map((q) => ({ key: q.key })), ...cards]
     : cards;
-  const next = reconcileShown(prevKeys, items, shown, questions ? new Set(questions.map((q) => q.key)) : NO_KEYS);
+  const next = reconcileShown(prevKeys, items, shown, questions ? new Set(questions.map((q) => q.key)) : NO_KEYS, !!questions);
   if (next.keys !== prevKeys) setPrevKeys(next.keys);
   if (next.shown !== shown) setShown(next.shown);
   if (items.length === 0) return null;
@@ -224,8 +234,9 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
   const go = (to: number) => setShown({ key: items[to].key, index: to });
   // The dock always draws its header row (D1), so a card there has no pager.
   const tabbed = questions ? true : items.length > 1;
-  // The one approval card that shows, with the tab row in its frame or none.
-  const approvalCard = (card: PendingConfirmation, slot: DockSlot | null) => {
+  // An approval card, with the tab row in its frame or none. In the dock,
+  // `dockView` is its mode and whether it is on the screen.
+  const approvalCard = (card: PendingConfirmation, slot: DockSlot | null, dockView?: { mode: DockMode; shown: boolean }) => {
   const view = rowsView(card, ticks);
   const shownCard = (
     <ConfirmationCard
@@ -276,8 +287,9 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
       {...(card.before ? { before: card.before } : {})}
       // The tab row sits inside the card's frame, and the card is its panel.
       {...(slot ?? {})}
-      // The dock (D2): the Compact or the Expanded view of this card.
-      {...(questions ? { dockMode: dockMode ?? "compact", onExpand } : {})}
+      // The dock (D2): the Compact or the Expanded view of this card, and
+      // whether it is on the screen (its arm, round 7).
+      {...(dockView ? { dockMode: dockView.mode, dockShown: dockView.shown, onExpand } : {})}
     />
   );
   return shownCard;
@@ -294,7 +306,8 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
         folded={folded}
         onUnfold={onUnfold}
         controls={dockControls}
-        approvalCard={at >= questions.length ? (tabs) => approvalCard(cards[at - questions.length], tabs) : null}
+        mode={dockMode ?? "compact"}
+        approvalCard={approvalCard}
       />
     );
   }
@@ -308,9 +321,10 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
 
 /**
  * The queue in the waiting dock (§24.11): approvals and question cards as the
- * tabs of ONE card. The open tab draws its card. Each question card stays
- * mounted, hidden while its tab is closed, so its picks and typed text live
- * through a change of tab and a fold. A folded dock draws one row: the tabs,
+ * tabs of ONE card. The open tab draws its card. EVERY card stays mounted,
+ * hidden and inert while its tab is closed (round 7), so its picks, ticks
+ * and typed text live through a change of tab and a fold. The card's own
+ * state is the one source, so what goes is what the screen showed. A folded dock draws one row: the tabs,
  * the title of the open item and one button that ONLY opens the card. It
  * never approves, rejects or sends (audit rule 2): the consent is on the card.
  */
@@ -324,6 +338,7 @@ function DockQueue({
   folded,
   onUnfold,
   controls,
+  mode,
   approvalCard,
 }: {
   cards: PendingConfirmation[];
@@ -335,7 +350,8 @@ function DockQueue({
   folded: boolean;
   onUnfold?: () => void;
   controls?: ReactNode;
-  approvalCard: ((slot: DockSlot | null) => ReactNode) | null;
+  mode: DockMode;
+  approvalCard: (card: PendingConfirmation, slot: DockSlot | null, view: { mode: DockMode; shown: boolean }) => ReactNode;
 }) {
   // D4: the questions first, then the approvals.
   const tabs: CardTab[] = [
@@ -378,12 +394,20 @@ function DockQueue({
         {questions.map((q, i) => {
           const open = at === i;
           return (
-            <div key={q.key} hidden={!open} data-dock-question={q.key}>
-              {q.render({ ...(open ? (slot ?? {}) : {}), inDock: true })}
+            <div key={q.key} hidden={!open} inert={!open} data-dock-question={q.key}>
+              {q.render({ ...(open ? (slot ?? {}) : {}), inDock: true, dockShown: open && !folded })}
             </div>
           );
         })}
-        {approvalCard?.(slot)}
+        {cards.map((c, i) => {
+          const open = at === questions.length + i;
+          // A card that does not show is Compact, so it holds no commit.
+          return (
+            <div key={c.key} hidden={!open} inert={!open} data-dock-approval={c.key}>
+              {approvalCard(c, open ? slot : null, { mode: open && !folded ? mode : "compact", shown: open && !folded })}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

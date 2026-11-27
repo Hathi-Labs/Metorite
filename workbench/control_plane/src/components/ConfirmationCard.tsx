@@ -40,7 +40,7 @@
  * `src/lib/chatCardConformance.test.ts` (the header and the icon).
  */
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import CardFieldValue from "@/components/CardFieldValue";
 import EarlierDraftQuestion, { declineStep } from "@/components/EarlierDraftQuestion";
@@ -53,6 +53,7 @@ import TaskCardForm, { useTaskCardEdits } from "@/components/TaskCardForm";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import { FRESH_KEY_PROPS, type DockMode } from "@/lib/waitingDock";
+import { ARM_MS, useArmed } from "@/lib/freshPress";
 import { CARD_FRAME_CLASS } from "@/components/ui/Collapsible";
 import { Checkbox } from "@/components/ui/Checkbox";
 import Icon from "@/components/Icon";
@@ -73,8 +74,9 @@ import { TASK_EDITED_HINT, isUnchanged, pendingLine, problemOf, taskApproval, wi
  * of a double-click would sign a card the member never saw. The buttons do
  * not grey out, so the card does not flash. They only ignore the click.
  * Fence: `src/lib/confirmationQueue.test.ts` ("a new card is not armed").
+ * The one value is `lib/waitingDock.ts` `ARM_MS`.
  */
-export const ARM_MS = 400;
+export { ARM_MS };
 
 /** The title row of a confirmation card. The summary is in the body. */
 export const CONFIRM_TITLE = "Approval";
@@ -311,6 +313,11 @@ interface ConfirmationCardProps {
   /** The dock's Expand: Review in the Compact view calls it. */
   onExpand?: () => void;
   /**
+   * The waiting dock: the card is on the screen, its tab open and the dock
+   * not folded. Off the screen it never arms (24.11 rule 7, round 7).
+   */
+  dockShown?: boolean;
+  /**
    * §18.11: the slot of a new-mail card that a chat message closed. The card
    * draws one status line and no buttons: "Updating the draft…", or "The
    * draft did not change." once the run ended with no new card.
@@ -369,6 +376,7 @@ export default function ConfirmationCard({
   headerAside,
   dockMode,
   onExpand,
+  dockShown,
   slot,
   onDraftChange,
   before,
@@ -380,10 +388,15 @@ export default function ConfirmationCard({
   onTaskEdits,
   onEditAnswer,
 }: ConfirmationCardProps) {
-  const [armed, setArmed] = useState(false);
   // Task 3978: Reject of a plain card that names a draft of the chat asks
   // "Keep the earlier draft, or delete it?" in place of its buttons.
   const [asking, setAsking] = useState(false);
+  // The same question of a new-mail form, which the form holds.
+  const [formAsking, setFormAsking] = useState(false);
+  // Round 7: the question goes when the card leaves the view (Collapse, a
+  // fold, another tab), so a later Review never shows Keep it under a press.
+  const offView = !!dockMode && (dockMode === "compact" || dockShown === false);
+  if (asking && offView) setAsking(false);
   // Task 3978: after Back, the Reject button takes the focus again.
   const [cameBack, setCameBack] = useState(false);
   const asksEarlier = !!(earlier && onDiscardEarlier);
@@ -397,15 +410,13 @@ export default function ConfirmationCard({
   // EAC-2: a form that the card cannot answer for is no form (the card of before).
   const taskForm = edit && onEditAnswer ? edit : undefined;
   const task = useTaskCardEdits(taskForm, savedTaskEdits, onTaskEdits);
-  // The card arms ARM_MS after it mounts. In the dock it arms again after
-  // each change of view (24.11, the fresh press): a click that lands in the
-  // first 400 ms after Expanded opens, as the second click of a double click
-  // on Review, does nothing. Outside the dock `dockMode` never changes.
-  useEffect(() => {
-    setArmed(false);
-    const t = setTimeout(() => setArmed(true), ARM_MS);
-    return () => clearTimeout(t);
-  }, [dockMode]);
+  // The card arms ARM_MS after it mounts. In the dock the arm is keyed on
+  // what the member sees (24.11 rule 7, round 7): the view, whether the card
+  // is on the screen, and the earlier-draft question. Each change arms it
+  // again, and the guard drops a press that began before the arm. Outside
+  // the dock the key never changes, so the card is the card of before.
+  const arm = useArmed(dockMode ? `${dockMode}:${dockShown !== false}:${asking || formAsking}` : "", dockShown !== false);
+  const armed = arm.armed;
   // The rows come ticked as the member left them (`rowsView` in the queue).
   // The card holds no tick state and no tick logic (PR #691 review): a tick
   // goes up through `onToggle`, and Approve sends what the queue computed.
@@ -471,6 +482,8 @@ export default function ConfirmationCard({
       aria-label={fenced ? unfenced(summary) : summary}
       {...(tabPanel ? { id: tabPanel.id, role: "tabpanel", "aria-labelledby": tabPanel.labelledBy } : {})}
       data-confirmation-card=""
+      // The dock's guard: a commit only on a fresh press of an armed card.
+      onClickCapture={dockMode ? arm.guard : undefined}
       // Glass only (GL-4): it wants an answer, so it is the raised card with a
       // hairline in the tint, and an orange tile.
       className={`${CARD_FRAME_CLASS} glass:glass-card-tile glass:[--tile:var(--system-orange)] glass:rounded-[16px] glass:border-primary/35 glass:glass-raised glass:p-4`}
@@ -552,7 +565,7 @@ export default function ConfirmationCard({
           carriesEdits={carriesEdits}
           savedEdits={savedEdits}
           onEdits={onEdits}
-          {...(dockMode ? { dockMode, onExpand } : {})}
+          {...(dockMode ? { dockMode, onExpand, onAsking: setFormAsking } : {})}
         />
       )}
       {!slot && isReply && !newMail && (
@@ -785,6 +798,8 @@ export default function ConfirmationCard({
           disabled={disabled}
           aria-disabled={!armed || undefined}
           autoFocus={cameBack}
+          data-confirmation-reject=""
+          {...fresh}
         >
           Reject
         </Button>

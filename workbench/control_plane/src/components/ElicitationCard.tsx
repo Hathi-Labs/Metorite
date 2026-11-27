@@ -73,6 +73,8 @@ import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import { CARD_FRAME_CLASS } from "@/components/ui/Collapsible";
 import { Textarea } from "@/components/ui/Input";
+import { useArmed } from "@/lib/freshPress";
+import { FRESH_KEY_PROPS } from "@/lib/waitingDock";
 import { cardExit, DECLINED_TITLE, declinedNoteFor } from "@/lib/declineAnswer";
 import { plainTitle } from "@/lib/fencedText";
 import {
@@ -154,6 +156,11 @@ interface ElicitationCardProps {
    * "Not now" beside Submit stays.
    */
   inDock?: boolean;
+  /**
+   * The dock: the card is on the screen, its tab open and the dock not
+   * folded. Submit and Not now wait `ARM_MS` after it shows (round 7).
+   */
+  dockShown?: boolean;
   /** The waiting dock's Expand and Fold controls, on the title row when no
    *  tab row is drawn (§24.11). */
   headerAside?: ReactNode;
@@ -187,6 +194,7 @@ export default function ElicitationCard({
   tabs,
   tabPanel,
   inDock = false,
+  dockShown,
   headerAside,
   initialDraft,
   onDraft,
@@ -202,6 +210,9 @@ export default function ElicitationCard({
     draftTo.current?.({ answers, freeformTexts });
   }, [answers, freeformTexts]);
   const uid = useId();
+  // Round 7: in the dock, Submit and Not now take only a fresh press on a
+  // card that shows. Outside the dock the card is the card of before.
+  const arm = useArmed(inDock ? `q:${dockShown !== false}` : "", inDock && dockShown !== false);
   const isAnswered = answered !== undefined;
   // Answered or declined: the card waits no more.
   const closed = isAnswered || declined;
@@ -278,6 +289,7 @@ export default function ElicitationCard({
       <section
         aria-label={title}
         data-elicitation-card={declined ? "declined" : isAnswered ? "answered" : "open"}
+        onClickCapture={inDock ? arm.guard : undefined}
         className={`${CARD_FRAME_CLASS} ${glassFrame}`}
         {...(tabPanel ? { id: tabPanel.id, role: "tabpanel", "aria-labelledby": tabPanel.labelledBy } : {})}
       >
@@ -407,6 +419,7 @@ export default function ElicitationCard({
                 disabled={locked || !canSubmit}
                 aria-describedby={blockedReason ? reasonId : undefined}
                 data-elicitation-submit=""
+                {...(inDock ? FRESH_KEY_PROPS : {})}
               >
                 Submit
               </Button>

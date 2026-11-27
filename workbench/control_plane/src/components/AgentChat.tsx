@@ -155,7 +155,8 @@ import {
 } from "@/lib/chatSteer";
 import { boxHadFocus, refocusAfterPress, refocusQuietly } from "@/lib/composerFocus";
 import { questionTabLabel } from "@/lib/cardTabs";
-import { arrivalBlursBox, dockCount, dockShown, picksOnly, threadLine, userInputShape } from "@/lib/waitingDock";
+import { arrivalBlursBox, boxEnterBlocked, dockCount, dockShown, picksOnly, threadLine, userInputShape } from "@/lib/waitingDock";
+import { msSinceDockCommit, trackPresses, whenKeysUp } from "@/lib/freshPress";
 import { canRetry, retryPlan } from "@/lib/chatRetry";
 import { mergeCappedText } from "@/lib/chatTurnFailure";
 import { createHistoryHold, drainAssumesRun, type HistoryHold } from "@/lib/historyHold";
@@ -2248,7 +2249,14 @@ export default function AgentChat({
     }
     // Enter sends and Shift+Enter is a new line (owner, 2026-10-31). On a
     // touch keyboard Enter stays a new line (`enterSends`, lib/chatSteer.ts).
-    if (enterSends({ ...e, isComposing: e.nativeEvent.isComposing }, touchKeyboard())) {
+    const sends = enterSends({ ...e, isComposing: e.nativeEvent.isComposing }, touchKeyboard());
+    // WD-1 round 7: with the dock on, a held Enter, or an Enter just after a
+    // commit in the dock, never sends the box. With the flag off, as before.
+    if (sends && boxEnterBlocked({ dock: dockOn, repeat: e.repeat, msSinceCommit: msSinceDockCommit() })) {
+      e.preventDefault();
+      return;
+    }
+    if (sends) {
       e.preventDefault();
       handleSubmit(e as unknown as React.FormEvent);
       return;
@@ -2698,6 +2706,8 @@ export default function AgentChat({
     if (!dockOn || !box) return;
     const onKey = () => { lastKeyAtRef.current = performance.now(); };
     box.addEventListener("keydown", onKey);
+    // The press log of the dock's arm and of K6 (`lib/freshPress.ts`).
+    trackPresses();
     return () => box.removeEventListener("keydown", onKey);
   }, [dockOn]);
   // K1, K2 and K6, on a change of the count. An arrival of picks-only items
@@ -2705,11 +2715,19 @@ export default function AgentChat({
   // It never focuses anything. When the last item leaves, the box takes the
   // focus back on a desktop only (`focusQuietly`, `lib/composerFocus.ts`).
   const dockNRef = useRef(dockN);
+  // K6 waits for the keys to come up (round 7): a held Enter on the last
+  // commit never runs on into the box. A new arrival cancels the wait.
+  const k6WaitRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => k6WaitRef.current?.(), []);
   useEffect(() => {
     const prev = dockNRef.current;
     dockNRef.current = dockN;
     if (!dockOn) return;
     const box = inputRef.current;
+    if (dockN > 0) {
+      k6WaitRef.current?.();
+      k6WaitRef.current = null;
+    }
     if (dockN > prev && box) {
       const blur = arrivalBlursBox({
         phone: phoneChrome || touchKeyboard(),
@@ -2722,8 +2740,13 @@ export default function AgentChat({
     } else if (dockN === 0 && prev > 0) {
       // Only when the focus is nowhere else: a member who types in another
       // field of the page keeps it (an app rail beside its app).
-      const at = typeof document === "undefined" ? null : document.activeElement;
-      if (!at || at === document.body || !!box?.form?.contains(at) || !!dockHostRef.current?.contains(at)) focusQuietly();
+      k6WaitRef.current?.();
+      k6WaitRef.current = whenKeysUp(() => {
+        k6WaitRef.current = null;
+        const at = typeof document === "undefined" ? null : document.activeElement;
+        const form = inputRef.current?.form;
+        if (!at || at === document.body || !!form?.contains(at) || !!dockHostRef.current?.contains(at)) focusQuietly();
+      });
     }
   }, [dockOn, dockN, dockPicksOnly, phoneChrome, focusQuietly]);
   const renderDockCards = ({ folded, unfold, controls, mode, expand }: DockRender): React.ReactNode => (
@@ -2741,8 +2764,9 @@ export default function AgentChat({
       dockControls={controls}
       dockMode={mode}
       onExpand={expand}
-      // The order of the tabs: the approvals, then `ask_questions`, then
-      // `ask_user`. One card is one tab (audit rule 3).
+      // The order of the tabs (24.11 rule 8): the questions first,
+      // `ask_questions` then `ask_user`, then the approvals, oldest first.
+      // One card is one tab (audit rule 3).
       questions={[
         ...(elicitationWaits && elicitation
           ? [{

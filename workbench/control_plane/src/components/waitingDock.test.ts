@@ -119,7 +119,18 @@ describe("one card with tabs (WD-D3, D4)", () => {
     expect(html).toContain('data-dock-question="ask:q1"');
     expect(html).toContain('data-dock-question="ask:q2"');
     expect(html).toContain("Which day?");
-    expect(html).toMatch(/<div hidden="" data-dock-question="ask:q2">/);
+    expect(html).toMatch(/<div hidden="" inert="" data-dock-question="ask:q2">/);
+  });
+
+  // Round 7, finding 4: a reply card lost its untick on a visit to another
+  // tab, and Send went to that person. Every approval card stays mounted.
+  it("every approval card stays mounted too: a closed tab is hidden and inert, Compact", () => {
+    const html = dock({ cards: [mail("m1", ["geo@acme.test"]), mail("m2", ["ops@acme.test"])], questions: [question("ask:q1", "Which printer?")] });
+    expect(html).toContain('data-dock-approval="m1"');
+    expect(html).toContain('data-dock-approval="m2"');
+    expect(html).toMatch(/<div hidden="" inert="" data-dock-approval="m2">/);
+    // A closed card holds no commit: it is Compact.
+    expect(html).not.toContain("data-reply-send");
   });
 });
 
@@ -392,6 +403,25 @@ describe("the shown tab across both kinds (D4, audit rule 3)", () => {
     const q = new Set(["ask:q1"]);
     const next = reconcileShown(["ask:q1", "c2"], [{ key: "ask:q1" }, { key: "c1" }, { key: "c2" }], { key: "ask:q1", index: 0 }, q);
     expect(next.shown.key).toBe("c1");
+  });
+
+  // Round 7, rule 8: only an Undo moves the open tab. A redraft swaps a key
+  // in place, and an Undo puts one key first and keeps the rest.
+  it("a redraft into the first approval keeps the open question, and the open approval", () => {
+    const q = new Set(["ask:q1"]);
+    const before = [{ key: "ask:q1" }, { key: "m1", redraft: "updating" as const }, { key: "t1" }];
+    const after = [{ key: "ask:q1" }, { key: "m2" }, { key: "t1" }];
+    for (const open of [{ key: "ask:q1", index: 0 }, { key: "t1", index: 2 }]) {
+      const one = reconcileShown([], before, open, q, true);
+      const two = reconcileShown(one.keys, after, one.shown, q, true);
+      expect(two.shown.key).toBe(open.key);
+    }
+    // An Undo in the dock still opens the restored card.
+    const undo = reconcileShown(["ask:q1", "t1"], [{ key: "ask:q1" }, { key: "c1" }, { key: "t1" }], { key: "ask:q1", index: 0 }, q, true);
+    expect(undo.shown.key).toBe("c1");
+    // The flag off: the queue of main, unchanged.
+    const one = reconcileShown([], before.slice(1), { key: "t1", index: 1 });
+    expect(reconcileShown(one.keys, after.slice(1), one.shown).shown.key).toBe("m2");
   });
 
   it("an answered question hands the view to the next tab, as for an approval", () => {

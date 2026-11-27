@@ -6487,6 +6487,11 @@ rules below replace the height cap above and the tab order of WD-D3.*
    never commits. A held key (`repeat`) presses no commit button. A click in
    the first 400 ms after Expanded opens does nothing, on every commit path.
    A double click, a held Enter or Space on Review sends nothing.
+   *Amended 2026-11-27 (WD-1 round 7):* the arm follows what the member
+   sees. A fold, an unfold, a change of tab, Expanded, Collapse or the
+   earlier-draft question arms the card again for 400 ms. A fold always
+   closes Expanded. Only a press that starts after the arm commits. A held
+   Enter, or an Enter within 400 ms of a commit, never sends the message box.
 8. **The order.** Questions come first, then approvals, oldest first. Only
    the first paint picks the open tab. After it, only the member, an Undo
    or the answer of the open item moves it. A new item adds a tab with a
@@ -6504,7 +6509,9 @@ shape of the gateway. Compact holds no commit in each. The shapes are a
 held new mail, a forward, a reply, a task with its form and a rows card.
 A long plain card, two earlier-draft cards and a redraft slot are in it too.
 
-`src/lib/waitingDock.test.ts` holds the fresh press.
+`src/lib/waitingDock.test.ts` holds the fresh press, and `pressIsFresh` and
+`boxEnterBlocked` of round 7. The "F1" to "F6" tests of
+`e2e/chat-waiting-dock.spec.ts` hold the arm after each change of view.
 `e2e/chat-waiting-dock.spec.ts` posts what the screen showed after Review,
 edit, Collapse and Review. A double click, a held Enter or Space on Review
 sends nothing. It also checks Esc, the order, and Send in view at 1280,

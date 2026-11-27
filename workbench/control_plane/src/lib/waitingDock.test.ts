@@ -14,7 +14,10 @@
  * - the box takes the focus back on a phone after the last item -> "K6";
  * - the live region speaks on a fall of the count -> "the live region";
  * - the thread line is a card or reads another count -> "the thread line";
- * - the fold row's button approves, rejects or sends -> "audit rule 2".
+ * - the fold row's button approves, rejects or sends -> "audit rule 2";
+ * - a press that began before the arm, or a held key, commits -> "the arm";
+ * - a held Enter or an Enter just after a dock commit sends the box -> "the
+ *   message box after a commit".
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -25,6 +28,9 @@ import { personName } from "./cardTabs";
 import {
   MIN_DOCK_PX,
   FRESH_KEY_PROPS,
+  ARM_MS,
+  boxEnterBlocked,
+  pressIsFresh,
   previewLines,
   sendLabel,
   PINNED_ACTIONS,
@@ -294,7 +300,10 @@ describe("the fresh press (24.11, 2026-11-27)", () => {
   it("each commit button of the dock takes the guard, and the card arms again on each change of view", () => {
     const read = (f: string) => readFileSync(join(__dirname, "..", f), "utf-8");
     const card = read("components/ConfirmationCard.tsx");
-    expect(card).toContain("}, [dockMode]);");
+    // Round 7: the arm is keyed on what the member sees, not on the view alone.
+    expect(card).toContain("useArmed(dockMode ? `${dockMode}:${dockShown !== false}:${asking || formAsking}` : \"\", dockShown !== false)");
+    expect(card).toContain("onClickCapture={dockMode ? arm.guard : undefined}");
+    expect(card).toMatch(/data-confirmation-reject=""\s+\{\.\.\.fresh\}/);
     expect(card).toMatch(/data-confirmation-approve=""\s+\{\.\.\.fresh\}/);
     for (const f of ["components/NewMailCardForm.tsx", "components/ReplyCardForm.tsx"]) {
       const src = read(f);
@@ -312,5 +321,44 @@ describe("the previews", () => {
     expect(previewLines("a\nb\nc\nd")).toEqual({ lines: ["a", "b", "c"], more: true });
     expect(previewLines("a\nb\n")).toEqual({ lines: ["a", "b"], more: false });
     expect(sendLabel(5)).toBe("Send to 5");
+  });
+});
+
+describe("the arm (24.11 rule 7, round 7)", () => {
+  const NONE = Number.NEGATIVE_INFINITY;
+  const log = { pointerDownAt: NONE, pointerUpAt: NONE, keyDownAt: NONE, keyUpAt: NONE, repeatAt: NONE };
+  const ARMED = 1000;
+
+  it("a pointer press counts from its pointerdown", () => {
+    expect(pressIsFresh({ ...log, pointerDownAt: 1100, pointerUpAt: 1150, armedAt: ARMED, now: 1151 })).toBe(true);
+    // Down before the arm, up after it: no commit.
+    expect(pressIsFresh({ ...log, pointerDownAt: 900, pointerUpAt: 1300, armedAt: ARMED, now: 1301 })).toBe(false);
+  });
+
+  it("a key press counts from its keydown, and a held key never presses", () => {
+    expect(pressIsFresh({ ...log, keyDownAt: 1200, armedAt: ARMED, now: 1200 })).toBe(true);
+    // Space: down before the arm, up after it.
+    expect(pressIsFresh({ ...log, keyDownAt: 900, keyUpAt: 1300, armedAt: ARMED, now: 1301 })).toBe(false);
+    expect(pressIsFresh({ ...log, keyDownAt: 1200, repeatAt: 1290, armedAt: ARMED, now: 1300 })).toBe(false);
+  });
+
+  it("a click with no press (a screen reader) needs the arm only", () => {
+    expect(pressIsFresh({ ...log, pointerDownAt: 10, pointerUpAt: 20, armedAt: ARMED, now: 5000 })).toBe(true);
+  });
+
+  it("the card waits ARM_MS", () => {
+    expect(ARM_MS).toBe(400);
+  });
+});
+
+describe("the message box after a commit (round 7)", () => {
+  it("with the dock, a held Enter or an Enter within ARM_MS of a commit sends nothing", () => {
+    expect(boxEnterBlocked({ dock: true, repeat: true, msSinceCommit: 10_000 })).toBe(true);
+    expect(boxEnterBlocked({ dock: true, repeat: false, msSinceCommit: 120 })).toBe(true);
+    expect(boxEnterBlocked({ dock: true, repeat: false, msSinceCommit: ARM_MS + 1 })).toBe(false);
+  });
+
+  it("with the flag off, the box is the box of main", () => {
+    expect(boxEnterBlocked({ dock: false, repeat: true, msSinceCommit: 0 })).toBe(false);
   });
 });

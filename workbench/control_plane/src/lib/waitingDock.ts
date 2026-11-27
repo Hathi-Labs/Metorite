@@ -248,14 +248,59 @@ export function previewLines(text: string): { lines: string[]; more: boolean } {
 /**
  * The consent rule (projects_ai_chat.md 24.11, 2026-11-27): a commit needs a
  * FRESH press. A held key (`repeat`) never presses a commit button: its
- * default action, the click, does not run. The card's arming does the rest:
- * a click in the first 400 ms after the Expanded view opens does nothing.
+ * default action, the click, does not run. The card's arm does the rest
+ * (`lib/freshPress.ts`): a commit waits `ARM_MS` after each change of what
+ * the member sees of the card.
  */
 export const FRESH_KEY_PROPS = {
   onKeyDown: (e: { repeat: boolean; preventDefault: () => void }) => {
     if (e.repeat) e.preventDefault();
   },
 };
+
+/** How long a card ignores a commit after it shows, in ms (24.11 rule 7). */
+export const ARM_MS = 400;
+
+/** The times of the last press of each kind, from `performance.now()`. */
+export interface PressLog {
+  pointerDownAt: number;
+  pointerUpAt: number;
+  /** The last keydown of Enter or Space that was not a repeat. */
+  keyDownAt: number;
+  /** The last keyup of Enter or Space. */
+  keyUpAt: number;
+  /** The last keydown that was a repeat (a held key). */
+  repeatAt: number;
+}
+
+/** A click this soon after a press event is the click of that press. */
+export const PRESS_LINK_MS = 100;
+
+/**
+ * Round 7, the fresh press: may this click commit, on a card armed at
+ * `armedAt`? The press must begin after the arm. A pointer clicks as it
+ * comes up, so its press began at the pointerdown. Space clicks at its keyup
+ * and Enter at its keydown, so a key press began at the keydown. A held key
+ * never presses. A click with no press near it (a screen reader) needs the
+ * arm only.
+ */
+export function pressIsFresh(st: PressLog & { armedAt: number; now: number }): boolean {
+  const near = (t: number) => st.now - t < PRESS_LINK_MS;
+  if (near(st.repeatAt)) return false;
+  if (near(st.pointerUpAt)) return st.pointerDownAt >= st.armedAt;
+  if (near(st.keyUpAt) || near(st.keyDownAt)) return st.keyDownAt >= st.armedAt;
+  return true;
+}
+
+/**
+ * Round 7: does the message box drop this Enter? With the dock on, a held
+ * Enter (`repeat`) never sends the box, and nor does an Enter within
+ * `ARM_MS` of a commit in the dock. The key of a commit then never runs on
+ * into the box. With the flag off, the box is the box of before.
+ */
+export function boxEnterBlocked(st: { dock: boolean; repeat: boolean; msSinceCommit: number }): boolean {
+  return st.dock && (st.repeat || st.msSinceCommit < ARM_MS);
+}
 
 /** D3: the Send of an Expanded email names how many people get it. */
 export function sendLabel(people: number): string {

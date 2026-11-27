@@ -120,6 +120,9 @@ export default function WaitingDock({ count, phone, children, initialFolded = fa
 
   const kbUp = keyboardUp({ phone, viewport: vp?.height ?? null, layout });
   const folded = dockFolded({ manual, keyboardUp: kbUp, cardFieldFocus: fieldFocus });
+  // Round 7: every fold leaves Expanded, by any cause (Fold, K7, the
+  // keyboard). An unfold then shows Compact, which holds no commit.
+  if (folded && expanded) setExpanded(false);
   const cap = size
     ? dockCap({
         phone,
@@ -222,20 +225,37 @@ export default function WaitingDock({ count, phone, children, initialFolded = fa
   // anywhere in this chat, the message box too. It does nothing else, so it
   // never also stops the run. A second Esc keeps its old meaning. A listener
   // on the window in the capture phase runs before any handler of the page.
+  // Round 7: after a press on blank thread the focus is on the page body, and
+  // that Esc is this chat's too. An Esc of a modal, or of another surface,
+  // stays theirs. Esc in the earlier-draft question is that question's Back.
   useEffect(() => {
     if (!expanded) return;
+    const chatOf = () => rootRef.current?.closest("[data-dock-host]")?.parentElement ?? null;
+    let pressedHere = true;
+    const onPress = (e: PointerEvent) => {
+      const chat = chatOf();
+      pressedHere = !!chat && e.target instanceof Node && chat.contains(e.target);
+    };
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      const chat = rootRef.current?.closest("[data-dock-host]")?.parentElement;
+      const chat = chatOf();
       const target = e.target as Node | null;
-      if (!chat || !target || !chat.contains(target)) return;
+      if (!chat || !target) return;
+      if (target instanceof Element && target.closest("[data-earlier-question]")) return;
+      const fromPage = target === document.body || target === document.documentElement;
+      const modal = !!document.querySelector('[aria-modal="true"], dialog[open]');
+      if (!chat.contains(target) && !(fromPage && pressedHere && !modal)) return;
       e.preventDefault();
       e.stopPropagation();
       e.stopImmediatePropagation();
       setExpanded(false);
     };
+    window.addEventListener("pointerdown", onPress, true);
     window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("pointerdown", onPress, true);
+      window.removeEventListener("keydown", onKey, true);
+    };
   }, [expanded]);
   // K7: the fold row of the keyboard opens the card only when the member
   // asks. A tap on its button opens the card and drops the keyboard.
