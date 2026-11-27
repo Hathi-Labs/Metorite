@@ -233,6 +233,12 @@ Twelve rules on top of the three above. Each one exists because somebody broke i
      A long body uses `components/ui/ShowMore.tsx`. A typed message answers
      the one waiting question. The rules are C1 to C8 in
      `projects_ai_chat.md` §24.10. Fence: `src/lib/chatCardScroll.test.ts`.
+   - **Amended 2026-11-27 (D234, `projects_ai_chat.md` §24.11).** With
+     `WAITING_DOCK_ORGS` on, a card that WAITS on the member draws in the dock
+     above the message box. It is the one card there, and only its body may
+     scroll over its height cap. Every other card keeps the rules above, and
+     with the flag off nothing changes. Keyboard rules K1 to K7 are in §24.11.
+     The dock slice (WD-1) names the fences that change.
    - A read draws inside its step in the trail, closed, and never after the
      answer.
    - A write's receipt draws compact after the text. An answer card is one
