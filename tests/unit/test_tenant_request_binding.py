@@ -280,9 +280,13 @@ _HEADERS = frozenset({
 #: SBX-2 (agent_sandbox.md §12.2): the sibling's own headers. The capability,
 #: and the names that it reads only to refuse a second credential. Only the
 #: functions of :data:`_SANDBOX_FUNCTIONS` may name them, so the scan still
-#: refuses such a read in ``_agent_user``.
+#: refuses such a read in ``_agent_user``. SBX-3a (agent_sandbox.md §12.5
+#: decision 4) adds ``x-sandbox-ticket``, the one-use ticket of an approved
+#: write. The sibling reads the body of that write only through the hand-off
+#: to ``_signed_body`` (:data:`_BODY_READER`), the one body reader.
 _SANDBOX_HEADERS = frozenset({
     "x-sandbox-capability", "authorization", "x-user-email", "x-user-role",
+    "x-sandbox-ticket",
 })
 _SANDBOX_FUNCTIONS = frozenset({"_is_sandbox_request", "_sandbox_user"})
 #: EA-6a (EA3-28): the ONE function that may read the body, and only as
@@ -943,6 +947,27 @@ def test_the_body_is_read_once_and_in_one_function():
     assert found == [_BODY_READER]
 
 
+#: The scanned functions that may hand the request to :data:`_BODY_READER`.
+#: Branch 0 hashes the body of a signed write. SBX-3a (agent_sandbox.md §12.5
+#: decision 4): of the sandbox functions, only ``_sandbox_user`` may, for the
+#: body hash of a ticket.
+_BODY_READER_CALLERS = frozenset({"_agent_user", "_sandbox_user"})
+
+
+def test_only_branch_0_and_the_sandbox_sibling_hand_the_body_to_the_reader():
+    """SBX-3a. The body read of the sibling goes through ``_signed_body``,
+    and no other scanned function calls it."""
+    import ast
+
+    callers = set()
+    for name, source in _sources().items():
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.Call) and getattr(node.func, "id", "") == _BODY_READER:
+                callers.add(name)
+    assert callers == _BODY_READER_CALLERS
+    assert _BODY_READER_CALLERS - {"_agent_user"} <= _SANDBOX_FUNCTIONS
+
+
 def test_the_kept_body_key_is_the_one_constant():
     """CIV-14b. The scan accepts only a literal scope key, so ``_signed_body``
     names the key as text. The gateway wrapper and the tripwire use the same
@@ -1276,8 +1301,22 @@ _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
     # fall-through. The independent verification (Opus) of e4a27a373 passed
     # each code item of §12.2, with 4 of 4 mutants caught. The pins did not
     # change after either one (lane-sbx, 2026-11-26).
-    (3, 12): "01b17a9f6a3a6b89bc60773370aa7e90bf42217e574c9f94ccd229530cf06a71",
-    (3, 13): "46de0ff1199ee3c585a1db0423081ec454ac57944d166e6a3a5af28990246f7a",
+    # SBX-3a (2026-11-27, agent_sandbox.md §12.5 decision 4, task 3802): the
+    # writes of the sandbox door. Step 2 of `_sandbox_user` takes at most one
+    # `X-Sandbox-Ticket` in its shape beside the capability, and a GET with a
+    # ticket is 401. Step 4b reads the body through `_signed_body`, the one
+    # body reader, and takes the ticket once in the new helper
+    # `_take_sandbox_ticket` (GETDEL in the ROW's org, 403 `sandbox_ticket`, a
+    # store fault 503). `_sandbox_gate` admits the batch pair with no steps 6
+    # to 8, and with a ticket it checks `SANDBOX_WRITE_ROUTES` and the write
+    # scope. The scope carries `write_scopes`, and `stamp` only from the
+    # ticket. `x-sandbox-ticket` joins `_SANDBOX_HEADERS` and the tripwire's
+    # list. The pins before it were 3.12 ``01b17a9f…0cf06a71`` and 3.13
+    # ``46de0ff1…90246f7a``. CPython 3.12.16 and 3.13.18 gave the new pins.
+    # OWED: the Opus diff-reviewer review and the independent verification of
+    # external_agent_access.md §10.1. A later commit names both.
+    (3, 12): "82bea7a4e5d25380a146ad4369b5d5aa13fcea990bf9bcb550909b12b4b467be",
+    (3, 13): "f781ee5f96b307cbee7fbd97f133bd5c46a2592be3a65e30edb91e7caca75904",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see
@@ -1296,7 +1335,7 @@ _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
 _BRANCH_ZERO_HELPERS = ("_read_connection", "_claim_write", "_claim_call", "_door_gate",
                         "_claim_door_read", "_audit_door", "_approval_of",
                         "_spend_approval", "_refuse_sandbox", "_read_capability",
-                        "_claim_sandbox_call", "_sandbox_gate")
+                        "_claim_sandbox_call", "_sandbox_gate", "_take_sandbox_ticket")
 
 
 def _branch_zero_digest() -> str:

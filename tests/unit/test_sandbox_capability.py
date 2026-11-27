@@ -9,7 +9,9 @@ done-when 1, 2 (the R8 half), 3, 8 and 9.
   gets 401, and a spy on the session factory and on ``tenant_redis`` records
   no call.
 * Done-when 8 and the rules of ``mint``: each bad argument raises
-  ``ValueError`` before any SQL. SBX-2 refuses every write scope.
+  ``ValueError`` before any SQL. SBX-3a (§12.5 decision 6, done-when 4):
+  a write scope only in the ``run`` phase, only of the door, and only with
+  an app id and a version.
 * Done-when 9: the 601st call of one capability gets 429 with
   ``Retry-After``, and a Redis outage gets 503.
 * The source scan: no module outside ``tests/`` calls ``mint``. SBX-4 names
@@ -154,6 +156,54 @@ def test_mint_raises_before_any_sql(monkeypatch, over):
     with pytest.raises(ValueError):
         asyncio.run(sandbox_capabilities.mint(**_good(**over)))
     assert ran == []
+
+
+_APP = "99999999-9999-4999-8999-999999999999"
+
+
+@pytest.mark.parametrize("over", [
+    # SBX-3a (§12.5 decision 6): a write scope in the smoke phase,
+    {"phase": "smoke", "write_scopes": ("crm:write",), "app_id": _APP, "version": 1},
+    # in the build phase,
+    {"phase": "build", "write_scopes": ("projects:write",), "app_id": _APP, "version": 1},
+    # a write scope that is not a scope of the door,
+    {"phase": "run", "write_scopes": ("knowledge:write",), "app_id": _APP, "version": 1},
+    {"phase": "run", "write_scopes": ("crm:read",), "app_id": _APP, "version": 1},
+    # and a write scope with no app_id or no version.
+    {"phase": "run", "write_scopes": ("crm:write",), "version": 1},
+    {"phase": "run", "write_scopes": ("crm:write",), "app_id": _APP},
+])
+def test_mint_refuses_a_bad_write_scope(monkeypatch, over):
+    """Done-when 4. Each bad write scope raises ``ValueError`` before any SQL."""
+    ran: list[object] = []
+
+    async def spy(work):
+        ran.append(work)
+        raise AssertionError("mint reached SQL")
+
+    monkeypatch.setattr(agent_tokens, "_run", spy)
+    with pytest.raises(ValueError):
+        asyncio.run(sandbox_capabilities.mint(**_good(**over)))
+    assert ran == []
+
+
+def test_mint_takes_a_write_scope_in_the_run_phase_with_an_app(monkeypatch):
+    seen: dict[str, Any] = {}
+
+    class _Session:
+        async def execute(self, statement, params):
+            seen.update(params)
+            return SimpleNamespace(one=lambda: SimpleNamespace(
+                created_at="c", expires_at="e"))
+
+    async def run(work):
+        return await work(_Session())
+
+    monkeypatch.setattr(agent_tokens, "_run", run)
+    asyncio.run(sandbox_capabilities.mint(**_good(
+        write_scopes=("crm:write", "projects:write"), app_id=_APP, version=2)))
+    assert seen["write_scopes"] == ["crm:write", "projects:write"]
+    assert seen["phase"] == "run" and seen["version"] == 2
 
 
 def test_the_token_has_its_shape_and_only_its_hash_is_bound(monkeypatch):

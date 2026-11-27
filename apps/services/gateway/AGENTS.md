@@ -822,7 +822,7 @@ sends `X-Sandbox-Capability` to the existing CRM and Projects GET routes. The
 sibling of branch 0 in `acb_auth/deps.py` decides each such request, and
 `gateway/sandbox_door.py` (`SandboxDoorLimits`, inside `TenantScopeMiddleware`)
 caps the answer of an admitted call at 4 MB and writes `sandbox.door.call`.
-The door adds no route. ⚠️ SBX-4b1 (§12.4 decision 9): for a refusal with
+The reads add no route. ⚠️ SBX-4b1 (§12.4 decision 9): for a refusal with
 `sandbox_read_only`, `sandbox_route_excluded`, `sandbox_route_unknown` or
 `sandbox_scope`, the middleware adds 1 to the refusal counter of the token
 hash BEFORE it forwards `http.response.start`. Do not move that step after
@@ -830,6 +830,20 @@ the send. `sandbox_capabilities.door_counts` reads the counts. Fence:
 `test_sandbox_door_identity.py`. `SANDBOX_DOOR_ORGS` keeps it off by default. The
 public Caddy vhost must strip each `X-Sandbox-` header before the flip (an
 owner act on the SBX-9 checklist).
+
+**The writes of the sandbox door (SBX-3a, `agent_sandbox.md` §12.5).** Code in
+the sandbox writes only through `POST /sandbox/v1/batch`
+(`gateway/sandbox_batch.py`). A direct non-GET keeps 403 `sandbox_read_only`.
+The route checks every row before it holds anything. It holds each card in
+tenant Redis (`sandbox_held`, `sandbox_held_run`, `sandbox_held_decision`),
+and it waits with no database session.
+
+- ⚠️ Only `decide` writes an answer, with `SET NX`, so the first writer wins.
+- After every card has an answer, the approved rows run one by one, each as
+  an in-process request. Each request has the same capability and a one-use
+  `X-Sandbox-Ticket`. The sibling takes the ticket once and runs every step
+  again. Do not run a held row in another way.
+- Fences: `test_sandbox_door_writes.py` (R8), `test_sandbox_door_identity.py`.
 
 ### Adding a new endpoint
 1. Create or extend a route file in routes/

@@ -472,6 +472,8 @@ def test_the_context_holds_the_run_and_never_the_token_or_its_hash(monkeypatch):
         "run_id": "run-1", "thread_id": "thread-1", "phase": "smoke",
         "app_id": "99999999-9999-4999-8999-999999999999", "version": 3,
         "read_scopes": ("crm:read", "projects:read"),
+        # SBX-3a: the row's write scopes, and no stamp with no ticket.
+        "write_scopes": (), "stamp": "",
     }
     text = repr(user) + repr(dataclasses.asdict(user.sandbox))
     assert kit.RAW not in text and state.row.token_sha256 not in text
@@ -659,6 +661,123 @@ def test_a_redis_failure_at_the_refusal_count_keeps_the_refusal(monkeypatch, arm
     assert [line["error"] for line in failed] == ["ConnectionError"]
 
 
+# ── SBX-3a done-when 11: the ticket of one approved write ──────────────────
+
+_BODY = b'{"last_name":"Rao"}'
+
+
+def _write_door(monkeypatch, armed_tripwire, **cap_over):
+    """The small gateway with a write route that records the stamp."""
+    from acb_auth import deps as deps_module
+    from fastapi import Depends
+
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    stamps: list[str] = []
+
+    async def write(user=Depends(deps_module.get_current_user)):
+        stamps.append(user.sandbox.stamp if user.sandbox else "-")
+        door.tenants.append(current_tenant())
+        return {"ok": True}
+
+    door.app.router.routes = [r for r in door.app.router.routes
+                              if getattr(r, "path", "") != "/crm/leads"
+                              or "POST" not in getattr(r, "methods", set())]
+    door.app.add_api_route("/crm/leads", write, methods=["POST"])
+    over = {"write_scopes": ("crm:write",), "app_id": "99999999-9999-4999-8999-999999999999",
+            "version": 1, **cap_over}
+    state = kit.arm_door(monkeypatch, cap=kit.capability(**over))
+    return door, state, stamps
+
+
+def _ticket(state, *, body: bytes = _BODY, token_sha256: str | None = None,
+            path: str = "/crm/leads", method: str = "POST") -> str:
+    import asyncio
+
+    return asyncio.run(sandbox_capabilities.issue_ticket(
+        org=kit.ORG_A, token_sha256=token_sha256 or state.row.token_sha256,
+        method=method, path=path, query=b"", body=body, stamp="sandbox:lead-tool:v1",
+        held_id="h" * 32))
+
+
+def _post(door, headers, body: bytes = _BODY):
+    with TestClient(door.app) as client:
+        return client.post("/crm/leads", content=body, headers=headers)
+
+
+def test_a_ticket_admits_one_write_once(monkeypatch, armed_tripwire):
+    """Done-when 11. A ticket admits one write once, with its stamp. A second
+    use, a ticket of another capability, another body, another path, or a
+    ticket with no capability gets 403 ``sandbox_ticket`` or 401, and no
+    tenant stays bound. A second ``X-Sandbox-Ticket`` gets 401."""
+    door, state, stamps = _write_door(monkeypatch, armed_tripwire)
+    ticket = _ticket(state)
+    first = _post(door, kit.headers(**{"X-Sandbox-Ticket": ticket}))
+    assert first.status_code == 200, first.text
+    assert stamps == ["sandbox:lead-tool:v1"]
+    assert door.tenants == [kit.ORG_A]
+
+    again = _post(door, kit.headers(**{"X-Sandbox-Ticket": ticket}))
+    assert again.status_code == 403
+    assert again.json() == {"detail": sandbox_capabilities.TICKET}
+
+    other_cap = _ticket(state, token_sha256="0" * 64)
+    assert _post(door, kit.headers(**{"X-Sandbox-Ticket": other_cap})).status_code == 403
+    other_body = _ticket(state)
+    assert _post(door, kit.headers(**{"X-Sandbox-Ticket": other_body}),
+                 body=b'{"last_name":"Ravi"}').status_code == 403
+    other_path = _ticket(state, path="/crm/deals")
+    assert _post(door, kit.headers(**{"X-Sandbox-Ticket": other_path})).status_code == 403
+    unknown = "f" * 32
+    assert _post(door, kit.headers(**{"X-Sandbox-Ticket": unknown})).status_code == 403
+
+    alone = _ticket(state)
+    assert _post(door, {"X-Sandbox-Ticket": alone}).status_code == 401
+    twice = _ticket(state)
+    doubled = [("X-Sandbox-Capability", kit.RAW), ("X-Sandbox-Ticket", twice),
+               ("X-Sandbox-Ticket", twice)]
+    assert _post(door, doubled).status_code == 401
+    assert _post(door, kit.headers(**{"X-Sandbox-Ticket": "NOT-A-TICKET"})).status_code == 401
+
+    assert stamps == ["sandbox:lead-tool:v1"], "only the first write ran"
+    assert door.after[0] == kit.ORG_A
+    assert len(door.after) == 9 and all(t is None for t in door.after[1:]), (
+        "a refused ticket leaves no tenant bound")
+
+
+def test_a_direct_write_with_a_write_scope_is_still_read_only(monkeypatch, armed_tripwire):
+    door, state, stamps = _write_door(monkeypatch, armed_tripwire)
+    answer = _post(door, kit.headers())
+    assert answer.status_code == 403
+    assert answer.json() == {"detail": sandbox_capabilities.READ_ONLY}
+    assert stamps == []
+
+
+def test_a_ticket_needs_the_write_scope_of_the_app(monkeypatch, armed_tripwire):
+    door, state, stamps = _write_door(monkeypatch, armed_tripwire,
+                                      write_scopes=("projects:write",))
+    answer = _post(door, kit.headers(**{"X-Sandbox-Ticket": _ticket(state)}))
+    assert answer.status_code == 403
+    assert answer.json() == {"detail": sandbox_capabilities.SCOPE}
+    assert stamps == []
+
+
+def test_a_ticket_on_a_get_is_401_and_reads_no_body(monkeypatch, armed_tripwire):
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    kit.arm_door(monkeypatch)
+    answer = _send(door, "GET", "/crm/leads", kit.headers(**{"X-Sandbox-Ticket": "a" * 32}))
+    assert answer.status_code == 401
+    assert door.ran == []
+
+
+def test_a_redis_fault_at_the_ticket_is_503(monkeypatch, armed_tripwire):
+    door, state, stamps = _write_door(monkeypatch, armed_tripwire)
+    ticket = _ticket(state)
+    state.redis.down = True
+    answer = _post(door, kit.headers(**{"X-Sandbox-Ticket": ticket}))
+    assert answer.status_code == 503
+    assert stamps == []
+
+
 # ── the digest of the capability store ──────────────────────────────────────
 
 #: SHA-256 of the normalised AST of ``acb_auth/sandbox_capabilities.py``, by
@@ -675,8 +794,16 @@ _STORE_DIGESTS: dict[tuple[int, int], str] = {
     # ("approved by this review"). Verified: the independent Opus
     # ws-verifier of 532a1b2cd0 (done-when 1, 2 and 4 to 7 met, R8 15 of 15
     # on a real database, mutations a to d red). Task 3986, 2026-11-26.
-    (3, 12): "a226cce603ff9e613d6ce99dc5a1f1eda4f9c6b5e5b6ef786abbc512137bec11",
-    (3, 13): "ac7483eb0fee46d5a277cbe890607e3cea41632287024bd23ed9ac71dd1a8a27",
+    # SBX-3a (task 3802, 2026-11-27, agent_sandbox.md §12.5 decisions 4 and
+    # 6): `mint` takes a write scope of `SANDBOX_WRITE_SCOPES` in the run
+    # phase only, with an app id and a version. The ticket: `issue_ticket`,
+    # `take_ticket`, `ticket_well_formed` and the new codes. The pins before
+    # it were 3.12 ``a226cce6…137bec11`` and 3.13 ``ac7483eb…1dd1a8a27``.
+    # CPython 3.12.16 and 3.13.18 gave the new pins. OWED: the Opus
+    # diff-reviewer review and the independent verification. A later commit
+    # names both.
+    (3, 12): "51e708c7d277f902287a16e210ac612a6c4339083af88f6dccc95c01bb9fecc5",
+    (3, 13): "665a61291b760d4facd9cb52615a3c9eb8862668875d43520c69b34269f14a45",
 }
 
 
