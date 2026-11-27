@@ -365,10 +365,11 @@ function share(open: readonly Draft[], options: PlanOptions): Map<string, { show
    */
   const window = latest && options.window?.person === latest.person ? options.window : null;
   const kept = !latest ? 0 : window ? roomFor(latest, window.state) : Math.min(WINDOW_ROOM, latest.cards);
-  if (latest) for (const s of latest.ranked) if (URGENT.includes(latest.rankOf(s))) take(latest, s, CARDS_MAX);
   const own = () => (latest ? cards.get(latest.person)!.size : 0);
-  /** The cards of the selection among them. They take none of the kept room. */
+  // Read before any urgent card: the selection takes none of the kept room,
+  // and each urgent card of the opened person counts toward it.
   const selection = own();
+  if (latest) for (const s of latest.ranked) if (URGENT.includes(latest.rankOf(s))) take(latest, s, CARDS_MAX);
   for (const state of URGENT) {
     for (const d of bySize) {
       if (d === latest) continue;

@@ -444,6 +444,19 @@ describe("urgency wins after a click too (decision G3)", () => {
     const holding = kind(g, "bucket").filter((b) => b.sessions.some((s) => s.id === "zboss"));
     if (!cards(g).includes("zboss")) expect(holding.map((b) => b.state)).toEqual(["failed"]);
   });
+  it("counts the urgent agents of the opened person toward its kept room", () => {
+    const m = fleetOf([
+      ["ana", 12, "failed"],
+      ["ana", 20, "working"],
+      ["ben", 35, "failed"],
+    ]);
+    const view = foldView(NEW_VIEW, "p:ana@x.test", true, "ana@x.test");
+    const g = layoutGraph(m, options({ mode: "all", ...view }));
+    expect([n(g, "ben-failed"), n(g, "ana-failed"), n(g, "ana-working")]).toEqual([28, 12, 0]);
+    // With a selection among them, one slot more goes to the selection only.
+    const pinned = layoutGraph(m, options({ mode: "all", pin: "ana-failed-0", ...view }));
+    expect(n(pinned, "ben-failed")).toBe(28);
+  });
   it("draws a folded orchestrator that holds an agent that needs you, over a state node click", () => {
     const m = buildLensModel(
       mapOf(
