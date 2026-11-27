@@ -6375,9 +6375,11 @@ The check at 390 × 844 is advisory, so review holds it.
 
 ### 24.11 The waiting dock (owner, 2026-11-27)
 
-**Status.** SPECIFIED 2026-11-27 (task 4088, D234). Epic: task 4087. Each
-slice ships dark behind `WAITING_DOCK_ORGS`. With the flag off, §24.2 and
-§24.10 hold as written, and the chat behaves as before.
+**Status.** SPECIFIED 2026-11-27 (task 4088, D234), verified against code on
+2026-11-27 at `79e0e12278`. Epic: task 4087. Each slice ships dark behind
+`WAITING_DOCK_ORGS`. With the flag off, §24.2 and §24.10 hold as written, and
+the chat behaves as before. The three slices are **AGENT-SAFE** to build. The
+flip of `WAITING_DOCK_ORGS` on a box is **OWNER-GATE** (`enforcement-flip`).
 
 **The problem, in the owner's words (2026-11-27).**
 
@@ -6415,8 +6417,8 @@ chat). The owner said, in chat with metorite-78:
   This widens the scope of D173 from approvals to every waiting element.
 - **WD-D4, typed text.** Typed text may ANSWER a question, picker or form,
   leave it OPEN, or CHANGE it. Typed text may CHANGE an approval card or leave
-  it OPEN, and it NEVER approves it. The click is the consent (D169, one
-  consent per card). A card can hold outside text (a held chat), so a model
+  it OPEN, and it NEVER approves it. The click is the consent (D168.1 and
+  D173.5, one consent per card). A card can hold outside text (a held chat), so a model
   that reads "approved" from text would be a new injection path. Code enforces
   this, not a prompt.
 - **WD-D5, the keyboard.** A picks-only item gets the whole space with the
@@ -6477,6 +6479,77 @@ K1 to K7 bind the phone. The desktop follows K1, K6 and the a11y line.
 - **A11y:** one polite live region says "N items wait for you" when the count
   goes up. The arrival never steals the focus. Every control of the dock is a
   native button or field.
+
+#### Rules of the audit (2026-11-27)
+
+The spec audit found gaps. These rules close them with the safest reading.
+They change no rule above.
+
+1. **The pin and the generative-UI ask.** In WD-1 an ask from a form, a picker
+   or a plan stays in the message bubble. `AskPin` still draws for it. `AskPin`
+   never draws for an item of the dock. The thread line counts dock items only.
+2. **The folded row never consents.** Its primary button only opens the card.
+   For an approval it never approves, rejects or sends. This keeps D168.1 and
+   C7: the member sees the whole card before the consent.
+3. **The tabs.** The order is the approvals (queue order), then the
+   `ask_questions` card, then the `ask_user` card. One card is one tab, also a
+   card with several questions. A question tab has a question icon and the
+   label "Question: <title>", cut. When every tab is an approval, the count
+   keeps "N to approve". Else it reads "N waiting". The auto-advance and the
+   unseen dot work across the kinds, as in `ConfirmationQueue`. A redraft slot
+   (§18.11) stays in the dock and is not counted.
+4. **When an item leaves.** The member answers, declines or discards it. It also
+   leaves when today's state removes it: the run ends, another tab answers it,
+   it times out, or a redraft replaces it. An answered question card keeps its
+   folded one-line form at its thread place until the run ends.
+5. **The caps.** Desktop: 50% of the chat height. Phone with the keyboard down:
+   60% of the visual viewport. Phone with the keyboard up and a card field in
+   focus: at most the visual viewport minus the composer and two thread lines.
+   Expand opens up to the chat column minus the composer and two thread lines,
+   and never covers the composer. The cap counts the dock only. "Phone" and
+   "keyboard up" use the signals that the chat already has.
+6. **Picks-only.** An approval of any kind is picks-only, because its fields
+   are optional edits. A question card is picks-only when every question has
+   options. The blur of an idle message box in K1 is the one exception to "the
+   arrival never steals the focus".
+7. **WD-1 captions.** WD-1 keeps `ANSWER_CAPTION` and `STEER_CAPTION` as today.
+   The new text of K7 and WD-D4 comes with WD-3. The inline "Other" field stays
+   on a phone until WD-2 builds K4.
+8. **Two folds.** The dock fold is a second fold beside `RollupCard`, which
+   never folds a card that waits. The dock card does not use the fold of
+   `RollupCard`.
+
+#### Done when (WD-1)
+
+- A card that waits draws in the dock, and it stays in view after any scroll.
+- Approvals, `ask_questions` and `ask_user` that wait together show as one card
+  with tabs.
+- The fold, the caps, the thread line, K1, K2, K3, K6, K7 and the live region
+  work, as in the rules above.
+- With the flag off, the chat draws as today, and the old assertions of the
+  changed tests hold.
+- The captures show 390 x 844 with the keyboard up (the dock and two thread
+  lines) and down, the 420 px rail, the full chat, light and dark, compact
+  density and a changed accent.
+- **Demo, rung 1:** with the flag on for Hathi Labs, ask Mira to draft an email
+  and ask one question. Scroll up. One card with two tabs stays above the box,
+  and the phone keyboard stays down for Send.
+- **Demo, rung 2:** one turn with a form, a picker and an approval shows one
+  card with three tabs.
+- **Demo, rung 3:** type "use the Website project, and make the email shorter"
+  with an approval and a question waiting. The question is answered, the email
+  card redrafts, and nothing is sent.
+
+**Verify with:** `cd workbench/control_plane && npx tsc --noEmit && npx vitest
+run src/lib src/components`, and
+`uv run pytest tests/unit/test_auth_me_shell.py tests/unit/test_flag_reload.py`
+and `uv run python scripts/affected_tests.py --run`.
+
+**Edit paths (WD-1):** `components/AgentChat.tsx`,
+`components/ConfirmationQueue.tsx`, `components/ui/CardTabs.tsx`,
+`lib/cardTabs.ts`, `lib/askPin.ts`, new `lib/waitingDock.ts` and
+`components/WaitingDock.tsx`, `lib/shell/shellPrefs.ts`, `flag_registry.py`,
+`routes/admin/me.py` and `docs/flag_reload.md`.
 
 #### Out of scope
 

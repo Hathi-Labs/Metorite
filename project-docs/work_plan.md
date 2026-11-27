@@ -6505,8 +6505,8 @@ The owner approved the design on 2026-11-27, in chat to metorite-78, after the m
 ```
 
 1. **The dock.** Every element that needs the member draws in a dock above the message box until the member answers, declines or discards it. The thread keeps one line at its old place. This reverses the owner's rule of 2026-10-23 (§24.10) for waiting elements only.
-2. **One card with tabs.** The tabs of D173 widen from approvals to every waiting element: approvals, questions, forms, pickers and plans.
-3. **Typed text never approves.** Typed text may answer or change a question, a picker or a form. It may change an approval card, and code never lets it approve one (D169).
+2. **One card with tabs.** The tabs of D173 widen from approvals to every waiting element: approvals, questions, forms, pickers and plans. Each approval still needs its own consent (D168.1, D173.5). The dock may fold, which amends the rule of the card roll-up that a waiting card never folds.
+3. **Typed text never approves.** Typed text may answer or change a question, a picker or a form. It may change an approval card, and code never lets it approve one (D168.1).
 4. **The keyboard.** A picks-only item leaves the keyboard down. The keyboard comes up only for text, on the member's own tap (K1 to K7).
 5. **Delivery.** Three slices, WD-1 to WD-3, ship dark behind `WAITING_DOCK_ORGS`. Each rung shows the owner a preview before its merge. This decision flips no flag and opens no owner gate.
 
