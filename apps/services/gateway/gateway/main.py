@@ -565,6 +565,12 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.pending_ask_prune_skipped", error=type(exc).__name__)
     try:
+        # The retention of the act record registers its prune hook at import
+        # (WS-PZ MM-1, gateway/member_action_prune.py). Its own try, as above.
+        from gateway import member_action_prune as _member_action_prune  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.member_action_prune_skipped", error=type(exc).__name__)
+    try:
         # The stub of `align.check` registers at import (WS-ALN ALN-1,
         # gateway/align/check.py). Its own try, for the reason above.
         from gateway.align import check as _align_check  # noqa: F401
@@ -1441,6 +1447,13 @@ class TenantScopeMiddleware:
             release_tenant(token)
 
 
+# SBX-2 (agent_sandbox.md §12.2 decision 9): the 4 MB cap and the log line of
+# each call that the sandbox sibling of branch 0 admitted. Pure ASGI, and
+# inside TenantScopeMiddleware, so the record of the call and the route run
+# in one task. Every other request passes through byte for byte.
+from gateway.sandbox_door import SandboxDoorLimits  # noqa: E402
+
+app.add_middleware(SandboxDoorLimits)
 app.add_middleware(TenantScopeMiddleware)
 
 # WS-41 I-7: cap an import upload BEFORE it is read. FastAPI spools a whole
@@ -2521,6 +2534,14 @@ except Exception:  # pragma: no cover
 from gateway.routes.agent_kit import router as _agent_kit_router  # noqa: E402
 
 app.include_router(_agent_kit_router)
+
+# SBX-3a (agent_sandbox.md §12.5 decision 4): the one write route of the
+# sandbox door, `POST /sandbox/v1/batch`. Only a sandbox call reaches it, and
+# the door stays off while `SANDBOX_DOOR_ORGS` is empty. A plain import, so a
+# real import error stops the start and does not hide.
+from gateway.sandbox_batch import router as _sandbox_batch_router  # noqa: E402
+
+app.include_router(_sandbox_batch_router)
 
 try:
     # WS-MCP SW-94 — one policy store for agent work (agent_coordination.md

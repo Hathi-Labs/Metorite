@@ -19,8 +19,9 @@
  */
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
+import Icon from "@/components/Icon";
 import Badge, { type BadgeTone } from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
@@ -47,6 +48,7 @@ import {
   ProfileError,
   addAlias,
   addFact,
+  addLanguage,
   areaLabel,
   celebrationsGate,
   chatHref,
@@ -60,17 +62,24 @@ import {
   errorText,
   fallbackAddress,
   fetchBlock,
+  focusAfterRemove,
+  pickLanguageButton,
+  type LanguageFocus,
   fetchExport,
   fetchProfileAndGate,
   fetchSummaries,
   forgetAll,
   mergeAddress,
   mergeCelebrations,
+  languageName,
+  languagesToAdd,
   mergeStyle,
+  moveLanguage,
   nearCap,
   patchAlias,
   patchFact,
   reconcileDraft,
+  removeLanguage,
   resetArea,
   resetInterview,
   saveAddress,
@@ -78,6 +87,7 @@ import {
   saveKeepSummaries,
   saveLearning,
   saveStyle,
+  styleLanguages,
   shortDate,
   sourceLabel,
   withoutArea,
@@ -591,7 +601,7 @@ function StyleSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
     <Section
       id="assistant-style"
       title="How the assistant answers"
-      description="Length, language and up to five notes on your style."
+      description="Length, languages and up to five notes on your style."
     >
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Answer length">
@@ -604,18 +614,12 @@ function StyleSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
             onChange={(x) => v.onStyle({ length: (x || null) as Style["length"] })}
           />
         </Field>
-        <Field label="Language">
-          <Choice
-            label="Language"
-            value={s.language ?? ""}
-            values={Object.keys(LANGUAGES)}
-            labels={LANGUAGES}
-            none="Same as my message"
-            disabled={busy}
-            onChange={(x) => v.onStyle({ language: x || null })}
-          />
-        </Field>
       </div>
+      <LanguageList
+        languages={styleLanguages(s)}
+        busy={busy}
+        onChange={(languages) => v.onStyle({ languages })}
+      />
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <span className="text-xs font-medium text-foreground">Notes</span>
@@ -669,6 +673,227 @@ function StyleSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
       </div>
       <RowError text={v.errors.style} />
     </Section>
+  );
+}
+
+// ── Languages I speak (PZ-53, `personalization.md` §5.3a) ─────────────────
+
+/** The line under the list. The words are the owner's, and the spec quotes them. */
+export const LANGUAGES_HELP =
+  "The assistant understands any of these, and answers in the language you write or speak. Your records are always saved in English.";
+
+/**
+ * The ordered list of languages. Rank 1 is "Preferred". The member reorders
+ * by drag or with the arrow buttons (both reach the keyboard), removes with
+ * the cross, and adds from the menu of the languages not yet in the list.
+ * Every change saves the whole list at once. An empty list stores nothing.
+ */
+function LanguageList({
+  languages,
+  busy,
+  onChange,
+}: {
+  languages: string[];
+  busy?: boolean;
+  onChange: (languages: string[]) => Promise<boolean>;
+}) {
+  const [dragFrom, setDragFrom] = useState<number | null>(null);
+  const [over, setOver] = useState<number | null>(null);
+  const [said, setSaid] = useState("");
+  const box = useRef<HTMLDivElement>(null);
+  // A save disables every button, and a moved or removed row leaves its
+  // place, so a browser drops the focus. Each change names the buttons that
+  // may take it back. They get it when the save ends, worked or not.
+  const refocus = useRef<LanguageFocus[] | null>(null);
+  const order = languages.join(",");
+  useEffect(() => {
+    if (busy) return;
+    const wants = refocus.current;
+    refocus.current = null;
+    const root = box.current;
+    if (!wants || !root) return;
+    // The member went to another control during the save. Leave them there.
+    const at = document.activeElement;
+    if (at && at !== document.body && !root.contains(at)) return;
+    const rows = Array.from(root.querySelectorAll<HTMLButtonElement>("button[data-tag]"));
+    // No wanted row is left (the list is empty, or an add failed): the Add menu.
+    const add = root.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"]');
+    (pickLanguageButton(rows, wants) ?? add)?.focus();
+  }, [order, busy]);
+
+  const move = async (from: number, to: number, act: LanguageFocus["act"]) => {
+    if (busy || to < 0 || to >= languages.length || from === to) return;
+    const tag = languages[from];
+    refocus.current = [{ tag, act }];
+    if (await onChange(moveLanguage(languages, from, to))) {
+      setSaid(`${languageName(tag)} is now number ${to + 1}.`);
+    }
+  };
+  const remove = async (i: number) => {
+    if (busy) return;
+    const name = languageName(languages[i]);
+    refocus.current = focusAfterRemove(languages, i);
+    if (await onChange(removeLanguage(languages, i))) setSaid(`${name} removed.`);
+  };
+  const full = languages.length >= CAPS.languages;
+  const choices = languagesToAdd(languages);
+  const menu = choices.map((t) => ({ value: t, label: `${LANGUAGES[t]} (${t})` }));
+
+  return (
+    <div ref={box} className="space-y-2" data-testid="language-list">
+      <div className="flex items-center justify-between">
+        <span id="assistant-languages-label" className="text-xs font-medium text-foreground">
+          Languages I speak
+        </span>
+        <Counter used={languages.length} cap={CAPS.languages} unit="languages" />
+      </div>
+      {languages.length === 0 ? (
+        <div className="flex min-h-13 items-center gap-2 rounded-lg border border-dashed border-border px-3 py-1 text-xs text-muted-foreground">
+          <strong className="font-medium text-foreground">English</strong>
+          <span>The assistant follows the language of your message. Add a language to set an order.</span>
+        </div>
+      ) : (
+        <ol aria-labelledby="assistant-languages-label" className="space-y-1.5">
+          {languages.map((tag, i) => (
+            <li
+              key={tag}
+              draggable={!busy}
+              onDragStart={(e) => {
+                setDragFrom(i);
+                e.dataTransfer.effectAllowed = "move";
+                e.dataTransfer.setData("text/plain", tag);
+              }}
+              onDragEnd={() => {
+                setDragFrom(null);
+                setOver(null);
+              }}
+              onDragOver={(e) => {
+                if (dragFrom === null) return;
+                e.preventDefault();
+                setOver(i);
+              }}
+              onDragLeave={() => setOver((o) => (o === i ? null : o))}
+              onDrop={(e) => {
+                e.preventDefault();
+                const from = dragFrom;
+                setDragFrom(null);
+                setOver(null);
+                if (from !== null) void move(from, i, "up");
+              }}
+              onKeyDown={(e) => {
+                if (!e.altKey) return;
+                // The button that has the focus keeps it on the moved row.
+                const held = (e.target as HTMLElement).dataset.act as LanguageFocus["act"] | undefined;
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  void move(i, i - 1, held ?? "up");
+                } else if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  void move(i, i + 1, held ?? "down");
+                }
+              }}
+              className={`flex min-h-13 items-center gap-2 rounded-lg border bg-background py-1 pl-2 pr-1 ${
+                over === i && dragFrom !== null ? "border-primary ring-1 ring-primary" : "border-border"
+              } ${dragFrom === i ? "opacity-50" : ""}`}
+            >
+              <span aria-hidden className="flex h-11 w-5 shrink-0 cursor-grab items-center justify-center text-muted-foreground">
+                <Icon name="GripVertical" size={16} />
+              </span>
+              <span
+                aria-hidden
+                className={`flex h-6 min-w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold tabular-nums ${
+                  i === 0 ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"
+                }`}
+              >
+                {i + 1}
+              </span>
+              <span className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2">
+                <span className="text-sm font-medium text-foreground">{languageName(tag)}</span>
+                <span className="text-[11px] text-muted-foreground">{tag}</span>
+                {i === 0 ? <span className="text-[11px] font-semibold text-primary">Preferred</span> : null}
+              </span>
+              <LanguageButton
+                act="up"
+                tag={tag}
+                icon="ArrowUp"
+                label={`Move ${languageName(tag)} up`}
+                disabled={busy || i === 0}
+                onClick={() => move(i, i - 1, "up")}
+              />
+              <LanguageButton
+                act="down"
+                tag={tag}
+                icon="ArrowDown"
+                label={`Move ${languageName(tag)} down`}
+                disabled={busy || i === languages.length - 1}
+                onClick={() => move(i, i + 1, "down")}
+              />
+              <LanguageButton
+                act="remove"
+                tag={tag}
+                icon="X"
+                label={`Remove ${languageName(tag)}`}
+                disabled={busy}
+                onClick={() => remove(i)}
+              />
+            </li>
+          ))}
+        </ol>
+      )}
+      <SelectButton
+        label="Add a language"
+        value=""
+        options={menu}
+        prompt={full ? `The list is full (${CAPS.languages} languages)` : "Add a language"}
+        defaultValue=""
+        widthClass="w-full"
+        className="min-h-11 text-sm"
+        disabled={busy || full || choices.length === 0}
+        onChange={(x) => {
+          if (!x) return;
+          refocus.current = [{ tag: x, act: "up" }];
+          void onChange(addLanguage(languages, x)).then((ok) => {
+            if (ok) setSaid(`${languageName(x)} added as number ${languages.length + 1}.`);
+          });
+        }}
+      />
+      <p className="text-xs text-muted-foreground">{LANGUAGES_HELP}</p>
+      <p className="sr-only" role="status" aria-live="polite">
+        {said}
+      </p>
+    </div>
+  );
+}
+
+/** One 44 px icon button of a language row. */
+function LanguageButton({
+  act,
+  tag,
+  icon,
+  label,
+  disabled,
+  onClick,
+}: {
+  act: string;
+  tag: string;
+  icon: string;
+  label: string;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="none"
+      icon={icon}
+      aria-label={label}
+      data-act={act}
+      data-tag={tag}
+      disabled={disabled}
+      onClick={onClick}
+      className="h-11 w-11 shrink-0 justify-center text-muted-foreground hover:text-foreground"
+    />
   );
 }
 

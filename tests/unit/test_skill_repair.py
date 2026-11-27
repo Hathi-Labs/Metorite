@@ -651,7 +651,7 @@ async def test_a_fault_of_the_notes_never_stops_the_apply(monkeypatch) -> None:
 
     found = _pack(actions=[])
 
-    async def _with(turn: Any) -> Any:
+    async def _with(turn: Any, **_k: Any) -> Any:
         facts = ti._SKILL_FACTS.get()
         assert facts is not None, "the apply binds the facts"
         facts[found.slug] = _loaded(found.skill_id)

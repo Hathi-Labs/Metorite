@@ -28,7 +28,7 @@ import Button from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Skeleton";
 
 import { agentMapApi, agentRecentRunsApi, agentsOverviewApi } from "../lib/api";
-import { type AgentMapRead, LIST_LABEL, MAP_LABEL, SWITCH_LABEL } from "../lib/agentMap";
+import { type AgentMapRead, LIST_LABEL, MAP_LABEL, MAP_RESPONSE_MARK, SWITCH_LABEL } from "../lib/agentMap";
 import { AgentMapView } from "./AgentMapView";
 import {
   type AgentAtWork,
@@ -88,11 +88,13 @@ export function useAgentMap(
   showQuiet: boolean,
   projectId?: string,
   retry = 0,
+  /** AMR-4: the lenses read the summary, so a large fleet stays small on the wire. */
+  summary = false,
 ): AgentMapRead {
   // The read carries the project it answers for. A read of another project, or
   // a read while `enabled` is off, counts as loading on the same render. No
   // effect resets it, so a project never shows under the map of the last one.
-  const key = projectId ?? "";
+  const key = `${projectId ?? ""}${summary ? "|summary" : ""}`;
   const [state, setState] = useState<{ key: string; read: AgentMapRead }>({
     key,
     read: { kind: "loading" },
@@ -105,8 +107,13 @@ export function useAgentMap(
   const load = useCallback(
     (alive: () => boolean) => {
       agentMapApi
-        .read({ showQuiet, projectId })
+        .read({ showQuiet, projectId, summary })
         .then((map) => {
+          // The mark of the AMR-4 timing: from the answer to the first drawn overview.
+          if (summary && map) {
+            performance.clearMarks(MAP_RESPONSE_MARK);
+            performance.mark(MAP_RESPONSE_MARK);
+          }
           if (alive()) setState({ key, read: map ? { kind: "ready", map } : { kind: "dark" } });
         })
         .catch(() => {
@@ -118,7 +125,7 @@ export function useAgentMap(
           }
         });
     },
-    [showQuiet, projectId, key],
+    [showQuiet, projectId, summary, key],
   );
   useEffect(() => {
     if (!enabled) return;

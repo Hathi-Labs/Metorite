@@ -65,6 +65,12 @@ export interface QuestionRow {
   task_number: number | null;
   task_title: string;
   agent_name: string | null;
+  /**
+   * Task 4071. The label of the run's session, such as `lane-devx`. Many lanes
+   * on one box share a client, so the label tells them apart. Text that a
+   * client sent: draw it as text. An older gateway sends no key.
+   */
+  agent_label?: string | null;
   client_via: string | null;
   asked_at: string | null;
   run_started_at: string | null;
@@ -156,6 +162,10 @@ export function questionsQuery(opts: {
 
 export const QUESTIONS_COPY = {
   title: "Questions",
+  /** AMR-4: the pager of the phone view of Agents. */
+  pagerWord: "Question",
+  previous: "Previous question",
+  next: "Next question",
   allProjects: "All projects",
   projectFilter: "Project",
   sortOldest: "Oldest first",
@@ -270,9 +280,19 @@ export function durationText(iso: string | null | undefined, now: number): strin
   return `${Math.floor(hours / 24)} d ${hours % 24} h`;
 }
 
-/** "Claude Code asked 3 h ago". */
-export function askedLine(r: Pick<QuestionRow, "agent_name" | "asked_at">, now: number): string {
-  const agent = r.agent_name || "An agent";
+/**
+ * The name of the agent that asked: "<lane> on <client>" when the run has a
+ * label, else the client name. Null when both are absent. Task 4071.
+ */
+export function agentName(r: Pick<QuestionRow, "agent_name" | "agent_label">): string | null {
+  const label = r.agent_label?.trim();
+  if (!label) return r.agent_name || null;
+  return r.agent_name ? `${label} on ${r.agent_name}` : label;
+}
+
+/** "Claude Code asked 3 h ago", or "lane-devx on Box metorite-home asked 3 h ago". */
+export function askedLine(r: Pick<QuestionRow, "agent_name" | "agent_label" | "asked_at">, now: number): string {
+  const agent = agentName(r) || "An agent";
   const age = ageText(r.asked_at, now);
   return age === "just now" ? `${agent} asked just now` : age ? `${agent} asked ${age} ago` : `${agent} asked`;
 }
