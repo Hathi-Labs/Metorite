@@ -1058,6 +1058,105 @@ in this section when its builder starts, and its own spec-auditor run.
 **Out of scope.** Closing a PR (the owner closes, from the close list of task
 4019). A change to `TOOL_PACKS`. Any flag flip by a builder.
 
+### 7b.4 LBB-4: zero orphans at a stop (task 4042)
+
+**Status: built (dark, `STOP_DISPOSITION_PRS` unset = off). Disposition 3 stays off until PR 2898 is on main.** Tier STANDARD (a hook and a box script, no server
+code). It needs no `guard-write` grant: `stop-children.mjs` already calls the
+hook, so `.claude/settings.json` does not change.
+
+**Narrowed scope.** The box wind-down script cannot see which PR belongs to
+which lane: it holds no Metorite credential, and every lane pushes as one
+GitHub user. So the box part changes the message that the script sends, and
+the Stop hook does the check in each session.
+
+**The hook.** `.claude/hooks/stop-disposition.mjs` gains `openPrs(entries)`.
+It reads the same transcript entries as `openClaims`: `tool_use` blocks, and
+the `tool_result` blocks that answer them, with `is_error`. It never reads an
+exit code, and it orders events by the `tool_use` index, as `openClaims` does.
+
+- **A PR of the session** is a number N that one of these gives:
+  - a Bash `tool_use` whose command matches `gh pr create`, with a result that
+    is not an error and holds `github.com/<owner>/<repo>/pull/N`.
+  - an `add_task_reference` `tool_use` whose `url` is a pull request URL with N.
+- **A push to PR N** is a Bash `tool_use` whose command matches `git push`,
+  with a result that is not an error, and that names the head branch of PR N.
+  The hook learns that branch only from the transcript: the `--head` value of
+  `gh pr create`, or the `headRefName` in a result of `gh pr view N`. With
+  neither, a push proves nothing for N.
+- **A disposition of PR N** is one of these, at an index after the last push
+  to N (or after N first appears, with no push):
+  1. A Bash `tool_use` that runs `hand_over.sh N <task> <tier> <note>`, with a
+     result that is not an error and holds the line
+     `handed over: PR N (task ...` that `lane_handover.sh` prints. This means
+     queued with the merge bot, not merged.
+  2. A Bash `tool_use` whose command holds `REQUEUE`, `merge-queue.tsv` and N as
+     a word, with a result that is not an error. The line format is
+     `REQUEUE<TAB>pr<TAB>task<TAB>lane<TAB>note`, as in
+     `printf 'REQUEUE\t%s\t%s\t%s\t%s\n' N T lane 'note' >> ~/lanes/merge-queue.tsv`.
+     The box merger lane reads these lines for a HIGH PR (its lane notes,
+     `~/lanes/lane-merge-*.txt`, 2026-11-26). The merge bot does not read
+     them. `lane-merge.md` (~53) and `lane_handover.sh` (~35) still call this
+     file history. That text is stale, and task 4042 notes it for a fix.
+  3. An `add_task_reference` `tool_use` on the URL of N with `landing` set to
+     `queued`, `parked` or `gone`. This disposition exists only once PR 2898
+     (LBB-2) is on main. Before that, it is not counted.
+  4. A `release_task` `tool_use` whose handoff `next` holds `PR N` and a lane
+     name (`lane-` or `pc-` followed by letters, digits or dashes).
+  5. A result of `gh pr view N` that is not an error and shows the state
+     `MERGED` or `CLOSED`.
+- A bare `release_task` with no lane is not a disposition ("released for
+  other agents").
+- **The switch.** `STOP_DISPOSITION=off` and the background marker
+  (`CLAUDE_JOB_DIR`) apply first, as today. Then `STOP_DISPOSITION_PRS`:
+  `off` or unset (the default) checks nothing. `warn` writes the list to
+  stderr, and the Stop goes on. `block` blocks the Stop once
+  (`stop_hook_active` true passes).
+- **The signature.** `checkDisposition` returns `{ block, warn }`, each a
+  message or null. `main` in `stop-children.mjs` returns code 2 with `block`,
+  and prints `warn` to stderr with code 0. The existing tests change to read
+  `.block`.
+- **The message** names each PR and the two choices (queue it with a live
+  merger, or hand it to a named landing lane). It ends with
+  "To turn this check off: STOP_DISPOSITION_PRS=off".
+- **It fails open.** A transcript that the hook cannot parse gives no PR and
+  no block.
+
+**The wind-down message.** The box script `~/lanes/winddown.sh` is not in the
+repo. The lander puts its text in the task. LBB-4 adds
+`scripts/home_server/lanes/winddown.sh`: the same `wake()` loop, and the lane
+session ids come as arguments, not as fixed lines. Its message drops "queue a
+PR only if it is ready and green". It says: "For each open PR that you
+pushed, queue it with a live merger (hand_over.sh or a REQUEUE line), or hand
+it to a named landing lane in a NOTE and in the release_task handoff." The
+box copy moves to the repo copy by hand (AGENT-SAFE for the lane that owns the
+box script).
+
+**Done when** (each with a test in `.claude/hooks/stop-disposition.test.mjs`,
+or in `tests/unit/test_winddown.py` for item 5):
+1. With `STOP_DISPOSITION_PRS` unset, `checkDisposition` gives `block` null for
+   a transcript with an open PR, and every existing test still passes.
+2. With `block`, a transcript that ran `gh pr create` for PR N and ends with a
+   bare `release_task` gives a `block` message that names PR N.
+3. Each of the five dispositions clears PR N. A `git push` to the head branch
+   of N after the disposition brings N back.
+4. With `warn`, `main` prints the list to stderr and returns code 0.
+5. `scripts/home_server/lanes/winddown.sh` holds the new message, no fixed
+   session id (no match for `[0-9a-f]{8}` as a `wake` argument in the file),
+   and passes `bash -n`.
+
+**Verify with.**
+
+```
+node .claude/hooks/stop-disposition.test.mjs
+node .claude/hooks/stop-children.test.mjs
+PYTEST_ADDOPTS="-o timeout_method=thread" uv run pytest -p no:cacheprovider \
+  tests/unit/test_winddown.py tests/unit/test_task_routine.py
+```
+
+**Gate.** The build is AGENT-SAFE. `warn` and then `block` on the box lanes
+are gate `enforcement-flip` (a dated grant or the owner). `warn` comes first,
+then `block` after one day with no false block.
+
 ### 7b.5 LBB-3: the landing sweeper (task 4043)
 
 **Status: LBB-3a built (dry only).** LBB-3b is not built. The audit of 2026-11-27 found that the sweeper's
@@ -1183,6 +1282,116 @@ uv run ruff check scripts/home_server/landing_sweeper.py tests/unit/test_landing
 **Rollout (not in the build).** Install the units on the box and set
 `LANDING_SWEEPER_MODE=dry`: gate `deploy`. Read one day of
 `~/lanes/landing-sweeper.tsv`, then take the two decisions above for LBB-3b.
+
+### 7b.6 LBB-1: done means live (task 4044)
+
+**Status: LBB-1a built (report only). LBB-1b not built (verified against code 2026-11-27).** Rung 1. The demo:
+the owner reads `~/lanes/live-check.tsv` on the box and sees, for each merge
+of the last three days, whether production runs it. LBB-1 has two parts.
+- **LBB-1a (this build): a report.** After each release slot, a box script
+  lists each recent merge and says whether production runs it. It writes only
+  its own file. Tier STANDARD. The build is AGENT-SAFE.
+- **LBB-1b (later): the board.** The merger lane moves a task to Done only
+  when the report says LIVE, and leaves a "merged, not live" comment before
+  that. This changes step f of `scripts/home_server/lanes/lane-merge.md`.
+  metorite-78 makes that change after one day of the report. A script cannot
+  write the board yet: the box has no Metorite credential (task 1819).
+
+**What runs.** `scripts/home_server/live_check.py` (Python standard library,
+plus `git`). The units `scripts/home_server/metorite-live-check.service` and
+`.timer` run it at 06:00, 14:00 and 22:00 UTC, 30 minutes after each slot, in
+the shape of `metorite-answer-watcher.service`:
+`EnvironmentFile=-%h/.config/metorite/live-check.env`,
+`ExecStart=/usr/bin/python3 %h/.local/lib/metorite/live_check.py`,
+`Type=oneshot`, `TimeoutStartSec=300`. The timer ships disabled, as the
+answer-watcher timer does.
+
+**The env file** (mode 0600, no secret). Its full key set:
+- `LIVE_CHECK_MODE`: a missing file or `off` (the default) exits 0 with no
+  call. `dry` writes the report. Any other value reads as `off` and logs one
+  line to stderr, which journald keeps.
+- `LIVE_CHECK_GATEWAY_URL`: the production gateway, with no default. When it
+  is missing, the run writes one `UNKNOWN` line and exits 0.
+
+**What it reads.**
+- `GET <LIVE_CHECK_GATEWAY_URL>/version`, a read with no credential, as
+  `scripts/ci_deploy_reach.sh` does. The deployed SHA is `applied_sha` only:
+  `sha` names the gateway checkout, and a failed web build could then read
+  LIVE. A null `applied_sha` or a failed call gives one `UNKNOWN` line and
+  exit 0. The value may be short, so the script resolves it with
+  `git rev-parse` in its clone.
+- The merges, from two logs. It ignores every other line type:
+  - `~/lanes/merge-bot.log`: the line `DONE <pr> <sha>`, split on spaces, with
+    the full 40-character merge SHA. Its task is `-`.
+  - `~/lanes/merge-queue.log`: the line `DONE<TAB><pr><TAB><sha><TAB>(...)`,
+    split on tabs. The task comes from the regex `task (\d+)` in the last
+    field, else `-`.
+  - One report line for each (pr, sha) in each run, even when both logs name
+    it.
+- Its clone `~/lanes/live-check-src`. Each run fetches `main` and the
+  deployed SHA. The script makes the clone with `git clone` when it is
+  missing.
+
+**The time of a merge** is the committer date of its SHA in the clone. A
+merge is in the report when that date is within 72 hours of now. A SHA that
+the clone cannot fetch has no date: it gives `UNKNOWN` and is always
+written.
+
+**The states, for each merge.**
+- `LIVE`: `git merge-base --is-ancestor <merge> <deployed>` succeeds.
+- `WAITING`: not live, and fewer than two slot instants lie in the interval
+  (merge time, now].
+- `STUCK`: not live, and two or more slot instants lie in that interval. The
+  slot instants are 05:30, 13:30 and 21:30 UTC each day. The script counts
+  them in epoch UTC seconds, so midnight needs no special case.
+- `UNKNOWN`: the merge SHA or the deployed SHA cannot be fetched or resolved.
+
+A slot ships `green/main` (deploy.yml, CIV-30), not the tip of `main`. So a
+merge that came after `green/main` stays unreleased through a slot. The
+states count the slots that ran, not the slots that could ship this merge. A
+merge after `green/main` can be `STUCK`, and that is correct: it is built
+work that is not live.
+
+**The report.** One line for each merge in each run, appended to
+`~/lanes/live-check.tsv`:
+`<UTC time><TAB><pr><TAB><merge sha><TAB><task or -><TAB><state><TAB><deployed sha or ->`.
+A run-level `UNKNOWN` line (a null `applied_sha`, a failed read or a missing
+URL) holds `-` in the pr, merge SHA and task columns. Its time is now, in UTC.
+
+**Test seams** (read from the environment; the env file sets only the two keys
+above). `LIVE_CHECK_VERSION_CMD` (the `/version` read),
+`LIVE_CHECK_LANES` (the folder of the logs and the report),
+`LIVE_CHECK_SRC` (the clone), `LIVE_CHECK_NOW` (now, epoch seconds).
+
+**Fence (R7).** `tests/unit/test_live_check.py` holds the rules of this
+section. No rule here is advisory.
+
+**Done when** (each with a test in `tests/unit/test_live_check.py`, with a
+temp git repo and temp log files):
+1. `off`, a missing env file, or another value: no read and no write.
+2. `dry`: one report line for each (pr, sha) of both log shapes, with the
+   task read from the queue shape, and none for a merge older than 72 hours.
+3. Each state. An ancestor is `LIVE`. A merge after the deployed SHA is
+   `WAITING` with one slot instant in its interval, and `STUCK` with two (one
+   test crosses 21:30 and then 05:30). A SHA that cannot be fetched is
+   `UNKNOWN`.
+4. A `/version` with a null `applied_sha`, a failed read, or a missing URL
+   gives one `UNKNOWN` line and exit 0.
+5. The unit text: the timer's `OnCalendar` lines are 06:00, 14:00 and 22:00
+   UTC. The service has `EnvironmentFile=-` and holds no secret. The test
+   parses the files, because no systemd runs in a unit test.
+
+**Verify with.**
+
+```
+PYTEST_ADDOPTS="-o timeout_method=thread" uv run pytest -p no:cacheprovider \
+  tests/unit/test_live_check.py
+uv run ruff check scripts/home_server/live_check.py tests/unit/test_live_check.py
+```
+
+**Rollout (not in the build).** Install and enable the units, and set
+`LIVE_CHECK_MODE=dry` with the production gateway URL: gate `deploy`. After
+one day, metorite-78 changes lane-merge.md step f (LBB-1b).
 
 ## 8. What to fix before customer #1 — in order
 
