@@ -1505,8 +1505,9 @@ PEOPLE_READS = ("people_directory", "people_me", "people_work", "reach_preview")
 #: The five self writes of P-5b-2 (task 3943), in the order of the family.
 PEOPLE_WRITES = ("update_my_profile", "set_my_skills", "set_my_credentials",
                  "add_my_absence", "remove_my_absence")
-#: Each tool of the people pack, in the order of the family.
-PEOPLE_TOOLS = PEOPLE_READS + PEOPLE_WRITES
+#: Each tool of the people pack, in the order of the family. The last one is the
+#: work schedule of the company (P-5b-4, task 3945), a write of no person.
+PEOPLE_TOOLS = PEOPLE_READS + PEOPLE_WRITES + ("set_work_schedule",)
 
 #: The six reads of the notes pack (task 3963), in the order of the family.
 NOTES_TOOLS = (
@@ -1541,7 +1542,7 @@ def test_the_pack_loader_builds_the_people_tools_as_coroutines() -> None:
     for name in PEOPLE_READS:
         hints = get_annotations(name)
         assert hints and hints["read_only"] is True and hints["open_world"] is False, name
-    for name in PEOPLE_WRITES:
+    for name in (*PEOPLE_WRITES, "set_work_schedule"):
         hints = get_annotations(name)
         assert hints and hints["read_only"] is False and hints["open_world"] is False, name
 
@@ -1568,7 +1569,7 @@ def test_no_people_tool_takes_an_organization_a_caller_or_an_address() -> None:
                 "member", "member_email", "user", "user_email", "acting_user", "actor",
                 "email", "email_address", "owner_email", "as_user", "impersonate", "admin"}
     tools = tp.owner_tools("people", load_agent_module(ORG_ADMIN_DIR))
-    assert len(tools) == len(PEOPLE_TOOLS) == 9
+    assert len(tools) == len(PEOPLE_TOOLS) == 10
     for fn in tools:
         params = set(inspect.signature(inspect.unwrap(fn)).parameters)
         assert not params & identity, (fn.__name__, sorted(params & identity))

@@ -68,6 +68,7 @@
     "set_my_credentials",
     "set_my_skills",
     "set_seat",
+    "set_work_schedule",
     "update_my_profile"
   ]
 }

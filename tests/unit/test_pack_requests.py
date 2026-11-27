@@ -386,6 +386,8 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "add_my_absence": ("record my holiday from 24 to 31 December",
                        "add my absence for next Friday"),
     "remove_my_absence": ("remove my absence on Friday", "delete one of my absences"),
+    "set_work_schedule": ("change the company work schedule to four days",
+                          "set the working week of the company"),
     # -- calendar-connections: Sync now and the task switch (P-1c, task 3923) --
     # The pack is dark, and EVERY names each pack, so this table reads the pack
     # set of a box whose TOOL_PACKS line names it.
