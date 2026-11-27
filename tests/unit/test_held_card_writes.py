@@ -96,8 +96,13 @@ KEPT_CRM = frozenset({
     "crm_edit_field_rule", "crm_draft_mapping_plan", "crm_restore_mapping_plan",
 })
 #: The CRM writes that a held chat drops. The approve of a plan is class C and
-#: approves the field map of the whole org. No owner decision keeps it (task 3953).
-OFF_CRM = frozenset({"crm_approve_mapping_plan"})
+#: approves the field map of the whole org (task 3953). Task 3994: a delete of
+#: a stage or a lost reason is class C (D169), and the order acts on every row
+#: of a kind. No owner decision keeps them, so none is on ``HELD_CARD_WRITE_TOOLS``.
+OFF_CRM = frozenset({
+    "crm_approve_mapping_plan",
+    "crm_delete_status", "crm_delete_lost_reason", "crm_order_statuses",
+})
 
 #: The Projects writes that a held chat does not hold: every class C tool but
 #: ``promote_reminder``. A covered run still holds them. ``answer_decision``
@@ -810,14 +815,16 @@ def test_each_write_of_the_crm_agent_is_in_the_table() -> None:
 
 @pytest.mark.parametrize("name", sorted(OFF_CRM))
 def test_a_class_c_crm_write_stays_off_in_a_held_chat(name: str, crm_tools) -> None:
-    """Task 3953: the approve of a plan is on no list, so a held chat drops it,
-    and the three other Field map writes stay. Mutation: put the approve on
+    """Tasks 3953 and 3994: the approve of a plan, the two deletes and the
+    order are on no list, so a held chat drops them, and the other CRM set-up
+    writes stay. Mutation: put one of them on
     ``HELD_CARD_WRITE_TOOLS`` -> red."""
     tool = crm_tools[name]
     assert name not in eg.HELD_CARD_WRITE_TOOLS and name not in eg.HELD_CLASS_C_TOOLS
     assert eg.is_held_card_write(tool) is False
     assert eg.is_held_chat_off(tool, owner=CRM) is True
-    for kept in ("crm_edit_field_rule", "crm_draft_mapping_plan", "crm_restore_mapping_plan"):
+    for kept in ("crm_edit_status", "crm_edit_lost_reason", "crm_edit_field_rule",
+                 "crm_draft_mapping_plan", "crm_restore_mapping_plan"):
         assert eg.is_held_chat_off(crm_tools[kept], owner=CRM) is False, kept
 
 
@@ -840,11 +847,9 @@ def test_a_held_delegated_run_of_the_owner_drops_it(monkeypatch) -> None:
     assert agents[0].default_options["tools"] == []
 
 
-def test_the_owner_rule_drops_only_the_plan_approve_of_the_crm_agent(
-    crm_tools, monkeypatch,
-) -> None:
+def test_the_owner_rule_drops_only_off_crm_from_the_crm_agent(crm_tools, monkeypatch) -> None:
     """Each other tool of the agent is a read or a listed write, so a held
-    delegated run keeps it. The class C approve of a plan leaves (task 3953).
+    delegated run keeps it. The tools of ``OFF_CRM`` leave (tasks 3953 and 3994).
     Mutation: drop the read test -> the reads leave -> red."""
     monkeypatch.setattr(ti, "_run_covered", lambda *_a, **_k: False)
     agents = [_agent_with(list(crm_tools.values()))]

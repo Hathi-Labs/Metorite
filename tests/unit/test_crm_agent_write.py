@@ -167,6 +167,29 @@ def _mapping(call: dict) -> Any:
     raise AssertionError(f"a tool reached an unexpected route: {method} {path}")
 
 
+#: What :func:`_setup` gives for a call that is not a set-up call.
+_NOT_SETUP = object()
+
+
+def _setup(call: dict) -> Any:
+    """The set-up routes of CRM-M2e: the writes of task 3951, and the mode,
+    the count of a stage, the deletes and the order of task 3994."""
+    path, method, body = call["path"], call["method"], call["json"] or {}
+    if path.startswith(("/crm/statuses/", "/crm/lost-reasons")) and method in ("POST", "PATCH"):
+        # CRM-M2e (task 3951): the set-up writes answer the row they wrote.
+        made = path.rsplit("/", 1)[-1] if method == "PATCH" else str(uuid4())
+        return {"id": made, **body}
+    if path == "/crm/mode" and method == "GET":
+        return {"mode": "native"}
+    if path in ("/crm/deals", "/crm/leads") and method == "GET":
+        return {"rows": [], "total": 0}
+    if method == "DELETE" and path.startswith(("/crm/statuses/", "/crm/lost-reasons/")):
+        return {"deleted": path.rsplit("/", 1)[-1]}
+    if method == "PUT" and path.endswith("/order"):
+        return list(_STATUSES)
+    return _NOT_SETUP
+
+
 #: CRM-M2f and CRM-M2i (task 3953): one field that goes to custom, and the
 #: plan: version 1 superseded, 2 approved, 3 a draft on 2.
 _FIELD_KEY = "Industry_Code"
@@ -254,10 +277,9 @@ def _responder(call: dict) -> Any:
         return {"id": str(uuid4()), **body}
     if path == "/crm/leads" and method == "POST":
         return {**body, "id": _NEW_LEAD_ID, "owner_email": _USER}
-    if path.startswith(("/crm/statuses/", "/crm/lost-reasons")) and method in ("POST", "PATCH"):
-        # CRM-M2e (task 3951): the set-up writes answer the row they wrote.
-        made = path.rsplit("/", 1)[-1] if method == "PATCH" else str(uuid4())
-        return {"id": made, **body}
+    setup = _setup(call)
+    if setup is not _NOT_SETUP:
+        return setup
     if method == "PATCH" and path.count("/") == 3:
         return {"id": path.rsplit("/", 1)[-1], "name": "Acme AMC",
                 "first_name": "Ravi", **body}
@@ -356,6 +378,16 @@ _CALLS["crm_decide_suggestion"] = lambda: _M.crm_decide_suggestion("approve", "d
 _CALLS["crm_rerun_analysis"] = lambda: _M.crm_rerun_analysis()
 _CARD_MUST_NAME["crm_decide_suggestion"] = "Commercials"  # the module being used
 _CARD_MUST_NAME["crm_rerun_analysis"] = "AI analysis"     # the act itself
+
+# Task 3994: the two deletes and the order of the set-up. Each reads first.
+_WRITE_TOOLS += ["crm_delete_status", "crm_delete_lost_reason", "crm_order_statuses"]
+_CALLS["crm_delete_status"] = lambda: _M.crm_delete_status("deal", "Negotiation")
+_CALLS["crm_delete_lost_reason"] = lambda: _M.crm_delete_lost_reason("Price")
+_CALLS["crm_order_statuses"] = lambda: _M.crm_order_statuses(
+    "deal", ["Negotiation", "Qualification", "Closed Lost"])
+_CARD_MUST_NAME["crm_delete_status"] = "Negotiation"   # the stage being deleted
+_CARD_MUST_NAME["crm_delete_lost_reason"] = "Price"    # the reason being deleted
+_CARD_MUST_NAME["crm_order_statuses"] = "Negotiation → Qualification → Closed Lost"
 
 
 def test_the_call_table_covers_every_write_tool() -> None:
@@ -498,7 +530,7 @@ def test_the_confirmation_is_asked_for_before_the_write_is_issued(tool: str) -> 
     """
     fn = _tool_def(tool)
     confirmations = _call_lines(fn, {"request_confirmation"})
-    mutations = _call_lines(fn, {"_post", "_patch"})
+    mutations = _call_lines(fn, {"_post", "_patch", "_delete", "_put"})
     assert confirmations, f"{tool} never asks for confirmation"
     assert mutations, f"{tool} issues no write at all — is it still a write tool?"
     assert min(confirmations) < min(mutations), (

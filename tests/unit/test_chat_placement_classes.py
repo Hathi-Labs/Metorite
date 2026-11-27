@@ -127,8 +127,9 @@ def test_a_crm_read_is_evidence_and_a_crm_write_is_a_write() -> None:
     # crm_update_task of CRM-M2b, and the two writes of CRM-M2e (task 3951).
     # P-3 (task 3954) added three reads and two writes of the suggestions and
     # the AI analysis. Task 3953 added the two reads and four writes of the
-    # Field map and its plan (CRM-M2f, CRM-M2i). 8 + 1 + 2 + 2 + 5 + 6 = 24.
-    assert len(hints) == 24
+    # Field map and its plan (CRM-M2f, CRM-M2i). Task 3994 added three writes:
+    # the two deletes and the order of the set-up. 8 + 1 + 2 + 2 + 5 + 6 + 3 = 27.
+    assert len(hints) == 27
     wrong = []
     for name, hint in sorted(hints.items()):
         want = "evidence" if "read_only=True" in hint else "write"

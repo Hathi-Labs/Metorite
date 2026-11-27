@@ -395,6 +395,10 @@ const WRITE: readonly string[] = [
   // WS-CRM CRM-M2e (task 3951): a stage, a lead status or a lost reason.
   "crm_edit_status",
   "crm_edit_lost_reason",
+  // Task 3994: delete a stage or a lost reason, and set the stage order.
+  "crm_delete_status",
+  "crm_delete_lost_reason",
+  "crm_order_statuses",
   // WS-CRM CRM-M2f and CRM-M2i (task 3953): a field rule and the plan.
   "crm_edit_field_rule",
   "crm_draft_mapping_plan",

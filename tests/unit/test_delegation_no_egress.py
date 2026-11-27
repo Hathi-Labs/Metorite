@@ -126,6 +126,9 @@ EXPECTED_OPEN_WORLD = frozenset({
     # write does.
     "crm_edit_field_rule", "crm_draft_mapping_plan", "crm_approve_mapping_plan",
     "crm_restore_mapping_plan",
+    # crm-assistant, task 3994: the two deletes and the order of the set-up.
+    # They never queue for Zoho, and say open_world as each CRM write does.
+    "crm_delete_status", "crm_delete_lost_reason", "crm_order_statuses",
     # task-manager (skill_my_tasks)
     "my_tasks_delegate",
 })

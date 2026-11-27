@@ -88,6 +88,9 @@ EXPECTED_WITHHELD: dict[str, frozenset[str]] = {
         # Task 3953: the approve of a mapping plan is class C and approves the
         # field map of the whole org. No owner decision keeps it in a held run.
         "crm_approve_mapping_plan",
+        # Task 3994: a delete of a stage or a lost reason is class C, and the
+        # order acts on every row of a kind. No owner decision keeps them.
+        "crm_delete_status", "crm_delete_lost_reason", "crm_order_statuses",
     }),
     "projects-assistant": frozenset({
         "web_search", "fetch_page", "save_memory", "save_note",

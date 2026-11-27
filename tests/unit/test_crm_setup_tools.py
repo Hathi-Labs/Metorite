@@ -17,7 +17,7 @@ Mutations this file catches (R7):
 * a won stage with no win chance -> ``test_a_won_stage_sends_the_pinned_chance``;
 * an add of a case variant -> ``test_an_add_refuses_a_name_the_crm_has``;
 * a rename onto another row -> ``test_a_rename_onto_another_row_is_refused``;
-* a delete that reaches the wire -> ``test_a_delete_sends_no_request``;
+* a delete through an edit tool -> ``test_a_delete_sends_no_request``;
 * a kind from the caller's text in the path -> ``test_an_unknown_kind_sends_no_request``.
 
 Hermetic: no gateway, no database, no network.
@@ -312,12 +312,14 @@ async def test_inner_spaces_do_not_hide_a_name(monkeypatch) -> None:
     lambda: _M.crm_edit_lost_reason("remove", "Price"),
 ])
 async def test_a_delete_sends_no_request(call: Any, monkeypatch) -> None:
-    """The agent sends no DELETE (apps/AGENTS.md). Mutation: route a delete -> red."""
+    """The edit tools do not delete. Task 3994 gives the delete its own tool,
+    and the words name it. Mutation: route a delete through an edit tool -> red."""
     cards = approve(monkeypatch)
     calls = _gateway(monkeypatch)
     out = await call()
     assert calls == [] and cards == []
-    assert "cannot delete" in out and "CRM settings" in out
+    assert "does not delete" in out and ("crm_delete_status" in out
+                                         or "crm_delete_lost_reason" in out)
 
 
 async def test_an_unknown_kind_sends_no_request(monkeypatch) -> None:

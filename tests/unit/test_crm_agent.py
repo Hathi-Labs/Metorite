@@ -25,11 +25,13 @@ Three properties carry this slice, and each has failed in this repo before:
 3. **The verb allowlist is a property of the transport, not a promise in a
    docstring.** WS-26d-write widened it from ``{"GET"}`` to
    ``{"GET", "POST", "PATCH"}`` — and the check survived the widening, which is
-   the part worth testing: ``DELETE`` and ``PUT`` still raise inside the one
-   round-trip helper every tool goes through, so a tool added later cannot
-   remove or replace a record. Asserted behaviourally (a DELETE raises),
-   structurally (no ``_delete``/``_put`` helper exists for one to reach for),
-   and by observation (every call the eight tools actually make is in the set).
+   the part worth testing. Task 3994 (owner answer 47891971, "Allow DELETE and
+   PUT on listed paths only") lets a ``DELETE`` or a ``PUT`` through on the
+   three pairs of ``_LISTED_WRITES`` only. Every other ``DELETE`` or ``PUT``
+   still raises inside the one round-trip helper, before any network call.
+   Asserted behaviourally (each mutated path raises), structurally (each write
+   helper has a tool that calls it), and by observation (every call that the
+   tools make is in the set, or on the list).
 
 Plus the WhatsApp half of the ticket: ``"crm"`` is a KNOWN entity-ref system so
 a hand-set ref parses — and **nothing more**. The ``crm`` context block stays
@@ -178,11 +180,11 @@ def test_build_agents_constructs_one_native_maf_agent() -> None:
     assert getattr(agent, "_permission_handler", None) is None
     tools = (agent.default_options or {}).get("tools")
     assert tools, "built with no tools"
-    # 24 own tools: 11 before, the two set-up writes of CRM-M2e (task 3951),
-    # the five of the suggestions and the AI analysis (P-3, task 3954), and the
-    # six of the Field map and its plan (CRM-M2f, CRM-M2i, task 3953).
-    # 11 + 2 + 5 + 6 = 24.
-    assert len(tools) == len(_M._TOOLS) == 24 + len(_T.CRM_TOOLS)
+    # 27 own tools: 11 before, the two set-up writes of CRM-M2e (task 3951),
+    # the five of the suggestions and the AI analysis (P-3, task 3954), the
+    # six of the Field map and its plan (CRM-M2f, CRM-M2i, task 3953), and the
+    # two deletes and the order of the set-up (task 3994). 11 + 2 + 5 + 6 + 3 = 27.
+    assert len(tools) == len(_M._TOOLS) == 27 + len(_T.CRM_TOOLS)
 
 
 def test_the_advertised_description_does_not_still_say_read_only() -> None:
@@ -217,6 +219,8 @@ def test_register_agent_tools_maps_names() -> None:
         "crm_edit_status", "crm_edit_lost_reason",
         "crm_field_map", "crm_edit_field_rule", "crm_list_mapping_plans",
         "crm_draft_mapping_plan", "crm_approve_mapping_plan", "crm_restore_mapping_plan",
+        # Task 3994: the two deletes and the order of the set-up.
+        "crm_delete_status", "crm_delete_lost_reason", "crm_order_statuses",
     } | set(_T.CRM_TOOL_NAMES)
     assert all(reg[n] is getattr(_T, n) for n in _T.CRM_TOOL_NAMES)
     assert reg["search_crm"] is _M.search_crm
@@ -244,6 +248,8 @@ _MAPPING_ANSWERS: dict[str, Any] = {
 #: The deal stage vocabulary ``update_deal_status`` resolves a NAME against.
 _STATUSES = [
     {"id": _STATUS_ID, "name": "Negotiation", "type": "open", "probability": 60},
+    # Task 3994: a second stage, so that a new order differs from the old one.
+    {"id": str(uuid4()), "name": "Proposal", "type": "open", "probability": 40},
 ]
 
 
@@ -292,7 +298,8 @@ def _responder(call: dict) -> Any:
     if path == "/crm/statuses/deal":
         return _STATUSES
     if path == "/crm/lost-reasons":
-        return []
+        # Task 3994: the delete of a lost reason names this row.
+        return [{"id": _ID, "label": "Price", "position": 10, "hidden": False}]
     if path.startswith(("/crm/mapping/", "/crm/analysis/")):
         # P-3 (task 3954): one suggestion for Deals, its preview, and a run.
         return _MAPPING_ANSWERS.get(path, {"slot": "deal", "module": "Deals_X",
@@ -347,6 +354,10 @@ _INVOCATIONS: dict[str, Any] = {
          "target_column": "next_step"}]),
     "crm_approve_mapping_plan": lambda: _M.crm_approve_mapping_plan(3),
     "crm_restore_mapping_plan": lambda: _M.crm_restore_mapping_plan(1),
+    # Task 3994: the two deletes and the order of the set-up.
+    "crm_delete_status": lambda: _M.crm_delete_status("deal", "Negotiation"),
+    "crm_delete_lost_reason": lambda: _M.crm_delete_lost_reason("Price"),
+    "crm_order_statuses": lambda: _M.crm_order_statuses("deal", ["Proposal", "Negotiation"]),
     # CRM-C7: the shared read tools, one call each.
     "crm_list_records": lambda: _T.crm_list_records("deals", q="acme"),
     "crm_get_record": lambda: _T.crm_get_record("deals", _ID),
@@ -427,12 +438,51 @@ async def test_a_run_with_nobody_to_act_as_refuses_rather_than_calling(
 def test_the_method_allowlist_is_the_three_verbs_the_tools_use() -> None:
     """WS-26d-write widened this by exactly two entries.
 
-    ``DELETE``/``PUT`` are absent on purpose: no tool here removes or replaces
-    a record, so the check that used to enforce "read-only" now enforces "never
-    destroys", and deleting it along with the read-only doctrine would have
-    thrown that away.
+    ``DELETE``/``PUT`` are absent on purpose: a tool removes or replaces a row
+    only on a path of ``_LISTED_WRITES`` (task 3994), so the check that used to
+    enforce "read-only" now enforces "never destroys off the list".
     """
     assert set(_M._ALLOWED_METHODS) == {"GET", "POST", "PATCH"}
+    assert frozenset({"DELETE", "PUT"}) == _M._LISTED_METHODS
+
+
+#: Task 3994: the three pairs that the owner answer opened, and no other.
+_LISTED_PAIRS = (
+    ("DELETE", "/crm/statuses/{kind}/{status_id}"),
+    ("DELETE", "/crm/lost-reasons/{reason_id}"),
+    ("PUT", "/crm/statuses/{kind}/order"),
+)
+
+
+def test_the_listed_writes_are_exactly_the_three_pairs() -> None:
+    """(a) The list holds three entries, each anchored. Mutation: add a fourth
+    entry, or drop the UUID shape from one -> red."""
+    listed = _M._LISTED_WRITES
+    assert len(listed) == 3
+    assert [verb for verb, _ in listed] == ["DELETE", "DELETE", "PUT"]
+    uuid = _M._UUID_SEGMENT
+    assert [p.pattern for _, p in listed] == [
+        rf"/crm/statuses/(?:deal|lead)/{uuid}",
+        rf"/crm/lost-reasons/{uuid}",
+        r"/crm/statuses/(?:deal|lead)/order",
+    ]
+    for kind in ("deal", "lead"):
+        assert _M._is_listed_write("DELETE", f"/crm/statuses/{kind}/{_ID}", {})
+        assert _M._is_listed_write("PUT", f"/crm/statuses/{kind}/order", {"json": {}})
+    assert _M._is_listed_write("DELETE", f"/crm/lost-reasons/{_ID}", {})
+
+
+def test_each_listed_pair_is_a_row_that_its_tool_pays() -> None:
+    """The three pairs are the three rows of the manifest that the new tools
+    name. Mutation: list a pair with no row -> red."""
+    from acb_common.app_manifests.crm import CRM
+
+    rows = {(row.method, row.path): row.tool for row in CRM.routes}
+    assert {pair: rows.get(pair) for pair in _LISTED_PAIRS} == {
+        _LISTED_PAIRS[0]: "crm_delete_status",
+        _LISTED_PAIRS[1]: "crm_delete_lost_reason",
+        _LISTED_PAIRS[2]: "crm_order_statuses",
+    }
 
 
 @pytest.mark.parametrize("verb", ["PUT", "DELETE", "HEAD", "OPTIONS"])
@@ -445,18 +495,113 @@ async def test_a_destroying_verb_is_refused_before_the_request_is_built(
     assert calls == [], f"{verb} reached the gateway"
 
 
+#: (b) Each DELETE or PUT that the list must refuse: another route, a non-UUID
+#: id, a non-canonical UUID, extra segments, a dot segment, a query, a
+#: fragment, an encoded slash, another kind, a verb on the path of the other.
+_REFUSED_PAIRS: list[tuple[str, str]] = [
+    ("DELETE", f"/crm/deals/{_ID}"),
+    ("DELETE", f"/crm/leads/{_ID}"),
+    ("DELETE", f"/crm/activities/{_ID}"),
+    ("DELETE", f"/crm/pipelines/{_ID}"),
+    ("PUT", "/crm/field-layout/deals"),
+    ("PUT", "/crm/catalogue/Deals"),
+    ("DELETE", "/crm/statuses/deal/Negotiation"),
+    ("DELETE", "/crm/statuses/deal/ACME-123"),
+    ("DELETE", "/crm/statuses/deal/"),
+    ("DELETE", "/crm/statuses/deal"),
+    ("DELETE", f"/crm/statuses/deal/{_ID.upper()}"),
+    ("DELETE", f"/crm/statuses/deal/{_ID.replace('-', '')}"),
+    ("DELETE", f"/crm/statuses/deal/{{{_ID}}}"),
+    ("DELETE", f"/crm/statuses/deal/{_ID}/x"),
+    ("DELETE", f"/crm/statuses/deal/{_ID}/"),
+    ("DELETE", f"/crm/lost-reasons/{_ID}/../../admin/members"),
+    ("DELETE", f"/crm/statuses/deal/../../admin/{_ID}"),
+    ("DELETE", f"/crm/../crm/lost-reasons/{_ID}"),
+    ("DELETE", f"/crm/lost-reasons/{_ID}?x=1"),
+    ("DELETE", f"/crm/lost-reasons/{_ID}#x"),
+    ("DELETE", f"/crm/lost-reasons/{_ID}\n"),
+    ("DELETE", f"/crm/lost-reasons%2F{_ID}"),
+    ("DELETE", f"/crm/statuses/deal%2F{_ID}"),
+    ("DELETE", f"/crm/statuses/contact/{_ID}"),
+    ("DELETE", f"/crm/statuses/Deal/{_ID}"),
+    ("DELETE", f"/crm/statuses/deals/{_ID}"),
+    ("DELETE", f"//crm/lost-reasons/{_ID}"),
+    ("DELETE", f"/api/crm/lost-reasons/{_ID}"),
+    ("DELETE", f" /crm/lost-reasons/{_ID}"),
+    ("PUT", "/crm/statuses/contact/order"),
+    ("PUT", "/crm/statuses/deal/order/"),
+    ("PUT", "/crm/statuses/deal/order?x=1"),
+    ("PUT", "/crm/statuses/deal/order/reset"),
+    ("PUT", "/crm/statuses/deal/../lead/order"),
+    ("PUT", f"/crm/statuses/deal/{_ID}"),
+    ("PUT", f"/crm/lost-reasons/{_ID}"),
+    ("DELETE", "/crm/statuses/deal/order"),
+    ("PUT", "/crm/lost-reasons/order"),
+]
+
+
+@pytest.mark.parametrize(("verb", "path"), _REFUSED_PAIRS, ids=[f"{v} {p}" for v, p in _REFUSED_PAIRS])
+async def test_every_other_delete_or_put_is_refused_before_any_call(
+    verb: str, path: str, monkeypatch,
+) -> None:
+    """(b) Mutation: drop ``fullmatch`` for ``match`` or ``search``, or widen a
+    pattern -> red. No header and no client exist before the refusal."""
+    calls = _fake_gateway(monkeypatch, _responder)
+    with pytest.raises(RuntimeError, match="does not issue"):
+        await _M._request(verb, path)
+    assert calls == [], f"{verb} {path} reached the gateway"
+
+
+async def test_a_listed_path_with_a_query_is_refused(monkeypatch) -> None:
+    """(b) ``params`` would add a query to a listed path. Mutation: drop the
+    ``params`` test of ``_is_listed_write`` -> red."""
+    calls = _fake_gateway(monkeypatch, _responder)
+    with pytest.raises(RuntimeError, match="does not issue"):
+        await _M._request("DELETE", f"/crm/lost-reasons/{_ID}", params={"cascade": "1"})
+    with pytest.raises(RuntimeError, match="does not issue"):
+        await _M._request("PUT", "/crm/statuses/deal/order", params={"x": "1"}, json={})
+    assert calls == []
+
+
+@pytest.mark.parametrize("path", [None, 7, b"/crm/statuses/deal/order", ["/crm"]])
+async def test_a_path_that_is_no_string_is_refused(path: Any, monkeypatch) -> None:
+    """The guard fails closed on a value that is no ``str``."""
+    calls = _fake_gateway(monkeypatch, _responder)
+    with pytest.raises(RuntimeError, match="does not issue"):
+        await _M._request("PUT", path, json={})
+    assert calls == []
+
+
+async def test_a_listed_pair_reaches_the_gateway_once(monkeypatch) -> None:
+    """Non-vacuity: the guard does not refuse the three pairs it opens."""
+    calls = _fake_gateway(monkeypatch, _responder)
+    await _M._request("DELETE", f"/crm/statuses/lead/{_ID}")
+    await _M._request("delete", f"/crm/lost-reasons/{_ID}")
+    await _M._request("PUT", "/crm/statuses/deal/order", json={"ids": [_ID]})
+    assert [(c["method"], c["path"]) for c in calls] == [
+        ("DELETE", f"/crm/statuses/lead/{_ID}"),
+        ("DELETE", f"/crm/lost-reasons/{_ID}"),
+        ("PUT", "/crm/statuses/deal/order"),
+    ]
+
+
 async def test_no_tool_issues_a_verb_outside_the_allowlist(monkeypatch) -> None:
     """Observation, not assertion-by-inspection: run every tool, watch the wire.
 
     Both halves of the claim: nothing outside the allowlist is ever spoken, and
     the four READ tools still speak nothing but GET — the widening must not
-    have quietly let a read tool start writing.
+    have quietly let a read tool start writing. Each DELETE and PUT on the
+    wire is a pair of ``_LISTED_WRITES`` (task 3994).
     """
     approve(monkeypatch)
     calls = _fake_gateway(monkeypatch, _responder)
     await _call_every_tool()
-    assert {c["method"] for c in calls} <= set(_M._ALLOWED_METHODS)
-    assert {c["method"] for c in calls} == {"GET", "POST", "PATCH"}
+    allowed = set(_M._ALLOWED_METHODS) | set(_M._LISTED_METHODS)
+    assert {c["method"] for c in calls} <= allowed
+    assert {c["method"] for c in calls} == {"GET", "POST", "PATCH", "DELETE", "PUT"}
+    for call in calls:
+        if call["method"] in _M._LISTED_METHODS:
+            assert _M._is_listed_write(call["method"], call["path"], {}), call["path"]
 
     reads = _fake_gateway(monkeypatch, _responder)
     for name in ("search_crm", "get_pipeline", "get_record", "get_timeline"):
@@ -464,21 +609,43 @@ async def test_no_tool_issues_a_verb_outside_the_allowlist(monkeypatch) -> None:
     assert {c["method"] for c in reads} == {"GET"}
 
 
+#: The write helpers and the tools that call each one (task 3994 added the
+#: last two).
+_WRITE_HELPERS = ("_post", "_patch", "_delete", "_put")
+
+
 def test_the_module_defines_only_the_write_helpers_its_tools_use() -> None:
-    """Structural: ``_post`` and ``_patch`` now exist, and ``_delete``/``_put``
-    still do not. A helper nobody needs is a helper somebody finds — and the
-    absence is what makes "this agent cannot destroy a CRM record" a property
-    of the module rather than a claim about its current tool list."""
-    for helper in ("_post", "_patch"):
-        assert hasattr(_M, helper), f"{helper} is missing — the write half needs it"
-    for helper in ("_delete", "_put"):
-        assert not hasattr(_M, helper), (
-            f"{helper} exists — no tool here removes or replaces a record, and "
-            "a helper for it is how the first one gets written"
-        )
+    """(c) Structural: each write helper exists, and a tool of ``_TOOLS``
+    calls it. No helper is unused, and no other function sends ``DELETE`` or
+    ``PUT`` itself. A helper nobody needs is a helper somebody finds.
+    Mutation: add an unused ``_head`` or a ``_request("DELETE", ...)`` in a
+    tool -> red."""
+    tree = ast.parse(agent_source())
+    defined = {n.name for n in tree.body
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    tools = {fn.__name__ for fn in _M._TOOLS}
+    calls: dict[str, set[str]] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            calls[node.name] = {
+                c.func.id for c in ast.walk(node)
+                if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+            }
+    helpers = {name for name in defined
+               if re.fullmatch(r"_(get|post|patch|put|delete|head|options)", name)}
+    assert helpers == {"_get", *_WRITE_HELPERS}, helpers
+    for helper in _WRITE_HELPERS:
+        users = {name for name, called in calls.items() if helper in called and name in tools}
+        assert users, f"{helper} exists, and no tool calls it"
+    assert {name for name, called in calls.items() if "_delete" in called} <= tools
+    assert {name for name, called in calls.items() if "_put" in called} <= tools
     source = agent_source()
     for verb in ('"DELETE"', '"PUT"'):
-        assert f"_request({verb}" not in source
+        sites = [name for name, node in ((n.name, n) for n in tree.body
+                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)))
+                 if f"_request({verb}" in ast.unparse(node).replace("'", '"')]
+        assert sites == [{'"DELETE"': "_delete", '"PUT"': "_put"}[verb]], sites
+    assert "client.request(" in source and source.count("httpx.AsyncClient(") == 1
 
 
 def test_every_tool_declares_its_risk_and_the_write_half_declares_it_destructive(
@@ -504,6 +671,8 @@ def test_every_tool_declares_its_risk_and_the_write_half_declares_it_destructive
                "crm_approve_mapping_plan", "crm_restore_mapping_plan"}
     # P-3 (task 3954): the two card writes of the suggestions and the analysis.
     writers |= {"crm_decide_suggestion", "crm_rerun_analysis"}
+    # Task 3994: the two deletes and the order of the set-up.
+    writers |= {"crm_delete_status", "crm_delete_lost_reason", "crm_order_statuses"}
     seen: set[str] = set()
     for fn in _M._TOOLS:
         hints = annotations.TOOL_ANNOTATIONS.get(fn.__name__)
