@@ -515,43 +515,107 @@ async def test_the_list_shows_no_path_no_repo_url_and_no_install_text(gw: Gatewa
     assert PLANTED not in _outside(out, "agents")
 
 
-async def test_the_config_leaves_out_each_secret(gw: Gateway, marks: list[int]) -> None:
-    """A secret key goes, and a key in a text goes. Mutation: keep ``api_key``,
-    or scrub no value -> red."""
+async def test_the_config_shows_only_the_fields_of_the_form(gw: Gateway,
+                                                         marks: list[int]) -> None:
+    """The Add Agent form reads five fields. Mutation: pass ``api_key``,
+    ``auth`` or ``notes`` -> red."""
     with _run():
         out = await ar.agent_registry_config("acme/sales")
     text = _all_text(out)
     assert OPENAI_KEY not in text and GH_TOKEN not in text
-    inside = _block_text(out["config"])
-    assert '"api_key"' not in inside and '"token"' not in inside
-    assert '"user":"bot"' in inside and "<secret removed>" in inside
-    assert PLANTED in inside and PLANTED not in _outside(out, "config")
+    shown = json.loads(_block_text(out["config"]))
+    assert set(shown) == {"name", "description", "tags"}
+    assert shown["tags"] == ["sales"]
+    assert out["shown_fields"] == ["name", "description", "tags", "integrations",
+                                   "optional_integrations"]
+    assert "Add Agent form" in out["note"]
+    assert PLANTED in shown["description"] and PLANTED not in _outside(out, "config")
     assert marks
 
 
-async def test_a_wide_config_keeps_twenty_keys_and_says_how_many_went(gw: Gateway) -> None:
-    """A config with 5000 keys gives a small block. Mutation: drop the cap of
-    the keys -> red."""
-    gw.force["get_agent_config"] = (200, {f"k{i:05d}": f"value {i}" for i in range(5000)})
+async def test_a_field_of_another_type_goes(gw: Gateway) -> None:
+    """Mutation: pass a dict as the description, or a dict in the tags -> red."""
+    gw.force["get_agent_config"] = (200, {"name": ["x"], "description": {"a": V},
+                                          "tags": ["ok", {"k": V}, 3], "integrations": V})
     with _run():
         out = await ar.agent_registry_config("acme/sales")
-    shown = json.loads(_block_text(out["config"]))
-    assert len(shown) == ar.MAX_KEYS + 1
-    assert shown[ar.MORE_KEY] == f"+{5000 - ar.MAX_KEYS} more keys"
-    assert len(out["config"]) < ar.MAX_BLOCK_CHARS + 1000
+    assert V not in _all_text(out)
+    assert json.loads(_block_text(out["config"])) == {"tags": ["ok"]}
 
 
-async def test_a_deep_config_is_cut_with_a_clear_mark(gw: Gateway) -> None:
-    """A nested config of 20 x 20 x 20 long values is over the cap of the
-    block. Mutation: drop the cap of the text -> red."""
-    leaf = {f"c{i}": "x" * 250 for i in range(20)}
-    gw.force["get_agent_config"] = (200, {f"a{i}": {f"b{j}": dict(leaf) for j in range(20)}
-                                          for i in range(20)})
+async def test_a_long_list_of_the_form_says_how_many_went(gw: Gateway) -> None:
+    gw.force["get_agent_config"] = (200, {"tags": [f"t{i}" for i in range(5000)]})
     with _run():
         out = await ar.agent_registry_config("acme/sales")
-    inside = _block_text(out["config"])
+    tags = json.loads(_block_text(out["config"]))["tags"]
+    assert len(tags) == ar.MAX_LIST_ITEMS + 1 and tags[-1] == f"(+{5000 - 20} more)"
+
+
+def test_a_long_block_is_cut_with_a_clear_mark() -> None:
+    """Mutation: drop the cap of the text -> red."""
+    block, _frame = ar._block("LONG BLOCK", ["y" * 30000])
+    inside = _block_text(block)
     assert len(inside) <= ar.MAX_BLOCK_CHARS + len(ar.CUT_MARK) + 10
     assert inside.endswith(ar.CUT_MARK.format(limit=ar.MAX_BLOCK_CHARS))
+
+
+#: A secret value with no known shape: only the key rule finds it.
+V = "q7Zp2LmX9vKc4RtY8wNb"
+
+
+@pytest.mark.parametrize("config", [
+    {"env": [f"OPENAI_API_KEY={V}"]},
+    {"tags": [f"OPENAI_API_KEY={V}"]},
+    {"tags": [f"export DB_PASSWORD={V}"]},
+    {"description": f"Set it up with api_key: {V} and go"},
+    {"description": f"line one\nset -x; TOKEN={V}"},
+    {"name": f"sales DB_PASSWORD={V}"},
+    {"integrations": [f"api\u200b_key={V}"]},
+    {"a": {"b": {"c": {"d": {"e": {"DB_PASSWORD": V}}}}}},
+    {"api\u200b_key": V},
+    {"pass\u200bword": V},
+    {"description": f"pass\u200bword={V}"},
+])
+async def test_no_secret_value_of_a_config_reaches_the_model(gw: Gateway,
+                                                             config: dict[str, Any]) -> None:
+    """The reviewer's cases. Mutation: show a field outside the form, or skip
+    the key rule on a text -> red."""
+    gw.force["get_agent_config"] = (200, config)
+    with _run():
+        out = await ar.agent_registry_config("acme/sales")
+    assert out["ok"] is True
+    assert V not in _all_text(out)
+
+
+@pytest.mark.parametrize("line", [
+    f"+export OPENAI_API_KEY={V}",
+    f"+set -x; TOKEN={V}",
+    f'+    env = {{"DB_PASSWORD": "{V}"}}',
+    f"+api\u200b_key = {V}",
+    f"+run --password={V} now",
+])
+def test_the_diff_rule_finds_an_assignment_anywhere_in_the_line(line: str) -> None:
+    """Mutation: match the assignment only at the start of the line -> red."""
+    assert V not in ar._scrub_line(line)
+
+
+async def test_a_run_error_loses_the_value_of_a_secret_key(gw: Gateway) -> None:
+    """A run error is free text of a run. Mutation: give ``_error`` no key
+    rule -> red."""
+    gw.force["runs"] = (200, {"runs": [
+        {"run_id": "r1", "agent": "sales", "status": "error",
+         "error_message": f"failed: DB_PASSWORD={V}\nthen export API_KEY={V}"}], "count": 1})
+    with _run():
+        out = await ar.agent_registry_runs()
+    assert out["ok"] is True and V not in _all_text(out)
+    assert "failed: DB_PASSWORD=" in _block_text(out["runs"])
+
+
+def test_the_text_of_a_fold_takes_the_key_rule() -> None:
+    """A roster, a run or a cost row: each text takes the same rule."""
+    out = ar._fold({"description": f"use TOKEN={V}", "rows": [f"export API_KEY={V}"]})
+    assert V not in json.dumps(out)
+    assert ar._error(f"failed: DB_PASSWORD={V}") and V not in ar._error(f"DB_PASSWORD={V}")
 
 
 async def test_a_huge_since_hours_is_clamped_to_what_the_route_takes(gw: Gateway) -> None:
@@ -570,21 +634,6 @@ def _nest(depth: int, leaf: dict[str, Any]) -> dict[str, Any]:
     for i in range(depth):
         out = {f"n{i}": out}
     return out
-
-
-@pytest.mark.parametrize("depth", [4, 5, 6])
-async def test_a_secret_key_at_any_depth_never_reaches_the_model(gw: Gateway,
-                                                                 depth: int) -> None:
-    """Past MAX_DEPTH the subtree is dumped. Its secret keys go first.
-    Mutation: dump the subtree with no key filter -> red."""
-    gw.force["get_agent_config"] = (200, _nest(depth, {"password": "hunter2PlainValue",
-                                                       "api_key": "plainkeyvalue99",
-                                                       "keep": "seen"}))
-    with _run():
-        out = await ar.agent_registry_config("acme/sales")
-    text = _all_text(out)
-    assert "hunter2PlainValue" not in text and "plainkeyvalue99" not in text
-    assert "password" not in text and "seen" in text
 
 
 @pytest.mark.parametrize("depth", [5, 6])

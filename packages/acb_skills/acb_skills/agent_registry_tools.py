@@ -39,11 +39,15 @@ The rules:
   write, and ``feature:observability`` for the roster, the cost, the
   activity and the runs. The list and the avatars need no feature, because
   each app reads them. The config read takes an ``owner/repo`` slug of
-  GitHub only. It never sends a path on the server. A skill read and an
+  GitHub only. It never sends a path on the server. It shows only the five
+  fields that the Add Agent form reads: name, description, tags,
+  integrations and optional integrations. A skill read and an
   avatar write name only an agent of the member's list. The cost read leaves
   out the cost of each person, which the page does not show.
 * **No secret reaches the model.** A key that names a secret is left out
-  (``secret_shapes.is_secret_key``). Each text loses each credential shape of
+  (``secret_shapes.is_secret_key``), after its hidden characters go. Each
+  line of each text loses the value of a ``KEY=value`` or ``KEY: value`` of
+  a secret key, anywhere in the line (:func:`_scrub_line`). Each text loses each credential shape of
   the one list (``secret_shapes``). A route error loses each link, key and
   path (``tool_refusals.scrub_text``). A local path, a sprite and a repo URL
   are not shown.
@@ -189,7 +193,9 @@ _SECRET_RX = (REDACTION_BEARER, *REDACTION_SHAPES, *(rx for _, rx in SECRET_SHAP
 #: The user and the password of a link (``https://user:pass@host``).
 _LINK_LOGIN = re.compile(r"(://)[^/\s:@]{1,256}:[^/\s@]{1,512}@")
 #: An assignment in a line of code or config: the key, then ``=`` or ``:``.
-_ASSIGNMENT = re.compile(r"^(\W{0,40}?)([A-Za-z_][\w.-]{0,80})([\"']?\s{0,8}[:=]\s{0,8})(.+)$")
+_ASSIGNMENT = re.compile(r"(?<![\w.])([A-Za-z_][\w.-]{0,80})([\"']?\s{0,8}[:=]\s{0,8})(?=\S)")
+#: The first word of a value, for the plain-value test.
+_VALUE_WORD = re.compile(r"[^\s,;]{0,200}")
 #: A value that holds no secret: a number, a switch, null, or an empty text.
 _PLAIN_VALUE = re.compile(r"^(?:-?\d{1,20}(?:\.\d{1,20})?|true|false|True|False|null|None|"
                           r"\"\"|''|\{|\[)?$")
@@ -226,8 +232,9 @@ _NOT_FOUND = "The Agent Registry holds no such item. Nothing was read."
 
 _LIST_NOTE = ("The block holds the agents that you may see. A person who registered an agent "
               "wrote its name and its description.")
-_CONFIG_NOTE = ("The block holds the config.json of a repository on GitHub. Its owner wrote "
-                "it. Each secret field is left out.")
+_CONFIG_NOTE = ("The block holds only the fields of the Add Agent form from the config.json "
+                "of a repository on GitHub: name, description, tags, integrations and "
+                "optional integrations. Its owner wrote them. No other field is shown.")
 _QUEUE_NOTE = ("The block holds the self-mutation queue. An agent wrote each commit message "
                "and each test summary.")
 _DIFF_NOTE = ("The block holds the diff that an agent wrote. Each credential shape is "
@@ -324,14 +331,26 @@ def _scrub(text: str) -> str:
 def _scrub_line(line: str) -> str:
     """One line of code or config, with each credential shape removed, and the
     value of a key that names a secret removed."""
+    # The scrub removes each hidden character first, so a key is plain text
+    # when the key rule reads it.
     out = _scrub(line)
-    hit = _ASSIGNMENT.match(out)
-    if hit and is_secret_key(hit.group(2)) and _REMOVED not in hit.group(4):
-        value = hit.group(4).strip().strip(",;").strip()
+    at = 0
+    while True:
+        hit = _ASSIGNMENT.search(out, at)
+        if hit is None:
+            return out
+        at = hit.end()
+        if not is_secret_key(hit.group(1)):
+            continue
+        rest = out[hit.end():]
+        word = (_VALUE_WORD.match(rest) or _VALUE_WORD.match("")).group(0)
         # A number, a switch or an empty value holds no secret (``max_tokens: 100``).
-        if not _PLAIN_VALUE.match(value):
-            out = hit.group(1) + hit.group(2) + hit.group(3) + _REMOVED
-    return out
+        # A value that the shape scrub removed already stays as it is.
+        if _PLAIN_VALUE.match(word.strip("\"'")) or rest.lstrip("\"'").startswith(_REMOVED):
+            continue
+        # The assignment can be anywhere in the line (``export KEY=V``,
+        # ``set -x; TOKEN=V``). The rest of the line goes.
+        return str(out)[:hit.end()] + _REMOVED
 
 
 def _cut(text: str, width: int) -> str:
@@ -344,8 +363,10 @@ def _cut(text: str, width: int) -> str:
 
 
 def _line(value: Any, width: int = MAX_FIELD_CHARS) -> str:
-    """*value* as one clean line of at most *width* characters."""
-    text = one_line(_scrub(str(value if value is not None else "")))
+    """*value* as one clean line of at most *width* characters. Each line of
+    it goes through :func:`_scrub_line`, then the cut comes last."""
+    raw = str(value if value is not None else "")
+    text = one_line("\n".join(_scrub_line(x) for x in raw.splitlines()))
     if len(text) <= width:
         return text
     return textwrap.shorten(text, width=width, placeholder="...")
@@ -360,7 +381,8 @@ def _long(value: Any, width: int = MAX_LONG_CHARS) -> str:
 def _error(value: Any) -> str:
     """The text of a run error: each link, key, address and path removed
     (``tool_refusals.scrub_text``), one line."""
-    return scrub_text(_scrub(str(value or "")), limit=MAX_ERROR_CHARS)
+    text = "\n".join(_scrub_line(x) for x in str(value or "").splitlines())
+    return scrub_text(text, limit=MAX_ERROR_CHARS)
 
 
 def _empty(value: Any) -> bool:
@@ -371,7 +393,8 @@ def _fold(value: Any, depth: int = 0) -> Any:
     """*value* with each text clean and on one line, each list paged, and each
     key that names a secret, and each field with no value, left out. The key
     rule is the narrow one (``is_secret_field_key``), so ``tokens`` of a cost
-    stays. A config file takes the wide rule (:func:`_clean_config`)."""
+    stays. Each text goes through :func:`_line`, so a ``KEY=value`` of a
+    secret key goes too."""
     if value is None or isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, str):
@@ -380,7 +403,7 @@ def _fold(value: Any, depth: int = 0) -> Any:
         return _deep_line(value)
     if isinstance(value, dict):
         kept = [(k, v) for k, v in value.items()
-                if not _empty(v) and not is_secret_field_key(k)]
+                if not _empty(v) and not is_secret_field_key(strip_hidden(str(k)))]
         return _capped(kept, lambda v: _fold(v, depth + 1))
     if isinstance(value, (list, tuple)):
         page = paged(list(value), 0, MAX_LIST_ITEMS, default=MAX_LIST_ITEMS,
@@ -397,7 +420,8 @@ def _no_secret_keys(value: Any) -> Any:
     ``is_secret_key``) removed in the WHOLE subtree. Run it before any dump,
     so no depth lets a secret key through."""
     if isinstance(value, dict):
-        return {k: _no_secret_keys(v) for k, v in value.items() if not is_secret_key(k)}
+        return {k: _no_secret_keys(v) for k, v in value.items()
+                if not is_secret_key(strip_hidden(str(k)))}
     if isinstance(value, (list, tuple)):
         return [_no_secret_keys(v) for v in value]
     return value
@@ -632,18 +656,32 @@ def _repo_slug(raw: Any) -> str:
     return text if _REPO_SLUG.match(text) else ""
 
 
-def _clean_config(value: Any, depth: int = 0) -> Any:
-    """A config file with each secret key left out and each text clean. Lists
-    page, each object keeps :data:`MAX_KEYS` keys, and nesting stops at
-    :data:`MAX_DEPTH`."""
-    if isinstance(value, dict) and depth < MAX_DEPTH:
-        kept = [(k, v) for k, v in value.items() if not is_secret_key(k)]
-        return _capped(kept, lambda v: _clean_config(v, depth + 1))
-    if isinstance(value, str):
-        return _long(value, MAX_FIELD_CHARS)
-    if depth >= MAX_DEPTH and isinstance(value, (dict, list, tuple)):
-        return _deep_line(value)
-    return _fold(value, depth)
+#: The fields of ``config.json`` that the Add Agent form reads
+#: (``app/agents/page.tsx``, ``fetchConfig``), with their type. No other field
+#: is shown.
+_FORM_TEXT = ("name", "description")
+_FORM_LISTS = ("tags", "integrations", "optional_integrations")
+
+
+def _form_fields(body: dict[str, Any]) -> dict[str, Any]:
+    """The fields of the Add Agent form, and nothing else. A field of another
+    type goes. Each text goes through :func:`_line`."""
+    out: dict[str, Any] = {}
+    for key in _FORM_TEXT:
+        if isinstance(body.get(key), str) and body[key].strip():
+            out[key] = _line(body[key])
+    for key in _FORM_LISTS:
+        items = body.get(key)
+        if not isinstance(items, list):
+            continue
+        texts = [x for x in items if isinstance(x, str) and x.strip()]
+        page = paged(texts, 0, MAX_LIST_ITEMS, default=MAX_LIST_ITEMS, maximum=MAX_LIST_ITEMS)
+        shown = [_line(x, 64) for x in page.items]
+        if page.total > len(page.items):
+            shown.append(f"(+{page.total - len(page.items)} more)")
+        if shown:
+            out[key] = shown
+    return out
 
 
 @annotate(read_only=True, idempotent=True, open_world=True)
@@ -670,11 +708,10 @@ async def agent_registry_config(repo: str) -> dict[str, Any]:
         return _fail(status, body, member)
     if not isinstance(body, dict):
         return _refusal(_SHAPE)
-    # The secret keys of the whole file go first, at each depth, before any
-    # fold or dump.
-    return await _framed("AGENT CONFIG", _clean_config(_no_secret_keys(body)), "config",
-                         _CONFIG_NOTE,
-                         found=True, repo=slug)
+    # Only the five fields of the Add Agent form pass. The rest of the file,
+    # with each key and value in it, never reaches the model.
+    return await _framed("AGENT CONFIG", _form_fields(body), "config", _CONFIG_NOTE,
+                         found=True, repo=slug, shown_fields=list(_FORM_TEXT + _FORM_LISTS))
 
 
 # ── agent_registry_mutations ────────────────────────────────────────────────

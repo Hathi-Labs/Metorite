@@ -625,11 +625,17 @@ fails closed. The skills, the config, the queue and the avatar write need
 each app reads them.
 
 The chat does no more than the page. The config read sends a GitHub
-`owner/repo` slug only, and never a path on the server. The cost read leaves
-out the cost of each person. No result holds a secret key, a credential shape,
-a local path, a repo URL or a sprite. Agent names, descriptions, commit
-messages, diffs, config files and run errors go in one untrusted frame. A diff
-pages by line.
+`owner/repo` slug only, and never a path on the server. It shows only the five
+fields of the Add Agent form: `name`, `description`, `tags`, `integrations`
+and `optional_integrations`. A field of another type, and each other field of
+the file, never reaches the model. The cost read leaves out the cost of each
+person.
+
+No result holds a secret key, a credential shape, a local path, a repo URL or
+a sprite. Each line of each text loses the value of a secret key, at any place
+in the line, as in `export API_KEY=value`. Agent names, descriptions, commit
+messages, diffs, config fields and run errors go in one untrusted frame. A
+diff pages by line.
 
 The avatar write sends the body of the picker. It shows one card where
 `_must_ask` says so. It always shows the card when a custom picture goes,
