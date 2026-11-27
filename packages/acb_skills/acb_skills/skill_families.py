@@ -1188,8 +1188,8 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "label": "People directory",
         "summary": (
             "Read the people directory, your own row, the open work of a person and "
-            "what Reach would send you now, and change your own row after one card. "
-            "Send your own brief to your WhatsApp now."
+            "what Reach would send you now, change your own row, and send your own "
+            "brief to your WhatsApp, each write after one card."
         ),
         "description": (
             "A tool pack: four reads of the People app and of the Reach preview, for the "
