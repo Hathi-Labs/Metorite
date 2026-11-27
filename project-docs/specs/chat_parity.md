@@ -684,6 +684,10 @@ The settings route replaces the whole row. So the tool sends each field that the
 member did not name as it read it. The gateway answers a failed read with the
 defaults. So the tool writes nothing when every value that it read is a default.
 
+The route also drops the stored text of a template that no longer ships. The
+card names each such text. The card names the cost when live transcription goes
+from off to on.
+
 ⚠️ **The settings write needs task 3966 (PR 2940).** On `main` of 2026-11-27 the
 settings read is not bound to the tenant. As the app role under row security, it
 answers with the defaults, and the tool writes nothing. With the bound read of

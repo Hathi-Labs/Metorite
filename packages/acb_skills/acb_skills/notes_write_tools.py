@@ -329,7 +329,33 @@ def _named(given: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-@annotate(read_only=False, idempotent=True, open_world=False)
+def _live_on(mode: str, copilot_on: bool) -> bool:
+    """True when the settings pay for live transcription. A mirror of
+    ``settings.wants_live_transcription`` of the gateway, which a test pins."""
+    if mode == "always":
+        return True
+    if mode == "never":
+        return False
+    return bool(copilot_on)
+
+
+def _starts_live_cost(stored: dict[str, Any], changes: dict[str, Any]) -> bool:
+    """True when *changes* turn live transcription from off to on."""
+    after = {**stored, **changes}
+    old, new = (_live_on(s["live_transcription"], s["copilot_default_on"])
+                for s in (stored, after))
+    return new and not old
+
+
+def _dropped_templates(stored: dict[str, Any], labels: dict[str, str]) -> dict[str, Any]:
+    """The stored template texts that each save removes: the route keeps only
+    the templates that it ships."""
+    return {k: v for k, v in (stored["template_instructions"] or {}).items() if k not in labels}
+
+
+# destructive: "" erases the bot name or a template text, and each save removes
+# the text of a template that no longer ships.
+@annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
 async def notes_update_settings(
     copilot_default_on: bool | None = None,
     copilot_sensitivity: Literal["low", "normal", "high"] | None = None,
@@ -372,11 +398,14 @@ async def notes_update_settings(
                 if before.get(key) != value.get(key):
                     rows += _block(f"Instructions for the template {key}", field,
                                    before.get(key), value.get(key, ""))
+        dropped = _dropped_templates(stored, labels)
+        rows += [("template_instructions",
+                  f"This save removes your text for the template {_old(key)}, which no "
+                  f"longer ships: {_old(words)}") for key, words in dropped.items()]
+        live_cost = _starts_live_cost(stored, changes)
         note = [_CARD_NOTE]
         note += [words for field, words in _EFFECTS.items() if changes.get(field) is True]
-        if changes.get("live_transcription") == "always" or (
-                changes.get("copilot_default_on") is True
-                and changes.get("live_transcription", stored["live_transcription"]) == "auto"):
+        if live_cost:
             note.append(_LIVE_COST)
         if "bot_name" in changes:
             note.append("The people in a call see the bot name.")
@@ -388,8 +417,11 @@ async def notes_update_settings(
 
         # The route replaces the whole row. So the body starts from a second
         # read, and a named setting that moved while the card waited stops it.
-        again, _labels = await _settings()
-        if any(again[f] != stored[f] for f in changes):
+        again, labels = await _settings()
+        # A move of another field can also change what the card said.
+        if (any(again[f] != stored[f] for f in changes)
+                or _starts_live_cost(again, changes) != live_cost
+                or _dropped_templates(again, labels) != dropped):
             raise _Refused(_MOVED.format(what="Note Taker settings"), decision="approved")
         await _send("PUT", SETTINGS_PATH, {**again, **changes}, act="change of your settings")
     except _Refused as exc:

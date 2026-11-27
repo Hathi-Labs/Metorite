@@ -308,6 +308,70 @@ async def test_a_text_too_big_for_one_card_writes_nothing(gw, card) -> None:
     assert out["error"] == nw._WONT_FIT and card.shown == [] and gw.writes() == []
 
 
+_PAIRS = [(mode, on) for mode in ("auto", "always", "never") for on in (False, True)]
+
+
+def test_the_live_rule_is_the_rule_of_the_gateway() -> None:
+    """Mutation: change the mirror, or the gateway function, alone -> red."""
+    pytest.importorskip("gateway.routes.notes.settings", reason="gateway not installed")
+    from gateway.routes.notes.settings import wants_live_transcription
+
+    for mode, on in _PAIRS:
+        assert nw._live_on(mode, on) is wants_live_transcription(mode, on), (mode, on)
+
+
+@pytest.mark.parametrize("new", _PAIRS)
+@pytest.mark.parametrize("old", _PAIRS)
+async def test_the_cost_line_shows_when_live_transcription_goes_from_off_to_on(
+        gw, card, old, new) -> None:
+    """Each from and to pair. Mutation: decide the line from the changed fields
+    alone -> "never" to "auto" with the copilot on shows no line -> red."""
+    pytest.importorskip("gateway.routes.notes.settings", reason="gateway not installed")
+    from gateway.routes.notes.settings import wants_live_transcription as wants
+
+    gw.settings.update(live_transcription=old[0], copilot_default_on=old[1])
+    out = await nw.notes_update_settings(live_transcription=new[0], copilot_default_on=new[1])
+    assert out["ok"] is True, out
+    if old == new:
+        assert card.shown == []
+        return
+    expected = wants(*new) and not wants(*old)
+    assert (nw._LIVE_COST in card.shown[0]["context"]) is expected, (old, new)
+
+
+async def test_a_move_that_changes_the_cost_line_writes_nothing(gw, card) -> None:
+    """The member turns the copilot on while live transcription is "never". It
+    moves to "auto" while the card waits, so the write would start a cost that
+    the card did not name. Mutation: drop that check of the second read -> red."""
+    gw.settings.update(live_transcription="never", copilot_default_on=False)
+    card.during = lambda: gw.settings.update(live_transcription="auto")
+    out = await nw.notes_update_settings(copilot_default_on=True)
+    assert "while the card waited" in out["error"] and gw.writes() == []
+
+
+async def test_the_card_names_the_text_of_a_template_that_no_longer_ships(gw, card) -> None:
+    """The route drops that text on any save. Mutation: no row for it -> red."""
+    gw.settings["template_instructions"] = {"standup": "Keep.", "old_kind": "Lost text."}
+    out = await nw.notes_update_settings(copilot_sensitivity="low")
+    assert out["ok"] is True
+    context = card.shown[0]["context"]
+    assert ("This save removes your text for the template «old_kind», which no longer "
+            "ships: «Lost text.»") in context.split("\n")
+    assert "«Keep.»" not in context
+
+
+async def test_a_new_dropped_text_while_the_card_waited_writes_nothing(gw, card) -> None:
+    card.during = lambda: gw.settings["template_instructions"].update(old_kind="Late.")
+    out = await nw.notes_update_settings(copilot_sensitivity="low")
+    assert "while the card waited" in out["error"] and gw.writes() == []
+
+
+def test_the_settings_write_says_that_it_can_erase() -> None:
+    from acb_skills.tool_annotations import get_annotations
+
+    assert get_annotations("notes_update_settings")["destructive"] is True
+
+
 # ── 7. Refusals before a write ─────────────────────────────────────────────
 
 
