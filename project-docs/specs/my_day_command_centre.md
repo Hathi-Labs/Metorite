@@ -300,7 +300,11 @@ None of them reads the One Thing, a focus mark or a block.
 - Setting the One Thing never refuses. It counts toward the cap.
 - A lower cap keeps the marks that exist and refuses new ones until the count is under it.
 
-**The flag.** `TODAY_RULE_ORGS`, default empty. It reloads by SIGHUP (`docs/flag_reload.md`). With it off, the Today chip and its count keep the old rule, and nothing that a member sees changes. The new route answers with the flag off. The route refuses a mark and a clear with 403 `today_focus_off`. With the flag on, `GET /projects/my/today` adds `today_rule: true`. The chat reads that key, and without it the chat refuses `todays_focus` before its confirm card. No UI calls the route or the mark until CC-3 and CC-7. The flip is gate `enforcement-flip`.
+**The flag.** `TODAY_RULE_ORGS`, default empty. It reloads by SIGHUP (`docs/flag_reload.md`). The flip is gate `enforcement-flip`.
+
+With the flag off, the Today chip and its count keep the old rule, and nothing that a member sees changes. The new route answers, but no UI calls it until CC-3 and CC-7. The route refuses a mark and a clear with 403 `today_focus_off`.
+
+With the flag on, `GET /projects/my/today` adds `today_rule: true`. The Today chip reads the set from the new route. The chat reads the new key. Without it, the chat refuses `todays_focus` before its confirm card. No UI sends a mark until CC-3 and CC-7.
 
 **Not in CC-2.** The phases, the focus log, the day rail, the chat tools (CC-10) and a control for the cap setting. The control ships with CC-7, which picks the top 3.
 
