@@ -521,6 +521,168 @@ def test_r8_two_thousand_nodes_answer_in_one_door_call(world, stats: str) -> Non
         stats_back()
 
 
+#: The most buffers that the C18 check of a move of a 2,000-node subtree may touch. The lookup
+#: per step took the wrong index under stale statistics and read 102,010 (0.8 s on the box);
+#: the child-edge join reads 55 (measured, stale and never analyzed).
+MAX_TREE_CHECK_BUFFERS = 5_000
+
+
+async def _check_buffers(org: str, pkg: str, oid: str, rid: str) -> tuple[str, int]:
+    binds = {"oid": oid, "pid": pkg, "fk": "parent", "rids": [rid], "cap": 20}
+    try:
+        async with tenant_session(org) as db:
+            await db.execute(text("SET LOCAL statement_timeout = 60000"))
+            plan = [r[0] for r in (await db.execute(text(
+                "EXPLAIN (ANALYZE, BUFFERS) " + store._TREE_CHECK_SQL), binds)).all()]
+        top = next((x for x in plan if "Buffers:" in x), "")
+        m = re.search(r"Buffers: shared(?: hit=(\d+))?(?: read=(\d+))?", top)
+        return "\n".join(plan), (int(m.group(1) or 0) + int(m.group(2) or 0) if m else -1)
+    except Exception as exc:
+        return f"check plan failed: {type(exc).__name__}: {str(exc)[:200]}", -1
+
+
+@pytest.mark.parametrize("stats", ["stale", "never_analyzed"])
+def test_r8_a_write_that_moves_a_2000_node_subtree_stays_cheap(world, stats: str) -> None:
+    """Task 3346: moving the root of a 2,000-node tree under another record walks the whole
+    subtree in the C18 check. The walk must not take a lookup per step (the wrong index under
+    stale statistics): the buffer count of the check is the fence, as for the read.    The fence counts buffers: it does not see a CPU-quadratic join over the materialised
+    edge set (a nested loop reads no extra buffers). At 2,000 edges that is cheap; the
+    100,000-edge case stays open in task 3346.
+    """
+    with world.p.admin_engine.begin() as c:
+        for t in ("studio_records", "studio_record_hot"):
+            c.execute(text(f"ALTER TABLE {t} SET (autovacuum_enabled = false)"))
+            if stats == "never_analyzed":
+                c.execute(text("DELETE FROM pg_statistic WHERE starelid = CAST(:t AS regclass)"),
+                          {"t": t})
+                c.execute(text("UPDATE pg_class SET reltuples = -1, relpages = 0 "
+                               "WHERE oid = CAST(:t AS regclass)"), {"t": t})
+    if stats == "stale":
+        with world.p.admin_engine.begin() as c:
+            c.execute(text("ANALYZE studio_records"))
+            c.execute(text("ANALYZE studio_record_hot"))
+    ids: dict[str, str] = {}
+
+    async def build() -> None:
+        [root] = await _put(world.a, world.lot, Write("create", world.lot.id,
+                                                      data={"name": "root"}))
+        [new] = await _put(world.a, world.lot, Write("create", world.lot.id,
+                                                     data={"name": "new"}))
+        ids["root"], ids["new"] = root.id, new.id
+        for start in range(0, 1999, 50):
+            await _put(world.a, world.lot, *[
+                Write("create", world.lot.id, data={"name": f"n{i}", "parent": {"id": root.id}})
+                for i in range(start, min(start + 50, 1999))])
+
+    async def move() -> None:
+        await _put(world.a, world.lot, Write("update", world.lot.id, record_id=ids["root"],
+                                             data={"parent": {"id": ids["new"]}}))
+
+    try:
+        _run(world, build)
+        report, buffers = _run(world, lambda: _check_buffers(
+            world.a, world.pkg, world.lot.id, ids["root"]))
+        print(f"tree check buffers ({stats}): {buffers}")
+        if not 0 <= buffers < MAX_TREE_CHECK_BUFFERS:
+            raise AssertionError(f"the check touched {buffers} buffers "
+                                 f"(limit {MAX_TREE_CHECK_BUFFERS})\n{report}")
+        _run(world, move)  # the write passes the C18 check inside its deadline
+    finally:
+        with world.p.admin_engine.begin() as c:
+            for t in ("studio_records", "studio_record_hot"):
+                c.execute(text(f"ALTER TABLE {t} RESET (autovacuum_enabled)"))
+
+
+#: The most buffers that the SCOPED read of 2,000 nodes may touch. The plain read touches about
+#: 20,000. The scoped read with the row rule as a probe touches 44,161 (stale) and 44,168 (never
+#: analyzed) on the box. The rule as a flattened semi-join touched 267,466 never analyzed
+#: (task 3375, 1.4 s on the box).
+MAX_SCOPED_READ_BUFFERS = 100_000
+
+
+class _Recording:
+    """A session that remembers each recursive statement and its binds."""
+
+    def __init__(self, db: Any) -> None:
+        self._db = db
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._db, name)
+
+    async def execute(self, stmt: Any, params: Any = None, *a: Any, **kw: Any) -> Any:
+        sql = str(stmt)
+        if "WITH RECURSIVE" in sql:
+            self.calls.append((sql, dict(params or {})))
+        return await self._db.execute(stmt, params, *a, **kw)
+
+
+async def _scoped_read(org: str, obj: store.StudioObject, viewer: Viewer) -> tuple[Any, int, str]:
+    """Read the tree as *viewer* through the store, then take EXPLAIN (ANALYZE, BUFFERS) of
+    the recursive statement that the read ran, with its binds (task 3375)."""
+    async with tenant_session(org) as db:
+        rec = _Recording(db)
+        page = await store.read_tree(rec, package_id=obj.package_id, object_id=obj.id,
+                                     viewer=viewer, limit=2000)
+        (sql, binds), = rec.calls
+    # The statement is the SCOPED one: it carries the binds of the row rule of the viewer.
+    assert binds.get("me") == viewer.email.strip().lower() and binds.get("akeys"), binds
+    try:
+        async with tenant_session(org) as db:
+            await db.execute(text("SET LOCAL statement_timeout = 60000"))
+            plan = [r[0] for r in (await db.execute(text(
+                "EXPLAIN (ANALYZE, BUFFERS) " + sql), binds)).all()]
+        top = next((x for x in plan if "Buffers:" in x), "")
+        m = re.search(r"Buffers: shared(?: hit=(\d+))?(?: read=(\d+))?", top)
+        return page, (int(m.group(1) or 0) + int(m.group(2) or 0) if m else -1), "\n".join(plan)
+    except Exception as exc:
+        return page, -1, f"plan failed: {type(exc).__name__}: {str(exc)[:200]}"
+
+
+@pytest.mark.parametrize("stats", ["stale", "never_analyzed"])
+def test_r8_the_scoped_read_of_2000_nodes_stays_cheap(world, stats: str) -> None:
+    """Task 3375: a viewer with a row rule (a keeper who reads the nodes with keeper = me)
+    reads 2,000 nodes. The scoped statement adds the row rule on each root and on each
+    step: its plan must stay near the plain read (about 20,000 buffers), in both
+    statistics states, as on the runner."""
+    with world.p.admin_engine.begin() as c:
+        for t in ("studio_records", "studio_record_hot"):
+            c.execute(text(f"ALTER TABLE {t} SET (autovacuum_enabled = false)"))
+            if stats == "never_analyzed":
+                c.execute(text("DELETE FROM pg_statistic WHERE starelid = CAST(:t AS regclass)"),
+                          {"t": t})
+                c.execute(text("UPDATE pg_class SET reltuples = -1, relpages = 0 "
+                               "WHERE oid = CAST(:t AS regclass)"), {"t": t})
+    if stats == "stale":
+        with world.p.admin_engine.begin() as c:
+            c.execute(text("ANALYZE studio_records"))
+            c.execute(text("ANALYZE studio_record_hot"))
+
+    async def build() -> None:
+        [root] = await _put(world.a, world.site, _site(world.site, "bigroot", E1, None))
+        for start in range(0, 1999, 50):
+            await _put(world.a, world.site, *[
+                Write("create", world.site.id, data={
+                    "name": f"n{i}", "keeper": E1, "secret": f"s{i}", "parent": {"id": root.id}})
+                for i in range(start, min(start + 50, 1999))])
+
+    try:
+        _run(world, build)
+        page, buffers, report = _run(world, lambda: _scoped_read(world.a, world.site, AS_E1))
+        print(f"scoped tree read buffers ({stats}): {buffers}")
+        # The cut holds at scale: C and G are hidden from the keeper, so F and H below them are
+        # too (the 7-node world tree sits in the same object).
+        seen = {n.record.id for n in page.nodes}
+        assert not seen & {world.ids[k] for k in ("C", "F", "G", "H")}
+        if len(page.nodes) < 2000 or not 0 <= buffers < MAX_SCOPED_READ_BUFFERS:
+            raise AssertionError(f"read {len(page.nodes)} nodes and touched {buffers} buffers "
+                                 f"(limit {MAX_SCOPED_READ_BUFFERS})\n{report}")
+    finally:
+        with world.p.admin_engine.begin() as c:
+            for t in ("studio_records", "studio_record_hot"):
+                c.execute(text(f"ALTER TABLE {t} RESET (autovacuum_enabled)"))
+
+
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
     """An R8 suite that CI does not list still skips in silence when the
     database gate is disarmed."""

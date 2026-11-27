@@ -233,7 +233,9 @@ keys that changed, each as ``{"old": ..., "new": ...}``. An update that
 changes no value writes no row. A delete holds each old value. A derived
 write of a roll-up parent writes no row. ``app_audit`` still holds no value.
 :func:`purge_record_changes` deletes the rows of a package in chunks, before
-:func:`purge_records`. No reader exists yet (C4a-2).
+:func:`purge_records`. :func:`list_record_changes` is the one reader
+(C4a-2). It reads through the gate of a get, and it drops each key that the
+viewer may not read, so the store keeps each value and the reader hides.
 
 **On a floor of 0 or less, a write that does not lower a group never reads
 the group.** The store adds up the net change of the batch on each key of
@@ -299,12 +301,13 @@ from collections.abc import AsyncIterator, Callable, Collection, Mapping, Sequen
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from dataclasses import field as dc_field
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from acb_common import studio_query
-from acb_common.paging import page_line
+from acb_common.paging import PAGE_MAX, page_line
 from acb_common.studio_access import (
     AccessError,
     Grant,
@@ -322,6 +325,8 @@ from acb_common.studio_access import (
     with_formulas,
 )
 from acb_common.studio_fields import (
+    HISTORY_DECISION,
+    HISTORY_VALUES,
     HOT_TEXT_CHARS,
     MAX_FIELDS_PER_OBJECT,
     MAX_HOT_BACKFILL,
@@ -337,6 +342,10 @@ from acb_common.studio_fields import (
     FieldError,
     FieldSpec,
     RecordError,
+    autonumber_fields,
+    autonumber_pad,
+    autonumber_reset,
+    autonumber_text,
     check_can_be_hot,
     entry_bytes,
     hot_value,
@@ -714,6 +723,20 @@ _CREATE_RECORD_SQL = (
     "r.created_at, r.updated_at FROM r"
 )
 
+#: C15a. The next number of one autonumber field, in ONE atomic statement: an
+#: insert that starts at 1, and on a second call an increment of the stored
+#: value, under the row lock of the conflict. It never reads then writes. The
+#: statement runs in the SAVEPOINT of the batch, so a refused batch rolls the
+#: counter back, and a refusal leaves no gap. The org comes from the DEFAULT of
+#: the table, the bound tenant, and the policy binds the row.
+_NEXT_NUMBER_SQL = (
+    "INSERT INTO studio_object_counters (object_id, field_key, period, last_value) "
+    "VALUES (CAST(:oid AS uuid), :key, :period, 1) "
+    "ON CONFLICT (organization_id, object_id, field_key, period) "
+    "DO UPDATE SET last_value = studio_object_counters.last_value + 1, updated_at = now() "
+    "RETURNING last_value"
+)
+
 _GET_RECORD_SQL = (
     f"SELECT {_RECORD_COLUMNS} FROM studio_records "
     f"WHERE organization_id = {_BOUND_ORG} AND object_id = CAST(:oid AS uuid) "
@@ -770,6 +793,33 @@ _CHANGE_SQL = (
     "(object_id, record_id, op, actor, via_kind, via_id, changes) "
     "VALUES (CAST(:oid AS uuid), CAST(:rid AS uuid), :op, :actor, :via_kind, :via_id, "
     "CAST(:changes AS jsonb))"
+)
+
+#: C4a-2. The rows of the change history of one record. The index
+#: ``(organization_id, object_id, record_id, id)`` serves each statement below.
+#: The bound org filters it beside RLS.
+_CHANGES_OF_RECORD = (
+    f"FROM studio_record_changes WHERE organization_id = {_BOUND_ORG} "
+    "AND object_id = CAST(:oid AS uuid) AND record_id = CAST(:rid AS uuid)"
+)
+
+#: C4a-2. One page of the history, oldest first, by key. ``:keys`` are the keys
+#: that the viewer reads. An update that changed none of them is not in the
+#: statement, so the page and ``next`` never show that a hidden key changed
+#: (fix round 1). ``jsonb_exists_any`` and not ``?|``, so no driver reads a
+#: ``?`` as a bind. ``:n`` is one past the page, so the reader knows whether
+#: a next page exists.
+_CHANGES_PAGE_SQL = (
+    f"SELECT id, op, actor, via_kind, via_id, changes, at {_CHANGES_OF_RECORD} "
+    "AND id > :after AND (op <> 'update' OR jsonb_exists_any(changes, CAST(:keys AS text[]))) "
+    "ORDER BY id LIMIT :n"
+)
+
+#: C4a-2 fix round 1. The last change of a key that a row rule of the viewer
+#: reads: the change that brought the record into the scope of the viewer.
+_CHANGES_SCOPE_START_SQL = (
+    f"SELECT max(id) {_CHANGES_OF_RECORD} "
+    "AND jsonb_exists_any(changes, CAST(:wkeys AS text[]))"
 )
 
 #: The kinds of a ``via`` (C4a-1). The CHECK ``studio_record_changes_via_kind``
@@ -1435,6 +1485,15 @@ _FIELD_ATTRS = (
     "normal", "critical", "conversions")
 
 
+#: C15a. The parts of an autonumber field that a sync cannot change, each read
+#: as the store reads it (a default for a part that the manifest leaves out).
+_AUTONUMBER_ATTRS = (
+    ("prefix", lambda f: f.prefix or ""),
+    ("pad", autonumber_pad),
+    ("reset", autonumber_reset),
+)
+
+
 @dataclass(frozen=True)
 class SyncProblem:
     """One reason that a manifest does not fit the stored objects. ``message``
@@ -1565,13 +1624,26 @@ async def _plan_fields(db: Any, item: _Item, row: StudioObject,
             item.add.append(raw)
             continue
         changed = [a for a in _FIELD_ATTRS if getattr(cur, a) != getattr(spec, a)]
+        if cur.type == spec.type == "autonumber":
+            # C15a. The three are read as the store reads them, so an unset pad or
+            # reset equals its default and an unchanged manifest is no change.
+            changed += [a for a, read in _AUTONUMBER_ATTRS
+                        if read(cur) != read(spec)]
+        if changed and set(changed) <= {a for a, _ in _AUTONUMBER_ATTRS}:
+            problems.append(SyncProblem(
+                FIELD_CHANGED, item.name, field=spec.key,
+                message=f"Field `{spec.key}` of `{item.name}` changed ({', '.join(changed)}). "
+                "A prefix, a pad and a reset of a published auto-number cannot change. "
+                "Make a new field."))
+            continue
         if changed:
             problems.append(SyncProblem(
                 FIELD_CHANGED, item.name, field=spec.key,
                 message=f"Field `{spec.key}` of `{item.name}` changed ({', '.join(changed)}). "
                 "A published field cannot change yet."))
-        elif cur.hot != spec.hot:
-            item.heat.append((spec.key, spec.hot))
+        else:
+            if cur.hot != spec.hot:
+                item.heat.append((spec.key, spec.hot))
     wanted = {f.key for f in item.fields}
     for key in old:
         if key not in wanted:
@@ -2084,6 +2156,9 @@ class _View:
     scope: Scope
     rules: tuple[Rule, ...] = ()
     tainted: frozenset[str] = frozenset()
+    #: C4a-2. True when the viewer is the owner of the package, from the
+    #: ``apps`` row. ``scope.open`` is True for an open object too.
+    owner: bool = False
 
     def hidden(self, data: Mapping[str, Any]) -> frozenset[str]:
         """The keys hidden on the record *data*, with each formula that reads one."""
@@ -2129,7 +2204,7 @@ async def _view(db: Any, oid: str, pid: str, viewer: Viewer) -> _View | None:
     owner = row[2] is not None and str(row[2]) == viewer.email
     rules = stored_rules(_json(row[0]))
     scope = scope_for(stored_access(_json(row[1])), viewer, owner=owner, rules=rules)
-    return _View(scope, rules, await _tainted(db, pid, rules, viewer, owner))
+    return _View(scope, rules, await _tainted(db, pid, rules, viewer, owner), owner)
 
 
 async def query_hidden_keys(db: Any, *, package_id: str, object_id: str,
@@ -2169,16 +2244,162 @@ async def get_record(db: Any, object_id: str, record_id: str, *,
 
     C8a: a record that the row rule of *viewer* does not read answers None, as
     a record that is not there does, and each hidden key leaves the answer."""
+    view, rec = await _read_record(db, object_id, record_id, package_id=package_id,
+                                   viewer=viewer)
+    return None if view is None or rec is None else view.shown(rec)
+
+
+async def _read_record(db: Any, object_id: str, record_id: str, *, package_id: str,
+                       viewer: Viewer) -> tuple[_View | None, Record | None]:
+    """The one gate of a record read (C8a): the view of *viewer*, and the
+    record with each value, or None when the row rule of *viewer* does not
+    read it or it is not there. The view is None when the package holds no
+    such object, or when the viewer reads no record of it. The caller hides
+    the keys. :func:`get_record` and :func:`list_record_changes` call it."""
     who = _check_viewer(viewer)
     oid = _uuid(object_id, "object_id")
     binds = {"oid": oid, "rid": _uuid(record_id, "record_id"),
              "pid": _uuid(package_id, "package_id")}
     view = await _view(db, oid, binds["pid"], who)
     if view is None or not view.scope.reads:
-        return None
+        return None, None
     sql = _scoped(_GET_RECORD_SQL, _GET_RECORD_SCOPED_SQL, view.scope, binds)
     row = (await db.execute(text(sql), binds)).first()
-    return None if row is None else view.shown(_record(row))
+    return view, None if row is None else _record(row)
+
+
+@dataclass(frozen=True)
+class RecordChange:
+    """One row of the change history of a record, as a viewer reads it (C4a-2).
+
+    ``changes`` holds ``{key: {"old": ..., "new": ...}}`` with only the keys
+    that the viewer may read. ``actor`` is the address of the member who
+    wrote, or None for a viewer of an install."""
+
+    id: int
+    op: str
+    actor: str | None
+    via_kind: str | None
+    via_id: str | None
+    changes: dict[str, Any]
+    at: datetime
+
+
+@dataclass(frozen=True)
+class ChangePage:
+    """One page of the change history of a record, oldest first (C4a-2).
+    ``next`` is the id to send as ``after`` for the next page, or None when
+    the page holds the last row."""
+
+    changes: tuple[RecordChange, ...]
+    next: int | None
+
+    def without_writer(self) -> ChangePage:
+        """The page with no actor and no ``via`` (J2a: a viewer of an install),
+        as ``InstalledApp.project_record`` drops the writer."""
+        return ChangePage(tuple(replace(r, actor=None, via_kind=None, via_id=None)
+                                for r in self.changes), self.next)
+
+
+def _history_bound(value: Any, what: str, low: int, high: int) -> int:
+    """*value* as a whole number from *low* to *high*. A bool is no number."""
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        raise ObjectStoreError(f"{what} must be a whole number from {low} to {high}")
+    return value
+
+
+def _history_shown(fields: Sequence[FieldSpec], hidden: frozenset[str]) -> frozenset[str]:
+    """The keys of the history that a viewer reads (C4a-2): each field of the
+    object that *hidden* does not hold and whose type
+    ``studio_fields.HISTORY_DECISION`` shows. A key with no field now, or a
+    type with no decision, is dropped (fail closed)."""
+    return frozenset(f.key for f in fields if f.key not in hidden
+                     and HISTORY_DECISION.get(f.type) == HISTORY_VALUES)
+
+
+async def _scope_start(db: Any, view: _View, oid: str, rid: str) -> int | None:
+    """C4a-2 fix round 1. For a viewer that a row rule binds, the id of the
+    last change of a key that its row rules read, or None. Before that change
+    the record may have been in the rows of another person, so the viewer
+    reads the history from that change on. Each other viewer gets None."""
+    if not view.scope.row_bound:
+        return None
+    found = (await db.execute(text(_CHANGES_SCOPE_START_SQL), {
+        "oid": oid, "rid": rid, "wkeys": list(view.scope.where_keys)})).first()
+    return None if found is None or found[0] is None else int(found[0])
+
+
+def _change(row: Any, shown: frozenset[str], boundary: int | None) -> RecordChange:
+    """One row of the page with only the keys of *shown*. An update of the id
+    *boundary* shows only the new values: the old ones are of the time before
+    the record came into the scope of the viewer. A create has no old value."""
+    changes = {k: v for k, v in (_json(row[5]) or {}).items() if k in shown}
+    if boundary is not None and int(row[0]) == boundary and str(row[1]) == "update":
+        changes = {k: {"new": v.get("new") if isinstance(v, dict) else None}
+                   for k, v in changes.items()}
+    return RecordChange(int(row[0]), str(row[1]), str(row[2]), _opt(row[3]), _opt(row[4]),
+                        changes, row[6])
+
+
+async def list_record_changes(db: Any, object_id: str, record_id: str, *, package_id: str,
+                              viewer: Viewer, limit: int | None = None,
+                              after: int | None = None,
+                              only: Collection[str] | None = None) -> ChangePage | None:
+    """The change history of the record *record_id*, oldest first, one page of
+    at most *limit* rows with an id past *after* (C4a-2). Answers None when
+    the viewer may not read the history. *only* narrows the keys further (J2a:
+    the fields of the installed version).
+
+    **The gate is the gate of a get.** :func:`_read_record` decides, with the
+    row rule of *viewer*. A record that the viewer cannot read answers None,
+    as :func:`get_record` does. **A deleted record** has no row, so no row
+    rule can run on it. Only the owner of the package reads its history, and
+    each other viewer gets None (fail closed).
+
+    **The hide.** The store keeps each value, and this reader drops each key
+    that some grant of the viewer may hide (``maybe_hidden``) or that the
+    record hides now, with each formula that reads one. An old value can come
+    from a time when other grants read the record, so the reader takes the
+    wider set, and it can hide more than a get. It drops too each key with no
+    field now, and each type that ``HISTORY_DECISION`` does not show. **The
+    statement** leaves out each update that changed no shown key, so the page
+    holds *limit* rows until the history ends, and ``next`` is always the id
+    of a row of the page. A create or a delete stays, also with no shown key:
+    it shows only that the record exists, and the viewer reads the record or
+    owns the package.
+
+    **The scope start (fix round 1).** A viewer that a row rule binds reads
+    from the last change of a key that its row rules read, and that row shows
+    only the new values. So a viewer who got a record by a move never reads
+    the values of the time before the move. The owner and a viewer who reads
+    each record read the whole history."""
+    size = _history_bound(studio_query.DEFAULT_LIMIT if limit is None else limit,
+                          "limit", 1, PAGE_MAX)
+    start = _history_bound(0 if after is None else after, "after", 0, 2**63 - 1)
+    view, rec = await _read_record(db, object_id, record_id, package_id=package_id,
+                                   viewer=viewer)
+    if view is None or (rec is None and not view.owner):
+        return None
+    oid, rid = _uuid(object_id, "object_id"), _uuid(record_id, "record_id")
+    hidden = view.maybe_hidden() | (frozenset() if rec is None else view.hidden(rec.data))
+    shown = _history_shown(await _fields(db, oid), hidden)
+    if only is not None:
+        shown &= frozenset(only)
+    boundary = await _scope_start(db, view, oid, rid)
+    if boundary is not None:
+        start = max(start, boundary - 1)
+    rows = (await db.execute(text(_CHANGES_PAGE_SQL), {
+        "oid": oid, "rid": rid, "after": start, "keys": sorted(shown), "n": size + 1})).all()
+    if rec is None and not rows and start == 0:
+        # The owner names a record that never had a change: not found.
+        return None
+    page = rows[:size]
+    return ChangePage(tuple(_change(r, shown, boundary) for r in page),
+                      int(page[-1][0]) if len(rows) > size else None)
+
+
+def _opt(value: Any) -> str | None:
+    return None if value is None else str(value)
 
 
 async def update_record(db: Any, actor: str, object_id: str, record_id: str,
@@ -2598,6 +2819,23 @@ def _q_access(rid: str) -> str:
     return (f"EXISTS (SELECT 1 FROM studio_record_hot ac WHERE ac.{_OF_ORG} AND ac.{_OF_OBJECT} "
             f"AND ac.record_id = {rid} AND ac.field_key = ANY(CAST(:akeys AS text[])) "
             "AND ac.v_text = CAST(:me AS text))")
+
+
+def _q_access_probe(rid: str) -> str:
+    """The row rule of :func:`_q_access` for a WALK, as a probe by record id (task 3375).
+
+    The plain EXISTS is flattened into a semi-join, and with no statistics the planner took
+    ``studio_record_hot_num_f8_idx`` for ``ac`` and joined it to the walk by a filter: 2,003
+    edges x 671 rows of ``ac`` for each of 3 passes, 267,466 buffers and 1.4 s for 2,000
+    nodes on the box. Here the lookup sits in a subquery with ``OFFSET 0``, so it stays one
+    probe for each record id, and the object test is ``IS NOT DISTINCT FROM`` so that the
+    primary key ``(organization_id, record_id, field_key)`` is the only index with a full
+    equality prefix. The rows are the same. :func:`_q_access` stays as it is for
+    ``build_query``: a list over a big object may prefer to start from the person field."""
+    return (f"EXISTS (SELECT 1 FROM (SELECT ac.record_id FROM studio_record_hot ac "
+            f"WHERE ac.{_OF_ORG} AND ac.object_id IS NOT DISTINCT FROM CAST(:oid AS uuid) "
+            f"AND ac.record_id = {rid} AND ac.field_key = ANY(CAST(:akeys AS text[])) "
+            "AND ac.v_text = CAST(:me AS text) OFFSET 0) ap)")
 
 
 def _q_where(conditions: Sequence[Condition], params: dict[str, Any], rid: str,
@@ -3464,6 +3702,9 @@ class _Batch:
         #: The last write that gave each line a new parent (C13), for the place
         #: of a refusal.
         self.moved: dict[tuple[str, str], int] = {}
+        #: C15a. The day of the batch in the zone of the org, as YYYY-MM-DD. It
+        #: is read once, under the org lock, by :func:`_batch_day`.
+        self.day: str | None = None
 
 
 @dataclass(frozen=True)
@@ -4007,6 +4248,74 @@ def _formulas(held: _Held, checked: Mapping[str, Any],
     return run_formulas(plan, held.name, {**checked, **kept})
 
 
+def _wall_now() -> datetime:
+    """C15a. The wall clock of the store, in UTC. A test patches this name. The
+    period of a counter never comes from SQL ``now()``, which is the start of the
+    transaction, so a batch that waits for the org lock would count the old day."""
+    return datetime.now(UTC)
+
+
+async def _batch_day(db: Any, batch: _Batch) -> str:
+    """C15a. The day of the batch, as YYYY-MM-DD, in ``default_timezone`` of the
+    work-schedule policy of the org (UTC when it has none). It is read once for
+    each batch, and the caller holds the org lock, so two writers of one org
+    never read two days for one batch."""
+    if batch.day is None:
+        from gateway.work_schedule import load_policy  # lazy, as brief/planner does
+
+        batch.day = _wall_now().astimezone(_org_zone(
+            (await load_policy(db)).get("default_timezone"))).date().isoformat()
+    return batch.day
+
+
+def _org_zone(name: Any) -> ZoneInfo:
+    """The zone of a stored name, UTC when it has none, a bad name or a name that
+    no zone has. The shell reads a zone name the same way (``zone_of``), but a
+    store never imports a route, so the three lines are here."""
+    try:
+        return ZoneInfo(str(name or "UTC"))
+    except (ValueError, OSError, ZoneInfoNotFoundError):
+        return ZoneInfo("UTC")
+
+
+def _refuse_autonumber_keys(held: _Held, data: Any) -> None:
+    """C15a. A caller never writes an autonumber field: the store fills it. A body
+    that names the key is refused, on a create and on an update, whatever the
+    value. The refusal names the field and shows no value."""
+    if not isinstance(data, Mapping):
+        return
+    hidden = (held.scope.maybe_hidden()
+              if held.scope is not None and not held.scope.open else frozenset())
+    for f in autonumber_fields(held.fields):
+        if f.key in data:
+            if f.key in hidden:
+                # ``_refuse_hidden_write`` ran first and refused each non-null value of a
+                # hidden key (create and update) with the sentence of any hidden key. A
+                # create may send a hidden key with no value, and the store accepts that
+                # for every type. So a hidden autonumber gets no refusal of its own here:
+                # it must not tell the type (the store then fills the number).
+                continue
+            raise FieldError(
+                f.key, f"Field `{f.key}` is filled by the store, one number for each new "
+                "record. Write no value for it.")
+
+
+async def _fill_autonumbers(db: Any, batch: _Batch, oid: str, held: _Held, data: Any) -> Any:
+    """C15a. The record *data* of a create with the next number of each autonumber
+    field, in the order of the fields. It runs after the lock of the org, inside
+    the SAVEPOINT of the batch, and before ``validate_record``."""
+    fields = autonumber_fields(held.fields)
+    if not fields or not isinstance(data, Mapping):
+        return data
+    out = dict(data)
+    for f in fields:
+        period = await _batch_day(db, batch) if autonumber_reset(f) == "day" else ""
+        number = (await db.execute(text(_NEXT_NUMBER_SQL), {
+            "oid": oid, "key": f.key, "period": period})).scalar_one()
+        out[f.key] = autonumber_text(f, int(number))
+    return out
+
+
 async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     """Step 4, for one write. Only this function runs the three write statements."""
     oid = step.object_id
@@ -4015,12 +4324,15 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     linked = _link(batch, step)
     if step.op == "create":
         _refuse_hidden_write(held, step.data, create=True)
+        _refuse_autonumber_keys(held, step.data)
         if linked is not None and isinstance(step.data, Mapping):
             # C13: the line takes its parent from the batch, never from its data.
             step = replace(step, data={**step.data, linked[0].via: {"id": linked[1]}})
         data = with_initial(held.rules, step.data)
         refuse_computed_keys(held.plan, held.name, data)
         data = with_rollup_zero(held.plan, data)
+        # C15a: the number comes in this SAVEPOINT, so a refusal below rolls it back.
+        data = await _fill_autonumbers(db, batch, oid, held, data)
         checked = validate_record(plain, data)
         # Fix round 3 (rule 2): the access rules come before each formula.
         _check_write(held, None, checked, _sent(held, step.data))
@@ -4056,6 +4368,7 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
         # Fix round 4 (rule 19): the test of the link comes after the row rule.
         _check_line_of(held, linked[0], linked[1], mark.after)
     _refuse_hidden_write(held, changes)
+    _refuse_autonumber_keys(held, changes)
     refuse_computed_keys(held.plan, held.name, changes)
     merged = without_targets(held.plan, {**(mark.after or {}), **changes})
     checked = validate_record(plain, merged)
@@ -4603,6 +4916,24 @@ async def _one_write(db: Any, who: str, package_id: str, write: Write,
 #: 2,000 nodes in one read.
 MAX_TREE_NODES = 2_000
 
+#: The child edges of the field, read once: one range scan on the full prefix
+#: ``(organization_id, object_id, field_key)`` of the object (51 buffers for 2,000 edges). The
+#: walk down, in a READ and in the C18 WRITE CHECK, joins this set by the text of the parent id,
+#: so the plan does not choose an index for each step (task 3308 and its follow-up 3346). A
+#: lookup per step took the wrong index under stale statistics: 102,010 buffers and 0.8 s on the
+#: box to check a write that moves a node with a subtree of 2,000 nodes.
+#: COST, stated: a write that sets a parent now reads ALL child edges of the field of its object
+#: (a leaf write too), where the lookup per step read O(subtree). Estimated, not measured, at
+#: 1M edges in one object: 0.1 to 0.5 s for each batch that sets a parent; 100k edges: tens of ms.
+#: The join may also be a nested loop over the materialised set under odd statistics: the buffer
+#: fence in the R8 test cannot see that CPU shape (task 3346 keeps the read at 100k edges open).
+_TREE_KIDS = (
+    "kids AS MATERIALIZED (SELECT h.record_id, h.v_text FROM studio_record_hot h "
+    "WHERE h.organization_id = " + _BOUND_ORG + " AND h.object_id = CAST(:oid AS uuid) "
+    "AND h.field_key = CAST(:fk AS text) AND h.v_text IS NOT NULL)"
+)
+
+
 #: The object test of a lookup in ``studio_record_hot`` BY RECORD ID (the parent step, the
 #: roots). The primary key is ``(organization_id, record_id, field_key)``. With a plain
 #: ``object_id = ...`` test the planner can also take an index that leads with
@@ -4612,40 +4943,34 @@ MAX_TREE_NODES = 2_000
 #: with a full equality prefix. Do NOT use it for the lookup by parent text: that lookup needs
 #: the object in the index prefix, or it scans the whole org.
 _HOT_OF_OBJECT = "h.object_id IS NOT DISTINCT FROM CAST(:oid AS uuid)"
-#: The same for the lookup of a PARENT RECORD by id in ``studio_records``. CI plan of run
-#: 43682459066 (task 3308): with ``p.object_id = ...`` the planner took
-#: ``studio_records_object_id_key`` (organization, object) as the index condition and filtered
-#: ``id`` row by row: 1,999 lookups of 675 rows, 3.7 s. The primary key is the path with a full
-#: equality on ``id``.
-_REC_OF_OBJECT = "p.object_id IS NOT DISTINCT FROM CAST(:oid AS uuid)"
+#: THE PARENT RECORD by id (task 3308, CI run 43696143611, never analyzed): the parent id is
+#: computed in the hot-row select (``pid``) and the record lookup compares two plain uuids.
+#: Before, ``p.id = CASE WHEN v_text ~ uuid-form THEN CAST(v_text AS uuid) END`` was a
+#: row-by-row FILTER in every CI plan, never an index condition (the org index: 249,875
+#: buffers for 2,000 lookups on the runner). PROBABLE cause, an inference that no planner
+#: trace has confirmed: the regex is not leakproof and the tables are under FORCE RLS. The fix
+#: does not depend on the cause. A lead for later: ``build_query`` compares a relation with
+#: the same regex shape (``_UUID_FORM``) and may be a Filter for the same reason.
 
 #: The parent of a record, by the primary key of the hot row. A parent id that
 #: is no UUID, or that names no record of this object, ends the walk.
 _TREE_PARENT = (
-    "JOIN LATERAL (SELECT h.v_text FROM studio_record_hot h "
+    "JOIN LATERAL (SELECT CASE WHEN h.v_text ~ " + _UUID_FORM + " THEN CAST(h.v_text AS uuid) END AS pid "
+    "FROM studio_record_hot h "
     "WHERE h.organization_id = " + _BOUND_ORG + " "
     "AND " + _HOT_OF_OBJECT + " AND h.record_id = u.id "
     "AND h.field_key = CAST(:fk AS text) OFFSET 0) h ON true "
     "JOIN LATERAL (SELECT p.id FROM studio_records p "
     "WHERE p.organization_id = " + _BOUND_ORG + " "
-    "AND " + _REC_OF_OBJECT + " "
-    "AND p.id = CASE WHEN h.v_text ~ " + _UUID_FORM + " THEN CAST(h.v_text AS uuid) END "
+    "AND p.object_id = CAST(:oid AS uuid) AND p.id = h.pid "
     "OFFSET 0) p ON true "
-)
-
-#: The children of a record, by the text index of the hot rows.
-_TREE_CHILDREN = (
-    "JOIN LATERAL (SELECT h.record_id FROM studio_record_hot h "
-    "WHERE h.organization_id = " + _BOUND_ORG + " "
-    "AND h.object_id = CAST(:oid AS uuid) AND h.field_key = CAST(:fk AS text) "
-    "AND h.v_text = CAST(t.id AS text) OFFSET 0) h ON true "
 )
 
 #: The walk of each record of `:rids` (C18): its level (the walk up, which stops
 #: one past the cap), a cycle, the levels below it (the walk down, to the cap),
 #: and whether its parent is a record of this object.
 _TREE_CHECK_SQL = (
-    "WITH RECURSIVE s AS (SELECT DISTINCT x.id FROM unnest(CAST(:rids AS uuid[])) AS x(id) "
+    "WITH RECURSIVE " + _TREE_KIDS + ", s AS (SELECT DISTINCT x.id FROM unnest(CAST(:rids AS uuid[])) AS x(id) "
     "WHERE " + _IN_PACKAGE + "), "
     "up(start, id, depth, path, cyc) AS ("
     "SELECT s.id, s.id, 1, ARRAY[s.id], false FROM s "
@@ -4654,11 +4979,11 @@ _TREE_CHECK_SQL = (
     + _TREE_PARENT +
     "WHERE NOT u.cyc AND u.depth <= CAST(:cap AS int) "
     "AND (p.id = u.start OR NOT p.id = ANY(u.path))), "
-    "down(start, id, depth, path) AS ("
-    "SELECT s.id, s.id, 0, ARRAY[s.id] FROM s "
+    "down(start, id, depth, path, key) AS ("
+    "SELECT s.id, s.id, 0, ARRAY[s.id], CAST(s.id AS text) FROM s "
     "UNION ALL "
-    "SELECT t.start, h.record_id, t.depth + 1, t.path || h.record_id FROM down t "
-    + _TREE_CHILDREN +
+    "SELECT t.start, h.record_id, t.depth + 1, t.path || h.record_id, CAST(h.record_id AS text) "
+    "FROM down t JOIN kids h ON h.v_text = t.key "
     "WHERE t.depth < CAST(:cap AS int) AND NOT h.record_id = ANY(t.path)) "
     "SELECT s.id::text, "
     "(SELECT max(u.depth) FROM up u WHERE u.start = s.id), "
@@ -4681,13 +5006,13 @@ _TREE_OBJECT_SQL = (
 _TREE_ALL_ROOTS = (
     "SELECT r.id FROM studio_records r "
     f"WHERE r.{_OF_ORG} AND r.{_OF_OBJECT} AND NOT EXISTS ("
-    "SELECT 1 FROM (SELECT h.v_text FROM studio_record_hot h "
+    "SELECT 1 FROM (SELECT CASE WHEN h.v_text ~ " + _UUID_FORM + " THEN CAST(h.v_text AS uuid) END AS pid "
+    "FROM studio_record_hot h "
     f"WHERE h.{_OF_ORG} AND " + _HOT_OF_OBJECT + " AND h.record_id = r.id "
     "AND h.field_key = CAST(:fk AS text) OFFSET 0) h "
     "JOIN LATERAL (SELECT 1 FROM studio_records p "
     "WHERE p.organization_id = " + _BOUND_ORG + " "
-    "AND " + _REC_OF_OBJECT + " "
-    "AND p.id = CASE WHEN h.v_text ~ " + _UUID_FORM + " THEN CAST(h.v_text AS uuid) END "
+    "AND p.object_id = CAST(:oid AS uuid) AND p.id = h.pid "
     "OFFSET 0) p ON true)"
 )
 
@@ -4695,21 +5020,6 @@ _TREE_ALL_ROOTS = (
 _TREE_ONE_ROOT = (
     "SELECT r.id FROM studio_records r "
     f"WHERE r.{_OF_ORG} AND r.{_OF_OBJECT} AND r.id = CAST(:root AS uuid)"
-)
-
-
-#: The child edges of the field, read once: one range scan on the full prefix
-#: ``(organization_id, object_id, field_key)`` of the object. The walk of a READ then joins this
-#: set by the text of the parent id, so the plan does not choose an index for each step, and the
-#: cost is one scan of the field plus the join (task 3308). The write check keeps a lookup for
-#: each step, because a write must not scan the whole field. RESIDUAL (follow-up of 3308): with
-#: stale statistics a write that moves a node with a LARGE subtree (about 2,000 nodes) can still
-#: take the wrong index for those lookups (about 0.9 s on the box, past the batch deadline on a
-#: slow runner). Writes of leaves and small subtrees are not affected.
-_TREE_KIDS = (
-    "kids AS MATERIALIZED (SELECT h.record_id, h.v_text FROM studio_record_hot h "
-    "WHERE h.organization_id = " + _BOUND_ORG + " AND h.object_id = CAST(:oid AS uuid) "
-    "AND h.field_key = CAST(:fk AS text) AND h.v_text IS NOT NULL)"
 )
 
 
@@ -4725,8 +5035,8 @@ def _tree_read_sql(roots: str, scoped: bool = False) -> str:
     at a record that the viewer cannot read, and the subtree below it is cut.
     The limit, the levels and the parent ids count only the records that the
     viewer reads."""
-    root_rule = " AND " + _q_access("r.id") if scoped else ""
-    step_rule = " AND " + _q_access("h.record_id") if scoped else ""
+    root_rule = " AND " + _q_access_probe("r.id") if scoped else ""
+    step_rule = " AND " + _q_access_probe("h.record_id") if scoped else ""
     return (
         "WITH RECURSIVE " + _TREE_KIDS + ", roots AS (" + roots + " AND " + _IN_PACKAGE + root_rule + "), "
         "tree(id, parent, depth, path, key) AS ("

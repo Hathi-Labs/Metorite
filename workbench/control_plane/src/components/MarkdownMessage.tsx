@@ -21,6 +21,7 @@ import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Options as MarkdownOptions } from "react-markdown";
+import type { McpStamp } from "@/lib/chatStore";
 import remarkTextOnly from "@/lib/remarkTextOnly";
 import ChatEntityPill from "@/components/ChatEntityPill";
 import ChatTaskRef from "@/components/ChatTaskRef";
@@ -79,6 +80,8 @@ export interface ToolEvent {
   /** Number of message segments that existed when this tool started (Phase 3b)
    *  — drives segment↔tool interleaving when the runtime sent real ids. */
   segmentCutoff?: number;
+  /** CSY-10: the connected MCP server of this tool (`chatStore.McpStamp`). */
+  mcp?: McpStamp;
   /** Set when this tool is a call_agent delegation — the target agent name. */
   subAgentName?: string;
   /** Live streaming text from the sub-agent (appended as it streams). */
@@ -101,6 +104,10 @@ interface MarkdownMessageProps {
   progressNotice?: string;
   /** True while the agent run is in progress (drives shimmer/working state). */
   isThinkingActive?: boolean;
+  /** CS-1: the message is the placeholder that Send put in the thread (see `ChatMessage.firstLine`). */
+  firstLine?: boolean;
+  /** CS-3b: the fixed words of the server's phase (see `ChatMessage.phaseWord`). */
+  phaseWord?: string;
   /** Sequential reasoning blocks — each its own timeline entry. */
   reasoningBlocks?: string[];
   /** Real assistant-message segments (Phase 3b, message-id-native). When
@@ -725,6 +732,8 @@ export default function MarkdownMessage({
   progressLines,
   progressNotice,
   isThinkingActive,
+  firstLine,
+  phaseWord,
   reasoningBlocks,
   segments,
   onChoice,
@@ -788,6 +797,9 @@ export default function MarkdownMessage({
             reasoningBlocks={reasoningBlocks}
             narrationSegments={narrationSegments}
             isActive={!!isThinkingActive}
+            firstLine={firstLine}
+            phaseWord={phaseWord}
+            answerStarted={!!content?.trim() || (segments ?? []).some((s) => s.text.trim().length > 0)}
             evidenceFor={evidenceFor}
             notice={progressNotice}
           />

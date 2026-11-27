@@ -167,14 +167,20 @@ async def test_llm_failure_yields_sentinel_on_automation_path(monkeypatch) -> No
     assert body.strip() == m.DRAFT_NO_DRAFT_SENTINEL
 
 
-async def test_llm_failure_yields_template_on_interactive_path(monkeypatch) -> None:
+async def test_llm_failure_raises_with_copy_on_interactive_path(monkeypatch) -> None:
+    """Task 3541: the interactive compose box shows why the draft failed. It
+    never gets a stock "I'll review this and get back to you shortly" body."""
+    from fastapi import HTTPException
+
     async def boom(*, model, messages, **kw):
         raise RuntimeError("gateway down")
 
     _patch(monkeypatch, boom)
-    body = await m._llm_draft_reply(
-        _EMAIL, about="", signature="— Vijay", model="tier-powerful",
-        interactive_fallback=True,
-    )
-    assert not _is_no_draft(body)
-    assert "get back to you" in body.lower()
+    with pytest.raises(HTTPException) as caught:
+        await m._llm_draft_reply(
+            _EMAIL, about="", signature="— Vijay", model="tier-powerful",
+            interactive_fallback=True,
+        )
+    assert caught.value.status_code == 503
+    assert "get back to you" not in str(caught.value.detail).lower()
+    assert "Try Draft again" in str(caught.value.detail)

@@ -12,6 +12,9 @@
  * - return `read.enabled` alone from `provenSolo`: "solo needs proof";
  * - drop `!prompt.typed` from `offerAsks`: "a prompt with no typed mark gives none";
  * - set `MIN_CALLS` to 2: "two calls give none";
+ * - fold a repeated tool in `mapCalls` again (a `seen` set): "each call is its own row and step";
+ * - read a target from `call.args` with no id shape (`skillDraft.targetOf`): the marker tests;
+ * - drop the `skillRan` line of `skillOffer`: "task 3830".
  * - return true at the end of `succeededCall`: "each plain-text refusal gives none";
  * - match a line mark with `text.includes(mark)`: "a mark counts only at its fixed place";
  * - drop the count of "'): " of `workflowSucceeded`: "a run whose name, error
@@ -40,10 +43,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { soloRoom } from "@/lib/rooms";
 
 import { NAME_TAKEN, WORDS } from "./skillErrors";
-import { starterFor } from "./skillStarter";
+import { jobDescription, jobInstructions, jobName } from "./skillDraft";
 import type { CatalogAction } from "./skillsApi";
 import {
   MIN_CALLS,
+  NON_ANSWER_HEADS,
   NOT_SAVED,
   STALE_CATALOG,
   SAVE_LATER,
@@ -63,6 +67,7 @@ import {
   pressSave,
   promptBefore,
   provenSolo,
+  readCandidate,
   saveInput,
   skillHref,
   skillOffer,
@@ -82,6 +87,7 @@ const WF = "0f1e2d3c-4b5a-4968-8776-655443322110";
 const WF2 = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
 const PKG = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d";
 const PAGE = "7c6d5e4f-3a2b-4c1d-9e8f-7a6b5c4d3e2f";
+const PAGE2 = "2f3e4d5c-6b7a-4980-9a1b-0c1d2e3f4a5b";
 const MARKER = "ZZ-INJECTED-MARKER-ZZ";
 const WORDS_TYPED = "Find the onboarding page and propose a short summary page";
 
@@ -138,13 +144,18 @@ describe("rule 4: three mapped calls give one offer", () => {
     expect(offer).not.toBeNull();
     expect(offer!.actions.map((a) => a.id)).toEqual(["knowledge.list_spaces", "knowledge.get_page", "knowledge.propose"]);
     expect(offer!.actions.map((a) => a.cls)).toEqual(["A", "A", "B"]);
-    const fields = starterFor(WORDS_TYPED);
+    const steps = [
+      { tool: "list_spaces", target: "" },
+      { tool: "read_page", target: PAGE },
+      { tool: "propose_page", target: "" },
+    ];
+    const description = jobDescription(WORDS_TYPED, steps);
     expect(offer!.draft).toEqual({
-      name: fields.name,
-      description: fields.description,
+      name: jobName(WORDS_TYPED),
+      description,
       body: {
-        description: fields.description,
-        instructions: fields.instructions,
+        description,
+        instructions: jobInstructions(WORDS_TYPED, steps),
         actions: ["knowledge.list_spaces", "knowledge.get_page", "knowledge.propose"],
       },
     });
@@ -155,11 +166,74 @@ describe("rule 4: three mapped calls give one offer", () => {
     expect(skillOffer(turn({ calls }), CATALOG, false)?.actions).toHaveLength(3);
   });
 
-  it("a repeated action is one action of the draft, in the order of its first call", () => {
-    const calls = [call("read_page"), call("list_spaces"), call("read_page"), call("propose_page")];
-    expect(skillOffer(turn({ calls }), CATALOG, false)?.draft.body.actions).toEqual([
-      "knowledge.get_page", "knowledge.list_spaces", "knowledge.propose",
+  it("a repeated action is one action of the skill, in the order of its first call, and each call is its own row and step (task 3832)", () => {
+    const calls = [call("read_page", { page_id: PAGE }), call("list_spaces"), call("read_page", { page_id: PAGE2 }), call("propose_page")];
+    const offer = skillOffer(turn({ calls }), CATALOG, false);
+    expect(offer?.draft.body.actions).toEqual(["knowledge.get_page", "knowledge.list_spaces", "knowledge.propose"]);
+    // Four calls, four rows, in call order. The second read is no fold.
+    expect(offer?.actions.map((a) => [a.id, a.target])).toEqual([
+      ["knowledge.get_page", PAGE], ["knowledge.list_spaces", ""], ["knowledge.get_page", PAGE2], ["knowledge.propose", ""],
     ]);
+    const steps = offer!.draft.body.instructions.split("\n").filter((l) => /^\d+\. /.test(l));
+    expect(steps).toEqual([
+      `1. Read page ${PAGE} (tool read_page)`,
+      "2. List spaces (tool list_spaces)",
+      `3. Read page ${PAGE2} (tool read_page)`,
+      "4. Propose page (tool propose_page)",
+    ]);
+  });
+
+  it("a turn of list spaces, read page, read page gives three rows and three steps (task 3832)", () => {
+    const calls = [call("list_spaces"), call("read_page", { page_id: PAGE }), call("read_page", { page_id: PAGE2 })];
+    const offer = skillOffer(turn({ calls }), CATALOG, false);
+    expect(offer?.actions).toHaveLength(3);
+    expect(offer?.draft.body.actions).toEqual(["knowledge.list_spaces", "knowledge.get_page"]);
+    expect(offer?.draft.body.instructions).toContain(`3. Read page ${PAGE2} (tool read_page)`);
+  });
+
+  it("MIN_CALLS counts calls, not distinct tools: three reads of one tool give an offer", () => {
+    const calls = [call("read_page", { page_id: PAGE }), call("read_page", { page_id: PAGE2 }), call("read_page", { page_id: PAGE })];
+    const offer = skillOffer(turn({ calls }), CATALOG, false);
+    expect(offer?.actions).toHaveLength(3);
+    expect(offer?.draft.body.actions).toEqual(["knowledge.get_page"]);
+  });
+});
+
+describe("task 3829: the saved draft has a short name, a description and numbered steps", () => {
+  it("the demo sentence gives a short name with no question mark, and no empty placeholder", () => {
+    const words = "Please look through the knowledge spaces?";
+    const offer = skillOffer(turn({ prompt: { words, typed: true, byViewer: true } }), CATALOG, false);
+    expect(offer?.draft.name).toBe("Look through the knowledge spaces");
+    expect(offer?.draft.description).toContain("look through the knowledge spaces");
+    expect(offer?.draft.description).toMatch(/Use this when/);
+    const text = JSON.stringify(offer);
+    expect(text).not.toContain("?");
+    expect(offer?.draft.body.instructions).not.toMatch(/^1\. $/m);
+    expect(offer?.draft.body.instructions).not.toMatch(/^- $/m);
+  });
+
+  it("a three-call turn gives one numbered step for each call, with the target named", () => {
+    const calls = [call("list_spaces"), call("read_page", { page_id: PAGE }), call("read_page", { page_id: PAGE2 })];
+    const instructions = skillOffer(turn({ calls }), CATALOG, false)!.draft.body.instructions;
+    const steps = instructions.split("\n").filter((l) => /^\d+\. /.test(l));
+    expect(steps).toHaveLength(3);
+    expect(steps[1]).toContain(PAGE);
+    expect(steps[2]).toContain(PAGE2);
+  });
+
+  it("the name is at most five words, and the saved body carries it", () => {
+    const words = "Could you find the onboarding page for the new hire and then propose a short summary page?";
+    const offer = skillOffer(turn({ prompt: { words, typed: true, byViewer: true } }), CATALOG, false)!;
+    expect(offer.draft.name.split(" ").length).toBeLessThanOrEqual(5);
+    expect(saveInput(offer, offer.draft.name)?.name).toBe(offer.draft.name);
+  });
+});
+
+describe("task 3830: no offer on a turn that ran a saved skill", () => {
+  it("a matched skill shows none, an unknown answer shows none, and no match shows the offer", () => {
+    expect(skillOffer(turn(), CATALOG, false, false)).not.toBeNull();
+    expect(skillOffer(turn(), CATALOG, false, true)).toBeNull();
+    expect(skillOffer(turn(), CATALOG, false, null)).toBeNull();
   });
 });
 
@@ -440,7 +514,7 @@ describe("no argument and no result reaches the draft", () => {
 
   it("mapCalls keeps the title of the catalog row, never a word of the call", () => {
     const rows = mapCalls([call("read_page", { title: MARKER })], CATALOG);
-    expect(rows).toEqual([{ id: "knowledge.get_page", title: "Read one page, with its body, versions and links.", cls: "A" }]);
+    expect(rows).toEqual([{ id: "knowledge.get_page", title: "Read one page, with its body, versions and links.", cls: "A", tool: "read_page", target: "" }]);
   });
 });
 
@@ -619,5 +693,126 @@ describe("the press of the card", () => {
     expect(offerLocal("m-1")).toEqual({ kind: "dismissed" });
     expect(calls).toBe(0);
     expect(offerAsks(turn(), answeredOffer(offerLocal("m-1")))).toBe(false);
+  });
+});
+
+// ── TOF-1d: the chat tool source ────────────────────────────────────────────
+
+describe("TOF-1d: a turn of chat tool reads", () => {
+  // The rows of the source `tool` (`gateway/studio/chat_tool_actions.py`): the
+  // id is `tool:<name>`, the `tool` is the chat tool, and the class comes from
+  // the annotation of the tool (A reads only, B changes, C sends).
+  const toolRow = (name: string, cls: string): CatalogAction => ({
+    id: `tool:${name}`, title: name, source: "tool", class: cls, tool: name,
+  });
+  const TOOL_ROWS: CatalogAction[] = [
+    toolRow("search_crm", "A"),
+    toolRow("projects_tree", "A"),
+    // The email reads say `read_only=False`, so the catalog gives them class B (TOF-1a).
+    toolRow("query_inbox", "B"),
+    toolRow("find_tasks", "A"),
+    toolRow("create_task", "B"),
+    toolRow("send_reply", "C"),
+  ];
+  // The answers of tools in scope (`skill_families`): `search_crm` of the
+  // CRM assistant, `projects_tree` and `find_tasks` of Projects, and
+  // `query_inbox` of Email. Each is plain text in the shape of its file: a
+  // head line and "- ..." lines. No answer holds a common success mark.
+  const READ: Record<string, string> = {
+    search_crm: "Leads: 2 match, page 1.\n- Asha Rao · New (id=11)\n- Dev Mehta · Won (id=12)",
+    projects_tree: "Space Engineering\n  Project Roadmap  full_id: 5f0e",
+    query_inbox: "3 messages match.\n- From Asha: Invoice 22",
+    find_tasks: "2 tasks match 'invoice':\n- #12 Pay invoice",
+    create_task: "Created #44 Pay invoice.\n  full_id: 9a1c",
+  };
+  const readCall = (name: string, extra: Partial<OfferCallLike> = {}) => call(name, {}, { result: READ[name], ...extra });
+  const reads = () => [readCall("search_crm"), readCall("projects_tree"), readCall("find_tasks")];
+
+  it("three reads of CRM and Projects give one offer, named by the rows of the source tool", () => {
+    const offer = skillOffer(turn({ calls: reads() }), TOOL_ROWS, false);
+    expect(offer?.actions.map((a) => a.id)).toEqual(["tool:search_crm", "tool:projects_tree", "tool:find_tasks"]);
+    expect(offer?.actions.map((a) => a.cls)).toEqual(["A", "A", "A"]);
+  });
+
+  it("the known limit: an email read is class B today, so a turn with it gives none", () => {
+    const calls = [readCall("search_crm"), readCall("projects_tree"), readCall("query_inbox")];
+    expect(offerAsks(turn({ calls }), false)).toBe(true);
+    expect(skillOffer(turn({ calls }), TOOL_ROWS, false)).toBeNull();
+    // With class A (the owner's call on `read_only`), the same turn gives the offer.
+    const asRead = TOOL_ROWS.map((r) => (r.tool === "query_inbox" ? { ...r, class: "A" } : r));
+    expect(skillOffer(turn({ calls }), asRead, false)?.actions).toHaveLength(3);
+  });
+
+  it("a read beside a tool with a mark gives one offer too", () => {
+    const rows = [...TOOL_ROWS, ...CATALOG];
+    const calls = [readCall("find_tasks"), call("list_spaces"), call("read_page")];
+    expect(skillOffer(turn({ calls }), rows, false)?.actions).toHaveLength(3);
+  });
+
+  it("an org with no `tool:` row gives none: the calls map to no row", () => {
+    expect(skillOffer(turn({ calls: reads() }), CATALOG, false)).toBeNull();
+    expect(skillOffer(turn({ calls: reads() }), [], false)).toBeNull();
+  });
+
+  it("a write or a send never counts, even when its call finished with a plain answer", () => {
+    for (const name of ["create_task", "send_reply"]) {
+      const calls = [readCall("search_crm"), readCall("projects_tree"), call(name, {}, { result: "Created #44 Pay invoice." })];
+      expect(skillOffer(turn({ calls }), TOOL_ROWS, false), name).toBeNull();
+    }
+  });
+
+  it("a tool that two rows name maps no call", () => {
+    const twice = [...TOOL_ROWS, { id: "tool:search_crm2", title: "x", source: "tool", class: "A", tool: "search_crm" }];
+    expect(skillOffer(turn({ calls: reads() }), twice, false)).toBeNull();
+  });
+
+  it("each failure that a read answers as plain text gives no offer", () => {
+    const failures = [
+      "Refused: The CRM refused the request (422).\nNext: Fix the argument.",
+      "The CRM is off for this organization, so there is nothing to read. An admin of the organization can turn it on.",
+      "The CRM is not open to you. An admin of your organization can give you access.",
+      "I cannot see that mailbox or message for this account.",
+      "This tool has no data for this organization. Do not call it again in this chat.",
+      "Error: Function failed.",
+      "Rule 12 not found.",
+      "",
+      "   ",
+    ];
+    for (const text of failures) {
+      const calls = [readCall("projects_tree"), readCall("query_inbox"), call("search_crm", {}, { result: text })];
+      expect(readCandidate(calls[2]), text).toBe(false);
+      expect(offerAsks(turn({ calls }), false), text).toBe(false);
+      expect(skillOffer(turn({ calls }), TOOL_ROWS, false), text).toBeNull();
+    }
+    // A running call and an error call are no answer either.
+    for (const status of ["running", "error"]) {
+      expect(readCandidate(readCall("projects_tree", { status })), status).toBe(false);
+    }
+  });
+
+  it("an empty read is still an answer, and a long answer that ends in not found is one too", () => {
+    expect(readCandidate(call("search_crm", {}, { result: "No leads match these filters." }))).toBe(true);
+    const long = `${"A long answer. ".repeat(20)}The page was not found.`;
+    expect(readCandidate(call("projects_tree", {}, { result: long }))).toBe(true);
+  });
+
+  it("a tool with a mark counts by its mark alone: its plain refusal never falls to the read tier", () => {
+    const refused = call("propose_page", {}, { result: "A NEW refusal that no list names." });
+    expect(readCandidate(refused)).toBe(false);
+    expect(offerAsks(turn({ calls: [readCall("projects_tree"), readCall("query_inbox"), refused] }), false)).toBe(false);
+  });
+
+  it("each plain-text head of the list is the text of its file", () => {
+    for (const head of NON_ANSWER_HEADS) {
+      expect(pySource(head.source), head.text).toContain(head.text);
+      expect(readCandidate(call("search_crm", {}, { result: `${head.text} and more words.` })), head.text).toBe(false);
+    }
+  });
+
+  it("no argument and no result reaches the draft", () => {
+    const calls = reads().map((c) => ({ ...c, args: { q: MARKER }, result: `${c.result}\n${MARKER}` }));
+    const offer = skillOffer(turn({ calls }), TOOL_ROWS, false);
+    expect(offer).not.toBeNull();
+    expect(JSON.stringify(offer)).not.toContain(MARKER);
   });
 });

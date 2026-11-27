@@ -128,5 +128,8 @@ def test_one_helper_writes_the_line() -> None:
         # a re-read with a member's own field gets the note too.
         body = inspect.getsource(fn) + (inspect.getsource(T._aggregate_text)
                                         if name == "crm_aggregate" else "")
+        # Task 3864: the module list builds its answer in `_module_records_body`.
+        if name == "crm_list_module_records":
+            body += inspect.getsource(T._module_records_body)
         assert "_short_note(" in body, name
     assert "_aggregate_text(" in inspect.getsource(T.crm_aggregate.__wrapped__)

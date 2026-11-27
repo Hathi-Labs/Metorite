@@ -1,8 +1,9 @@
 """The tool index and the lexical ranker (WS-67 TS-1).
 
 ``specs/one_assistant_context.md`` section 4.2.9, "The index and the ranker".
-This is the TS-1 seam. It has NO caller yet. TS-2 adds ``find_tools``, which
-passes the candidate tools to :func:`rank`.
+This is the TS-1 seam. ``tool_packs.FindTools`` (TS-2a) passes the candidate
+tools to :func:`rank`. ``_tool_injection._turn_with_skills`` calls
+:func:`match_skill_descriptions` only (TOF-1c).
 
 The index holds each pack tool once. An entry holds the name of the tool, its
 pack slug, the label and summary of its family, the ``when`` words of its pack
@@ -17,6 +18,13 @@ input gives the same order, and a tie breaks by tool name. ``allow`` is a set
 of tool names or pack slugs that the CALLER already filtered. The ranker never
 decides permission.
 
+**The skill description match (TOF-1c).** :func:`match_skill_descriptions`
+reads a SEPARATE corpus: the descriptions of the published Studio skills that
+the member may load. It uses that text for scores only. The text never enters
+the index, and :func:`rank`, :func:`build_index` and :func:`default_index`
+never read it. Only a skill id and a count leave the function. The owner
+accepted this corpus under D222 decision 6 on 2026-11-16 (task 3412).
+
 Fence: ``tests/unit/test_tool_search_index.py``.
 """
 
@@ -27,6 +35,7 @@ import re
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 
+from acb_skills.hidden_text import strip_hidden
 from acb_skills.skill_families import SKILL_FAMILIES, pack_slugs
 from acb_skills.tool_packs import PACKS, _plain, _word_re
 
@@ -221,3 +230,89 @@ def rank(
             scored.append((-score, entry.name, entry.pack))
     scored.sort()
     return [(name, pack, -neg) for neg, name, pack in scored[:limit]]
+
+
+# ── The skill description match (TOF-1c) ─────────────────────────────────────
+# ``specs/ai_studio_rows/TOF-1c.md``. A separate corpus, used for scores only:
+# no text of it enters the index, and no text of it leaves the function.
+
+#: The fewest distinct whole-word stems that the turn and a description must
+#: share. A prefix gives no credit.
+DESC_MATCH_MIN = 2
+#: The most distinct content stems of the turn that the match reads, from the
+#: start. So a long turn adds no work to the scores.
+TURN_STEMS_MAX = 32
+#: The words that the match never counts: the stop words of :func:`rank` and
+#: "use", because each description of the F6a offer starts "Use this".
+_DESC_SKIP = _STOP | frozenset({"use"})
+
+
+def _turn_stems(words: object) -> frozenset[str]:
+    """The first :data:`TURN_STEMS_MAX` distinct content stems of *words*."""
+    found: dict[str, None] = {}
+    for word in _TOKEN.finditer(_plain(strip_hidden(str(words or "")))):
+        stem = _stem(word.group())
+        if stem in _DESC_SKIP or stem in found:
+            continue
+        found[stem] = None
+        if len(found) >= TURN_STEMS_MAX:
+            break
+    return frozenset(found)
+
+
+def _desc_stems(text: object) -> frozenset[str]:
+    """The content stems of *text*, cut at :data:`DESC_MAX` on a word end."""
+    plain = _plain(strip_hidden(str(text or "")))
+    if len(plain) > DESC_MAX:
+        plain = plain[: DESC_MAX + 1].rsplit(" ", 1)[0]
+    return frozenset(t for t in _tokens(plain) if t not in _DESC_SKIP)
+
+
+def match_skill_descriptions(
+    words: str, texts: Mapping[str, str],
+) -> tuple[str, int] | None:
+    """TOF-1c. The one skill whose description the member's *words* name, as
+    (skill id, hits), or None.
+
+    *texts* maps a skill id to its description. The caller passes only the
+    skills that the member may load. *hits* is the number of distinct
+    whole-word stems that the turn and the description share. The turn gives
+    its first :data:`TURN_STEMS_MAX` content stems. A description gives the
+    stems of its first :data:`DESC_MAX` characters. The skill with the most
+    hits wins when it has at least :data:`DESC_MATCH_MIN`. A tie at the top
+    gives None.
+
+    Pure: no I/O, no clock and no random source. Only an id and a count leave
+    the function, never a word of the text. The order of *texts* never
+    changes the answer."""
+    turn = _turn_stems(words)
+    if len(turn) < DESC_MATCH_MIN:
+        return None
+    best: list[str] = []
+    top = 0
+    for skill_id, text in texts.items():
+        hits = len(turn & _desc_stems(text))
+        if hits < DESC_MATCH_MIN or hits < top:
+            continue
+        if hits > top:
+            best, top = [], hits
+        best.append(str(skill_id))
+    return (best[0], top) if len(best) == 1 else None
+
+
+# ── The shared stems of a need and a text (SBX-1a) ───────────────────────────
+# ``specs/agent_sandbox.md`` §6.1. The no-match path of ``find_tools`` ranks the
+# Studio library, the live tools of the run and the catalog rows with it. It
+# reads the same stems as :func:`match_skill_descriptions`, and it never
+# touches :func:`build_index` or :func:`rank`.
+
+
+def shared_stems(words: str, text: str) -> int:
+    """The number of distinct whole-word content stems that *words* and *text*
+    share. *words* gives its first :data:`TURN_STEMS_MAX` content stems, and
+    *text* the stems of its first :data:`DESC_MAX` characters. A prefix gives
+    no credit, and a stop word or "use" never counts.
+
+    Pure: no I/O, no clock and no random source. Only a count leaves the
+    function, never a word of either text."""
+    return len(_turn_stems(words) & _desc_stems(text))

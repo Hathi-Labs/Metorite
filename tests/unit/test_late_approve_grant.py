@@ -24,14 +24,17 @@ What this file holds (R7), each with the mutation that turns it red:
    same act, writes nothing on a late approve. Drop the live cleanup, and the
    twin writes a second time. Two cards of two acts in one thread each keep
    their own grant: key the grant by the thread alone, and one is lost.
+   RESUME-2a follow-up, P2-1: a drop never removes a SPENT mark that a twin's
+   claim writes in its window. Put back the GET and then the DELETE in
+   ``drop_offer``, and the mark goes.
 5. A late decline and a late REJECT write nothing and open nothing, and drop
    the offer. So does an answer that came during the park.
 6. A grant never crosses a thread, a member or an org.
 7. The cards that never take a grant: rows, ``bulk_update`` (it keys as
    ``update_task``), a send, a call with no act key, and a cut card. Test the
    family head and not the real tool, and ``bulk_update`` takes one.
-8. Off is today: with the flag off, nothing is read or written, and the
-   message is the same, byte for byte.
+8. Off is today: with this flag and ``CHAT_RESUME_ORGS`` off, nothing is
+   read or written, and the message is the same, byte for byte.
 9. A Redis fault shows the normal card.
 10. The new message reads as an approve, and only a grant adds its paragraph.
 11. The places: the grant write sits after the move of the row, and the use
@@ -174,13 +177,15 @@ class _Store:
             raise self.fail
 
     async def set(self, k: Any, value: str, ex: int | None = None, nx: bool = False,
-                  **_kw: Any) -> bool | None:
+                  get: bool = False, **_kw: Any) -> Any:
         self._check("set", k)
+        old = self.data.get(k.value)
         if nx and k.value in self.data:
-            return None
+            return old if get else None
         self.data[k.value] = value
         self.ttl[k.value] = ex
-        return True
+        # ``SET … GET`` (Redis 6.2): the old value, or None.
+        return old if get else True
 
     async def get(self, k: Any) -> str | None:
         self._check("get", k)
@@ -195,6 +200,15 @@ class _Store:
         self._check("delete", k)
         self.ttl.pop(k.value, None)
         return 1 if self.data.pop(k.value, None) is not None else 0
+
+    async def delete_unless(self, k: Any, value: str) -> int:
+        """``TenantRedis.delete_unless``: ONE step, as the Lua script."""
+        self._check("delete_unless", k)
+        if k.value not in self.data or self.data[k.value] == value:
+            return 0
+        self.ttl.pop(k.value, None)
+        del self.data[k.value]
+        return 1
 
     def keys(self, namespace: str) -> list[str]:
         return sorted(k for k in self.data if f":{namespace}:" in k)
@@ -218,6 +232,48 @@ def late_on(monkeypatch, flag_on, store):
 
     monkeypatch.setattr(get_settings(), "chat_late_approve_orgs", f"{_ORG_A},{_ORG_B}")
     return store
+
+
+@pytest.fixture(autouse=True)
+def _twin_witness(ask_db, monkeypatch):
+    """The in-memory table has the second witness of HRD-22b
+    (``pending_ask.twin_approved_since``). A row is stamped with the order in
+    which it was asked and answered, and the witness reads that order, as the
+    SQL reads ``asked_at`` and ``answered_at``. The SQL itself is
+    ``test_late_approve_twin_r8.py``."""
+    seq = iter(range(1, 10_000))
+    insert, move = ask_db.insert_ask, ask_db.move_ask
+
+    def insert_ask(org, row):
+        ok = insert(org, row)
+        if ok:
+            ask_db.rows[(org, row["request_id"])]["_asked"] = next(seq)
+        return ok
+
+    def move_ask(org, rid, *, to, from_states, answer=None):
+        out = move(org, rid, to=to, from_states=from_states, answer=answer)
+        if out is not None and to == "answered":
+            ask_db.rows[(org, rid)]["_answered"] = next(seq)
+        return out
+
+    def twin_approved_since(org, member, row):
+        card = (row.get("payload") or {})
+        if not card.get("title") or row.get("_asked") is None:
+            return True
+        for (o, rid), other in ask_db.rows.items():
+            other_card = other.get("payload") or {}
+            if (o == org and rid != row["request_id"] and other["actor_email"] == member
+                    and other["kind"] == "confirmation" and other["state"] == "answered"
+                    and str(other.get("answer") or "").strip().upper() == "APPROVE"
+                    and other.get("_answered", 0) > row["_asked"]
+                    and all(str(other_card.get(k) or "") == str(card.get(k) or "")
+                            for k in ("title", "detail", "context"))):
+                return True
+        return False
+
+    monkeypatch.setattr(pending_ask, "insert_ask", insert_ask)
+    monkeypatch.setattr(pending_ask, "move_ask", move_ask)
+    monkeypatch.setattr(pending_ask, "twin_approved_since", twin_approved_since)
 
 
 def _run(r, tid: str, fn: Any = update_deal_status, *, member: str = _ALICE,
@@ -413,6 +469,52 @@ def test_a_record_lives_no_longer_than_its_row():
     assert late_approve._row_ttl_s({}, 3600) == 3600
 
 
+def test_the_spent_mark_outlives_each_waiting_row(monkeypatch):
+    """RESUME-2a review, P1-A (c). The SPENT mark lives as long as a row
+    (``chat_ask_ttl_hours``), so the stored call of a twin row that waits a
+    week still finds it. The cost: an identical act in the same thread within
+    that week shows one more card. Mutation: drop the hours term of
+    ``spent_ttl_s`` -> 1800 s -> red."""
+    from acb_common import get_settings
+
+    assert late_approve.spent_ttl_s() == max(
+        late_approve.GRANT_TTL_S, pending_ask._ttl_hours() * 3600)
+    monkeypatch.setattr(get_settings(), "chat_ask_ttl_hours", 168)
+    monkeypatch.setattr(get_settings(), "chat_ask_park_seconds", 600)
+    assert late_approve.spent_ttl_s() == 168 * 3600
+    monkeypatch.setattr(get_settings(), "chat_ask_ttl_hours", 1)
+    monkeypatch.setattr(get_settings(), "chat_ask_park_seconds", 7200)
+    assert late_approve.spent_ttl_s() == 7500, "the park window still counts"
+
+
+def test_the_spent_mark_is_one_set_get_and_one_writer_wins():
+    """RESUME-2a review, P1-A (d). ``_spend`` writes the mark and reads the
+    old value in ONE ``SET … GET``: the first writer reads no mark, the second
+    reads SPENT. ``take_grant`` and ``claim_act`` refuse on SPENT. Mutation:
+    a GET, then a SET -> the source test below fails."""
+    from acb_common.tenant_redis import organization_scope
+
+    store = _Store()
+
+    async def go() -> tuple[bool, bool]:
+        with organization_scope(_ORG_A):
+            first = await late_approve._spend(store, _ALICE, "t-spend", "d" * 32)
+            second = await late_approve._spend(store, _ALICE, "t-spend", "d" * 32)
+        return first, second
+
+    assert asyncio.run(go()) == (False, True)
+    # The offer key, the member-level key (HRD-22b), then the grant.
+    assert [c.split(" ")[0] for c in store.calls] == [
+        "set", "set", "delete", "set", "set", "delete"]
+    src = inspect.getsource(late_approve._spend)
+    assert "get=True" in src and ".get(" not in src
+    assert "if await _spend(" in inspect.getsource(late_approve.take_grant)
+    assert "spent = await _spend(" in inspect.getsource(late_approve.claim_act)
+    # P2-1: the drop never reads the offer and then deletes it.
+    drop = inspect.getsource(late_approve.drop_offer)
+    assert "redis.delete_unless(" in drop and "redis.get(" not in drop
+
+
 # ---------------------------------------------------------------------------
 # 3. A changed card gets a normal card
 # ---------------------------------------------------------------------------
@@ -597,6 +699,76 @@ def test_an_answer_during_the_park_drops_the_offer(
     assert _offers(late_on) == [] and late_on.keys(late_approve.ASK_NAMESPACE) == []
 
 
+class _Window(_Store):
+    """The fake Redis, with ONE window on the offer key *okey*: a twin's
+    claim lands after the drop read the key (a GET), or just before its one
+    atomic step (``delete_unless``). Both are the worst order."""
+
+    def __init__(self, okey: str) -> None:
+        super().__init__()
+        self.okey = okey
+        self.hook: Any = None
+        self.fired = 0
+
+    async def _twin(self, k: Any) -> None:
+        if self.hook is not None and k.value == self.okey:
+            hook, self.hook = self.hook, None
+            self.fired += 1
+            await hook()
+
+    async def get(self, k: Any) -> str | None:
+        out = await super().get(k)
+        await self._twin(k)
+        return out
+
+    async def delete_unless(self, k: Any, value: str) -> int:
+        await self._twin(k)
+        return await super().delete_unless(k, value)
+
+
+def test_a_drop_never_removes_a_mark_that_a_twin_claim_writes_in_its_window(monkeypatch):
+    """RESUME-2a follow-up, P2-1. Twin rows A and B of one act. B's
+    ``_resume_from_row`` drops its offer while the offer is still there. A's
+    continuation runs ``claim_act`` in the window of that drop and writes
+    SPENT. After the drop the mark is STILL there, so B's claim reads SPENT
+    and the act writes once. Mutation: put back the GET and then the DELETE
+    in ``drop_offer`` -> the DELETE removes the mark -> red."""
+    from acb_common import get_settings
+    from acb_common.tenant_redis import key, organization_scope
+
+    monkeypatch.setattr(get_settings(), "chat_late_approve_orgs", _ORG_A)
+    tid, digest = "t-p21-window", "e" * 32
+    with organization_scope(_ORG_A):
+        okey = key(late_approve.OFFER_NAMESPACE, _ALICE, tid, digest)
+        akey = key(late_approve.ASK_NAMESPACE, _ALICE, tid, "rid-b")
+    store = _Window(okey.value)
+    store.data[okey.value] = late_approve._encode("rid-a", "Move it?", ['["m","update_deal_status",[]]'])
+    store.data[akey.value] = digest
+    monkeypatch.setattr(late_approve, "_redis", lambda: store)
+
+    async def _a_claims() -> None:
+        # What A's `claim_act` does: ONE `SET … GET` of the mark.
+        assert await late_approve._spend(store, _ALICE, tid, digest) is False
+
+    async def go() -> bool:
+        store.hook = _a_claims
+        await late_approve.drop_offer(_ORG_A, _ALICE, tid, "rid-b")
+        with organization_scope(_ORG_A):
+            # B's claim, after the drop.
+            return await late_approve._spend(store, _ALICE, tid, digest)
+
+    b_spent = asyncio.run(go())
+    assert store.fired == 1, "non-vacuity: A's claim landed in the window of the drop"
+    assert store.data[okey.value] == late_approve._SPENT, "the drop kept the mark"
+    assert b_spent is True, "B reads SPENT, so the act writes once"
+    assert akey.value not in store.data, "B's own ask record goes"
+    # With no mark, the drop still removes a plain offer.
+    store.data[okey.value] = late_approve._encode("rid-a", "Move it?", ['["m","x",[]]'])
+    store.data[akey.value] = digest
+    asyncio.run(late_approve.drop_offer(_ORG_A, _ALICE, tid, "rid-b"))
+    assert okey.value not in store.data
+
+
 # ---------------------------------------------------------------------------
 # 6. A grant never crosses a thread, a member or an org
 # ---------------------------------------------------------------------------
@@ -708,8 +880,10 @@ def test_only_a_parked_plain_confirmation_row_turns_its_offer_into_a_grant(late_
         ask = key(late_approve.ASK_NAMESPACE, _ALICE, tid, rid).value
         offer = key(late_approve.OFFER_NAMESPACE, _ALICE, tid, digest).value
         grant = key(late_approve.GRANT_NAMESPACE, _ALICE, tid, digest).value
+    # A comparable card, for the second witness of HRD-22b (``_asked`` is the
+    # stand-in of ``asked_at`` in the in-memory table).
     row = {"kind": "confirmation", "state": "parked", "thread_id": tid,
-           "request_id": rid, "payload": {}}
+           "request_id": rid, "payload": {"title": "card"}, "_asked": 1}
 
     def seed() -> None:
         late_on.data.update({ask: digest, offer: late_approve._encode(rid, "card", keys)})
@@ -822,6 +996,13 @@ def test_the_real_crm_tool_of_two_runs_writes_once(
 def test_with_the_flag_off_nothing_is_read_or_written(
     flag_on, store, ask_db, liveness, no_persist, monkeypatch,
 ):
+    """``CHAT_LATE_APPROVE_ORGS`` AND ``CHAT_RESUME_ORGS`` off: no Redis call
+    at all, so each card and each message is byte for byte as before. Since
+    P2-2 either flag writes the SPENT mark, so both must be off here."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "chat_late_approve_orgs", "")
+    monkeypatch.setattr(get_settings(), "chat_resume_orgs", "")
     tid = "t-hrd22-off"
     assert "parked" not in _run(liveness, tid, live="APPROVE", deal_id="d-neuro", stage="Won")
     assert _run(liveness, tid, deal_id="d-neuro", stage="Won").get("parked")
@@ -923,10 +1104,12 @@ def test_each_record_has_one_writer_and_one_reader():
     """``grant_from_offer`` has one caller (the late answer route),
     ``record_offer`` one (the park), ``take_grant`` and ``note_approved`` one
     each (the card gate), and ``drop_offer`` the park and the decline. No
-    other code names a namespace of the grant."""
+    other code names a namespace of the grant. RESUME-2a: the stored-call yes
+    (``stored_call.resume_answer``) takes its act with ``claim_act``, the one
+    atomic mark (review, P1-A)."""
     names = ("grant_from_offer(", "record_offer(", "take_grant(", "note_approved(",
-             "drop_offer(", "chat-late-approve", "chat-late-offer", "chat-late-ask",
-             "GRANT_NAMESPACE")
+             "claim_act(", "drop_offer(", "chat-late-approve", "chat-late-offer",
+             "chat-late-ask", "GRANT_NAMESPACE")
     callers: dict[str, set[str]] = {n: set() for n in names}
     for top in ("apps", "packages"):
         for path in (_ROOT / top).rglob("*.py"):
@@ -940,12 +1123,14 @@ def test_each_record_has_one_writer_and_one_reader():
     agent = "apps/services/gateway/gateway/routes/agent.py"
     park = "apps/services/orchestrator/orchestrator/pending_ask.py"
     gate = "packages/acb_skills/acb_skills/ask_tools.py"
+    stored = "packages/acb_skills/acb_skills/stored_call.py"
     assert callers["grant_from_offer("] == {own, agent}
     assert callers["record_offer("] == {own, park}
     assert callers["take_grant("] == {own, gate}
     assert callers["note_approved("] == {own, gate}
+    assert callers["claim_act("] == {own, stored}
     assert callers["drop_offer("] == {own, park, agent}
-    for name in names[5:]:
+    for name in names[6:]:
         assert callers[name] == {own}, (name, callers[name])
 
 
@@ -961,3 +1146,185 @@ def test_the_use_comes_before_the_card_and_reads_once():
     take = inspect.getsource(late_approve.take_grant)
     assert "redis.getdel(\n                key(GRANT_NAMESPACE, member, thread, act.digest))" in take
     assert ".get(" not in take.replace(".getdel(", ""), "a GET would leave the grant for a replay"
+
+
+# ---------------------------------------------------------------------------
+# HRD-22b (task 3294): one act, once, across chats, a Redis fault and the race
+# ---------------------------------------------------------------------------
+
+_CALL = {"deal_id": "d-neuro", "stage": "Payment Complete"}
+
+
+def test_an_approve_in_another_chat_stops_the_stale_twin(
+    late_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """Item 1 (reviewer P2). C1 parks in chat A. The member approves its twin
+    live in chat B (write 1). A late tap on C1 writes no grant, and the new
+    run in chat A asks again. Mutation: drop the member-level mark -> the
+    grant is written and the act runs twice."""
+    assert _run(liveness, "t-hrd22b-a", **_CALL).get("parked")
+    c1 = _cards(liveness, "t-hrd22b-a")[0]["request_id"]
+    out = _run(liveness, "t-hrd22b-b", live="APPROVE", **_CALL)
+    assert "parked" not in out and WRITES == [("deal", "d-neuro", "Payment Complete")]
+    assert late_on.keys(late_approve.SPENT_NAMESPACE), "the member-level mark is written"
+
+    res = _approve_late(monkeypatch, "t-hrd22b-a", c1)
+    assert res.status_code == 409
+    assert res.json()["detail"]["resumeMessage"] == _envelope(
+        "Move this deal to Payment Complete?"), "no grant, so no paragraph"
+    assert _grants(late_on) == []
+    assert _run(liveness, "t-hrd22b-a", **_CALL).get("parked"), "chat A asks again"
+    assert WRITES == [("deal", "d-neuro", "Payment Complete")]
+
+
+def test_the_member_level_mark_is_keyed_by_member_and_digest_only(late_on):
+    """It has no thread and no org of the other member in its key."""
+    async def go():
+        from acb_common.tenant_redis import key, organization_scope
+
+        with organization_scope(_ORG_A):
+            await late_approve._spend(late_on, _ALICE, "t-1", "d" * 32)
+            await late_approve._spend(late_on, _BOB, "t-1", "e" * 32)
+            return (key(late_approve.SPENT_NAMESPACE, _ALICE, "d" * 32).value,
+                    key(late_approve.SPENT_NAMESPACE, _BOB, "e" * 32).value)
+
+    mine, theirs = asyncio.run(go())
+    assert late_on.data[mine] == late_on.data[theirs] == late_approve._SPENT
+    assert "t-1" not in mine and mine.endswith(":" + "d" * 32)
+    assert late_on.ttl[mine] == late_approve.spent_ttl_s()
+
+
+def test_a_redis_fault_during_the_live_approve_leaves_no_second_run(
+    late_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """Item 2 (reviewer P2). The SPENT mark is best effort: here the live
+    approve of C2 writes none (a stall of Redis). The row of C2 is in Postgres,
+    answered APPROVE, so the late tap on C1 still writes no grant. Mutation:
+    drop the Postgres read -> the stale offer is valid and the act runs twice."""
+    assert _run(liveness, "t-hrd22b-f", **_CALL).get("parked")
+    c1 = _cards(liveness, "t-hrd22b-f")[0]["request_id"]
+
+    async def stalled(*_a: Any, **_k: Any) -> bool:
+        raise TimeoutError
+
+    monkeypatch.setattr(late_approve, "_spend", stalled)
+    out = _run(liveness, "t-hrd22b-f2", live="APPROVE", **_CALL)
+    assert "parked" not in out and WRITES == [("deal", "d-neuro", "Payment Complete")]
+    monkeypatch.undo()  # Redis is back, and no mark was ever written
+    assert late_on.keys(late_approve.SPENT_NAMESPACE) == []
+    assert _offers(late_on), "the stale offer is still valid in Redis"
+
+    res = _approve_late(monkeypatch, "t-hrd22b-f", c1)
+    assert res.status_code == 409
+    assert _grants(late_on) == [], "Postgres says the act ran"
+    assert WRITES == [("deal", "d-neuro", "Payment Complete")]
+
+
+def test_a_mark_that_expired_and_a_new_twin_cannot_serve_the_stale_tap(
+    late_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """Item 3 (verifier F1, probe test_p1e2: writes = 2). C1 parks. C2 is
+    approved live (write 1). The marks expire. A new twin C3 parks and writes a
+    fresh offer. The late tap on the STALE C1 takes that offer by digest. The
+    Postgres read refuses: C2 was answered APPROVE after C1 was asked."""
+    assert _run(liveness, "t-hrd22b-x", **_CALL).get("parked")
+    c1 = _cards(liveness, "t-hrd22b-x")[0]["request_id"]
+    _run(liveness, "t-hrd22b-x", live="APPROVE", **_CALL)
+    for k in list(late_on.data):
+        if late_on.data[k] == late_approve._SPENT:
+            del late_on.data[k]
+    assert _run(liveness, "t-hrd22b-x", **_CALL).get("parked"), "C3 parks"
+    assert _offers(late_on), "C3 wrote a fresh offer"
+
+    res = _approve_late(monkeypatch, "t-hrd22b-x", c1)
+    assert res.status_code == 409
+    assert _grants(late_on) == []
+    assert WRITES == [("deal", "d-neuro", "Payment Complete")]
+
+
+def test_a_live_approve_between_the_grant_and_its_use_makes_the_use_refuse(
+    late_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """Item 4 (reviewer P3, verifier F3). The grant is written. Before its use,
+    the member approves a twin live in another chat. The use finds SPENT and
+    shows the card. Mutation: drop the SPENT read of the use -> a second write."""
+    _park_and_approve(liveness, monkeypatch, "t-hrd22b-r", **_CALL)
+    assert len(_grants(late_on)) == 1
+    out = _run(liveness, "t-hrd22b-r2", live="APPROVE", **_CALL)
+    assert "parked" not in out and WRITES == [("deal", "d-neuro", "Payment Complete")]
+    # The new run in the original chat takes the grant: the act is SPENT.
+    again = _run(liveness, "t-hrd22b-r", **_CALL)
+    assert again.get("parked"), "the card shows"
+    assert WRITES == [("deal", "d-neuro", "Payment Complete")]
+    assert _grants(late_on) == []
+
+
+def test_an_unreadable_postgres_refuses_the_grant(
+    late_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """Fail closed: a fault of the second witness gives no grant."""
+    def boom(*_a: Any, **_k: Any) -> bool:
+        raise RuntimeError("db down")
+
+    assert _run(liveness, "t-hrd22b-d", **_CALL).get("parked")
+    rid = _cards(liveness, "t-hrd22b-d")[0]["request_id"]
+    monkeypatch.setattr(pending_ask, "twin_approved_since", boom)
+    res = _approve_late(monkeypatch, "t-hrd22b-d", rid)
+    assert res.status_code == 409
+    assert _grants(late_on) == []
+
+
+def test_a_repeat_of_the_act_after_it_ran_shows_one_more_card_and_no_more(
+    late_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """The documented cost of the safe side: after the act ran, the member
+    repeats it on purpose. Its late approve shows one more card."""
+    _run(liveness, "t-hrd22b-c", live="APPROVE", **_CALL)
+    assert _run(liveness, "t-hrd22b-c", **_CALL).get("parked")
+    rid = _cards(liveness, "t-hrd22b-c")[-1]["request_id"]
+    res = _approve_late(monkeypatch, "t-hrd22b-c", rid)
+    assert res.status_code == 409 and _grants(late_on) == []
+
+
+def test_a_card_that_the_guard_refuses_leaves_no_facts_for_the_next_card():
+    """Item 5 (verifier F2). ``card_facts`` binds the ids of the next card. A
+    card that ``_check_card`` refuses never takes them, so they were stale.
+    Mutation: drop the clear in ``_confirm`` -> the facts stay."""
+    skill = pytest.importorskip("skill_projects.writes")
+    from acb_common.tool_refusals import GatewayRefusal
+    from acb_skills import whatsapp_acts
+
+    async def go() -> tuple[Any, Any]:
+        # One task, one context: the tool binds the facts, then the card.
+        skill._bind_card_facts(task_id="t-1")
+        with pytest.raises(GatewayRefusal):
+            await skill._confirm("Change it?", "d", "x" * (skill.CARD_CONTEXT_LIMIT + 5))
+        after_refusal = whatsapp_acts._NEXT_FACTS.get()
+        skill._bind_card_facts(task_id="t-2")  # a card that goes out still takes facts
+        return after_refusal, whatsapp_acts.take_card_facts()
+
+    after_refusal, taken = asyncio.run(go())
+    assert after_refusal is None
+    assert taken == {"task_id": "t-2"}
+
+
+def test_the_second_witness_is_read_before_the_offer_is_taken():
+    src = inspect.getsource(late_approve.grant_from_offer)
+    assert src.index("_twin_approved(") < src.index("redis.getdel(okey)")
+    assert src.index("SPENT_NAMESPACE") < src.index("redis.getdel(okey)")
+
+
+def test_the_member_level_mark_alone_stops_the_stale_twin(
+    late_on, ask_db, liveness, no_persist, monkeypatch,
+):
+    """Item 1, by behaviour: with the Postgres witness stubbed to False, the
+    member-level mark still refuses the grant. Mutation: drop the read of
+    ``SPENT_NAMESPACE`` in ``grant_from_offer`` -> a grant is written."""
+    assert _run(liveness, "t-hrd22b-m1", **_CALL).get("parked")
+    c1 = _cards(liveness, "t-hrd22b-m1")[0]["request_id"]
+    _run(liveness, "t-hrd22b-m2", live="APPROVE", **_CALL)
+    assert WRITES == [("deal", "d-neuro", "Payment Complete")]
+    monkeypatch.setattr(pending_ask, "twin_approved_since", lambda *_a, **_k: False)
+    res = _approve_late(monkeypatch, "t-hrd22b-m1", c1)
+    assert res.status_code == 409
+    assert _grants(late_on) == []

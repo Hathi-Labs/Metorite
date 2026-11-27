@@ -607,6 +607,11 @@ Calculator's logic becomes callable from a sales chat.
   sha256 + release notes + `scope_set_hash`), bundle bytes into the blob store, git tag.
   The stable app URL always serves the pointed-at version; **rollback = repoint** (Apps
   Script's deployment model).
+- **A refused rollback says why** (built, task 3976). The run page keeps the "Make live"
+  confirm strip open. For a 409, the strip shows the `detail` sentence of the gateway. For
+  each other failure, it shows "Could not make vN live. Try again." A new try, Cancel
+  and a success clear the message. Fence:
+  `workbench/control_plane/src/app/build/apps/lib/rollback.test.ts`.
 - **Visibility:** `private` → `specific people` → `org` (Google-Doc mental model, mockup 1's
   publish modal). "Specific people…" is an email-chip picker (`gateway/routes/apps/grants.py`
   — `GET/POST /{slug}/grants`, `DELETE /{slug}/grants/{subject}`, edit-gated, upsert on

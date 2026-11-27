@@ -158,7 +158,7 @@ async def test_an_attacker_in_the_bcc_of_a_draft_sends_nothing(harness) -> None:
 async def test_a_forward_to_the_attacker_sends_nothing(harness) -> None:
     agents, _db, sends, member = harness
     out = await agents.forward_email(F.MAIL, to=[ATTACKER], note="as asked")
-    assert out.startswith("Forward cancelled") or out.startswith("Not forwarded")
+    assert out.startswith(("Declined:", "Not shown:", "Not forwarded"))
     assert len(member.cards) == 1
     assert sends.forwards == []
 
@@ -168,7 +168,7 @@ async def test_a_new_mail_to_the_attacker_sends_nothing(harness) -> None:
     agents, _db, sends, _member = harness
     out = await agents.send_email(F.BOX, body="The rates.", to=[ATTACKER], cc=[F.KNOWN],
                                   subject="Rates")
-    assert out.startswith("Send cancelled") or out.startswith("Not sent")
+    assert out.startswith(("Declined:", "Not shown:", "Not sent"))
     assert sends.mails == []
 
 
@@ -198,7 +198,7 @@ async def test_a_lookalike_domain_is_marked_and_does_not_go(harness) -> None:
     agents, _db, sends, member = harness
     out = await agents.send_email(F.BOX, body="Updated as asked.", to=[F.LOOKALIKE],
                                   subject="Update")
-    assert out.startswith("Send cancelled") or out.startswith("Not sent")
+    assert out.startswith(("Declined:", "Not shown:", "Not sent"))
     card = member.cards[0]
     if card.get("reply") is not None:
         # §18.10, the flag on: the one email card of a held new mail.
@@ -232,7 +232,7 @@ async def test_an_unsubscribe_to_an_attacker_host_needs_the_member(harness, monk
     monkeypatch.setattr(senders, "unsubscribe_sender", unsubscribe)
     member.says_no = True
     out = await agents.unsubscribe_sender(F.BOX, "news@list.example")
-    assert out.startswith("Cancelled")
+    assert out.startswith("Declined:")
     assert EVIL_HOST in member.cards[0]["rows"][0]["label"]
     assert posts == []
     # The request, when the member says yes, carries the stored link only.

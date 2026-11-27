@@ -48,6 +48,7 @@ from gateway.routes.projects.agent_runs import (
     listed_question_sql,
     person_may_answer_sql,
     question_reason_sql,
+    with_image_urls,
 )
 from gateway.routes.projects.analytics import scope_clause, scope_params
 from gateway.routes.projects.core import (
@@ -109,7 +110,7 @@ def questions_sql(scope_sql: str, vis: Any) -> str:
     so the rule of an open question has one text.
     """
     return (
-        f"SELECT r.id AS run_id, r.client_via,"
+        f"SELECT r.id AS run_id, r.client_via, r.agent_label,"
         f"       COALESCE(r.started_at, r.created_at) AS run_started_at,"
         f"       t.id AS task_id, t.task_number, t.title AS task_title, t.project_id,"
         f"       {question_reason_sql('r')} AS why,"
@@ -165,7 +166,11 @@ def question_row(
     out, and "Everyone" answers 403."""
     via = run.client_via
     meta = from_jsonb(question.signal_metadata) or {}
+    content = with_image_urls(from_jsonb(question.content) or {})
     request = archive_request_of(question)
+    # CIV-14b (spec §12.9): the images of the question, with the url of the
+    # cookie serve route, as the run read gives them. Absent with none.
+    images = content.get("attachments") if isinstance(content, dict) else None
     return {
         "run_id": str(run.run_id),
         "activity_id": str(question.id),
@@ -173,18 +178,24 @@ def question_row(
         "task_number": int(run.task_number) if run.task_number is not None else None,
         "task_title": run.task_title,
         "agent_name": agent_oauth.client_label(via) if via else None,
+        # Task 4071. The label of the session (SW-7b, migration 418), such as
+        # `lane-devx`. Many lanes share one client on a box, so the label tells
+        # them apart. It is text that a client sent, cleaned on write
+        # (`agent_runs.clean_agent_label`). The client draws it as text.
+        "agent_label": getattr(run, "agent_label", None),
         "client_via": via,
         "asked_at": wire(question.created_at),
         "run_started_at": wire(run.run_started_at),
         "project_path": path,
         "question": {
             "kind": KIND_ARCHIVE_REQUEST if request is not None else KIND_QUESTION,
-            "body": (from_jsonb(question.content) or {}).get("body"),
+            "body": content.get("body") if isinstance(content, dict) else None,
             "options": meta.get("options") or [],
             "allow_multiple": bool(meta.get("allow_multiple")),
             # EA-18b. A typed request carries its expiry, so the card draws the
             # expired state with a Decline. Absent on any other question.
             **({"expires_at": request.get("expires_at")} if request is not None else {}),
+            **({"attachments": images} if isinstance(images, list) and images else {}),
         },
         "can_answer": bool(review or run.may_answer),
         "why": run.why,
