@@ -85,6 +85,20 @@ def test_the_share_verb_is_read_by_the_install_only() -> None:
     dependency, so the gate stays one gate. No file reads `.access.has(`,
     the other door to the same check.
 
+    WS-STU J2c adds four readers in `skills.py`, each with one
+    `user.has_permission(SHARE_RIGHT)`: `list_skill_shares` (403 for each
+    other caller), `approve_skill_share` and `reject_skill_share` (the
+    answer goes to the store as `can_publish`), and `unshare_skill` (a
+    member who is not the owner needs it). The ask of the owner
+    (`request_skill_share`) reads no right. `skills.py` imports the name
+    from `packages.py`, so the constant stays once.
+
+    SBX-1a adds one reader in `tool_gaps.py`: `list_tool_gaps`, the gap view
+    of an approver (`agent_sandbox.md` §9.2), with one
+    `user.has_permission(SHARE_RIGHT)` (403 for each other caller). It
+    imports the name from `packages.py`. The test takes out its one entry of
+    each list first.
+
     WS-STU B1b-3 adds one reader of another right: `approve_mcp_tool` reads
     `integrations:manage` (`routes/integrations.MANAGE_PERMISSION`), the right
     that connects and edits an MCP server. It reads no share verb. The test
@@ -125,6 +139,21 @@ def test_the_share_verb_is_read_by_the_install_only() -> None:
         assert names.count(share_name) == 1 and calls.count(share_call) == 1, (names, calls)
         names.remove(share_name)
         calls.remove(share_call)
+    # WS-STU J2c: the skill share reads the verb once in each of four handlers.
+    for handler in ("list_skill_shares", "approve_skill_share", "reject_skill_share",
+                    "unshare_skill"):
+        share_name = ("skills.py", handler, "Load")
+        share_call = ("skills.py", handler, "user.has_permission(SHARE_RIGHT)")
+        assert names.count(share_name) == 1 and calls.count(share_call) == 1, (
+            handler, names, calls)
+        names.remove(share_name)
+        calls.remove(share_call)
+    # SBX-1a: the gap view of an approver reads the verb once.
+    gaps_name = ("tool_gaps.py", "list_tool_gaps", "Load")
+    gaps_call = ("tool_gaps.py", "list_tool_gaps", "user.has_permission(SHARE_RIGHT)")
+    assert names.count(gaps_name) == 1 and calls.count(gaps_call) == 1, (names, calls)
+    names.remove(gaps_name)
+    calls.remove(gaps_call)
     # WS-STU B1b-3: the approval of an MCP tool reads the connections right once.
     approve_call = ("actions.py", "approve_mcp_tool",
                     "user.has_permission(_integrations.MANAGE_PERMISSION)")

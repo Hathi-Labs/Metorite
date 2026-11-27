@@ -30,6 +30,16 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
 pytestmark = _DB_GATE
 
 
+@pytest.fixture(autouse=True)
+def _kind_on(monkeypatch):
+    """LOOP-9: a kind reaches a member only in ``on``. This file tests the
+    scope check, so its kind runs ``on`` for every org."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "proactive_kind_modes", "k=on", raising=False)
+    monkeypatch.setattr(get_settings(), "proactive_kind_orgs", "*", raising=False)
+
+
 @pytest.fixture
 def world(promoted, app_engine):  # noqa: F811 — fixtures
     p = promoted

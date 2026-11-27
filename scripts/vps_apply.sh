@@ -1147,6 +1147,24 @@ if [ -n "$CC_DSN" ] && ! cc_reachable; then
   echo "       serve the Console -> ladder SKIPPED, deploy CONTINUES."
   echo "       ⚠️ Still a defect: the .env names a database that does not answer."
 elif [ -n "$CC_DSN" ]; then
+  # 🔴 H-170: back up the Console database BEFORE its ladder, and fail closed.
+  # The pre-migration backup of apply_migrations.sh never covered it: it has no
+  # Console DSN, and it does not run when no tenant migration is pending. So a
+  # Console migration ran with no restore point. Now a failed or refused dump
+  # stops the deploy here, and the ladder below never runs.
+  # The DSN is the libpq form that the applier uses, so the backup reads the
+  # same database that the ladder writes. backup_db.sh sends the stderr of
+  # pg_dump to a file, so no password reaches this log. It is not in the
+  # applier, because pr-check and dev_db.sh run that on throwaway databases.
+  # Fence: tests/unit/test_console_backup_gate.py.
+  cc_backup_dsn="${CC_DSN/+psycopg2/}"
+  cc_backup_dsn="${cc_backup_dsn/+psycopg/}"
+  if ! CUSTOMER_CONSOLE_DATABASE_URL="$cc_backup_dsn" bash scripts/backup_db.sh --console-only < /dev/null; then
+    echo "    !! ERROR: the Console backup FAILED, so the Console ladder did NOT run."
+    echo "       A Console migration runs only after a good dump of its database."
+    echo "       Read the backup lines above, fix the cause, then deploy again."
+    exit 1
+  fi
   CUSTOMER_CONSOLE_DATABASE_URL="$CC_DSN" \
     bash scripts/apply_customer_console_migrations.sh < /dev/null
 elif systemctl is-enabled --quiet acb-customer-console 2>/dev/null; then

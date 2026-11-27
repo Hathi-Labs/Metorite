@@ -290,9 +290,14 @@ async def _module_sources(
         )).fetchall():
             options = from_jsonb(r.options)
             target = options.get("lookup_module") if isinstance(options, dict) else None
+            # SEM-7: the option keys of a picklist. They are schema, not data.
+            keys = tuple(
+                str(o["value"]) for o in options
+                if isinstance(o, dict) and o.get("value") is not None
+            ) if isinstance(options, list) else ()
             defs.setdefault(str(r.entity), []).append(cat.Field(
                 key=str(r.key), label=str(r.label or r.key), type=str(r.type or "text"),
-                target=str(target) if target else None,
+                target=str(target) if target else None, options=keys,
             ))
         if count != COUNT_FROM_FILL:
             fills = await fills_of(db, org, entities)
@@ -314,9 +319,16 @@ async def _module_sources(
 
 async def _load(
     db: Any, org: str, *, only: str | None = None, count: bool | str = True,
+    core_counts: bool = True,
 ) -> tuple[str, list[Any], dict[str, str], list[dict[str, Any]]]:
     """The mode, the sources, the approved roles (slot → module) and the
-    approved items of other kinds, in the caller's tenant session."""
+    approved items of other kinds, in the caller's tenant session.
+
+    SEM-7: with *core_counts* False, no record count of a core entity is
+    read, and each one counts 0. The check of a semantic item needs only
+    the fields, and it runs under the plan lock
+    (``mapping_plans._check_semantic_refs``). Each other caller keeps the
+    default."""
     from gateway.crm_sync import profiles
     from gateway.routes.crm.core import is_mirror_mode
     from gateway.routes.crm.fill_rank import labels_of
@@ -326,7 +338,7 @@ async def _load(
     mirror = await is_mirror_mode(db, org)
     latest = await profiles.latest(db, org) if mirror else None
     counts: dict[str, int] = {}
-    if only is None:
+    if only is None and core_counts:
         row = (await db.execute(text(_CORE_COUNTS_SQL), {"org": org})).first()
         counts = {slug: int(getattr(row, slug, 0) or 0) for slug in CORE_ORDER} if row else {}
     if not mirror:

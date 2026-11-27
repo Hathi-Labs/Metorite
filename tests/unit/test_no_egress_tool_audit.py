@@ -113,7 +113,8 @@ EXPECTED_WITHHELD: dict[str, frozenset[str]] = {
         "change_agent_answer",
     }),
     "whatsapp-assistant": frozenset({
-        "web_search", "fetch_page", "code_task", "run_script", "run_workflow",
+        # D129 (task 808): an open run no longer holds code_task or run_script.
+        "web_search", "fetch_page", "run_workflow",
         "save_memory", "save_note",
     }),
     "task-manager": frozenset({
@@ -652,6 +653,27 @@ async def test_a_held_run_cannot_forget_a_pin_that_narrows_a_forward_rule(gw, he
         ok = await agents.forget_pattern("p-1", kind="rule")
         assert ok.startswith("Forgot rule pattern"), (pin, ok)
     assert gw.deletes == ["/email/rules/patterns/p-1"] * 2
+
+
+@pytest.mark.parametrize(("exclude", "approve"), [(False, True), (True, False)])
+async def test_a_held_run_cannot_review_a_pin_so_a_forward_rule_widens(
+    gw, held, exclude: bool, approve: bool,
+) -> None:
+    """P-2c (task 3919): to approve an "always match" pin, or to reject a
+    "never match" pin, widens its rule. A held run refuses that for a rule
+    that sends mail out, and for a rule that it cannot read. The review that
+    narrows a rule still runs behind its card."""
+    gw.rules = [LABEL_RULE, FORWARD_RULE]
+    gw.patterns = [_pin(exclude, "r-fwd")]
+    out = await agents.forget_pattern("p-1", action="review", approve=approve)
+    assert _is_held(out), out
+    gw.patterns = [_pin(exclude, "r-gone")]
+    assert _is_held(await agents.forget_pattern("p-1", action="review", approve=approve))
+    assert gw.cards == [] and gw.writes == []
+    for pin, ok in ((_pin(exclude, "r-lbl"), approve), (_pin(exclude, "r-fwd"), not approve)):
+        gw.patterns = [pin]
+        await agents.forget_pattern("p-1", action="review", approve=ok)
+    assert gw.writes == ["/email/rules/patterns/review"] * 2 and len(gw.cards) == 2
 
 
 async def test_an_open_run_forgets_a_pin_after_its_card(gw) -> None:

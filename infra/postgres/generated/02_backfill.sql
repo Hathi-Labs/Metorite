@@ -6,7 +6,7 @@
 --
 -- Batched UPDATE. Re-runnable and interruptible — each statement is idempotent, so a run that aborts can simply be run again. This is the slow phase; expect it to be the long pole on any table with real volume.
 --
--- Tables in this phase: 201
+-- Tables in this phase: 205
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -106,6 +106,9 @@ UPDATE chat_session_participant SET organization_id = (SELECT id FROM organizati
  WHERE organization_id IS NULL;
 
 UPDATE chat_topic SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE connection_semantic_models SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE copilot_config SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
@@ -361,6 +364,12 @@ UPDATE pm_agent_run_activities SET organization_id = (SELECT id FROM organizatio
  WHERE organization_id IS NULL;
 
 UPDATE pm_agent_run_strands SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE pm_project_sequences SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE pm_sequence_reservations SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE pm_agent_runs SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
@@ -669,6 +678,9 @@ UPDATE studio_skills SET organization_id = (SELECT id FROM organization WHERE sl
 UPDATE studio_skill_versions SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
+UPDATE studio_skill_runs SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
 UPDATE package_install SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
@@ -760,6 +772,18 @@ UPDATE email_signature_settings SET organization_id = (SELECT id FROM organizati
  WHERE organization_id IS NULL;
 
 UPDATE pm_epic_contracts SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE failure_events SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE failure_org_days SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE tool_gaps SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE user_tool_runs SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE member_action SET organization_id = (SELECT id FROM organization WHERE slug = 'default')

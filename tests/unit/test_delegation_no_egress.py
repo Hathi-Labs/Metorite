@@ -110,10 +110,17 @@ EXPECTED_OPEN_WORLD = frozenset({
     "compose_reply",
     # crm-assistant: writes that queue for the live Zoho tenant (D-CRM-9)
     "create_lead", "update_deal_status", "log_activity", "convert_lead",
+    # crm-assistant, P-3 (task 3954): a suggestion of the field map and a new
+    # AI analysis. They never queue for Zoho, and say open_world as each CRM
+    # write does.
+    "crm_decide_suggestion", "crm_rerun_analysis",
     # crm-assistant, WS-CRM CRM-M3a: a new pipeline. It never queues for Zoho,
     # but it says open_world as each CRM write does, so a covered run holds it off.
     "crm_create_pipeline",
     "crm_update_record", "crm_update_task",
+    # crm-assistant, CRM-M2e (task 3951): the set-up writes of stages and lost
+    # reasons. They never queue for Zoho, and say open_world as each CRM write does.
+    "crm_edit_status", "crm_edit_lost_reason",
     # task-manager (skill_my_tasks)
     "my_tasks_delegate",
 })
@@ -146,6 +153,8 @@ def _no_database(monkeypatch):
     # WS-VOX VOX-3: analyze_image is per org. The covered run pins the surface
     # of a lit org (the dark case is in test_attachment_analyze_image.py).
     monkeypatch.setattr(_ti_vox, "_image_withheld", lambda: frozenset())
+    # SBX-19: compute_run is per org too. The covered run pins a lit org.
+    monkeypatch.setattr(_ti_vox, "_compute_withheld", lambda: frozenset())
 
     monkeypatch.setattr(auth_access, "_tables_missing", auth_access._tables_missing)
     monkeypatch.setattr(routes_agent, "_load_dynamic_agents", lambda: [])

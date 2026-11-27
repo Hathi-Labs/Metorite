@@ -354,6 +354,40 @@ reason. `routes/projects/core.py` now:
 `NOT NULL`, with a `pm_organization_from_parent()` trigger (`:117`) so descendants inherit
 rather than each INSERT site remembering.
 
+**Task 2324 (2026-11-21).** Under FORCE RLS the trigger cannot read a parent of another
+organization. The 161 body then returned in silence. The child kept the org that the writer
+named, or got it from its other attachment. RLS WITH CHECK accepted that bound org, and the
+foreign key ignores RLS. So a child could name that parent.
+
+A new migration (471 at merge, 470 at build)
+makes the trigger refuse such a parent with SQLSTATE 23503. It refuses on an INSERT, and on an
+UPDATE that changes the link or the org. An UPDATE that keeps the link keeps the old return,
+because the cascade of a delete runs one. Fence: `tests/unit/test_pm_org_from_parent_r8.py`.
+
+**Task 3846 (2026-11-21).** Nineteen pm_* keys had no org guard, for example
+`pm_tasks.parent_task_id`, `type_id` and `status_id`. A session of one org could set such a
+key to a row of another org. Migration 491 adds the check-only function `pm_same_org_ref()`
+and one attachment for each key. The lane booked 472, and SW-107 merged its own 472 first.
+So the file became 476 on 2026-11-22. SW-27a (PR 2763) then merged 477 first, so the file
+became 482 on the same day. PR 2757 then merged 486 first, so the file became 491 on
+2026-11-23. The function refuses a row of another org with
+SQLSTATE 23503, for each role, and it never sets the org of a row. It keeps the rule of 471,
+so the delete of a parent still works.
+
+SW-107 (migration 472, task 3628) added a twentieth key, `pm_agent_runs.dispatched_by_run_id`,
+with ON DELETE SET NULL. Migration 491 guards it too. Its one writer reads the named run in the
+tenant session first, and it drops a refused value with a warning.
+
+SW-39 (migration 475, task 3799) added a twenty-first key, `pm_agent_runs.parent_run_id`, with
+ON DELETE CASCADE. A child run names the open run that it works under. Migration 491 guards it
+with the same function. A child has no task, so the guard reads only the parent run. The org of
+the parent must equal the org of the child, and a NULL parent passes.
+
+The header of 491 lists each key that it guards and each key that it leaves out. Fence:
+`tests/unit/test_pm_fk_same_org_r8.py`. It reads `pg_constraint`, so a new pm_* key with no
+guard fails it. Two keys of other tables stay open: `wa_commitments.task_id` and
+`reminders.promoted_task_id`.
+
 **What remains open here.** Assignee writes still accept any address. Nothing leaks now, but
 `PUT /tasks/{id}/assignees` returns `not_notified` (`tasks.py:591-596`) — the list of addresses
 that could not see the task. Post-retrofit, every out-of-tenant address lands in it, which
@@ -705,6 +739,38 @@ Stated plainly, so nobody reads silence as clearance.
 5. **Meeting bot, Note Taker and `live_session`.** Not examined. `meeting*`, `notes_glossary`,
    `transcript_segment` and `live_session` are all unscoped; whether any of them has a global
    read surface is unknown.
+
+   **Task 3845 (2026-11-22).** Task 2009 proved that the notes tables now have the tenant
+   column and FORCE RLS. But ten keys between them were plain foreign keys, for example the
+   meeting key of a transcript segment. The check of a foreign key ignores RLS. So a session
+   bound to org A could insert a child that named a meeting that org B owns. The child took
+   org A from the DEFAULT, and RLS accepted it.
+
+   Migration 486 (473 at build time, then 479) adds the check-only function
+   `notes_same_org_ref()` and one attachment for each key. It refuses a parent of another org
+   with SQLSTATE 23503, for each role. It keeps the rule of 471, so the delete of a meeting
+   or a recording still works.
+
+   Each request route of `gateway/routes/notes/` that inserts a child loads the meeting under
+   the bound tenant first. Five background writes use `get_db`, which binds no tenant (H4):
+   `enqueue_summary`, `generate_notes`, `run_transcription`, `_ingest_recording` and
+   `copilot._persist`. Under FORCE RLS such a session reads no row and cannot write one. So
+   the guard is defence in depth.
+
+   Fence: `tests/unit/test_notes_fk_same_org_r8.py`. It reads `pg_constraint`, so a new notes
+   key with no guard fails it. Three keys name tables outside the notes set and stay open:
+   `action_item.assignee_id`, `action_item.resulting_task_id` and
+   `transcript_segment.speaker_person_id`.
+
+   **Update 2026-11-22 (task 3844).** Each notes table now has `organization_id` and FORCE RLS
+   (`test_notes_tenant_isolation_r8.py`). Two unique keys were still over all orgs:
+   `copilot_config_pkey` on `owner_email` and `notes_glossary_user_term_idx` on
+   `(user_id, lower(term))`. RLS hides the row of another org, but a unique index does not. So
+   the unique error told a second org that another org held the key.
+
+   Migration `487_notes_keys_per_org.sql` adds the per-org keys (expand, R6). A later release
+   drops the two old keys (contract). Until then the oracle stays open, and the xfail of each
+   table stays strict.
 6. **The frontend.** `workbench/control_plane` was out of scope; if any org identity is derived
    client-side it would compound S1-1's wrong `/auth/me` answer.
 
@@ -737,7 +803,7 @@ like infrastructure but are not (below).
 | `provider_keys` | does the platform supply LLM keys and bill usage, or does each tenant BYOK? Today: shared, silently (S1-2) |
 | `model_config` | is the enabled-model catalogue a platform choice or a tenant choice? |
 | `mcp_servers`, `plugins` | is the tool registry curated by the platform, or self-serve per tenant? Today: self-serve *and* shared, which is the worst pair (S3-10) |
-| `copilot_config` | not examined; grouped by shape |
+| `copilot_config` | Superseded: the table has `organization_id` and FORCE RLS. Task 3844 adds a per-org key. The global key stays until a later release drops it (§4 item 5) |
 | `access_request` | a knock from an address with no org yet — genuinely has no tenant at knock time, but *some* tenant's admin must see it. Needs a routing rule (domain? invite token?), not a column |
 
 Being in this set must mean "we chose this", with the reason in the file. It must not mean

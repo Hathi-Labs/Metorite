@@ -111,7 +111,7 @@ def _one_instant(monkeypatch):
 #: The sources of a member with Projects and Email, and no Approvals.
 #: WS-66 RM-2b: `reminders` is a needs source, absent while the flag is off.
 SOURCES = {"tasks": "ok", "reminders": "absent", "studio": "absent", "approvals": "absent",
-           "projects": "ok", "email": "ok"}
+           "projects": "ok", "email": "ok", "providers": "absent"}
 
 
 def _member(email: str, *extra: str, is_admin: bool = False) -> UserContext:

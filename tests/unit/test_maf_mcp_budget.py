@@ -767,7 +767,7 @@ async def test_a_server_with_a_129th_tool_is_left_out_and_logged(monkeypatch):
     try:
         assert [t.name for t in agent.mcp_tools] == ["ok"]
         down = [e for e in logs if e["event"] == "mcp.unreachable" and e["name"] == "huge"]
-        assert down and down[0]["reason"] == "McpListTooLong"
+        assert down and down[0]["reason"] == "too_many_tools"
     finally:
         await _maf_mcp.close_mcp_tools(opened)
 
@@ -882,6 +882,11 @@ def test_the_experimental_maf_api_is_pinned() -> None:
             maf_mcp._MCP_PROGRESSIVE_UNLOAD_TOOL_NAME) == _LOADERS
     sig = inspect.signature(maf_mcp.MCPTool._list_progressive_mcp_tools)
     assert list(sig.parameters) == ["self", "ctx"]
+    # Task 3924: the autoload calls MAF's own load with a context over the live
+    # list, and MAF adds the tool to that list in place (``ctx.add_tools``).
+    sig = inspect.signature(maf_mcp.MCPTool._load_progressive_mcp_tool)
+    assert list(sig.parameters) == ["self", "ctx", "tool"]
+    assert "ctx.add_tools(" in inspect.getsource(maf_mcp.MCPTool._load_progressive_mcp_tool)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", ExperimentalWarning)

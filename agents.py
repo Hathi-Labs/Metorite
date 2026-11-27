@@ -102,9 +102,12 @@ SYSTEM_PROMPT = _append_skills(SYSTEM_PROMPT)
 def build_agent():
     """Return a GitHubCopilotAgent configured for the Metorite repo."""
     from agent_framework_github_copilot import GitHubCopilotAgent  # type: ignore[import]  # noqa: PLC0415
-    # SDK 1.0 (H-181): ``copilot.types`` is gone; the handler is top-level.
-    from copilot import PermissionHandler  # type: ignore[import]  # noqa: PLC0415
 
+    # No on_permission_request here (H-211, task 560). The slot stays empty,
+    # so the executor installs the B6 handler of AGENT_PERMISSION_MODE
+    # (``_copilot_session._install_copilot_permission_handler``). A factory
+    # ``approve_all`` approved every request in every mode.
+    # Fence: tests/unit/test_no_first_party_approve_all.py.
     return GitHubCopilotAgent(
         name="metorite",
         description=(
@@ -116,7 +119,6 @@ def build_agent():
         tools=[],
         default_options={
             "model": "tier-balanced",
-            "on_permission_request": PermissionHandler.approve_all,
         },
     )
 

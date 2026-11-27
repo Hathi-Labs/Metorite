@@ -93,12 +93,21 @@ lane rules in `scripts/home_server/lanes/lane-rules.md`.
 The start note is the first prompt of the session. Put these parts in one
 plain text file on the PC:
 
-1. The lane's name, its stream and the task numbers, in priority order.
+1. The lane's name, its stream and the task numbers, in priority order. Name
+   the lane as `agent_label`, and the machine as `host`. The lane sends both
+   with each claim (task 3626, SW-105).
 2. A time window, not a hard deadline. A lane refuses a HIGH slice that
    cannot finish before a hard deadline, so it stops early.
 3. The full text of `scripts/home_server/lanes/lane-rules.md`.
 4. For the merge lane only: `scripts/home_server/lanes/lane-merge.md` before
    the lane rules.
+
+When an orchestrator writes the note, its first line names the run id of the
+orchestrator, for example `Dispatched by run <run id>`. The lane passes that id
+as `dispatched_by` on each claim. A server that does not know the input
+refuses the claim, so the lane then claims again without it. The lane keeps
+the line in the note header, so a lane that restarts finds its dispatcher
+(SW-108). A note with no orchestrator carries no such line.
 
 ### 3.3 Start the lane
 
@@ -203,7 +212,7 @@ merges it. The other lanes keep building. Its role is in
 | File on the box | What it holds |
 |---|---|
 | `~/lanes/merge-bot-queue.tsv` | One line for each hand-over: pull request, task, worktree, lane, head SHA, tier, note. Tabs between the fields, under a `#` header line. Only `lane_handover.sh` writes it. A hand-over by PR number writes `-` as the worktree. |
-| `~/lanes/merge-bot.log` | One line for each result: `DONE <pull request> <sha>`, `RESOLVED <pull request> <rules>` or `BACK <pull request> <reason>`. Only the merge bot writes it. The bot also posts each BACK reason on the pull request as a comment. |
+| `~/lanes/merge-bot.log` | One line for each result: `DONE <pull request> <sha>`, `RESOLVED <pull request> <rules>`, `RENUMBERED <pull request> <old>-><new>[, ...]` or `BACK <pull request> <reason>`. Only the merge bot writes it. The bot also posts each BACK reason on the pull request as a comment. |
 | `~/lanes/merge-queue.tsv`, `~/lanes/merge-queue.log` | History of the lane-merge session, with HOLD, RED and NOTE lines that people wrote. Nothing reads them now. |
 
 A lane hands over a pull request only after three steps. The verifier passed,
@@ -321,6 +330,14 @@ It never uses force, and `rerere` stays off.
 
 The log then gets `RESOLVED <pull request> <rules>`, and the next pass waits
 for the new pr-check. The lane pulls its branch after a `RESOLVED` line.
+
+**Migration numbers** (CIV-RN, `ci_velocity.md` §8.10). lane-merge runs
+`~/lanes/merge-bot-src/scripts/home_server/merge_bot.sh --renumber <pull request> <sha>`
+before premerge. A migration at or below main's highest gets the next number
+of the ledger, and each later migration of the PR moves above it. The bot
+pushes the move with no force, and the log gets
+`RENUMBERED <pull request> <old>-><new>[, ...][ check by hand: <file>:<line>, ...]`.
+The lane pulls its branch after a `RENUMBERED` line.
 
 The log gets `BACK <pull request> conflict: ...` in these cases:
 
@@ -482,9 +499,47 @@ When `claude mcp list` shows `metorite` as "Needs authentication":
 5. Check with `claude mcp list`. Then start fresh lanes (§3.3), not resumes.
 
 The login needs a terminal. A login with no terminal opens no listener. A
-callback address that waits too long expires. The per-box token of task 1819
-(MCP-G17) replaces this procedure when it ships. `docs/box_connect.md` holds
-the box-token steps.
+callback address that waits too long expires.
+
+The per-box token of task 1819 (MCP-G17) replaces this procedure when it
+ships. `docs/box_connect.md` holds the box-token steps. A lane does not load
+`~/.config/metorite/box.env`. The user entry gets its header from the helper
+`~/.local/bin/metorite-box-headers`, so `box.sh start` needs no change. The
+OWNER STEP about the project entry of `.mcp.json` (`docs/box_connect.md` §4)
+still applies.
+
+With a box token, the sign-in ends only through an org switch:
+`scripts/metorite_switch_org.sh` (`docs/box_connect.md` §7).
+
+### 5.3 The sign-in alarm
+
+A timer checks the sign-in of §5.2 every 10 minutes on a dev machine. When
+`metorite` shows "Needs authentication" or is missing, it writes one NOTE
+line to `~/lanes/merge-queue.log`. A repeat sends nothing. A "back" NOTE
+marks the recovery. A failed check (timeout, odd text) changes nothing.
+
+⚠️ The check must never refresh the shared OAuth token. A refresh by the
+alarm can make a lane present a spent refresh token, and then the server
+signs out every lane. So the alarm reads `expiresAt` of the `metorite`
+entry in `~/.claude/.credentials.json` first. It runs the check only when
+the access token has 10 minutes or more left, or when no OAuth entry
+exists (a box token). An expired token does not page, because it can mean
+that nobody called. So with OAuth, the alarm cannot see a dead refresh
+token that no lane retries. The box token of task 1819 has no refresh
+token, and the alarm then checks on each run.
+
+- Install: `bash scripts/home_server/mcp_signin_alarm.sh install`. This
+  enables nothing. Enable with `... enable` (OWNER-GATE `deploy`).
+- Settings: `~/.config/metorite/alarm.env`. `METORITE_ALARM_CHANNEL` is
+  `note` (default) or `gh`. The `gh` channel opens one issue, and it closes
+  the issue on recovery. It needs `METORITE_ALARM_GH_USER`, the login to
+  mention. Without it, nothing is sent. `METORITE_ALARM_GH_REPO` sets the
+  repository (default `Hathi-Labs/Metorite`). A new issue also notifies the
+  watchers of the repository. `METORITE_ALARM_HOST` names the box.
+- Logs: `journalctl --user -u metorite-signin-alarm.service`. State is in
+  `~/.local/state/metorite/signin_alarm.json`.
+- `aroh-dev-1` and the PC's WSL install it the same way. When the checkout
+  is not `~/Metorite`, set `METORITE_REPO=<path>` in `alarm.env`.
 
 ---
 

@@ -124,14 +124,26 @@ def _member(user: UserContext) -> str:
     return (user.email or "").strip().lower()
 
 
+#: The held record kinds that hold one row for each person (§21): a new mail
+#: and, since HRD-8b-2, a forward.
+_HELD_ROW_KINDS: frozenset[str] = frozenset({"new", "forward"})
+#: The plain record kinds that hold the people as lists: a new-mail card and,
+#: since HRD-8b-3, a reply card (``reply_card._write_reply_record``).
+_PLAIN_KINDS: frozenset[str] = frozenset({"new-mail", "reply"})
+#: The Redis namespace of a reply card record. ``tests/unit/test_redraft_keeps_act.py``
+#: holds it equal to ``reply_card.REPLY_RECORD_NAMESPACE``, because that module
+#: imports this one.
+REPLY_NAMESPACE = "reply-card"
+
+
 def _people_of(rec: dict[str, Any]) -> dict[str, set[str]] | None:
     """The people of a card record, by kind and in lower case, or None for a
     record that is not a new mail. A plain record holds the lists, and a held
     record (§21) holds one row for each person."""
     kind = rec.get("kind")
-    if kind == "new-mail":
+    if kind in _PLAIN_KINDS:
         return {k: {str(a).strip().lower() for a in rec.get(k) or []} for k in _KINDS}
-    if kind == "new":
+    if kind in _HELD_ROW_KINDS:
         out: dict[str, set[str]] = {k: set() for k in _KINDS}
         for row in rec.get("rows") or []:
             if isinstance(row, dict) and row.get("kind") in out:
@@ -209,8 +221,13 @@ async def _find_card(
     if rec is not None and rec.get("kind") == "new-mail":
         return rec, nm.RECORD_NAMESPACE
     rec = await hc.peek_record(user, card_id, thread_id=thread_id)
-    if rec is not None and rec.get("kind") == "new":
+    if rec is not None and rec.get("kind") in _HELD_ROW_KINDS:
         return rec, hc.RECORD_NAMESPACE
+    # HRD-8b-3: a reply card keeps its own record in its own namespace. It names its
+    # thread only when the edit card is on, so no other reply record matches.
+    rec = await hc.peek_record(user, card_id, thread_id=thread_id, namespace=REPLY_NAMESPACE)
+    if rec is not None and rec.get("kind") == "reply":
+        return rec, REPLY_NAMESPACE
     return None
 
 
@@ -275,6 +292,11 @@ async def _keep_one(user: UserContext, org: str, member: str, thread: str, raw: 
         found = await _find_card(user, card_id, thread)
         if found is None:
             _log.info("email.card_draft_dropped", reason="no_card")
+            return False
+        if act_of(found[0]) != "new":
+            # HRD-8b-2: a forward card joins the revise, and it has no form that
+            # the member edits. A snapshot of it is no snapshot of a new mail.
+            _log.info("email.card_draft_dropped", reason="not_new_mail")
             return False
         with organization_scope(org):
             redis = hc._tenant_redis()
@@ -345,7 +367,8 @@ def _takes(link: dict[str, Any] | None, member: str, to: Any) -> bool:
 
 
 async def link_fields(
-    user: UserContext, thread_id: str, to: Any, *, cc: Any = (), act: str = "new",
+    user: UserContext, thread_id: str, to: Any, *, cc: Any = (), bcc: Any = (),
+    act: str = "new",
 ) -> dict[str, Any]:
     """The link fields of a new-mail card of the thread (§18.11 step 6).
 
@@ -394,7 +417,7 @@ async def link_fields(
     # HRD-8b: the default is that a card with a changed act still takes the link
     # (``revises`` and ``draft``) and says what changed. The owner may change
     # this on task 3459.
-    changed = changed_since(link, act=act, to=to, cc=cc)
+    changed = changed_since(link, act=act, to=to, cc=cc, bcc=bcc)
     if changed:
         out["changed"] = changed
     return out
@@ -452,7 +475,7 @@ async def _drop_snapshot(user: UserContext, thread: str, card_id: str) -> None:
 
 async def _write_link(
     user: UserContext, thread: str, card_id: str, draft: int, to: list[str],
-    *, act: str = "", cc: list[str] | None = None,
+    *, act: str = "", cc: list[str] | None = None, bcc: list[str] | None = None,
 ) -> None:
     """Write the link of the thread (§18.11 step 4.4): the revised card, its
     next draft number, and its To in lower case, so only a card to the same
@@ -473,7 +496,7 @@ async def _write_link(
     # HRD-8b: the link keeps the act kind and the Cc of the revised card, so the
     # next card can say what changed. The record of the card holds both.
     link = json.dumps({"owner": member, "card_id": card_id, "draft": draft, "to": to,
-                       "act": act, "cc": cc or []})
+                       "act": act, "cc": cc or [], "bcc": bcc or []})
     with organization_scope(hc._org_of(user)):
         redis = hc._tenant_redis()
         k = _key(LINK_PART, thread)
@@ -502,10 +525,18 @@ def _cc_of(rec: dict[str, Any]) -> list[str]:
     return sorted(a for a in (people or {}).get("cc", set()) if a)
 
 
+def _bcc_of(rec: dict[str, Any]) -> list[str]:
+    """The Bcc of a card record, in lower case and in a fixed order."""
+    people = _people_of(rec)
+    return sorted(a for a in (people or {}).get("bcc", set()) if a)
+
+
 #: The act kind of each record kind that the revise reads (HRD-8b). A plain
-#: new-mail card and a held ``new`` card are one act, a new mail. A forward and
-#: a reply join when their cards take the revise (HRD-8b-2).
-ACT_OF_KIND: dict[str, str] = {"new-mail": "new", "new": "new"}
+#: new-mail card and a held ``new`` card are one act, a new mail. A held
+#: ``forward`` card is a forward (HRD-8b-2), and a ``reply`` card is a reply
+#: (HRD-8b-3).
+ACT_OF_KIND: dict[str, str] = {"new-mail": "new", "new": "new", "forward": "forward",
+                               "reply": "reply"}
 
 
 def act_of(rec: dict[str, Any]) -> str:
@@ -518,7 +549,7 @@ def _strings(value: Any) -> list[str]:
     return [str(a) for a in value if isinstance(a, str)] if isinstance(value, list) else []
 
 
-def changed_since(link: dict[str, Any], *, act: str, to: Any, cc: Any) -> dict[str, Any]:
+def changed_since(link: dict[str, Any], *, act: str, to: Any, cc: Any, bcc: Any = ()) -> dict[str, Any]:
     """What differs between the card that the link names and the new card
     (HRD-8b): its act kind, its To and its Cc. A part that is equal is left
     out, so an empty answer means "nothing changed". A link that was written
@@ -529,7 +560,7 @@ def changed_since(link: dict[str, Any], *, act: str, to: Any, cc: Any) -> dict[s
     was_act = link.get("act")
     if isinstance(was_act, str) and was_act and act and was_act != act:
         out["act"] = {"was": was_act, "now": act}
-    for name, now in (("to", to), ("cc", cc)):
+    for name, now in (("to", to), ("cc", cc), ("bcc", bcc)):
         if name not in link:
             continue
         was_set, now_set = _lower_set(link.get(name)), _lower_set(now)
@@ -549,9 +580,9 @@ def _untickable(rec: dict[str, Any]) -> dict[str, list[str]] | None:
     so a new address that started unticked is never the member's untick.
     None for a record that is not a new mail."""
     kind = rec.get("kind")
-    if kind == "new-mail":
+    if kind in _PLAIN_KINDS:
         return {k: [str(a).strip().lower() for a in rec.get(k) or []] for k in _KINDS}
-    if kind == "new":
+    if kind in _HELD_ROW_KINDS:
         out: dict[str, list[str]] = {k: [] for k in _KINDS}
         for row in rec.get("rows") or []:
             if isinstance(row, dict) and row.get("kind") in out and row.get("checked") is True:
@@ -743,7 +774,7 @@ async def revise_new_mail_card(
         raise HTTPException(status_code=409, detail=nm.NO_CARD)
     try:
         await _write_link(user, thread, req.card_id, nxt, _to_of(rec),
-                          act=act_of(rec), cc=_cc_of(rec))
+                          act=act_of(rec), cc=_cc_of(rec), bcc=_bcc_of(rec))
     except Exception as exc:  # the class only: the link is a label, so the next card is "Draft 1"
         _log.warning("email.card_link_write_failed", error=type(exc).__name__)
     await _drop_snapshot(user, thread, req.card_id)

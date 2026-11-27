@@ -62,6 +62,7 @@ from acb_auth import agent_tokens
 from acb_auth.agent_tokens import (
     CONNECTION_DEAD,
     INVALID,
+    ORG_NOT_ALLOWED,
     REUSED,
     WRONG_CLIENT,
     IssuedTokens,
@@ -637,6 +638,212 @@ class TestRefreshRotation:
             assert _reason(await _rotate(issued.refresh_token)) == REUSED
             found = await lookup_token(other.access_token)
         assert found is not None and found.connection_id == other_cid
+
+
+class TestTheGraceWindow:
+    """MCP-G17f (task 4032, owner directive 2026-11-26, rule 5).
+
+    With ``agent_refresh_reuse_grace_s`` above 0, a reuse by the same client
+    of a token spent inside the window gets a sibling pair, and the
+    connection stays live. Every other refusal holds. Named mutations, each
+    proved red on 2026-11-26: drop the time bound of ``_GRACE_REFRESH_SQL``
+    (case b and the late org case go red), drop its ``revoked_at`` clause
+    (the revoked token case goes red), or drop ``revoked_at IS NULL`` from
+    ``_LOCK_LIVE_CONNECTION_SQL`` (case e goes red). Drop its
+    ``expires_at`` clause, and the expired token case goes red. The guard
+    of a window of 0 has a hermetic fence in ``test_agent_oauth_server.py``
+    (``test_a_window_of_zero_runs_no_sql``), because a gather of two
+    refreshes cannot force the order that needs it.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _grace(self, monkeypatch):
+        from acb_common import get_settings
+
+        monkeypatch.setattr(get_settings(), "agent_refresh_reuse_grace_s", 30)
+
+    async def test_two_concurrent_refreshes_both_get_a_pair(self, promoted):
+        """Case (a): the two sessions of one box both keep the board."""
+        async with tenant_engine_scope(promoted.app_dsn):
+            connection_id, _code, issued = await _connect(promoted.org_a)
+            results = await asyncio.gather(
+                _rotate(issued.refresh_token), _rotate(issued.refresh_token))
+            assert all(isinstance(r, IssuedTokens) for r in results), results
+            first, second = results
+            assert first.refresh_token != second.refresh_token
+            assert first.access_token != second.access_token
+            for won in results:
+                assert won.connection_id == connection_id
+                assert await lookup_token(won.access_token) is not None
+            # Each new refresh token works afterwards, one chain each.
+            for won in results:
+                again = await _rotate(won.refresh_token)
+                assert isinstance(again, IssuedTokens), again
+                assert await lookup_token(again.access_token) is not None
+        assert not _connection_revoked(promoted, connection_id), (
+            "a reuse inside the grace window revoked the connection")
+
+    async def test_a_reuse_in_the_window_slides_the_idle_window(self, promoted):
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, _code, issued = await _connect(promoted.org_a)
+            assert isinstance(await _rotate(issued.refresh_token), IssuedTokens)
+            _admin_exec(
+                promoted,
+                "UPDATE agent_connection SET expires_at = now() + interval '1 day', "
+                "       last_used_at = NULL WHERE id = :i", i=cid)
+            assert isinstance(await _rotate(issued.refresh_token), IssuedTokens)
+        row = _admin_one(
+            promoted,
+            "SELECT expires_at > now() + interval '2 days' AS slid, "
+            "       last_used_at IS NOT NULL AS stamped "
+            "  FROM agent_connection WHERE id = :i", i=cid)
+        assert row.slid and row.stamped
+
+    async def test_a_reuse_after_the_window_revokes(self, promoted):
+        """Case (b): the token was spent longer ago than the window."""
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, _code, issued = await _connect(promoted.org_a)
+            rotated = await _rotate(issued.refresh_token)
+            assert isinstance(rotated, IssuedTokens)
+            _admin_exec(
+                promoted,
+                "UPDATE agent_token SET used_at = now() - interval '31 seconds' "
+                " WHERE token_hash = :h", h=hash_token(issued.refresh_token))
+            assert _reason(await _rotate(issued.refresh_token)) == REUSED
+            assert await lookup_token(rotated.access_token) is None
+        assert _connection_revoked(promoted, cid)
+        assert _live_tokens(promoted, cid) == 0
+        reason = _admin_one(
+            promoted,
+            "SELECT revoked_reason FROM agent_connection WHERE id = :i",
+            i=cid)[0]
+        assert reason == agent_tokens.REVOKE_REFRESH_REUSE
+
+    async def test_a_window_of_zero_revokes_a_concurrent_refresh(
+            self, promoted, monkeypatch):
+        """Case (c): 0 turns the window off, as before MCP-G17f."""
+        from acb_common import get_settings
+
+        monkeypatch.setattr(get_settings(), "agent_refresh_reuse_grace_s", 0)
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, _code, issued = await _connect(promoted.org_a)
+            results = await asyncio.gather(
+                _rotate(issued.refresh_token), _rotate(issued.refresh_token))
+            assert sum(isinstance(r, IssuedTokens) for r in results) <= 1
+        assert _connection_revoked(promoted, cid)
+
+    async def test_another_client_gets_nothing_in_the_window(self, promoted):
+        """Case (d): WRONG_CLIENT spends nothing and issues nothing."""
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, _code, issued = await _connect(promoted.org_a)
+            evil = "https://evil.example/m.json"
+            assert _reason(await _rotate(issued.refresh_token, client_id=evil)) \
+                == WRONG_CLIENT
+            spent = _admin_one(
+                promoted,
+                "SELECT used_at IS NOT NULL FROM agent_token WHERE token_hash = :h",
+                h=hash_token(issued.refresh_token))[0]
+            assert not spent, "a wrong client spent the token"
+            assert isinstance(await _rotate(issued.refresh_token), IssuedTokens)
+            before = _live_tokens(promoted, cid)
+            # A spent token, in the window, from another client or resource.
+            assert _reason(await _rotate(issued.refresh_token, client_id=evil)) \
+                == WRONG_CLIENT
+            assert _reason(await _rotate(
+                issued.refresh_token, resource="https://other.example/mcp")) \
+                == WRONG_CLIENT
+            assert _live_tokens(promoted, cid) == before
+        assert not _connection_revoked(promoted, cid)
+
+    async def test_a_revoked_connection_gets_no_pair(self, promoted):
+        """Case (e): the token is spent inside the window, and the
+        connection is revoked."""
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, _code, issued = await _connect(promoted.org_a)
+            assert isinstance(await _rotate(issued.refresh_token), IssuedTokens)
+            _admin_exec(
+                promoted,
+                "UPDATE agent_connection SET revoked_at = now() WHERE id = :i",
+                i=cid)
+            before = _admin_one(
+                promoted,
+                "SELECT count(*) FROM agent_token WHERE connection_id = :i",
+                i=cid)[0]
+            assert _reason(await _rotate(issued.refresh_token)) == CONNECTION_DEAD
+            after = _admin_one(
+                promoted,
+                "SELECT count(*) FROM agent_token WHERE connection_id = :i",
+                i=cid)[0]
+        assert after == before, "a revoked connection got a new pair"
+
+    async def test_an_expired_connection_gets_no_pair(self, promoted):
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, _code, issued = await _connect(promoted.org_a)
+            assert isinstance(await _rotate(issued.refresh_token), IssuedTokens)
+            _admin_exec(
+                promoted,
+                "UPDATE agent_connection "
+                "   SET expires_at = now() - interval '1 second' WHERE id = :i",
+                i=cid)
+            assert _reason(await _rotate(issued.refresh_token)) == CONNECTION_DEAD
+
+    async def test_an_org_off_the_list_gets_no_pair(self, promoted, monkeypatch):
+        """Case (f): rule 8 holds inside the window. No pair, no revoke."""
+        from acb_common import get_settings
+
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, _code, issued = await _connect(promoted.org_a)
+            assert isinstance(await _rotate(issued.refresh_token), IssuedTokens)
+            before = _live_tokens(promoted, cid)
+            monkeypatch.setattr(
+                get_settings(), "agent_access_orgs", promoted.org_b)
+            assert _reason(await _rotate(issued.refresh_token)) == ORG_NOT_ALLOWED
+            assert _live_tokens(promoted, cid) == before
+        assert not _connection_revoked(promoted, cid)
+
+    async def test_an_org_off_the_list_still_revokes_after_the_window(
+            self, promoted, monkeypatch):
+        from acb_common import get_settings
+
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, _code, issued = await _connect(promoted.org_a)
+            assert isinstance(await _rotate(issued.refresh_token), IssuedTokens)
+            _admin_exec(
+                promoted,
+                "UPDATE agent_token SET used_at = now() - interval '31 seconds' "
+                " WHERE token_hash = :h", h=hash_token(issued.refresh_token))
+            monkeypatch.setattr(
+                get_settings(), "agent_access_orgs", promoted.org_b)
+            assert _reason(await _rotate(issued.refresh_token)) == REUSED
+        assert _connection_revoked(promoted, cid)
+
+    async def test_an_expired_token_gets_no_pair(self, promoted):
+        """F3. An expired token never matches the window, as in the spend.
+        Mutation: drop ``expires_at > now()`` from ``_GRACE_REFRESH_SQL``."""
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, _code, issued = await _connect(promoted.org_a)
+            assert isinstance(await _rotate(issued.refresh_token), IssuedTokens)
+            _admin_exec(
+                promoted,
+                "UPDATE agent_token SET expires_at = now() - interval '1 second' "
+                " WHERE token_hash = :h", h=hash_token(issued.refresh_token))
+            # It falls back to the rule before MCP-G17f: a reuse revokes.
+            assert _reason(await _rotate(issued.refresh_token)) == REUSED
+        assert _connection_revoked(promoted, cid)
+
+    async def test_a_revoked_token_gets_no_pair(self, promoted):
+        """A token that a revoke reached never matches the window."""
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, _code, issued = await _connect(promoted.org_a)
+            rotated = await _rotate(issued.refresh_token)
+            assert isinstance(rotated, IssuedTokens)
+            _admin_exec(
+                promoted,
+                "UPDATE agent_token SET revoked_at = now() WHERE token_hash = :h",
+                h=hash_token(issued.refresh_token))
+            # It falls back to the rule before MCP-G17f: a reuse revokes.
+            assert _reason(await _rotate(issued.refresh_token)) == REUSED
+        assert _connection_revoked(promoted, cid)
 
 
 class TestEachRefreshClauseRefuses:

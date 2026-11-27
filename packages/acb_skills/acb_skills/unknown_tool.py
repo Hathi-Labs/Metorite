@@ -16,6 +16,8 @@ The answer holds tool and pack names only, never member or tool data. It
 names a tool only when the member may use it: a tool in the request now, or
 a tool of a pack that ``load_skill_tools`` offers to this run (the planner
 filtered that list by the member's permissions and the held run, H-236).
+The one exception is the answer of HRD-1d, which repeats the name that the
+model called, and no other name.
 
 Each answer says what happened ("Not run …") and what is true now. None
 tells the model to call the tool again. The rewrite changes the result in
@@ -47,28 +49,52 @@ asks it, and shows :data:`MEMBER_LINE` on the step in its place.
 
 HRD-1b (task 3230): a batch run gets the same answer, with no flag. One hook
 of the executor, ``_unknown_tool_view``, puts the provider on the stream run
-of the orchestrator and on each batch run (``_assemble_batch_agents``). So a
-WhatsApp run, a delegated agent, a worker and a self-anneal retry are in
-scope. A batch run has no loader, so it never loads.
+and on each batch run (``_assemble_batch_agents``). So a WhatsApp run, a
+delegated agent, a worker and a self-anneal retry are in scope. A batch run
+has no loader, so it never loads. HRD-1c (task 3679): the stream run of each
+agent gets it, not only the orchestrator's. An agent that is not the
+orchestrator has no loader either, so its answer names only a tool of its
+own request. Fence: ``tests/unit/test_unknown_tool_non_orchestrator_stream.py``.
 A delegated run answers another model, and a run with no chat answers no
 member. Each of those runs is a *step* (``step=True``). Its answer names only
 a tool of the request, or it is :data:`NOT_IN_STEP`. A step never reads the
 record of the packs and never asks a loader, so its text names no pack and
 offers no load. Fence: ``tests/unit/test_unknown_tool_batch_paths.py``.
+
+HRD-1d (task 3719): a run that holds a pack that reads mail from outside
+senders gets no MCP server (``_tool_injection._inject_mcp_servers``). The
+model can still call a tool of such a server, because the name is in the
+history of the chat. :data:`NOT_HERE` then said that no tool has that name,
+which is false. Now the skip tells the provider of the run which servers it
+held back (:func:`note_withheld`), as a :class:`Withheld` value from the
+server config. A call of a tool of one of them gets :data:`WITHHELD_MAIL`,
+which says why and what the member can do. A step ignores the value. Fence:
+``tests/unit/test_unknown_tool_withheld.py``.
+
+The rewrite is also the capture site C3 of the failure log
+(``tool_failure_log.md`` §4.2, TOF-2c): ONE ``unknown_tool`` record for each
+call of this run, and none for a result of the chat history. Fence:
+``tests/unit/test_failure_capture_sites.py``.
 """
 from __future__ import annotations
 
 import difflib
 import re
 from collections.abc import Awaitable, Callable, Iterable, Mapping
+from dataclasses import dataclass
 from typing import Any
 
-from acb_common import get_logger
+from acb_common import failure_log, get_logger
 from agent_framework import ChatMiddleware, Content, ContextProvider, FunctionInvocationContext
 
+# TOF-2b: the set of built-in names is in the failure log before C3 runs
+# (tool_failure_log.md §3.2 rule 1).
+from acb_skills import builtin_tools as _builtin_tools  # noqa: F401
+
 __all__ = [
-    "MEMBER_LINE", "NOT_IN_STEP", "UnknownToolAnswer", "UnknownToolProvider", "answer_for",
-    "autoload_enabled", "is_raw", "unknown_call_name",
+    "MEMBER_LINE", "NOT_IN_STEP", "WITHHELD_MAIL", "WITHHELD_MAIL_REASON", "UnknownToolAnswer",
+    "UnknownToolProvider", "Withheld", "answer_for", "autoload_enabled", "is_raw",
+    "note_withheld", "reads_withheld", "unknown_call_name",
 ]
 
 _log = get_logger("acb_skills.unknown_tool")
@@ -117,10 +143,22 @@ NOT_HERE = (
 #: HRD-1b: the answer of a step (a delegated run, or a run with no chat) when
 #: no tool of the request is close. It names no pack and offers no load.
 NOT_IN_STEP = "Not run: {name} is not available in this step. Use only the tools that you hold."
+#: HRD-1d: the answer to a call of a tool of an MCP server that the run held
+#: back, because the run reads mail from outside senders. The model can quote
+#: it to the member, so it holds no internal word and names no other server.
+WITHHELD_MAIL = (
+    "Not run: {name} is a tool of a connected system, and a chat that reads email "
+    "from outside senders cannot use it. Tell the member that this tool works in a "
+    "new chat that does not read email."
+)
+#: The reason code of :data:`WITHHELD_MAIL`.
+WITHHELD_MAIL_REASON = "untrusted_mail"
+#: Each reason code of a :class:`Withheld` value, with its answer.
+WITHHELD_TEXTS: Mapping[str, str] = {WITHHELD_MAIL_REASON: WITHHELD_MAIL}
 #: Every answer text, for the fence.
 TEXTS = (
     SUGGEST_LOAD, SUGGEST_LOAD_NEAR, LOADED_NOW, LOADED_NOW_NEAR, LOAD_FAILED,
-    LIVE_NOW, SUGGEST_LIVE, NEEDS_PACK, NOT_HERE, NOT_IN_STEP,
+    LIVE_NOW, SUGGEST_LIVE, NEEDS_PACK, NOT_HERE, NOT_IN_STEP, WITHHELD_MAIL,
 )
 #: What the member reads on the step of the trail in place of MAF's text
 #: (task 3599). It names no tool, no pack and no framework. The model never
@@ -200,10 +238,54 @@ def _owners(offered: Iterable[str]) -> dict[str, str]:
     return by_tool
 
 
+def _first_party(name: str) -> bool:
+    """True when a pack of the platform holds a tool named *name*."""
+    from acb_skills import tool_packs as tp
+
+    return any(name in tuple(getattr(p, "tools", ()) or ()) for p in tp.PACKS.values())
+
+
+def _first_party_names() -> set[str]:
+    """The tool names of every pack of the platform."""
+    from acb_skills import tool_packs as tp
+
+    return {t for p in tp.PACKS.values() for t in tuple(getattr(p, "tools", ()) or ())}
+
+
+@dataclass(frozen=True)
+class Withheld:
+    """HRD-1d: the MCP servers that ONE run held back on purpose, and why.
+
+    *prefixes* holds the start of each tool name of a held server, as MAF
+    makes it: the server name, then one ``_`` (``_maf_mcp.tool_prefix``).
+    The orchestrator makes each one from the server config, never from a tool
+    argument or the member's text. *reason* is a key of
+    :data:`WITHHELD_TEXTS`."""
+
+    prefixes: frozenset[str]
+    reason: str
+
+    def holds(self, name: str) -> bool:
+        """True when *name* is a tool name of a held server.
+
+        The name must start with the full prefix, ``_`` included, so a call of
+        ``shopx_find`` never matches the server ``shop``. A name that a pack
+        of the platform holds keeps the answer that it had before HRD-1d,
+        because the tool of the platform is the more likely meaning."""
+        if self.reason not in WITHHELD_TEXTS or not name:
+            return False
+        if not any(p and name.startswith(p) and len(name) > len(p) for p in self.prefixes):
+            return False
+        # A server may share its name with a family of the platform (``crm``).
+        # A near miss of a tool of the platform then keeps its close-name
+        # answer, so the model corrects itself in the same turn (review P2).
+        return not _first_party(name) and not _closest(name, _first_party_names())
+
+
 def answer_for(
     name: str, *, live: Iterable[str], offered: Iterable[str], held: Iterable[str] = (),
     gone: Iterable[str] = (), loaded: str = "", tried: str = "", load_answer: str = "",
-    step: bool = False,
+    step: bool = False, withheld: Withheld | None = None,
 ) -> str:
     """The answer to a call of the unknown tool *name*. Pure: no I/O.
 
@@ -216,11 +298,17 @@ def answer_for(
 
     HRD-1b: *step* is True for a delegated run or a run with no chat. It
     reads *live* only, so the answer names a tool of the request or none.
+
+    HRD-1d: *withheld* is the servers that the run held back on purpose. A
+    name of one of them gets the text of its reason, in place of a close
+    name or :data:`NOT_HERE`. A tool of the request and the exact name of
+    an offered tool keep their answer. A step ignores *withheld*.
     """
     shown = _clean(name)
     live_names = set(live)
     if step:
         # A step reads no pack: no pack name and no load, whatever the caller passed.
+        # HRD-1d: and no held server, so NOT_IN_STEP stays its answer.
         if name in live_names:
             return LIVE_NOW.format(name=shown)
         near = _closest(name, live_names)
@@ -246,6 +334,10 @@ def answer_for(
     # The exact name of a tool in an offered pack.
     if name in by_tool:
         return SUGGEST_LOAD.format(name=shown, slug=by_tool[name])
+    # HRD-1d: a tool of a server that this run held back on purpose. The text
+    # says why, so the model does not tell the member that the tool is gone.
+    if withheld is not None and withheld.holds(name):
+        return WITHHELD_TEXTS[withheld.reason].format(name=shown)
     # The closest real name among the tools that the member may use.
     near = _closest(name, [*live_names, *by_tool])
     if near:
@@ -308,11 +400,18 @@ class UnknownToolAnswer(ChatMiddleware):
     live list.
 
     HRD-1b: with *step*, it keeps no loader, reads no record of the packs
-    and answers with ``answer_for(step=True)``."""
+    and answers with ``answer_for(step=True)``.
 
-    def __init__(self, loader: Any = None, *, step: bool = False) -> None:
+    HRD-1d: *withheld* is the servers that the run held back on purpose. A
+    call of one of their tools never asks the loader, so a server tool name
+    can never load a pack with a close name. A step keeps no *withheld*."""
+
+    def __init__(
+        self, loader: Any = None, *, step: bool = False, withheld: Withheld | None = None,
+    ) -> None:
         self._step = step
         self._loader = None if step else loader
+        self._withheld = None if step else withheld
         #: The raw results that the first request held. The key is the call
         #: id, so a copy of a result keeps it. The list keeps each object
         #: alive, so the id of an object with no call id is not used twice.
@@ -323,6 +422,25 @@ class UnknownToolAnswer(ChatMiddleware):
         #: slug and the text of a refused load ("" and "" after a load). A
         #: name gets ONE load try in a run, so the loop cannot spin the loader.
         self._tried: dict[str, tuple[str, str]] = {}
+        #: TOF-2c (C3): the keys of the calls of this run that the failure log
+        #: holds. A call writes one record, however many requests hold it.
+        self._recorded: set[str] = set()
+
+    def _record(self, content: Any, name: str) -> None:
+        """The capture site C3 (``tool_failure_log.md`` §4.2): ONE record for
+        each call of this run. A result from the chat history (a key of the
+        first request) writes none. *name* is model text, so the writer
+        keeps it in the tenant column only. Never raises."""
+        try:
+            key = _result_key(content)
+            if key in self._history_keys or key in self._recorded:
+                return
+            self._recorded.add(key)
+            failure_log.record_tool_failure(
+                None, source="chat_tool", error_code="unknown_tool", tool=name,
+                **failure_log.run_fields())
+        except Exception as exc:  # the class only: the answer stays
+            _log.debug("unknown_tool.capture_failed", error_type=type(exc).__name__)
 
     async def process(self, context: Any, call_next: Callable[[], Awaitable[None]]) -> None:
         try:
@@ -363,10 +481,14 @@ class UnknownToolAnswer(ChatMiddleware):
         run = run if isinstance(run, tp.PackRun) else None
         tools = options.get("tools") if isinstance(options, Mapping) else None
         for content, name in hits:
+            self._record(content, name)  # C3 (TOF-2c)
             held = run.holds() if run is not None else ()
             offered = tuple(s for s in (getattr(loader, "offered", ()) or ()) if s not in held)
             gone = tuple(getattr(run, "gone", ()) or ())
             loaded = tried = load_answer = ""
+            # HRD-1d: a tool of a server that the run held back never asks
+            # the loader. A close pack name is not what the model meant.
+            held_back = self._withheld is not None and self._withheld.holds(name)
             repeat = name in self._tried
             if repeat:
                 # Task 3599: the second call of a name in this run. The loader
@@ -374,8 +496,8 @@ class UnknownToolAnswer(ChatMiddleware):
                 # answer, unless the name is in the tools now.
                 if name not in _live_names(tools):
                     tried, load_answer = self._tried[name]
-            elif (_result_key(content) not in self._history_keys and live_list is not None
-                    and loader is not None and autoload_enabled()):
+            elif (not held_back and _result_key(content) not in self._history_keys
+                    and live_list is not None and loader is not None and autoload_enabled()):
                 self._tried[name] = ("", "")
                 try:
                     loaded, tried, load_answer = await self._autoload(name, offered, live_list)
@@ -384,10 +506,13 @@ class UnknownToolAnswer(ChatMiddleware):
                 self._tried[name] = (tried, load_answer)
             text = answer_for(
                 name, live=_live_names(tools), offered=offered, held=held, gone=gone,
-                loaded=loaded, tried=tried, load_answer=load_answer)
+                loaded=loaded, tried=tried, load_answer=load_answer, withheld=self._withheld)
             _set_text(content, text)
+            reason = self._withheld.reason if held_back and self._withheld is not None else ""
+            shown = bool(reason) and text == WITHHELD_TEXTS[reason].format(name=_clean(name))
             _log.info("unknown_tool.answered", tool=_clean(name),
-                      loaded=loaded or None, refused=tried or None, repeat=repeat or None)
+                      loaded=loaded or None, refused=tried or None, repeat=repeat or None,
+                      **({"withheld": reason} if shown else {}))
 
     async def _autoload(
         self, name: str, offered: tuple[str, ...], live_list: list[Any],
@@ -440,13 +565,20 @@ class UnknownToolProvider(ContextProvider):
     """Adds :class:`UnknownToolAnswer` to ONE run of a native MAF agent.
 
     HRD-1b: *step* is True for a delegated run or a run with no chat. Then
-    it looks for no loader on the agent, so the answer never loads a pack."""
+    it looks for no loader on the agent, so the answer never loads a pack.
+
+    HRD-1d: :attr:`withheld` is None until :func:`note_withheld` sets it.
+    The executor makes the provider before the MCP step decides what to hold
+    back, so the value comes after the provider and before ``before_run``.
+    With no value, the answer is the answer of HRD-1c, byte for byte."""
 
     SOURCE_ID = "unknown_tool_answer"
 
     def __init__(self, *, step: bool = False) -> None:
         super().__init__(self.SOURCE_ID)
         self.step = step
+        #: HRD-1d: the servers that this run held back. Only a chat run reads it.
+        self.withheld: Withheld | None = None
 
     async def before_run(
         self, *, agent: Any, session: Any, context: Any, state: dict[str, Any],
@@ -460,4 +592,35 @@ class UnknownToolProvider(ContextProvider):
         for provider in getattr(agent, "context_providers", None) or []:
             if isinstance(provider, LoadSkillToolsProvider):
                 loader = provider.loader
-        context.extend_middleware(self.SOURCE_ID, [UnknownToolAnswer(loader)])
+        answer = (UnknownToolAnswer(loader) if self.withheld is None
+                  else UnknownToolAnswer(loader, withheld=self.withheld))
+        context.extend_middleware(self.SOURCE_ID, [answer])
+
+
+def _chat_provider(agent: Any) -> UnknownToolProvider | None:
+    """The provider of a chat run (not a step) on the view *agent*, or None."""
+    for provider in getattr(agent, "context_providers", None) or []:
+        if isinstance(provider, UnknownToolProvider) and not provider.step:
+            return provider
+    return None
+
+
+def reads_withheld(agent: Any) -> bool:
+    """HRD-1d: True when the view *agent* holds a provider that reads a
+    :class:`Withheld` value. A step, a run with no view and an agent that is
+    not the first of the run hold none. Then the caller reads no registry."""
+    return _chat_provider(agent) is not None
+
+
+def note_withheld(agent: Any, prefixes: Iterable[str], *, reason: str) -> bool:
+    """HRD-1d: hand the servers that this run held back to the provider of
+    the view *agent*. *prefixes* is the start of each tool name of a held
+    server (``_maf_mcp.tool_prefix``). The caller makes them from the server
+    config. True when the provider took the value. An empty set, a reason
+    with no text and a view with no chat provider change nothing."""
+    kept = frozenset(p for p in prefixes if isinstance(p, str) and p)
+    provider = _chat_provider(agent)
+    if provider is None or not kept or reason not in WITHHELD_TEXTS:
+        return False
+    provider.withheld = Withheld(prefixes=kept, reason=reason)
+    return True
