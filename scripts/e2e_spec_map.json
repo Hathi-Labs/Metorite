@@ -48,12 +48,12 @@
         "src/lib/shell/askBar", "src/lib/shell/phoneBar", "src/lib/shell/briefTurn"
       ],
       "areas": ["assistant"],
-      "specs": ["shell-*.spec.ts", "sidebar-*.spec.ts", "rail-rows.spec.ts", "app-title-bar.spec.ts"]
+      "specs": ["shell-*.spec.ts", "sidebar-*.spec.ts", "rail-rows.spec.ts", "app-title-bar.spec.ts", "session-picker-strip.spec.ts"]
     },
     {
       "name": "shell. A shared shell file that is only reached as an importer selects the shell specs, not every spec.",
       "paths": ["src/lib/shell/", "src/components/AppShell", "src/components/AppTopBar", "src/components/Sidebar", "src/app/layout"],
-      "specs": ["shell-*.spec.ts", "sidebar-*.spec.ts", "rail-rows.spec.ts", "app-title-bar.spec.ts"]
+      "specs": ["shell-*.spec.ts", "sidebar-*.spec.ts", "rail-rows.spec.ts", "app-title-bar.spec.ts", "session-picker-strip.spec.ts"]
     }
     ,
     {
@@ -122,15 +122,16 @@
         "chat*.spec.ts", "approval-stack.spec.ts", "askbar-clearance.spec.ts", "assistant-motion.spec.ts",
         "genui-option-picker.spec.ts", "interview-offer-start.spec.ts", "plan-card.spec.ts",
         "glass-rail-menu.spec.ts", "phone-bar-always.spec.ts", "email-chat-*.spec.ts",
-        "email-held-send.spec.ts", "email-redraft.spec.ts", "one-assistant-email.spec.ts",
+        "email-held-send.spec.ts", "email-redraft.spec.ts", "task-edit-card.spec.ts", "touch-targets.spec.ts", "one-assistant-email.spec.ts",
         "agent-questions*.spec.ts", "agent-runs.spec.ts"
       ]
     },
     "home": {
       "paths": ["src/app/page.tsx", "src/app/api/brief/", "src/components/BreathingCharacter", "src/components/WelcomeDialog"],
       "specs": [
-        "my-day-feed.spec.ts", "myday-peek.spec.ts", "brief-card.spec.ts", "buddy-hello.spec.ts",
-        "chat-starter-pills.spec.ts", "guide-*.spec.ts", "sidebar-row-counts.spec.ts"
+        "my-day-capture.spec.ts", "my-day-feed.spec.ts", "myday-peek.spec.ts", "brief-card.spec.ts", "buddy-hello.spec.ts",
+        "chat-starter-pills.spec.ts", "guide-*.spec.ts", "sidebar-row-counts.spec.ts",
+        "focus-anywhere.spec.ts", "my-day-needs-tabs.spec.ts"
       ]
     },
     "artifacts": {
@@ -138,7 +139,7 @@
         "src/app/artifacts/", "src/app/apps/", "src/app/api/artifacts/", "src/app/api/apps/",
         "src/components/Artifact", "src/lib/artifact", "src/lib/compile"
       ],
-      "specs": ["react-artifact.spec.ts", "untrusted-html.spec.ts", "custom-app-bridge.spec.ts", "sandbox-theming.spec.ts", "theming.spec.ts"]
+      "specs": ["react-artifact.spec.ts", "untrusted-html.spec.ts", "custom-app-bridge.spec.ts", "sandbox-theming.spec.ts", "theming.spec.ts", "session-picker-strip.spec.ts"]
     },
     "other-apps": {
       "paths": [
@@ -154,7 +155,8 @@
       ],
       "specs": [
         "shell-presets.spec.ts", "rail-rows.spec.ts", "untrusted-html.spec.ts",
-        "agent-questions-doors.spec.ts", "app-title-bar.spec.ts", "studio-app-rail.spec.ts"
+        "agent-questions-doors.spec.ts", "app-title-bar.spec.ts", "studio-app-rail.spec.ts",
+        "workflow-card-height.spec.ts"
       ]
     }
   }

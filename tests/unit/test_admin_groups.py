@@ -104,6 +104,12 @@ class _FakeDB:
         self.groups: dict[str, dict[str, Any]] = {}    # id → row
         self.members: dict[tuple[str, str], dict[str, Any]] = {}  # (gid, uid)
         self.overrides: dict[tuple[str, str], dict[str, Any]] = {}  # (uid, perm)
+        #: ``organization.settings -> 'integration_access'`` (ACC-1). None is
+        #: no rule. The group gates read it.
+        self.integration_access: Any = None
+        #: Each read of the rules, as its SQL text. ACC-1 fix round 1 checks
+        #: the row lock of the group gates.
+        self.rule_reads: list[str] = []
         self.committed = 0
 
     # helpers -----------------------------------------------------------
@@ -160,6 +166,11 @@ class _FakeDB:
 
         if "FROM organization LIMIT 1" in s:
             return _Rows([{"one": 1}])
+
+        # ACC-1: the rules that the group gates read (`_common`).
+        if "settings -> 'integration_access'" in s and "FROM organization WHERE id" in s:
+            self.rule_reads.append(s)
+            return _Rows([{"rules": self.integration_access}])
 
         if "FROM app_user WHERE lower(email)" in s:
             row = next(
@@ -330,6 +341,74 @@ async def test_create_group_rejects_bad_slugs(db: _FakeDB, bad: str) -> None:
     with pytest.raises(HTTPException) as exc:
         await create_group(GroupCreate(slug=bad), admin=FULL_ADMIN)
     assert exc.value.status_code == 400
+
+
+# Task 2886. The team scope uses the word "all" for every team, so no group
+# may take the slug "all", in any case and with any space around it.
+@pytest.mark.parametrize("reserved", ["all", "ALL", " All ", "aLl"])
+def test_clean_slug_refuses_the_reserved_slug(reserved: str) -> None:
+    with pytest.raises(HTTPException) as exc:
+        groups._clean_slug(reserved)
+    assert exc.value.status_code == 400
+    assert "reserved" in str(exc.value.detail)
+    # The create dialog has no slug field: the slug comes from the name. So
+    # the message names the step that the admin can take.
+    assert "another name" in str(exc.value.detail)
+
+
+@pytest.mark.parametrize("allowed", ["all-hands", "allies", "all_staff", "small"])
+def test_clean_slug_allows_a_slug_that_only_holds_the_word(allowed: str) -> None:
+    assert groups._clean_slug(allowed) == allowed
+
+
+async def test_create_group_refuses_the_reserved_slug_and_writes_nothing(
+    db: _FakeDB,
+) -> None:
+    with pytest.raises(HTTPException) as exc:
+        await create_group(GroupCreate(slug=" All ", display_name="All"), admin=FULL_ADMIN)
+    assert exc.value.status_code == 400
+    assert db._group_by_slug("all") is None
+    # The positive control: the same call with a slug that only holds the word.
+    entry = await create_group(GroupCreate(slug="All Hands"), admin=FULL_ADMIN)
+    assert entry.slug == "all-hands"
+    assert db._group_by_slug("all-hands") is not None
+
+
+def test_the_reserved_slugs_are_one_set() -> None:
+    """The word lives in one set. The T-1 team filter must import it (task 2886)."""
+    assert "all" in groups.RESERVED_GROUP_SLUGS
+    assert not set(groups.RESERVED_GROUP_SLUGS) & set(CENTER_GROUP_SLUGS)
+
+
+async def test_a_legacy_all_group_stays_readable_editable_and_deletable(
+    db: _FakeDB,
+) -> None:
+    """A group with the slug "all" from a release before task 2886 stays reachable.
+
+    The routes look a group up by the path slug as it is. If a change sends the
+    path slug through ``_clean_slug``, this row returns 400, and no admin can
+    edit, empty or delete it.
+    """
+    db.seed_group("g-all", "all", "All")
+    db.seed_user("u-1", "priya@fracktal.in", "Priya")
+
+    listed = await list_groups(admin=FULL_ADMIN)
+    assert "all" in {g.slug for g in listed}
+
+    entry = await update_group(
+        "all", GroupPatch(description="An old team"), admin=FULL_ADMIN,
+    )
+    assert entry.slug == "all" and entry.description == "An old team"
+
+    await add_group_member(
+        "all", GroupMemberAdd(email="priya@fracktal.in"), admin=FULL_ADMIN,
+    )
+    out = await remove_group_member("all", "priya@fracktal.in", admin=FULL_ADMIN)
+    assert out["status"] == "removed"
+
+    out = await delete_group("all", admin=FULL_ADMIN)
+    assert out["status"] == "deleted"
+    assert db._group_by_slug("all") is None
 
 
 async def test_update_group_edits_name_and_description_only(db: _FakeDB) -> None:

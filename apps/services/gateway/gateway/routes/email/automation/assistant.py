@@ -181,9 +181,12 @@ EMAIL_TASK_TIERS: Mapping[str, str] = MappingProxyType({
     # BACKGROUND draft writing: a rule draft action and a follow-up nudge.
     # Nobody waits on these, so the strong tier writes them.
     "draft": "tier-powerful",
-    # MANUAL "Draft with AI" in the composer. The member waits on it, so the
-    # fast tier answers. A reasoning tier here costs 20 to 60 s for each click.
-    "compose": "tier-fast",
+    # MANUAL "Draft with AI" in the composer. The owner chose the strong tier
+    # for a better draft, and accepted a few seconds more for each click
+    # (2026-11-16, task 3541, amends D-EM-61). A long thread stays on it,
+    # because tier_for_size never lowers a tier. A stalled model shows the
+    # member a named error, never a stock reply (task 3541).
+    "compose": "tier-powerful",
     # The email chat when the tier policy does not cover it. A strong
     # tool-caller keeps the chat actions reliable.
     "chat": "tier-powerful",

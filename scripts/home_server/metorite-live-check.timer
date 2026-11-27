@@ -1,0 +1,14 @@
+# 30 minutes after each release slot (05:30, 13:30, 21:30 UTC): LBB-1a, task 4044.
+# Persistent=true: after a box outage the timer fires at the next start.
+# The timer ships DISABLED. Enabling it is OWNER-GATE (`deploy`).
+[Unit]
+Description=Metorite live check at 06:00, 14:00 and 22:00 UTC (LBB-1a)
+
+[Timer]
+OnCalendar=*-*-* 06:00:00 UTC
+OnCalendar=*-*-* 14:00:00 UTC
+OnCalendar=*-*-* 22:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

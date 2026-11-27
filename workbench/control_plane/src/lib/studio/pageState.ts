@@ -4,6 +4,8 @@
  * STU-D11a bounds it. A hostile URL gives a safe state. STU-D11b wires it to the URL.
  */
 
+import { parseHidden } from "./columnModel";
+
 export interface PageState {
   /** The id of the selected record, or `null`. */
   selected: string | null;
@@ -32,6 +34,8 @@ export interface PageState {
   ro?: string;
   rtab?: string;
   full?: boolean;
+  /** The columns that a member hides in a table workspace (STU-LY-2b): `key,key`. Absent: every column shows. */
+  hide?: string;
 }
 
 export const EMPTY_PAGE_STATE: PageState = { selected: null, filters: {}, tab: null };
@@ -74,6 +78,7 @@ export function encodePageState(state: PageState): string {
   if (state.q) p.set("q", state.q);
   if (state.sort) p.set("sort", state.sort);
   if (state.layout) p.set("layout", state.layout);
+  if (state.hide) p.set("hide", state.hide);
   if (state.group) p.set("group", state.group);
   if (state.rec && state.ro) {
     p.set("rec", state.rec);
@@ -109,6 +114,7 @@ export function boundPageState(state: PageState, page?: PageTabs): PageState {
     if (q && q.length <= PAGE_STATE_LIMITS.filterValue) out.q = q;
     if (typeof state.sort === "string" && SORT_VALUE.test(state.sort)) out.sort = state.sort;
     if (state.layout === "table" || state.layout === "board") out.layout = state.layout;
+    if (typeof state.hide === "string") { const h = parseHidden(state.hide).join(","); if (h) out.hide = h; }
     if (typeof state.group === "string" && FILTER_NAME.test(state.group)) out.group = state.group;
     // The record page: an id and an object together, or no record at all.
     if (typeof state.rec === "string" && RECORD_ID.test(state.rec) && typeof state.ro === "string" && FILTER_NAME.test(state.ro)) {
@@ -162,6 +168,7 @@ export function decodePageState(
     return boundPageState({ selected: p.get("sel") || null, filters, tab: p.get("tab") || null, page: p.get("page") || undefined,
       q: p.get("q") || undefined, sort: p.get("sort") || undefined,
       layout: (p.get("layout") || undefined) as PageState["layout"], group: p.get("group") || undefined,
+      hide: p.get("hide") || undefined,
       rec: p.get("rec") || undefined, ro: p.get("ro") || undefined, rtab: p.get("rtab") || undefined, full: p.get("full") === "1" }, page);
   } catch {
     return emptyState();

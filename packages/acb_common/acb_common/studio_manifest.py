@@ -72,22 +72,23 @@ STUDIO_VERSION = 1
 
 BLOCKS: tuple[str, ...] = (
     "table", "form", "detail", "board", "chart", "stat", "calendar",
-    "timeline", "mindMap", "processFlow", "checklist", "map", "markdown",
+    "timeline", "mindMap", "processFlow", "checklist", "map", "markdown", "tree",
 )  # fmt: skip
 
 #: The five record verbs of an object. ``studio_tools.complete_record_actions``
 #: adds an action for each of them, and ``manifestDiff.ts`` folds them.
 RECORD_OPS: tuple[str, ...] = ("list", "get", "create", "update", "delete")
 
-#: Each verb of an ``object:<name>.<op>`` action: the record verbs, and the
-#: aggregate of C2b (STU-D4b), and the tree read of C18 (STU-D18-2a). No action
-#: is added for the aggregate or the tree by itself, so a package declares it.
-OBJECT_OPS: tuple[str, ...] = (*RECORD_OPS, "aggregate", "tree")
+#: Each verb of an ``object:<name>.<op>`` action: the record verbs, the
+#: aggregate of C2b (STU-D4b), the tree read of C18 (STU-D18-2a) and the change
+#: history of one record (C4a-2). No action is added for the aggregate, the tree
+#: or the history by itself, so a package declares it.
+OBJECT_OPS: tuple[str, ...] = (*RECORD_OPS, "aggregate", "tree", "history")
 
 #: The class of each object verb (STU-B2a, ``ai_studio.md`` §3.2). It is the
 #: one source of the class of an ``object:<name>.<op>`` action. The B1 catalog
 #: (``catalog_rows``) gives the class of each other source. A read is A, and an
-#: aggregate and a tree are reads. A create or an update is B, because the app can undo
+#: aggregate, a tree and a history are reads. A create or an update is B, because the app can undo
 #: it. A delete is C. ``test_studio_action_door.py`` holds these keys equal to
 #: :data:`OBJECT_OPS`.
 OBJECT_OP_CLASSES: dict[str, str] = {
@@ -98,6 +99,7 @@ OBJECT_OP_CLASSES: dict[str, str] = {
     "delete": "C",
     "aggregate": "A",
     "tree": "A",
+    "history": "A",
 }
 
 #: The head of the refusal of a view source that writes (STU-B2c-1, fix round 1).
@@ -116,6 +118,23 @@ CONTRIBUTION_POINTS: tuple[str, ...] = (
 #: A `contributes` key is a point of section 4 or a P0-only key that the shell loader reads.
 #: The loader owns the second list (`_CONTRIBUTES_KEYS`), so this module keeps no copy of it.
 ALLOWED_POINTS: frozenset[str] = frozenset(CONTRIBUTION_POINTS) | frozenset(_P0_POINTS)
+
+#: The host records that a package may extend (package_host.md section 8.3, PKG-14a-2).
+#: A copy of `HOST_RECORD_KINDS` in `gateway/package_host/field_values.py`, because this
+#: package cannot import the gateway. `tests/unit/test_studio_field_claims.py` holds the
+#: two equal, so a change to one without the other fails there.
+HOST_RECORD_KINDS: tuple[str, ...] = ("task", "crm.lead", "crm.contact", "crm.company", "crm.deal")
+#: The most entries of `contributes.fields` in one manifest (PKG-14a-2).
+MAX_HOST_FIELDS = 20
+#: The keys of one entry of `contributes.fields`: the record kind and a field spec of
+#: `studio_fields` without `required`, `hot` and `to`.
+HOST_FIELD_KEYS: frozenset[str] = frozenset({"record", "key", "type", "label", "many", "options"})
+#: The parts of a field spec that an extension field cannot set. The same set as
+#: `REFUSED_SPEC_KEYS` of `field_values.py`, and the same test holds the two equal.
+HOST_FIELD_REFUSED_KEYS: frozenset[str] = frozenset({"required", "hot", "to"})
+#: The types that an extension field cannot have. The same set as `REFUSED_TYPES`
+#: of `field_values.py`.
+HOST_FIELD_REFUSED_TYPES: frozenset[str] = frozenset({"relation", "file", "autonumber"})
 
 #: Points that only a shipped `system` file holds. An anchor is the guide's contract with the
 #: shipped shell code (assistant_guide.md section 5.7), so a package never declares one.
@@ -188,7 +207,10 @@ MAX_CONNECTIONS = 32
 #: STU-I1a. The grammar of one name of ``connections``: an MCP server of the
 #: registry (``mcp:<server>``), or a provider id such as ``zoho``. I1 checks
 #: the grammar only. IN-11 adds the check that the connector list holds it.
-CONNECTION_NAME_RE = re.compile(rf"mcp:{MCP_SERVER_NAME}|{_NAME}")
+#: API-5 adds an API connection of a template (``api:<template>``), such as
+#: ``api:zoho_books`` (``api_connections.md`` §2.2). The connector list holds
+#: that id, and each id of the list matches this grammar.
+CONNECTION_NAME_RE = re.compile(rf"mcp:{MCP_SERVER_NAME}|api:{_NAME}|{_NAME}")
 #: STU-I9a. The two whose-account values of a connection need.
 CONNECTION_AS = ("org", "member")
 #: STU-I9a. The most scopes, and the longest scope, of one connection need.
@@ -321,6 +343,19 @@ class FieldDef(_Strict):
     reset: str | None = None
 
 
+#: The cap of the tabs of a record page (STU-AF5b, §5.5). `lib/studio/manifest.ts` holds the same
+#: number as `MAX_RECORD_TABS`, and `recordCaps.test.ts` checks it against the schema file.
+MAX_RECORD_TABS = 6
+
+
+class RecordDef(_Strict):
+    #: The tab ids, in order. `_check_record` refuses a duplicate. Without `record`, rule 3 of
+    #: §5.5 gives the default tabs.
+    tabs: list[Literal["details", "lines", "related", "files"]] = Field(
+        min_length=1, max_length=MAX_RECORD_TABS
+    )
+
+
 class ObjectDef(_Strict):
     name: str = Field(pattern=rf"^{_NAME}$")
     #: The CHECK `studio_objects_label` of C1 holds the same cap.
@@ -332,6 +367,8 @@ class ObjectDef(_Strict):
     #: C8a. The grant of each role on this object. None means an open object. The
     #: one parser is `studio_access.parse_access`, and `_check_access` calls it.
     access: list[dict[str, Any]] | None = None
+    #: The tabs of the record page of this object (STU-AF5b). None means the defaults.
+    record: RecordDef | None = None
 
 
 class ActionDef(_Strict):
@@ -352,11 +389,23 @@ class Card(_Strict):
     meta: list[str] = Field(default_factory=list)
 
 
+#: The icon names of the icon list as a type (the same 42 names as `NAV_ICONS`, which is the tuple that the tests read).
+NavIconName = Literal[
+    "Home", "LayoutDashboard", "LayoutGrid", "List", "ListChecks", "Table",
+    "Kanban", "Calendar", "CalendarDays", "Clock", "Users", "User",
+    "Briefcase", "Handshake", "Inbox", "Mail", "Phone", "MessageCircle",
+    "FileText", "Files", "FolderOpen", "Tag", "Star", "Flag",
+    "Bell", "Bookmark", "Wallet", "Receipt", "Package", "Truck",
+    "MapPin", "Wrench", "Settings", "ClipboardList", "CheckSquare", "Target",
+    "Trophy", "Lightbulb", "BookOpen", "Layers", "Activity", "Sparkles",
+]  # fmt: skip
+
+
 class ViewDef(_Strict):
     id: str = Field(pattern=rf"^{_DASHED}$")
     block: Literal[
         "table", "form", "detail", "board", "chart", "stat", "calendar",
-        "timeline", "mindMap", "processFlow", "checklist", "map", "markdown",
+        "timeline", "mindMap", "processFlow", "checklist", "map", "markdown", "tree",
     ]  # fmt: skip
     title: str | None = None
     source: Source | None = None
@@ -371,6 +420,8 @@ class ViewDef(_Strict):
     sort: str | None = None
     actions: list[str] = Field(default_factory=list)
     text: str | None = None
+    #: STU-LOOK-2: an icon of the icon list before the title of a stat tile. `_check_view` allows it on a stat view only.
+    icon: NavIconName | None = None
 
 
 #: The caps of the page shape (STU-D11a). `pageModel.ts` holds the same numbers, and
@@ -463,15 +514,7 @@ NAV_ICONS: tuple[str, ...] = (
 class NavRow(_Strict):
     #: A page of `pages`. The check that it exists is `_check_nav`.
     page: str = Field(pattern=rf"^{_DASHED}$")
-    icon: Literal[
-        "Home", "LayoutDashboard", "LayoutGrid", "List", "ListChecks", "Table",
-        "Kanban", "Calendar", "CalendarDays", "Clock", "Users", "User",
-        "Briefcase", "Handshake", "Inbox", "Mail", "Phone", "MessageCircle",
-        "FileText", "Files", "FolderOpen", "Tag", "Star", "Flag",
-        "Bell", "Bookmark", "Wallet", "Receipt", "Package", "Truck",
-        "MapPin", "Wrench", "Settings", "ClipboardList", "CheckSquare", "Target",
-        "Trophy", "Lightbulb", "BookOpen", "Layers", "Activity", "Sparkles",
-    ] | None = None  # fmt: skip
+    icon: NavIconName | None = None
     label: str | None = Field(default=None, min_length=1, pattern=r"\S")
     #: `true` asks the client to show a count of the rows of the page. `_check_nav` needs a
     #: table or board view on the page. The filter and the sort stay on that view, never here.
@@ -594,6 +637,7 @@ class Manifest(_Strict):
     shell: Shell | None = None
     # PKG-5a: package_host.md sections 3.1, 4, 5.4 and 8. Loose by design.
     # PKG-14 to PKG-16 give `slots`, `needs` and `overrides` their meaning.
+    # PKG-14a-2: `_check_host_fields` checks `contributes.fields`. The schema stays loose.
     contributes: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     extends: str | None = Field(default=None, pattern=rf"^{_DASHED}$")
     slots: list[dict[str, Any]] = Field(default_factory=list)
@@ -893,6 +937,8 @@ def _check_view(
     out: list[ManifestError],
 ) -> None:
     p = f"$.views[{vi}]"
+    if v.icon is not None and v.block != "stat":
+        out.append(_err(f"{p}.icon", "An icon sits on a stat view. Remove it, or use a stat view."))
     src_obj = v.source.object if v.source else None
     obj = v.object or src_obj
     if v.source and v.source.action and v.source.action not in action_ids:
@@ -1085,6 +1131,8 @@ def _check_objects(m: Manifest, objects: dict[str, set[str]], out: list[Manifest
                 # never into a form of the app. The narrow rule, because a
                 # field such as `token_number` holds member data.
                 out.append(_err(f"{base}[{fi}].key", SECRET_FIELD + _got(f.key)))
+        if o.record is not None:
+            _dupes(list(o.record.tabs), f"$.objects[{oi}].record.tabs", "record tab", out)
         _check_rules(o, f"$.objects[{oi}].rules", out, m.objects)
     _check_lines(m, out)
     _check_access(m, out)
@@ -1172,6 +1220,49 @@ def _check_lines(m: Manifest, out: list[ManifestError]) -> None:
                 out.append(_err(path, problem))
             else:
                 owners[f.to] = o.name
+
+
+def _check_host_fields(m: Manifest, out: list[ManifestError]) -> None:
+    """The extension fields of `contributes.fields` (package_host.md section 8.3,
+    PKG-14a-2). Each entry names a host record kind and holds a field spec of
+    `studio_fields` without its three refused parts. The field rules are
+    `studio_fields.validate_field_spec`, the one check. This adds the record
+    kind, the refused parts and types, the duplicates and the count cap."""
+    entries = m.contributes.get("fields")
+    if not entries:
+        return
+    base = "$.contributes.fields"
+    if len(entries) > MAX_HOST_FIELDS:
+        out.append(_err(base, f"A package declares at most {MAX_HOST_FIELDS} extension fields."))
+    seen: set[tuple[str, str]] = set()
+    for i, entry in enumerate(entries):
+        path = f"{base}[{i}]"
+        for extra in sorted(str(k) for k in entry if k not in HOST_FIELD_KEYS):
+            message = (f"An extension field cannot set `{extra}`. Remove it."
+                       if extra in HOST_FIELD_REFUSED_KEYS
+                       else "This is not a key of an extension field. Remove it.")
+            out.append(_err(f"{path}.{_short(extra)}", message))
+        record = entry.get("record")
+        if not isinstance(record, str) or record not in HOST_RECORD_KINDS:
+            out.append(_err(
+                f"{path}.record",
+                f"The record kind is one of {', '.join(HOST_RECORD_KINDS)}.{_got(record)}"))
+        spec = {k: v for k, v in entry.items() if k in HOST_FIELD_KEYS and k != "record"}
+        for problem in validate_field_spec(spec):
+            tail = "" if problem.got is None else _got(problem.got)
+            where = f"{path}.{problem.path}" if problem.path else path
+            out.append(_err(where, problem.message + tail))
+        kind = entry.get("type")
+        if isinstance(kind, str) and kind in HOST_FIELD_REFUSED_TYPES:
+            out.append(_err(f"{path}.type", f"An extension field cannot have the type `{kind}`."))
+        key = entry.get("key")
+        if isinstance(record, str) and isinstance(key, str):
+            if (record, key) in seen:
+                out.append(_err(
+                    f"{path}.key",
+                    f"The field `{_short(key)}` of `{_short(record)}` is declared twice. "
+                    "Each must be unique."))
+            seen.add((record, key))
 
 
 def _rollup_sources(others: Sequence[ObjectDef], own: str) -> dict[str, RollupSource]:
@@ -1388,6 +1479,7 @@ def _semantic_errors(m: Manifest, catalog: Mapping[str, str] | None) -> list[Man
     _check_pages(m, {v.id for v in m.views}, out)
     _check_nav(m, out)
     _check_links(m, objects, catalog, out)
+    _check_host_fields(m, out)
     if m.extends is not None and m.extends == m.id:
         out.append(_err("$.extends", "A package cannot extend itself. Name the host package."
                         + _got(m.extends)))

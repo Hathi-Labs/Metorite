@@ -236,6 +236,17 @@ class FakeDB:
     async def close(self) -> None:
         return None
 
+    def begin_nested(self):
+        """A savepoint: the fake keeps no transaction, so it is a plain context."""
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def _savepoint():
+            self.savepoints = getattr(self, "savepoints", 0) + 1
+            yield self
+
+        return _savepoint()
+
     def issued(self, fragment: str) -> bool:
         return any(fragment in s for s in self.statements)
 
@@ -746,3 +757,63 @@ def test_the_shared_clause_really_carries_both_ways_in():
     )
     assert "pm_project_grants" in clause or "project_id IN" in clause
     assert "pm_task_assignees" in clause, "the assignee path is gone"
+
+
+# ── Task 1574: the actor by the directory name ──────────────────────────────
+
+class _NamedDB(FakeDB):
+    """Answers the list with two rows, and the directory with one name."""
+
+    async def execute(self, sql: Any, params: dict | None = None) -> _Result:
+        statement = " ".join(str(sql).split())
+        if "FROM pm_notifications n JOIN pm_tasks t" in statement and "FILTER" not in statement:
+            self.statements.append(statement)
+            self.params.append(dict(params or {}))
+            return _Result([
+                SimpleNamespace(id="n1", recipient="me@fracktal.in", kind="comment",
+                                task_id="t1", activity_id=None, actor="karthik@fracktal.in",
+                                excerpt="ok", created_at=None, read_at=None,
+                                task_title="Paint", task_number=7, project_id="p1"),
+                SimpleNamespace(id="n2", recipient="me@fracktal.in", kind="comment",
+                                task_id="t1", activity_id=None, actor="agent:builder",
+                                excerpt="ok", created_at=None, read_at=None,
+                                task_title="Paint", task_number=7, project_id="p1"),
+            ])
+        if "FROM people" in statement:
+            self.statements.append(statement)
+            self.params.append(dict(params or {}))
+            return _Result([SimpleNamespace(email="karthik@fracktal.in", name="Karthik Iyer")])
+        return await super().execute(sql, params)
+
+
+def test_a_row_carries_the_directory_name_of_its_actor(monkeypatch):
+    """The My Day card read "karthik commented" (the local part). The list now gives
+    ``actor_name`` from the one resolver, and an agent has none."""
+    db = _NamedDB()
+    bind(monkeypatch, db, pm_notify, pm_core)
+    rows = run(pm_notify.list_notifications(user=ACTOR, page=page()))["rows"]
+    assert [(r["actor"], r["actor_name"]) for r in rows] == [
+        ("karthik@fracktal.in", "Karthik Iyer"), ("agent:builder", None)]
+    asked = [p for s, p in zip(db.statements, db.params) if "FROM people" in s]
+    assert asked and asked[0]["emails"] == ["karthik@fracktal.in"]
+
+
+def test_a_failed_name_read_leaves_the_names_out_and_the_list_whole(monkeypatch):
+    class _Broken(_NamedDB):
+        async def execute(self, sql, params=None):
+            if "FROM people" in " ".join(str(sql).split()):
+                raise RuntimeError("down")
+            return await super().execute(sql, params)
+
+    db = _Broken()
+    bind(monkeypatch, db, pm_notify, pm_core)
+    rows = run(pm_notify.list_notifications(user=ACTOR, page=page()))["rows"]
+    assert len(rows) == 2 and all(r["actor_name"] is None for r in rows)
+
+
+def test_the_name_read_runs_inside_a_savepoint(monkeypatch):
+    """A failed read must not abort the transaction of the list (review of task 1574)."""
+    db = _NamedDB()
+    bind(monkeypatch, db, pm_notify, pm_core)
+    run(pm_notify.list_notifications(user=ACTOR, page=page()))
+    assert getattr(db, "savepoints", 0) == 1

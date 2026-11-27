@@ -15,7 +15,7 @@
  * Fence: `blockState.test.ts` and `StudioBlockState.test.ts`.
  */
 
-export type BlockStateKind = "loading" | "empty" | "filtered" | "error" | "no-permission";
+export type BlockStateKind = "loading" | "empty" | "filtered" | "error" | "no-permission" | "not-found";
 
 export interface BlockStateInput {
   /** The read runs now and has no rows yet. */
@@ -24,6 +24,8 @@ export interface BlockStateInput {
   error: string | null;
   /** The viewer may not read the block (a 403 of the door). */
   forbidden: boolean;
+  /** The one record is gone, or the viewer may not read it. The door says one text for both (STU-LY-3). */
+  missing?: boolean;
   /** The rows that the block draws now. */
   rows: number;
   /** True when a filter or a search narrows the rows. */
@@ -33,6 +35,7 @@ export interface BlockStateInput {
 /** Which state to draw, or `null` when the block has rows and draws itself. */
 export function blockStateKind(input: BlockStateInput): BlockStateKind | null {
   if (input.forbidden) return "no-permission";
+  if (input.missing) return "not-found";
   if (input.error) return "error";
   if (input.loading) return "loading";
   if (input.rows > 0) return null;
@@ -87,6 +90,9 @@ export function blockStateCopy(
         hint: "Your data is safe. Try again.",
         action: "Retry",
       };
+    case "not-found":
+      // One sentence for a record that is gone and for one the viewer may not read, so it leaks nothing.
+      return { icon: "SearchX", message: `This ${noun} was not found, or you cannot open it.` };
     case "no-permission":
       return {
         icon: "Lock",
@@ -94,6 +100,15 @@ export function blockStateCopy(
         hint: askWho ? `Ask ${askWho} for access.` : "Ask the owner of the app for access.",
       };
   }
+}
+
+/** The plural of an object label, in lower case: "Visit" gives "visits", "Company" gives "companies". */
+export function pluralOf(label: string): string {
+  const w = label.trim().toLowerCase();
+  if (!w) return "records";
+  if (/[^aeiou]y$/.test(w)) return `${w.slice(0, -1)}ies`;
+  if (/(s|x|z|ch|sh)$/.test(w)) return `${w}es`;
+  return `${w}s`;
 }
 
 /** The label that a screen reader hears for a loading block. */

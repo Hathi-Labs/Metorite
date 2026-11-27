@@ -320,6 +320,59 @@ def test_sw7_a_call_with_no_session_signs_the_string_of_before():
     assert write.split("\n")[-2:] == ["N" * 22, "session:" + SESSION]
 
 
+# ── MCP-P1b-2: the signed approval of a door write (spec §19.12, AD-6) ──────
+
+APPROVAL = "5f2b8c1e-3d4a-4b6c-8e9f-0a1b2c3d4e5f"
+
+
+def test_p1b2_a_call_with_no_approval_signs_the_string_of_before():
+    """AD-6. No approval, no line: the string is byte for byte the one of
+    before MCP-P1b-2. With an approval, the line ``approval:<id>`` follows
+    the nonce and the session line, in that fixed order. Mutation: put the
+    approval line before the session line, and this test fails."""
+    base = dict(timestamp="1", organization_id=ORG_A, connection_id=CONN,
+                actor_via=VIA, method="POST", path=TASK, nonce="N" * 22)
+    plain = agent_signing.canonical_string(**base)
+    assert len(plain.split("\n")) == 9
+    approved = agent_signing.canonical_string(**base, approval=APPROVAL)
+    assert approved == plain + "\napproval:" + APPROVAL
+    both = agent_signing.canonical_string(**base, session=SESSION, approval=APPROVAL)
+    assert both.split("\n")[-3:] == ["N" * 22, "session:" + SESSION, "approval:" + APPROVAL]
+
+
+@pytest.mark.parametrize("bad", [
+    APPROVAL.upper(), APPROVAL.replace("-", ""), APPROVAL + "\n", "", "x" * 36,
+    "{" + APPROVAL + "}",
+])
+def test_p1b2_an_approval_of_another_shape_cannot_sign(bad):
+    """AD-6. An approval is a request id in ONE shape, the lower-case UUID,
+    so one request id has one signed line. A GET carries none."""
+    base = dict(timestamp="1", organization_id=ORG_A, connection_id=CONN,
+                actor_via=VIA, method="POST", path=TASK, nonce="N" * 22)
+    assert not agent_signing.approval_is_well_formed(bad)
+    with pytest.raises(ValueError):
+        agent_signing.canonical_string(**base, approval=bad)
+    with pytest.raises(ValueError):
+        agent_signing.canonical_string(**{**base, "method": "GET", "nonce": None},
+                                       approval=APPROVAL)
+
+
+def test_p1b2_the_edge_helper_sends_the_approval_it_signs():
+    headers = agent_signing.signed_headers(
+        "k" * 40, organization_id=ORG_A, connection_id=CONN, actor_via=VIA,
+        method="POST", path=TASK, body=b"{}", approval=APPROVAL)
+    assert headers[agent_signing.HEADER_APPROVAL] == APPROVAL
+    canonical = agent_signing.canonical_string(
+        timestamp=headers[agent_signing.HEADER_TIMESTAMP], organization_id=ORG_A,
+        connection_id=CONN, actor_via=VIA, method="POST", path=TASK, body=b"{}",
+        nonce=headers[agent_signing.HEADER_NONCE], approval=APPROVAL)
+    assert agent_signing.verify(headers[agent_signing.HEADER_SIGNATURE], canonical,
+                                {agent_signing.key_id("k" * 40): "k" * 40})
+    assert agent_signing.HEADER_APPROVAL not in agent_signing.signed_headers(
+        "k" * 40, organization_id=ORG_A, connection_id=CONN, actor_via=VIA,
+        method="POST", path=TASK, body=b"{}")
+
+
 async def test_the_query_is_signed_in_its_sorted_form(world):
     r = await _get("/projects/tasks", "q=abc&page_size=5&page=2")
     assert r.status_code == 200, r.text

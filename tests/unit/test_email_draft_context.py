@@ -167,6 +167,7 @@ async def test_resolve_draft_replace_when_unmodified() -> None:
     db = AsyncMock()
     db.execute.side_effect = [
         _one(SimpleNamespace(id="d1", provider_message_id="pd1",
+                             internet_message_id=None,  # task 4100
                              body_text="Hi there,\n\nThanks!\n\nBest")),
         _one(SimpleNamespace(draft_text="Hi there,\n\nThanks!\n\nBest")),
         MagicMock(),  # DELETE
@@ -268,9 +269,9 @@ async def test_compose_assist_reply_empty_body_uses_shared_reply_drafter() -> No
     assert res["draft"] == "drafted from the template\n\nsig"
     assert "compose" not in calls
     assert calls["agent_email"]["body"] == "TEMPLATE_BODY"
-    # Manual "Draft with AI" is interactive → it runs on the account's COMPOSE
-    # model (fast by default), never the background draft model.
-    assert calls["agent_kwargs"]["model"] == "tier-fast"
+    # Manual "Draft with AI" runs on the COMPOSE tier, which the code picks
+    # (tier-powerful since 2026-11-16, task 3541).
+    assert calls["agent_kwargs"]["model"] == "tier-powerful"
 
 
 async def test_compose_assist_improve_passes_reply_to_body() -> None:
@@ -304,7 +305,7 @@ async def test_compose_assist_improve_passes_reply_to_body() -> None:
     assert calls["reply_to_body"] == "TEMPLATE_BODY"
     assert calls["current_body"] == "my rough draft"
     # Interactive improve runs on the compose model too.
-    assert calls["model"] == "tier-fast"
+    assert calls["model"] == "tier-powerful"
 
 
 async def test_compose_assist_reply_empty_body_passes_user_instruction() -> None:

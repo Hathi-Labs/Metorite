@@ -21,8 +21,8 @@ The checks here:
    name. A member may connect a member connection of the list only: an org
    connection, an MCP server and an unknown id need the right (§3.5).
 4. The read's shape. One row for each name of the draft, in order, with the
-   six keys ``name``, ``label``, ``met``, ``checkable``, ``setup_href`` and
-   ``can_connect``. ``met`` is the answer of ``met_connections`` for the
+   seven keys ``name``, ``label``, ``met``, ``checkable``, ``setup_href``,
+   ``can_connect`` and ``asked`` (I8b-1a). ``met`` is the answer of ``met_connections`` for the
    session member. A provider outside the registry (a mailbox, a number, a
    key of the console) is not checkable and offers no Connect.
    ``OUTSIDE_REGISTRY`` comes from the connector list, and it agrees with the
@@ -45,7 +45,6 @@ M3: move the gate check below the session. Check 5 goes red. M4: drop
 from __future__ import annotations
 
 import ast
-import re
 import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -76,7 +75,8 @@ PATH = f"/studio/packages/{PID}/connections"
 NOT_FOUND = {"detail": "Not found"}
 MEMBER = ["feature:studio"]
 ADMIN = ["feature:studio", "integrations:manage"]
-ROW_KEYS = {"name", "label", "as", "met", "reason", "checkable", "setup_href", "can_connect"}
+ROW_KEYS = {"name", "label", "as", "met", "reason", "checkable", "setup_href", "can_connect",
+            "asked"}
 SRC = ROOT / "apps/services/gateway/gateway/routes/studio/connections.py"
 
 
@@ -199,6 +199,9 @@ class _World:
         self.names: Any = ["zoho", "mcp:tally", "google_calendar"]
         self.met_org: Any = frozenset({"zoho"})
         self.met_member: Any = frozenset()
+        #: I8b-1a: the reads of the asks, and the names that the caller asked for.
+        self.asked_reads: list[tuple[str, list[str]]] = []
+        self.asked: frozenset[str] = frozenset()
 
 
 def _package(manifest: dict[str, Any]) -> store.Package:
@@ -233,9 +236,14 @@ def world(monkeypatch: pytest.MonkeyPatch) -> _World:
         member = w.met_member if isinstance(w.met_member, dict) else frozenset(w.met_member)
         return Met(org=org, member=member)
 
+    async def asked_by(db: Any, org: str, member: str, providers: Any) -> frozenset[str]:
+        w.asked_reads.append((member, list(providers)))
+        return w.asked & frozenset(providers)
+
     monkeypatch.setattr(connections, "_tenant_session", session)
     monkeypatch.setattr(connections.store, "get_package", get_package)
     monkeypatch.setattr(connections.host_resolve, "met_connections", met_connections)
+    monkeypatch.setattr(connections.attention, "asked_by", asked_by)
     monkeypatch.setattr(get_settings(), "studio_orgs", "*")
     monkeypatch.setattr(get_settings(), "studio_connection_gate_orgs", "*")
     return w
@@ -257,15 +265,20 @@ def test_the_read_answers_one_row_for_each_name_in_order(world: _World) -> None:
     # I9b-1: a draft is never an approved install, so an org need with an org row waits
     # for an admin (`org_approval`), and `met` is False.
     assert rows[0] == {"name": "zoho", "label": "Zoho CRM", "as": "org", "met": False,
-                       "reason": "org_approval",
-                       "checkable": True, "setup_href": "/crm", "can_connect": False}
-    assert rows[1] == {"name": "mcp:tally", "label": "tally", "as": "org", "met": False, "reason": "org_approval",
-                       "checkable": True,
-                       "setup_href": "/integrations?add=mcp&name=tally", "can_connect": False}
-    assert rows[2] == {"name": "google_calendar", "label": "Google Calendar", "as": "member", "met": False,
-                       "reason": "missing", "checkable": True, "setup_href": "/calendar?settings=1", "can_connect": True}
+                       "reason": "org_approval", "checkable": True, "setup_href": "/crm",
+                       "can_connect": False, "asked": False}
+    assert rows[1] == {"name": "mcp:tally", "label": "tally", "as": "org", "met": False,
+                       "reason": "org_approval", "checkable": True,
+                       "setup_href": "/integrations?add=mcp&name=tally", "can_connect": False,
+                       "asked": False}
+    assert rows[2] == {"name": "google_calendar", "label": "Google Calendar", "as": "member",
+                       "met": False, "reason": "missing", "checkable": True,
+                       "setup_href": "/calendar?settings=1", "can_connect": True, "asked": False}
     assert world.sessions == 1
     assert world.met_reads == [OWEN]
+    # I8b-1a: one read of the asks, for the names that are not met only. I9b-1: an org
+    # need of a draft is never met, so its name is read too.
+    assert world.asked_reads == [(OWEN, ["zoho", "mcp:tally", "google_calendar"])]
 
 
 def test_a_row_is_met_by_the_set_of_its_own_need(world: _World) -> None:
@@ -315,6 +328,24 @@ def test_connection_rows_need_a_scopes_item_and_fail_closed() -> None:
     assert rows[0]["met"] is True
 
 
+def test_asked_follows_the_set_of_its_own_need(world: _World) -> None:
+    """I8b-1a with I9a and I9b-1: the read asks for the asks of each line that the
+    rule of its own need does not meet. A member row of the caller leaves an ``org``
+    line unmet, so its ask shows. An org row never meets an ``org`` need of a draft
+    (``org_approval``), so that ask shows too. A met line reads ``asked`` False, and
+    its name is not read."""
+    world.names = [{"name": "zoho", "as": "org"}, {"name": "google_drive", "as": "member"},
+                   {"name": "mcp:tally", "as": "org"}, {"name": "outlook_calendar", "as": "member"}]
+    world.met_org = frozenset({"google_drive", "mcp:tally"})  # a member need, an org row only
+    world.met_member = frozenset({"zoho", "outlook_calendar"})  # an org need, a member row only
+    world.asked = frozenset({"zoho", "google_drive", "mcp:tally", "outlook_calendar"})
+    rows = _client(_user()).get(PATH).json()["connections"]
+    assert [(x["name"], x["met"], x["asked"]) for x in rows] == [
+        ("zoho", False, True), ("google_drive", False, True), ("mcp:tally", False, True),
+        ("outlook_calendar", True, False)]
+    assert world.asked_reads == [(OWEN, ["zoho", "google_drive", "mcp:tally"])]
+
+
 def test_a_plain_name_takes_its_as_from_the_connector_list(world: _World) -> None:
     """``zoho`` is an org need and ``google_calendar`` a member need, as the door reads them."""
     world.met_org = frozenset()
@@ -345,9 +376,8 @@ def test_an_unknown_provider_id_reads_its_own_id_and_is_blocked(world: _World, g
     world.names = ["acme"]
     rows = _client(_user(grants=grants)).get(PATH).json()["connections"]
     assert rows == [{"name": "acme", "label": "acme", "as": "org", "met": False,
-                     "reason": "org_approval",
-                     "checkable": False,
-                     "setup_href": "/integrations", "can_connect": False}]
+                     "reason": "org_approval", "checkable": False,
+                     "setup_href": "/integrations", "can_connect": False, "asked": False}]
 
 
 @pytest.mark.parametrize("grants", [MEMBER, ADMIN])
@@ -400,12 +430,14 @@ def _registry_writers() -> dict[str, set[str]]:
     server. :func:`_writer_files` fails when a new writer module appears."""
     from gateway.connections import github as gh
     from gateway.connections import mcp as mcp_registry
+    from gateway.routes import integrations_api_connect as api_connect
     from gateway.routes.crm import connection as crm
     from gateway.routes.knowledge import sources as drive
     from gateway.routes.tasks import calendar_connections as cal_routes
 
     return {
         "apps/services/gateway/gateway/connections/github.py": {gh.PROVIDER},
+        "apps/services/gateway/gateway/routes/integrations_api_connect.py": {api_connect.PROVIDER},
         "apps/services/gateway/gateway/connections/mcp.py": {mcp_registry.PREFIX},
         "apps/services/gateway/gateway/routes/crm/connection.py": {crm.PROVIDER},
         "apps/services/gateway/gateway/routes/knowledge/sources.py": {drive.GOOGLE_DRIVE},
@@ -497,6 +529,23 @@ def test_each_listed_provider_has_a_registry_writer_or_an_outside_entry() -> Non
     from gateway.connections import mcp as mcp_registry
 
     assert written <= set(rows) | {mcp_registry.PREFIX}, sorted(written - set(rows))
+
+
+def test_the_api_connection_of_zoho_books_is_a_listed_org_row() -> None:
+    """API-5 (``api_connections.md`` §2.11, gap 4). The connect flow of API-2
+    writes ``api:zoho_books``, so the connector list holds it with no
+    exemption. It is an org connection of the console, and only a holder of
+    ``integrations:manage`` may connect it."""
+    from gateway.routes import integrations_api_connect as api_connect
+
+    row = cl.connector(api_connect.PROVIDER)
+    assert row is not None
+    assert (row["owning_app"], row["scope"], row["signin"]) == (
+        api_connect.OWNING_APP, "org", "admin_consent")
+    assert ic.setup_href_for(api_connect.PROVIDER) == "/integrations"
+    assert connections.checkable(api_connect.PROVIDER) is True
+    assert ic.may_connect(_user(grants=MEMBER), api_connect.PROVIDER) is False
+    assert ic.may_connect(_user(grants=ADMIN), api_connect.PROVIDER) is True
 
 
 def test_the_outside_set_is_computed_from_the_list_and_names_the_tables_the_console_reads() -> None:

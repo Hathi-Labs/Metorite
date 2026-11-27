@@ -26,7 +26,7 @@ is not a pass.
 **Acceptance (I8a).**
 
 a. An org row of org A meets the need of Owen's draft in org A. A name with
-   no row reads not met. The answer holds the five keys of each row, in the
+   no row reads not met. The answer holds the seven keys of each row, in the
    order of the draft.
 b. The org row of org A never meets the need of a draft in org B, and the
    org row of org B never meets a need in org A.
@@ -88,7 +88,8 @@ ADMIN = ("feature:studio", "integrations:manage")
 TALLY = f"mcp:tally-{TAG}"
 LEDGER = f"ledger_{TAG}"
 DIARY = f"diary_{TAG}"
-ROW_KEYS = {"name", "label", "as", "met", "reason", "checkable", "setup_href", "can_connect"}
+ROW_KEYS = {"name", "label", "as", "met", "reason", "checkable", "setup_href", "can_connect",
+            "asked"}
 
 
 def _manifest(names: list[str]) -> dict[str, Any]:

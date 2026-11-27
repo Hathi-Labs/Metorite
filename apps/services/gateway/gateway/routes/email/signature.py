@@ -148,7 +148,8 @@ def sign_html(signature: str, body_html: str) -> str:
 
 
 def build_signed_bodies(
-    signature: str, body_text: str, body_html: str | None = None,
+    signature: str, body_text: str, body_html: str | None = None, *,
+    quoted_thread: bool = True,
 ) -> tuple[str, str | None]:
     """Append the signature to a message in both representations.
 
@@ -166,6 +167,11 @@ def build_signed_bodies(
 
     With no signature set, returns the inputs unchanged — ``body_html`` stays
     ``None`` so a plain-text-only send is preserved exactly as before.
+
+    ``quoted_thread`` False (task 3605): the body holds no quoted thread, so
+    the signature goes at the end of both parts. A Markdown send of the chat
+    passes it: the model writes the new text only, and the provider adds the
+    thread. A Markdown quote (``> ``) then stays above the signature.
     """
     sig = (signature or "").strip()
     if not sig:
@@ -191,7 +197,8 @@ def build_signed_bodies(
             out_html += f"<br><br>{_text_to_html(post)}"
         return body_text, out_html
 
-    main_text, quoted_text = split_quoted_text(body_text)
+    main_text, quoted_text = (split_quoted_text(body_text) if quoted_thread
+                               else (body_text, ""))
     out_text = (
         f"{main_text.rstrip()}\n\n{sig_text}" if main_text.strip() else sig_text
     )
@@ -199,7 +206,8 @@ def build_signed_bodies(
         out_text = f"{out_text}\n\n{quoted_text}"
 
     if body_html and body_html.strip():
-        main_html, quoted_html = split_quoted_html(body_html)
+        main_html, quoted_html = (split_quoted_html(body_html) if quoted_thread
+                                  else (body_html, ""))
         out_html = f"{main_html}<br><br>{sig_html}{quoted_html}"
     else:
         # Derived from the plain body — render the two halves separately so the
@@ -415,6 +423,64 @@ async def resolve_signature_for_send(
     the ``new`` form keeps it, so the mail carries one signature."""
     _check_kind(kind)
     return (await signature_forms(db, account_id)).for_body(kind, body_text)
+
+
+# ── The row of one mailbox: the read and the one write (WS-17 SG-3a) ────────
+
+#: The ONE write of ``email_signature_settings`` (§23.3.10). The column default
+#: gives ``organization_id`` from the bound tenant, and the policy WITH CHECK
+#: refuses any other org, so no request field reaches the tenant (R5). The
+#: caller has proved manage access to the mailbox in the same session.
+SAVE_SETTINGS_SQL = (
+    "INSERT INTO email_signature_settings "
+    "(account_id, mode, layout, fields, reply_mode) "
+    "VALUES (CAST(:aid AS uuid), :mode, :layout, CAST(:fields AS jsonb), :reply_mode) "
+    "ON CONFLICT (account_id) DO UPDATE SET "
+    "mode = EXCLUDED.mode, layout = EXCLUDED.layout, fields = EXCLUDED.fields, "
+    "reply_mode = EXCLUDED.reply_mode, updated_at = now() "
+    "RETURNING mode, layout, fields, reply_mode")
+
+
+def no_row_settings() -> dict[str, Any]:
+    """What a mailbox with no row reads as: ``custom``, no layout, no fields
+    and ``full`` (D-EM-64, D-EM-71, rule 7)."""
+    return {"mode": "custom", "layout": None, "fields": {}, "reply_mode": "full"}
+
+
+def _settings_of(row: Any) -> dict[str, Any]:
+    return {
+        "mode": getattr(row, "mode", None) or "custom",
+        "layout": getattr(row, "layout", None),
+        "fields": _fields_of(getattr(row, "fields", None)),
+        "reply_mode": getattr(row, "reply_mode", None) or "full",
+    }
+
+
+async def stored_settings(db: Any, account_id: str) -> dict[str, Any]:
+    """The mode, the layout, the fields and ``reply_mode`` of one mailbox.
+
+    ``GET /email/signature/settings`` calls it. The caller has checked the
+    flag and the mailbox, and holds a session of the bound tenant. RLS of that
+    tenant holds the org, so a row of another org reads as no row."""
+    row = (await db.execute(text(SETTINGS_SQL), {"aid": account_id})).fetchone()
+    return no_row_settings() if row is None else _settings_of(row)
+
+
+async def save_settings(
+    db: Any, account_id: str, *, mode: str, layout: str | None,
+    fields: Mapping[str, Any], reply_mode: str,
+) -> dict[str, Any]:
+    """Store the signature row of one mailbox, and answer the saved row.
+
+    ``PUT /email/signature/settings`` (``signature_settings.py``) is the one
+    caller. It has checked the flag, the body and the mailbox. A value that a
+    CHECK of migration 393 refuses raises the driver's error, and the route
+    maps it to a 4xx."""
+    row = (await db.execute(text(SAVE_SETTINGS_SQL), {
+        "aid": account_id, "mode": mode, "layout": layout,
+        "fields": json.dumps(dict(fields), allow_nan=False), "reply_mode": reply_mode,
+    })).fetchone()
+    return _settings_of(row)
 
 
 def looks_html(signature: str) -> bool:

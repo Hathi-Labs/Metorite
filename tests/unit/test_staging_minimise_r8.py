@@ -163,7 +163,8 @@ def test_the_named_credentials_are_blanked(clone) -> None:
     assert res.returncode == 0, res.stdout + res.stderr
     with clone.connect() as c:
         for table in ("agent_token", "provider_keys", "agent_client", "auth_email_otp_token",
-                      "email_detached_purges"):
+                      "email_detached_purges", "failure_fingerprints", "failure_daily",
+                      "failure_config"):
             assert c.execute(text(f"SELECT count(*) FROM public.{table}")).scalar_one() == 0, table
 
 

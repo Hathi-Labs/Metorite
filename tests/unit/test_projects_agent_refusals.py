@@ -397,7 +397,8 @@ async def test_the_registered_tool_answers_a_closed_card_with_its_own_text(monke
     closed card read "Error: Function failed." to the model, and this fails."""
     import acb_skills.ask_tools as ask_tools
 
-    from skill_projects.writes import CARD_REVISED
+    # HRD-7: the text of a closed card comes from the one table.
+    CARD_REVISED = ask_tools.card_outcome_text(ask_tools.CLOSED_BY_YOUR_MESSAGE)
 
     calls = fake_gateway(monkeypatch, {"id": TASK, "task_number": 7, "title": "Fix the extruder"})
 
