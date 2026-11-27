@@ -15,7 +15,9 @@
  * ACC-2 (task 3988): each MCP and API row of the organization also shows "Who
  * can use". The control draws only when `GET /admin/integration-access`
  * answers. For an org off the flag (404) and for a viewer with no right (403)
- * nothing of it draws. `WhoCanUse.tsx` holds the parts.
+ * nothing of it draws. `WhoCanUse.tsx` holds the parts. On a cold load the
+ * list keeps its skeleton until the rules answer, for `ACCESS_WAIT_MS` at
+ * most, so no row grows under the pointer.
  *
  * WS-54 IN-8c (D98): Connect and Reconnect of an OAuth MCP server open a
  * dialog first. It says that the connection acts as this admin for the
@@ -59,6 +61,7 @@ import {
   type StatusFilter,
 } from "../lib/connections";
 import {
+  ACCESS_WAIT_MS,
   CLEAR_CHANGED,
   RULE_GONE,
   SAVE_FAILED,
@@ -66,6 +69,7 @@ import {
   rowRule,
   savedTitle,
   unmatchedRules,
+  waitsForRules,
   type AccessItem,
 } from "../lib/whoCanUse";
 import { ApiConnectReturn } from "./ApiConnect";
@@ -137,6 +141,15 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
   const [clearing, setClearing] = useState<AccessItem | null>(null);
   const [clearBusy, setClearBusy] = useState(false);
   const [clearError, setClearError] = useState<string | null>(null);
+  // The bound of the wait for the rules. It starts when the list arrives.
+  const listArrived = Boolean(res.data);
+  const [waitOver, setWaitOver] = useState(false);
+  useEffect(() => {
+    if (!listArrived) return;
+    const timer = setTimeout(() => setWaitOver(true), ACCESS_WAIT_MS);
+    return () => clearTimeout(timer);
+  }, [listArrived]);
+  const holding = !waitOver && waitsForRules(res.data, rules.data, rules.error);
 
   const all = res.data ?? [];
   const rows = useMemo(() => filterConnections(all, app, status), [all, app, status]);
@@ -364,7 +377,7 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
       <ConnectionList
         rows={rows}
         total={all.length}
-        loading={res.loading}
+        loading={res.loading || holding}
         selectedId={openId}
         onOpen={setOpenId}
         onClearFilters={() => {
