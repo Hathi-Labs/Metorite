@@ -537,6 +537,37 @@ class TestTheGoalOnARealDatabase:
                               signed=None, body={"project_id": live.other})
         assert moved.status_code == 200, moved.text
 
+    async def test_a_bulk_move_clears_the_goal_of_a_lost_epic_type(self, live, goals_on):
+        """``POST /tasks/move`` has its own write path. Mutation: remove its
+        ``drop_lost_goal`` call."""
+        _setup(live)
+        goal = _mk(live, "wm5 goal bulk", kind="goal")
+        epic = _mk(live, "wm5 epic bulk moved", kind="epic", goal=goal)
+        live.seeder.one("UPDATE pm_tasks SET created_by = :m WHERE id = CAST(:t AS uuid)"
+                        " RETURNING id", m=w.MEMBER, t=epic)
+        moved = await t._send(live, "POST", "/projects/tasks/move", signed=None, body={
+            "task_ids": [epic], "destination_project_id": live.other, "accept_drops": True})
+        assert moved.status_code == 200, moved.text
+        with live.admin.begin() as c:
+            row = c.execute(text("SELECT project_id, type_id, goal_task_id FROM pm_tasks"
+                                 " WHERE id = CAST(:t AS uuid)"), {"t": epic}).one()
+        assert (str(row.project_id), row.type_id, row.goal_task_id) == (live.other, None, None)
+
+    async def test_a_bulk_move_of_a_linked_goal_is_refused(self, live, goals_on):
+        _setup(live)
+        goal = _mk(live, "wm5 goal bulk refused", kind="goal")
+        epic = _mk(live, "wm5 epic of bulk goal", kind="epic", goal=goal)
+        live.seeder.one("UPDATE pm_tasks SET created_by = :m WHERE id = CAST(:t AS uuid)"
+                        " RETURNING id", m=w.MEMBER, t=goal)
+        moved = await t._send(live, "POST", "/projects/tasks/move", signed=None, body={
+            "task_ids": [goal], "destination_project_id": live.other, "accept_drops": True})
+        assert moved.status_code == 409, moved.text
+        with live.admin.begin() as c:
+            row = c.execute(text("SELECT project_id, type_id FROM pm_tasks"
+                                 " WHERE id = CAST(:t AS uuid)"), {"t": goal}).one()
+        assert (str(row.project_id), str(row.type_id)) == (live.team, live.wm5["goal"])
+        assert _goal_of(live, epic) == goal
+
     async def test_the_delete_of_a_linked_goal_type_is_refused(self, live, goals_on):
         """The delete leaves each Goal of the type with no type (409)."""
         _setup(live)
@@ -629,6 +660,10 @@ class TestTheGoalOnARealDatabase:
             "project_id": live.team, "title": "wm5 off create",
             "type_id": live.wm5["epic"], "goal_task_id": goal})
         assert made.status_code == 422 and made.json()["detail"] == "goals_off", made.text
+        # A null is no Goal, so a create that sends it passes with the flag off.
+        null = await t._send(live, "POST", "/projects/tasks", signed=None, body={
+            "project_id": live.team, "title": "wm5 off null", "goal_task_id": None})
+        assert null.status_code == 201, null.text
         typed = await t._send(live, "POST", f"/projects/nodes/{live.team}/types",
                               signed=None, body={"name": "wm5 off type", "is_goal": True})
         assert typed.status_code == 422 and typed.json()["detail"] == "goals_off", typed.text

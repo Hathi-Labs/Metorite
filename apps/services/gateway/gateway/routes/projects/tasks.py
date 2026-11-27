@@ -1393,10 +1393,12 @@ def check_task_values(
         if values["check_text"] is None:
             values.pop("check_text")
     if "goal_task_id" in values:
-        # WM-5. 422 while the Goal flag is off. A null is no Goal.
-        require_goals(getattr(user, "organization_id", None))
+        # WM-5. 422 while the Goal flag is off. A null is no Goal, so it
+        # passes with the flag off too, as before the column.
         if values["goal_task_id"] is None:
             values.pop("goal_task_id")
+        else:
+            require_goals(getattr(user, "organization_id", None))
     if getattr(user, "agent", None) is not None:
         # The task source of an agent comes from branch 0's signed context,
         # never from the body (the narrowing above refuses a body `source`).
