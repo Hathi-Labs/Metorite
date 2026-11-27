@@ -6456,35 +6456,36 @@ have covered the generated card with the message box. is that the right
 way?"). 2026-11-27: the owner delegated the UX decisions to metorite-78. The
 rules below replace the height cap above and the tab order of WD-D3.*
 
-1. **Three parts.** The dock has a header (the count, the tabs, Expand and
-   Fold), the content, and a footer (the actions of the open tab). Only the
-   content scrolls. The header and the footer are the card's own rows, held
-   with `position: sticky`, so no button has a second copy.
-2. **Compact and Expanded, one card.** Compact is the default. An email shows
-   one line ("To Kim, Ravi Kumar, Lena · Cc 2 · Rates for May") and the first
-   3 lines of its text. An approval shows its title and one meta line. A
-   question shows whole. Compact is as tall as its content, at most 40% of
-   the chat column on a desktop and 50% of the visual viewport on a phone.
-   Expanded shows the whole card in the chat column above the box, and its
-   content scrolls. Review or Expand opens it. Collapse or Esc closes it.
-   Edits and ticks stay through each change.
-3. **The consent rule.** The footer shows Send, Approve or Create only when
-   the view holds the whole item (`mailWhole`, `cardWhole` in
-   `lib/waitingDock.ts`). Else its first button is Review, which opens
-   Expanded. In Expanded, Send names its count ("Send to 5"). A hidden
-   commit does not exist in the page, so no key can reach it.
-4. **The order.** Questions come first, then approvals, oldest first. A new
+1. **Three parts.** The dock has a header, the content and a footer. The
+   header holds the count, the tabs, Expand and Fold. The footer holds the
+   actions of the open tab. Only the content scrolls. The header and the
+   footer are the card's own rows (`position: sticky`). No button has a copy.
+2. **Compact and Expanded, one card.** Compact is the default. An email
+   shows one line, such as "To Kim, Ravi Kumar, Lena · Cc 2 · Rates for May".
+   Under it, the first 3 lines of its text show. An approval shows its title
+   and one meta line. A question shows whole.
+3. **The size of Compact.** Compact is as tall as its content. A desktop
+   gives it at most 40% of the chat column. A phone gives it at most 50% of
+   the visual viewport.
+4. **Expanded.** Expanded shows the whole card in the chat column above the
+   box, and its content scrolls. Review or Expand opens it. Collapse or Esc
+   closes it. Edits and ticks stay through each change.
+5. **The consent rule.** The footer shows Send, Approve or Create only when
+   the view holds the whole item. `mailWhole` and `cardWhole` in
+   `lib/waitingDock.ts` decide it. Else the first button is Review, which
+   opens Expanded. In Expanded, Send names its count ("Send to 5"). A hidden
+   commit is not in the page, so no key can reach it.
+6. **The order.** Questions come first, then approvals, oldest first. A new
    item never takes the open tab. It adds a tab with a dot, and the live
    region says so.
-5. **The actions never scroll (owner, 2026-11-27).** The footer stays in
-   view inside each cap. Over its room, a fade from theme tokens marks the
-   foot of the content. The fade takes no click, and it goes at the end. The
-   dock is never less than 160 px tall, so the footer and a part of the
-   content show on a very small screen.
+7. **The actions never scroll (owner, 2026-11-27).** The footer stays in
+   view inside each cap. A fade from theme tokens marks more content below.
+   The fade takes no click, and it goes at the end. The dock is never less
+   than 160 px tall, so the footer and a part of the content always show.
 
-Fences: `src/lib/waitingDock.test.ts`, `src/components/waitingDock.test.ts`
-and `e2e/chat-waiting-dock.spec.ts` (Send of a long email in view at 1280,
-1440 and 390 px with no scroll, Review in Compact, "Send to 5" in Expanded).
+Fences: `src/lib/waitingDock.test.ts` and `src/components/waitingDock.test.ts`.
+`e2e/chat-waiting-dock.spec.ts` checks a long email at 1280, 1440 and 390 px.
+It finds Review in Compact and "Send to 5" in Expanded, both in view.
 
 #### Keyboard rules
 
