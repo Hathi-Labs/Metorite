@@ -32,27 +32,20 @@ describe("the receipt of a draft trash", () => {
     expect(draw("trash: affected 3 message(s).", ["m1", "m2", "m3"])).toContain("3 emails");
   });
 
-  it("never says Trashed when the mailbox did not confirm a trash", () => {
-    // Review round 1: the provider did not confirm, so the head counts 0.
-    const html = draw(
-      "Trashed 0 message(s): the mailbox did not confirm a trash.\nThe mailbox provider did not confirm",
-      ["m1"],
-    );
-    expect(html).not.toContain("Trashed 1 email");
-    expect(html).toContain("the mailbox did not confirm a trash");
-  });
-
-  it("says that nothing moved when the trash counts 0", () => {
-    // Task 4026. Mutation: drop the `Trashed 0` rule of `noActionOf` → the
-    // generic receipt "Inbox updated", with its check mark, is back.
-    const html = draw(
-      "Trashed 0 message(s): the mailbox did not confirm a trash.\nThe mailbox provider did not confirm",
-      ["m1"],
-    );
+  it.each([
+    "Trashed 0 message(s): the mailbox did not confirm a trash.\nThe mailbox provider did not confirm",
+    "Trashed 0 message(s): the answer of a trash did not come back.\nThey can be in Trash or not.",
+  ])("claims neither a trash nor no change when the head counts 0", (result) => {
+    // Review round 1 and task 4026. Mutation: drop the `Trashed 0` rule of
+    // `noActionOf` -> "Inbox updated" with its check mark is back. Map it to
+    // "unchanged" -> the card says that nothing changed, which can be false.
+    const html = draw(result, ["m1"]);
     expect(html).toContain('data-email-card="no-action"');
-    expect(html).toContain("Nothing changed");
+    expect(html).toContain("Not confirmed");
+    expect(html).toContain("Check your mailbox.");
+    expect(html).not.toContain("Nothing changed");
     expect(html).not.toContain("Inbox updated");
-    expect(html).not.toContain('data-email-card="action"');
+    expect(html).not.toContain("Trashed 1 email");
   });
 
   it("draws no trashed receipt when nothing went", () => {

@@ -21918,10 +21918,13 @@ writes nothing into the record.
    line. So the chat drew a card of one draft as a grid (`parseCardBody` in
    `ConfirmationCard.tsx`). The plain card now ends with one line that holds no ": ". The line
    says that no other matching draft is in Drafts, or that the Drafts page was full
-   (`_plain_card_end`).
-2. **A trash that counts 0 says that nothing moved.** A head of "Trashed 0 message(s):" drew
-   "Inbox updated" with a check mark. The chat now draws "Nothing changed", with no check mark
-   (`noActionOf`).
+   (`_plain_card_end`). When matching drafts stay and the page was not full, the card adds no
+   line. The header of the staying drafts then keeps the card a list.
+2. **A trash that counts 0 says "Not confirmed".** A head of "Trashed 0 message(s):" drew
+   "Inbox updated" with a check mark. The tool writes that head only for a trash that the
+   mailbox did not confirm, or for a lost answer. So the chat draws "Not confirmed", with no
+   check mark, and asks the member to check the mailbox (`noActionOf`, `UNCONFIRMED_NOTE`).
+   It never says that nothing changed.
 3. **Fences for the summaries fields and for the rule of Drafts.** A test reads
    `POST /email/messages/summaries` through a session that answers only the columns that the
    SQL names. So a column that leaves the SELECT fails it. A second test holds each case of
@@ -21930,9 +21933,8 @@ writes nothing into the record.
    and each row of the rows card. Then `draft_choice.unique` runs on the cut text.
 5. **The visual review.** A rig drew the plain card, the rows card, both receipts, the question
    card and the held card. It drew them dark, light, compact, comfortable, with a changed accent
-   and at 390 px. Three findings stay open. At 390 px, a long line of the plain card wraps
-   under its "-" mark. The receipt "Nothing changed" shows the raw head "Trashed 0 message(s):".
-   At 390 px, the status line of the held card cuts "Waiting for your answer".
+   and at 390 px. Two findings stay open. At 390 px, a long line of the plain card wraps
+   under its "-" mark. At 390 px, the status line of the held card cuts "Waiting for your answer".
 6. **A sender name that holds ": " keeps the subject.** `draft_choice.draft_parts` and
    `message_parts` give the sender and the subject apart. `_short_label` cuts each part by
    itself, before it joins them.
