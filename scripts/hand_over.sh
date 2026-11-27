@@ -44,9 +44,10 @@
 #   HAND_OVER_REPO_URL [https://github.com/Hathi-Labs/Metorite]  the repo of the PR URL
 #
 # LBB-2 (engineering_practice.md section 7b.2). After a hand-over with exit 0,
-# the last line is the add_task_reference call that marks the PR queued:
-#   NEXT: add_task_reference {"task_id": ..., "url": ..., "landing": "queued"}
-# Make that call. Without it, the claim gate counts the PR as not queued.
+# the last line says how to mark the PR queued (LBB-2b, section 7b.8):
+#   NEXT: Fill in the task id: call search_tasks with N, then call
+#   add_task_reference with that task_id, the url <PR URL> and landing queued.
+# Make those calls. Without it, the claim gate counts the PR as not queued.
 # Fence: tests/unit/test_hand_over.py.
 set -uo pipefail
 
@@ -180,10 +181,10 @@ esac
 PR="$1"; TASK="$2"; TIER="$3"; shift 3; NOTE="$*"
 need_pr "$PR"
 # LBB-2: the task of the landing mark. The box takes a task number only, and
-# the tool takes a task_id, so the line names the number and the lane puts in
-# the id of that task.
+# the tool takes a task_id. So the last line tells the lane to find the id with
+# search_tasks (LBB-2b, section 7b.8). The script calls no MCP.
 REPO_URL="${HAND_OVER_REPO_URL:-https://github.com/Hathi-Labs/Metorite}"
-TASK_REF="<the task_id of task ${TASK//[!0-9]/}>"
+TASK_NUM="${TASK//[!0-9]/}"
 LIMIT="${HAND_OVER_TIMEOUT:-600}"
 me="$(printf '%s' "${HOSTNAME:-unknown}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9._-' '-')"
 LANE="${HAND_OVER_LANE:-session@${me:-unknown}}"
@@ -216,8 +217,9 @@ case "$rc" in
   0)
     echo "hand_over: this is hand-over $SLOT of PR $PR. Wait for the bot with: bash scripts/hand_over.sh --wait $PR"
     # LBB-2 (engineering_practice.md section 7b.2): the server must know that a
-    # merger has the PR, or the claim gate counts it. The last line is the call.
-    echo "NEXT: add_task_reference {\"task_id\": \"$TASK_REF\", \"url\": \"$REPO_URL/pull/$PR\", \"landing\": \"queued\"}" ;;
+    # merger has the PR, or the claim gate counts it. The last line says what
+    # to fill in and holds no placeholder (LBB-2b, section 7b.8).
+    echo "NEXT: Fill in the task id: call search_tasks with $TASK_NUM, then call add_task_reference with that task_id, the url $REPO_URL/pull/$PR and landing queued." ;;
   1) echo "hand_over: refused. Fix the reason above, push, and run it again." >&2 ;;
   4) echo "hand_over: the bot never takes this PR. Merge it yourself with the full loop (next-ticket.md step 7). Do not change the diff to pass a check." >&2 ;;
   124|255)
