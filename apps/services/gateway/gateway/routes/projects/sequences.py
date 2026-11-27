@@ -21,26 +21,36 @@ lowers ``last_value``, so a released number is never handed out again.
 **Who may reserve.** A caller who can see the task (``load_visible_task``),
 for a task in the project or in one of its subprojects (``scope_clause``). A
 project the caller cannot see answers 404, as every Projects read does. An
-archived project refuses a new reservation (``assert_not_archived``). An agent
-token cannot reach the route until SW-27b adds it to ``MCP_WRITE_ROUTES``, with
-``projects:write`` and the pin check. The
-organization comes from the bound session, never from the request (R5). An
-agent may name its run, and the run must be a run of that task.
+archived project refuses a new reservation (``assert_not_archived``). An
+outside agent reaches the route through the MCP tool ``reserve_number``
+(SW-27b): the pair is in ``MCP_WRITE_ROUTES``, so ``projects:write``, the nonce
+and the write cap apply, and ``resolve_visibility`` narrows the agent to its
+pins. The organization comes from the bound session, never from the request
+(R5). A named run must be a run of that task and the caller's own run
+(``checks.own_run``, SW-27c1, the owner's decision 1), so a person names no
+run.
 
-Not in this slice: the MCP edge tool (SW-27b), the Needs attention kind and
-the release (SW-27c), the seed of the repo's sequences (SW-27d), and the
-``/next-ticket`` and ``/handoff`` edits (SW-19 and SW-19b).
+**The mark** (SW-27c1). ``POST /projects/reservations/{reservation_id}/mark``
+takes ``state`` ``used`` or ``released``. Only a signed agent marks, and only
+a number of its own run. It is dark behind ``sequence_marks_orgs``. A merge of
+a linked pull request also marks the task's numbers used
+(``github_sync.mark_reservations_used``, SW-27c2).
+
+Not here: the Needs attention kind and the release (SW-27c), the seed of the
+repo's sequences (SW-27d), and the ``/next-ticket`` and ``/handoff`` edits
+(SW-19 and SW-19b).
 """
 
 from __future__ import annotations
 
 import re
 import uuid
-from typing import Any
+from typing import Any, Literal
 
-from acb_auth import UserContext, get_current_user
+from acb_auth import UserContext, agent_oauth, get_current_user
 from fastapi import Depends, HTTPException
 from gateway.routes.projects.analytics import scope_clause
+from gateway.routes.projects.checks import own_run
 from gateway.routes.projects.core import (
     _tenant_session,
     assert_not_archived,
@@ -80,10 +90,46 @@ RETURNING id, value, reserved_at
 
 #: The run must belong to the task, so a reservation never names a stranger.
 _RUN_OF_TASK_SQL = """
-SELECT 1 FROM pm_agent_runs
+SELECT lower(member_email) AS member, client_via, connection_id, session_key
+  FROM pm_agent_runs
  WHERE id = CAST(:run AS uuid) AND task_id = CAST(:task AS uuid)
    AND task_id IS NOT NULL
 """
+
+#: SW-27c1. One reservation with its sequence, and the run that it names, for
+#: the own-run rule (``checks.own_run``). ``FOR UPDATE OF r`` holds the row,
+#: so two marks of one number queue, and the second sees the first. The join
+#: names its subject (AD-16). A reserve takes only a run of the task
+#: (``_RUN_OF_TASK_SQL``), so the filter drops no row.
+_RESERVATION_SQL = """
+SELECT r.id, r.state, r.value, r.task_id, r.run_id, r.reserved_at, r.used_at,
+       r.released_at, s.name AS sequence, s.project_id,
+       lower(ar.member_email) AS member, ar.client_via, ar.connection_id,
+       ar.session_key
+  FROM pm_sequence_reservations r
+  JOIN pm_project_sequences s ON s.id = r.sequence_id
+  LEFT JOIN pm_agent_runs ar ON ar.id = r.run_id AND ar.task_id IS NOT NULL
+ WHERE r.id = CAST(:rid AS uuid)
+   FOR UPDATE OF r
+"""
+
+#: SW-27c1. The mark itself. ``state = 'reserved'`` is in the WHERE, so a
+#: number that is already used or released never moves, and the CHECKs of
+#: migration 477 hold (one timestamp for each state).
+_MARK_SQL = """
+UPDATE pm_sequence_reservations
+   SET state = :state,
+       used_at = CASE WHEN :state = 'used' THEN now() ELSE NULL END,
+       released_at = CASE WHEN :state = 'released' THEN now() ELSE NULL END
+ WHERE id = CAST(:rid AS uuid) AND state = 'reserved'
+RETURNING id, state, used_at, released_at
+"""
+
+#: The texts of the mark route. The edge maps the shared ones by their detail
+#: (``agent_oauth.SEQUENCE_*``). A person never reaches the edge.
+NOT_YOUR_RUN = agent_oauth.SEQUENCE_NOT_YOUR_RUN
+PERSON_MARK = "Only the agent of the run marks its number here."
+RUN_NOT_YOURS = agent_oauth.SEQUENCE_RUN_NOT_YOURS
 
 
 class ReserveIn(BaseModel):
@@ -135,10 +181,16 @@ async def reserve_number(
         )).fetchone()
         if found is None:
             raise HTTPException(status_code=422, detail="The task is not in this project.")
-        if run_id is not None and (await db.execute(
-            text(_RUN_OF_TASK_SQL), {"run": run_id, "task": task_id},
-        )).fetchone() is None:
-            raise HTTPException(status_code=422, detail="The run is not a run of this task.")
+        if run_id is not None:
+            run = (await db.execute(
+                text(_RUN_OF_TASK_SQL), {"run": run_id, "task": task_id},
+            )).fetchone()
+            if run is None:
+                raise HTTPException(status_code=422, detail="The run is not a run of this task.")
+            # SW-27c1, the owner's decision 1: a reservation names only the
+            # caller's own run. A person owns no agent run.
+            if not own_run(run, user):
+                raise HTTPException(status_code=422, detail=RUN_NOT_YOURS)
         try:
             row = (await db.execute(
                 text(RESERVE_SQL),
@@ -162,4 +214,69 @@ async def reserve_number(
         "task_id": task_id,
         "run_id": run_id,
         "reserved_at": wire(row.reserved_at),
+    }
+
+
+class MarkIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    state: Literal["used", "released"]
+
+
+@router.post("/reservations/{reservation_id}/mark")
+async def mark_number(
+    reservation_id: str,
+    payload: MarkIn,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Mark one reserved number ``used`` or ``released`` (SW-27c1).
+
+    The owner's decisions 1, 2 and 5 on task 3894:
+
+    * Only a signed agent marks here, and only a number of its OWN run
+      (``checks.own_run``: the same member, client, connection and session).
+      A person gets 403. A person's release is SW-27c3.
+    * Dark: a signed agent of an organization off ``sequence_marks_orgs``
+      gets 404 with ``agent_oauth.SEQUENCE_MARKS_OFF``.
+    * A number that the caller cannot see answers 404, as a task read does.
+      A number with no run, or of another run, answers 403.
+    * The same mark twice answers 200 and changes nothing. A number that is
+      already used or released cannot change: 409. A released number is
+      burned, and no number comes back.
+    """
+    agent = getattr(user, "agent", None)
+    if agent is None:
+        raise HTTPException(status_code=403, detail=PERSON_MARK)
+    if not agent_oauth.sequence_marks_allowed(getattr(user, "organization_id", None)):
+        raise HTTPException(status_code=404, detail=agent_oauth.SEQUENCE_MARKS_OFF)
+    rid = _uuid(reservation_id, "Reservation", status=404)
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        row = (await db.execute(text(_RESERVATION_SQL), {"rid": rid})).fetchone()
+        if row is None or row.task_id is None:
+            raise HTTPException(status_code=404, detail="Reservation not found")
+        # The pins and the visibility of the task decide what the agent sees.
+        await load_visible_task(db, vis, str(row.task_id))
+        if row.run_id is None or not own_run(row, user):
+            raise HTTPException(status_code=403, detail=NOT_YOUR_RUN)
+        state = row.state
+        used_at, released_at = row.used_at, row.released_at
+        if state == "reserved":
+            marked = (await db.execute(
+                text(_MARK_SQL), {"rid": rid, "state": payload.state},
+            )).fetchone()
+            state, used_at, released_at = marked.state, marked.used_at, marked.released_at
+        elif state != payload.state:
+            raise HTTPException(status_code=409, detail=agent_oauth.SEQUENCE_MARK_FINAL)
+    return {
+        "reservation_id": rid,
+        "project_id": str(row.project_id),
+        "sequence": row.sequence,
+        "value": int(row.value),
+        "task_id": str(row.task_id),
+        "run_id": str(row.run_id),
+        "state": state,
+        "reserved_at": wire(row.reserved_at),
+        "used_at": wire(used_at),
+        "released_at": wire(released_at),
     }

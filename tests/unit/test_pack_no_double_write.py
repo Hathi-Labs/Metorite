@@ -574,13 +574,15 @@ def test_the_write_kinds_cover_each_projects_write() -> None:
     # applied by the server, and `HELD_OFF_PACK_WRITES` classifies them.
     owner = {slug for slug in sf.pack_slugs()
              if sf.SKILL_FAMILIES[slug].get("owner") == PA and slug != "calendar-day"}
-    assert owner == PROJ | {"projects-reports"}, "non-vacuity"  # PJP-2 + ALN-4: 7 packs
+    # P-1b (task 3922): mail-tasks holds one write that makes a task.
+    assert owner == PROJ | {"projects-reports", "mail-tasks"}, "non-vacuity"
     writes = {name for slug in owner for name in sf.SKILL_FAMILIES[slug]["tools"]
               if not annotated_read_only(name) and name not in tp.CHAT_FILE_TOOLS}
     assert set(tp.WRITE_KINDS) == writes
     assert tp.write_kind("create_tasks") == tp.write_kind("create_task") == tp.write_kind(
         "create_personal_task") == "task.create"
     assert tp.write_kind("set_reminder") != tp.write_kind("create_task")
+    assert tp.write_kind("my_tasks_capture_from_mail") == "task.create"
     assert tp.write_kind("send_email") == "send_email", "no entry: its own kind"
 
 

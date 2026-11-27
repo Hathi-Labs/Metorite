@@ -843,6 +843,33 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # P-1b (task 3922): a task from a mail, for the main chat. The two tools are
+    # My Tasks tools (skill_my_tasks.core), built by the Projects assistant in
+    # `_agent_tools()` only, as the calendar-day tools are. The pack follows
+    # `projects` (tool_packs.FOLLOWS), so the flag list needs no new line.
+    "mail-tasks": {
+        "label": "Tasks from mail",
+        "summary": (
+            "Make a task from an email, or from a reply that the member sent: "
+            "draft it, then make it after one card."
+        ),
+        "description": (
+            "A tool pack: the task from a mail, for the main assistant to load "
+            "when a turn says \"make a task from this email\". One tool drafts "
+            "the task from a mail or from a reply that the member sent, and "
+            "changes nothing. One tool makes the task in the member's own task "
+            "list after one card. A run loads a pack only where tool packs are "
+            "on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "my_tasks_capture_from_mail",
+            "my_tasks_draft_from_mail",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
     # WS-39 SP-5a (task 964): the cycles (sprints) of a project. Own pack, because
     # the other Projects packs are full in their measured turns.
     "projects-cycles": {
@@ -1027,6 +1054,36 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # PAR-9 (chat_parity.md section 6.4, rung 8, task 3950): the Custom Apps of
+    # the App Workshop. Six tools call the /apps routes as the member
+    # (custom_app_tools.py). It has no surface and is NOT in FOLLOWS: only the
+    # owner's pack list turns it on. Fence: test_custom_app_tools.py.
+    "studio-apps": {
+        "label": "AI Studio Custom Apps",
+        "summary": (
+            "Read the Custom Apps of the App Workshop, change their files and stored data, "
+            "rename, copy or pin one, publish it, roll it back, or share it."
+        ),
+        "description": (
+            "A tool pack: the acts of the Custom Apps of the App Workshop, for the main "
+            "assistant to load when a turn asks to read, change, publish or share a "
+            "Custom App. A publish, a roll back, each share act, a file delete, a "
+            "restore and a delete of a stored value show one card. A run loads a pack "
+            "only where tool packs are on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "custom_app_read",
+            "custom_app_save",
+            "custom_app_files",
+            "custom_app_publish",
+            "custom_app_share",
+            "custom_app_data",
+        ),
+        "owner": "studio-builder",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
     # WS-STU J2d (TOF-4b): the share of a skill with the org is one tool, in a
     # small pack of the same owner. It has no surface, so a plain Studio turn
     # holds no new tool. It is not in FOLLOWS: only the owner's pack list turns it
@@ -1046,6 +1103,175 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         ),
         "tools": ("studio_skill_share",),
         "owner": "studio-builder",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # PAR-2a (chat_parity.md section 6.3, rung 1, task 3102): the members of the
+    # org from the chat. Each tool calls an admin route as the member, and the
+    # guard of the route is the only check. The owner never runs as an agent, as
+    # studio-builder does. It is NOT in FOLLOWS: only the owner's pack list turns
+    # it on (tool_packs.packs_on). Fence: test_org_admin_tools.py.
+    # PAR-4a (rung 3, task 3107) adds the groups, the custom roles, the
+    # overrides of a member, the removal preview and the name of the org
+    # (org_admin_more_tools.py). Fence: test_org_admin_more_tools.py.
+    # PAR-4c (rung 3, task 3935) adds the removal and the purge of a member in
+    # the same module.
+    # PAR-4d (rung 3, task 3936) adds the read of the seats and the assign or
+    # release of one seat (org_admin_more_tools.py). Fences:
+    # test_org_admin_more_tools.py, test_org_admin_seats_console_stub.py.
+    # PAR-6a (rung 3, task 3109): the seven tools of the Integrations app join
+    # the same pack (integrations_admin_tools.py). Fence:
+    # test_integrations_admin_tools.py.
+    "org-admin": {
+        "label": "Organization members and Integrations",
+        "summary": (
+            "Manage the members, the sign-in requests, the groups, the roles, the access "
+            "of a member, the seats and the name of the organization, remove or purge a "
+            "member, or read, test and disconnect the Integrations, the agent connections "
+            "and the MCP servers."
+        ),
+        "description": (
+            "A tool pack: the tools of Organisation and of the Integrations app, for the "
+            "main assistant to load when a turn asks about the members or the "
+            "Integrations of the organization. Each tool calls the routes as the member, "
+            "so a member without the right gets a refusal. Each change shows one card "
+            "first. A run loads a pack only where tool packs are on, so until then this "
+            "switch has no effect."
+        ),
+        "tools": (
+            "list_members",
+            "set_member_roles",
+            "set_member_status",
+            "answer_access_request",
+            "list_org_groups",
+            "create_org_group",
+            "edit_org_group",
+            "delete_org_group",
+            "add_org_group_member",
+            "remove_org_group_member",
+            "list_roles_and_rights",
+            "create_org_role",
+            "delete_org_role",
+            "read_member_access",
+            "set_member_overrides",
+            "preview_member_removal",
+            "rename_org",
+            "remove_member",
+            "purge_member",
+            "read_seats",
+            "set_seat",
+            "read_integrations",
+            "read_agent_access",
+            "probe_integration",
+            "discover_api_setup",
+            "revoke_agent_connection",
+            "disconnect_integration",
+            "set_mcp_server",
+        ),
+        "owner": "org-admin",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # P-5b-1 (chat_parity.md section 6.4, task 3114, owner answer OD4 A of
+    # 2026-11-25): four reads of the People app and of the Reach preview. Each
+    # tool calls a route as the member, and the route projects each field by
+    # the right of the member (D-PC-10). The owner is org-admin, which never
+    # runs as an agent. It is NOT in FOLLOWS: only the owner's pack list turns
+    # it on (tool_packs.packs_on). Fence: test_people_tools.py.
+    # P-5b-2 (task 3943, owner answer OD1 B): five writes of the member's own
+    # record, each after one card. No tool sends email.
+    "people": {
+        "label": "People directory",
+        "summary": (
+            "Read the people directory, your own row, the open work of a person and "
+            "what Reach would send you now, and change your own row after one card."
+        ),
+        "description": (
+            "A tool pack: four reads of the People app and of the Reach preview, for the "
+            "main assistant to load when a turn asks about the people of the "
+            "organization. Each tool calls the routes as the member, so the member sees "
+            "only the fields that the People app shows to that member. Five writes change "
+            "only the member's own record: the profile, the skills, the credentials and "
+            "the absences. Each write shows one card first, and no write changes the "
+            "email address. A run loads a pack only where tool packs are on, so until "
+            "then this switch has no effect."
+        ),
+        "tools": (
+            "people_directory",
+            "people_me",
+            "people_work",
+            "reach_preview",
+            "update_my_profile",
+            "set_my_skills",
+            "set_my_credentials",
+            "add_my_absence",
+            "remove_my_absence",
+        ),
+        "owner": "org-admin",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # P-1c (chat_parity.md section 6.4, task 3923, owner answer aa02d28f of
+    # 2026-11-23): the one act on a connected calendar. Sync now, and the switch
+    # that shows the member's tasks in it. Each act shows one card first. The
+    # owner is org-admin, which never runs as an agent (option a, the owner's
+    # answer on task 3923 is open). It is NOT in FOLLOWS: only the owner's pack
+    # list turns it on (tool_packs.packs_on). Fence:
+    # test_calendar_connections_pack.py.
+    "calendar-connections": {
+        "label": "Calendar connections",
+        "summary": (
+            "Sync a connected Google or Outlook calendar now, or show or hide your tasks in it."
+        ),
+        "description": (
+            "A tool pack: one act on a connected calendar, for the main assistant to load "
+            "when a turn asks to sync Google Calendar or Outlook now, or to show or hide "
+            "the member's tasks in it. Each act asks on one card first, and the route "
+            "acts as the member. To connect, reconnect or disconnect a calendar, the "
+            "member uses Calendar settings. A run loads a pack only where tool packs are "
+            "on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "my_tasks_calendar_connection",
+        ),
+        "owner": "org-admin",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # Task 3963 (chat_parity.md section 6.4, P-4d): six reads of the Notes app,
+    # the notes read tools. Each calls GET routes as the member. Each route checks
+    # the owner of a meeting or reads the rows of the member only. Thirteen
+    # reads wait for task 3966. The pack follows the example of "people": owned by
+    # org-admin, which never runs as an agent, and NOT in FOLLOWS. A run loads it
+    # where the owner lists it in the pack list of the box, or where the list is
+    # "*" (tool_packs.packs_on). Fence: test_notes_read_tools.py.
+    "notes": {
+        "label": "Meeting notes",
+        "summary": (
+            "Read your meetings, one meeting with its transcript, "
+            "the Note Taker settings, the templates, your glossary and your copilot "
+            "instructions."
+        ),
+        "description": (
+            "A tool pack: six reads of the Notes app, for the main assistant to "
+            "load when a turn asks about your meetings or the Note Taker settings. "
+            "Each tool calls the routes as the member. No tool writes, joins a "
+            "meeting or starts a bot. A run loads a pack only where tool packs are "
+            "on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "notes_meetings",
+            "notes_meeting",
+            "notes_settings",
+            "notes_templates",
+            "notes_glossary",
+            "notes_copilot_instructions",
+        ),
+        "owner": "org-admin",
         "core": False,
         "scope_governed": True,
         "dynamic": False,

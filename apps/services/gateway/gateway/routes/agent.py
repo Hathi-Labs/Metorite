@@ -1014,6 +1014,16 @@ _PACK_OWNER_AGENTS: list[dict] = [
         "integrations": [],
         "optional_integrations": [],
     },
+    # PAR-2a (chat_parity.md section 6.3, task 3102): the member tools of the
+    # Members tab. The admin routes decide each right.
+    {
+        "name": "org-admin",
+        "description": "Owns the org-admin tool pack. It never runs as an agent.",
+        "agent_runtime": "maf",
+        "local_path": "apps/agents/agent-org-admin",
+        "integrations": [],
+        "optional_integrations": [],
+    },
 ]
 
 
@@ -2262,7 +2272,13 @@ async def register_agent(
     # registered ``worker`` would share ``cache_root/worker`` with the spawn child.
     # STU-G1: the name of a pack-only owner is reserved too, so no registered
     # agent shows in a list under the name of an owner that never runs.
+    # SBX-4b1 (agent_sandbox.md §12.4 decision 11): the broker names
+    # `user-tool` and `compute` are reserved too, because a registered agent
+    # with either name would share the container key of a broker step.
+    from acb_skills.agent_paths import BROKER_AGENT_NAMES
+
     reserved = {a["name"] for a in (*_INTERNAL_AGENTS, *_PACK_OWNER_AGENTS)}
+    reserved |= BROKER_AGENT_NAMES
     if req.name.strip().lower() in reserved:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

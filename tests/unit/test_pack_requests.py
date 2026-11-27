@@ -315,9 +315,92 @@ REQUESTS: dict[str, tuple[str, ...]] = {
                              "delete the workflow that chases invoices"),
     "studio_workflow_build": ("change the workflow so it also sends a summary",),
     "studio_workflow_module": ("write a code module that splits a full name",),
+    # -- studio-apps: the Custom Apps of the App Workshop (PAR-9, task 3950) --
+    "custom_app_read": ("list my custom apps", "show the files of the custom app expenses"),
+    "custom_app_save": ("rename the custom app expenses to Team expenses",
+                        "pin the app expenses to my sidebar"),
+    "custom_app_files": ("change the index.html of my custom app",
+                         "restore the app checkpoint from this morning"),
+    "custom_app_publish": ("publish the custom app expenses",
+                           "roll back the custom app to version 2"),
+    "custom_app_share": ("share the custom app with ravi@acme.test",),
+    "custom_app_data": ("delete the stored data of the app for key q3",),
     # -- studio-share: the share of a skill with the org (WS-STU J2d) --
     "studio_skill_share": ("share my skill with the team",
                            "approve the skill share that waits for me"),
+    # -- org-admin: the members of the org (PAR-2a, task 3102) --
+    "list_members": ("list the members of our organization", "who are our org members?",
+                     "which sign-in requests wait?"),
+    "set_member_roles": ("give ravi@acme.test the admin role",
+                         "change the member roles of ravi@acme.test"),
+    "set_member_status": ("suspend the member ravi@acme.test",
+                          "reactivate the member ravi@acme.test"),
+    "answer_access_request": ("approve the sign-in request from kim@acme.test",
+                              "deny the access request from kim@acme.test"),
+    # -- org-admin: groups, roles, access and the org name (PAR-4a, task 3107) --
+    "list_org_groups": ("list the org groups", "who is in the organization groups?"),
+    "create_org_group": ("make a new org group called design",),
+    "edit_org_group": ("rename the org group design to Design team",),
+    "delete_org_group": ("delete the org group design",),
+    "add_org_group_member": ("add ravi@acme.test to the org group design",),
+    "remove_org_group_member": ("take ravi@acme.test out of the org group design",),
+    "list_roles_and_rights": ("list the roles and rights of our organization",
+                              "which custom roles do we have?"),
+    "create_org_role": ("make a custom role called auditor",),
+    "delete_org_role": ("delete the custom role auditor",),
+    "read_member_access": ("show the member access of ravi@acme.test",),
+    "set_member_overrides": ("set the permission overrides of ravi@acme.test",
+                             "deny ravi@acme.test the CRM with an access override"),
+    "preview_member_removal": ("what would the removal of a member like ravi@acme.test seal?",),
+    "rename_org": ("rename the organization to Acme Labs",),
+    # -- org-admin: the removal and the purge of a member (PAR-4c, task 3935) --
+    "remove_member": ("remove the member ravi@acme.test",),
+    "purge_member": ("purge the member ravi@acme.test",),
+    # -- org-admin: the seats (PAR-4d, task 3936) --
+    "read_seats": ("how many org seats are in use?", "show the seat assignments",
+                   "who holds a seat in our organization?"),
+    "set_seat": ("assign a seat to ravi@acme.test", "release the seat of ravi@acme.test",
+                 "free a seat for kim@acme.test"),
+    # -- org-admin: the Integrations app (PAR-6a, task 3109) --
+    "read_integrations": ("which integrations are connected?", "list our plugins",
+                          "is github connected?"),
+    "read_agent_access": ("which agent connections do I have?",
+                          "list the app requests that wait for me"),
+    "probe_integration": ("test the apollo integration", "test the MCP server tools-a"),
+    "discover_api_setup": ("how do I set up the Notion integration?",),
+    "revoke_agent_connection": ("revoke the agent connection of Claude Desktop",),
+    "disconnect_integration": ("disconnect the zoho integration", "remove the plugin weather",
+                               "disconnect github"),
+    "set_mcp_server": ("turn on always confirm for the MCP server tools-a",),
+    # -- people: four reads of the People app and of Reach (P-5b-1, task 3114) --
+    "people_directory": ("search the people directory for Priya",
+                         "who works here in sales?"),
+    "people_me": ("show my person record", "what does my people profile say?"),
+    "people_work": ("what is on the plate of a colleague? show the work of a colleague",),
+    "reach_preview": ("show me the reach preview", "what would reach send me now?"),
+    # -- people: five self writes of my own record (P-5b-2, task 3943) --
+    "update_my_profile": ("set my pronouns to she/her", "change my people record",
+                          "update my emergency contact"),
+    "set_my_skills": ("add python to the skills on my people profile",),
+    "set_my_credentials": ("add my AWS certificate to the credentials on my people profile",),
+    "add_my_absence": ("record my holiday from 24 to 31 December",
+                       "add my absence for next Friday"),
+    "remove_my_absence": ("remove my absence on Friday", "delete one of my absences"),
+    # -- calendar-connections: Sync now and the task switch (P-1c, task 3923) --
+    # The pack is dark, and EVERY names each pack, so this table reads the pack
+    # set of a box whose TOOL_PACKS line names it.
+    "my_tasks_calendar_connection": ("sync my google calendar", "sync my outlook calendar",
+                                     "show my tasks in google calendar",
+                                     "stop sending my tasks to outlook",
+                                     "send my tasks to google calendar"),
+    # -- notes: six reads of the Notes app (task 3963) --
+    "notes_meetings": ("list my meetings", "search my meetings for the budget review"),
+    "notes_meeting": ("show the meeting transcript of the sales sync",
+                      "show the meeting summary of the sales sync"),
+    "notes_settings": ("show my note taker settings",),
+    "notes_templates": ("list the meeting templates",),
+    "notes_glossary": ("show my notes glossary",),
+    "notes_copilot_instructions": ("show my copilot instructions",),
     # -- studio-repair: the repair of a skill (TOF-3a F12c) --
     "studio_skill_repair": ("fix my skill, it failed", "the skill was wrong, repair the skill"),
     "studio_skill_undo": ("undo my skill to the version before",),
@@ -361,6 +444,10 @@ REQUESTS: dict[str, tuple[str, ...]] = {
                                            "list my calendar connections"),
     "my_tasks_suggest_title": ("improve the title of this task", "suggest a title for this task"),
     "my_tasks_enrich": ("fill in the details of this task", "enrich this task"),
+    # P-1b (task 3922): a task from a mail, or from a reply that the member sent.
+    "my_tasks_draft_from_mail": ("make a task from this email", "draft a task from my reply"),
+    "my_tasks_capture_from_mail": ("turn this email into a task",
+                                   "add this email to my tasks"),
 }
 
 #: Known gaps, kept out of the table on purpose. A bare "calendar" or "project"
@@ -470,3 +557,25 @@ def test_the_question_tools_are_routed_to_the_authority_pack_and_no_rule_refuses
     assert "answer_agent_question" in tp.PACKS["projects-authority"].rules
     assert "agent" in tp.PACKS["projects-authority"].when
     assert "answer to an agent" not in plan.when
+
+
+@pytest.mark.parametrize("words", [
+    "open a pull request on github", "push the branch to github",
+    "clone the repo from github and fix the build",
+])
+def test_a_coding_turn_that_names_github_does_not_load_org_admin(words: str) -> None:
+    """PAR-6a fix round: a bare "github" once loaded the admin tools. Mutation:
+    add "github" back to ``_ORG_ADMIN_WORDS`` -> red."""
+    assert tp.matched_layer("org-admin", words) is None, words
+    assert "org-admin" not in _chosen(words)
+
+
+@pytest.mark.parametrize("words", [
+    "book a window seat on the flight to Pune", "reserve a seat at the conference",
+    "how many seats does the meeting room have?",
+])
+def test_a_turn_about_a_seat_elsewhere_does_not_load_org_admin(words: str) -> None:
+    """PAR-4d (task 3936): a bare "seat" is out of the words. Mutation: add
+    "seat" or "seats" to ``_ORG_ADMIN_WORDS`` -> red."""
+    assert tp.matched_layer("org-admin", words) is None, words
+    assert "org-admin" not in _chosen(words)

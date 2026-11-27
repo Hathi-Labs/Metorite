@@ -270,12 +270,12 @@ The spec audit of 2026-11-07 asked for these choices before the build. Each is a
 
 None of them reads the One Thing, a focus mark or a block.
 
-**Storage (migration 349, expand only).**
+**Storage (migration 507, expand only).**
 
 - `pm_task_personal.focus_on date NULL`. A mark is the member's date of the mark. It is "today's focus" only while it equals the member's today, so it expires by itself.
 - `user_settings.today_focus_cap smallint NULL`. Null reads as 3. A write clamps it to 1..10, and a read clamps it again.
 - Both columns ride tables that are already tenant-scoped with FORCE RLS. Identity comes from the session only (R5).
-- The build takes the number 349 (main is at 347, and 348 is on another branch). Re-check it at merge (R1).
+- The build took the number 349, then 412, then 498 (booked 2026-11-23). It moved to 507 on 2026-11-26. Re-check it at merge (R1).
 
 **The Today set.** One SQL predicate in the gateway decides it, for one member and one local day. The day is the member's local day, read from the zone that `in_today` uses now. A task is in the set when it is open, visible to the member, and one of these is true:
 
@@ -300,7 +300,11 @@ None of them reads the One Thing, a focus mark or a block.
 - Setting the One Thing never refuses. It counts toward the cap.
 - A lower cap keeps the marks that exist and refuses new ones until the count is under it.
 
-**The flag.** `TODAY_RULE_ORGS`, default empty. It reloads by SIGHUP (`docs/flag_reload.md`). With it off, the Today chip and its count keep the old rule, and nothing that a member sees changes. The new route and the mark exist with the flag off, and no UI calls them until CC-3 and CC-7. The flip is gate `enforcement-flip`.
+**The flag.** `TODAY_RULE_ORGS`, default empty. It reloads by SIGHUP (`docs/flag_reload.md`). The flip is gate `enforcement-flip`.
+
+With the flag off, the Today chip and its count keep the old rule, and nothing that a member sees changes. The new route answers, but no UI calls it until CC-3 and CC-7. The route refuses a mark and a clear with 403 `today_focus_off`.
+
+With the flag on, `GET /projects/my/today` adds `today_rule: true`. The Today chip reads the set from the new route. The chat reads the new key. Without it, the chat refuses `todays_focus` before its confirm card. No UI sends a mark until CC-3 and CC-7.
 
 **Not in CC-2.** The phases, the focus log, the day rail, the chat tools (CC-10) and a control for the cap setting. The control ships with CC-7, which picks the top 3.
 
@@ -334,7 +338,7 @@ CC-5 ships in two parts. **CC-5a** is the server log. **CC-5b** is the check-in 
 - A partial unique index on `(organization_id, member_email) WHERE ended_at IS NULL`. A member has at most one open session.
 - The DDL is idempotent, as `infra/postgres/README.md` asks.
 
-A new table can have NOT NULL columns and defaults, because no old code reads it (R6). The build took the number 350. On 2026-11-23 it moved to 501, above main's 496, and CC-2 holds 498. Re-check both at merge (R1).
+A new table can have NOT NULL columns and defaults, because no old code reads it (R6). The build books a number above main's highest, with reserve_migration.sh. CC-2 holds 507. Re-check at merge (R1).
 
 **CC-5a, privacy.** A session row belongs to its member. Every route reads and writes only the rows of the session's member. Identity comes from the session, never from the request (R5). A manager sees no other member's minutes (D-MD-5).
 

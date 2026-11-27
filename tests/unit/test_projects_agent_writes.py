@@ -654,7 +654,9 @@ def _reminder_answers(call: dict) -> Any:
     path, method = call["path"], call["method"]
     if path == "/projects/my/today":
         today = W._today().isoformat()
-        return {"today": today, "timezone": "UTC", "stored": True, "valid": True}
+        # WS-MDC CC-2: the org has today's focus, so `todays_focus` sends.
+        return {"today": today, "timezone": "UTC", "stored": True, "valid": True,
+                "today_rule": True}
     if not path.startswith("/projects/my/reminders"):
         return None
     body = call["json"] if isinstance(call["json"], dict) else {}
@@ -2656,9 +2658,12 @@ async def test_every_manifest_tool_is_now_built() -> None:
     # pack `agents-overview`. Its `agents_list` reads the overview route, and
     # its `agent_recent_runs` reads the drill-down.
     aga_11 = {"agents_list", "agent_recent_runs"}
+    # WS-MCP SW-45: the free tasks of the member's own apps. The MCP `my_work`
+    # reads the route. The chat `my_work` does not show the group yet.
+    sw_45 = {"own_app_free"}
     assert set(m.PLANNED) <= ({"my_areas"} | ea_12e | ea_6b | ea_6g | ea_13e
                               | mcp_g15 | ea_18a | ap_10 | mcp_g19a | mcp_g21 | sp_5
-                              | sw_23 | sw_32 | aga_11), m.PLANNED
+                              | sw_23 | sw_32 | aga_11 | sw_45), m.PLANNED
     assert not {t for t in m.PLANNED if "reminder" in t}, m.PLANNED
     assert "change_agent_answer" in skill_projects.__all__
     assert not {"withdraw_agent_answer", "replace_agent_answer", "change_agent_answer"} & set(

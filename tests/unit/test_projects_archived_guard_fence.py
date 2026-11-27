@@ -58,6 +58,8 @@ GUARDED: dict[str, tuple[str, str]] = {
     "DELETE /projects/comments/{activity_id}": ("activities", "delete_comment"),
     "POST /projects/activities/{activity_id}/revert": ("activities", "revert_change"),
     "POST /projects/tasks/{task_id}/check-result": ("checks", "report_check"),
+    "PUT /projects/tasks/{task_id}/package-fields/{install_id}/{field_key}": (
+        "package_fields", "set_task_package_field"),
     "PUT /projects/tasks/{task_id}/epic-contract": ("epic_contract", "put_epic_contract"),
     "POST /projects/tasks/{task_id}/refs": ("refs", "add_ref"),
     "DELETE /projects/tasks/{task_id}/refs/{ref_id}": ("refs", "delete_ref"),

@@ -141,6 +141,21 @@ CLASS_X_WRITES: dict[tuple[str, str], str] = {
         " member's yes and with the member's switch on. The chat deletes"
         " through delete_task and its card."
     ),
+    ("POST", "/projects/nodes/{project_id}/sequences/{name}/reserve"): (
+        "SW-27b (task 3893, agent_coordination.md SW-27). The MCP door only:"
+        " reserve_number gives an outside agent the next number of a project"
+        " sequence. The chat has no need to reserve a number."
+    ),
+    ("POST", "/projects/reservations/{reservation_id}/mark"): (
+        "SW-27c1 (task 3938). The MCP door only: mark_number marks a number of"
+        " the agent's own run used or released. A person's release is SW-27c3."
+    ),
+    # WS-MCP SW-114 (agent_coordination.md SW-114, §3.12.7 rule 11).
+    ("POST", "/projects/agent-runs/{run_id}/children"): (
+        "SW-114. The MCP door only: a hook of the agent reports a sub-agent"
+        " through report_subagent, under an open run of the same member and"
+        " connection. The chat starts no sub-agent, and a person gets 422."
+    ),
 }
 
 #: The pairs of ``MCP_WRITE_ROUTES`` that are class C in the manifest, each
@@ -250,9 +265,16 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
         ("POST", "/agent-access/apps/{app}/requests"),
         # CIV-14b: `upload_task_image` (spec §12.9). One image, multipart.
         ("POST", "/projects/tasks/{task_id}/attachments"),
+        # WS-MCP SW-114: `report_subagent` (agent_coordination.md SW-114).
+        ("POST", "/projects/agent-runs/{run_id}/children"),
         # WS-MCP SW-32: `set_run_plan` (agent_coordination.md SW-32). It
         # replaces the plan of the agent's own run.
         ("PUT", "/projects/agent-runs/{run_id}/plan"),
+        # WS-MCP SW-27b: `reserve_number` (agent_coordination.md SW-27). Each
+        # call takes the next number of a project sequence.
+        ("POST", "/projects/nodes/{project_id}/sequences/{name}/reserve"),
+        # WS-MCP SW-27c1: `mark_number`, dark behind `sequence_marks_orgs`.
+        ("POST", "/projects/reservations/{reservation_id}/mark"),
     }
     assert expected == set(MCP_WRITE_ROUTES)
 
@@ -429,6 +451,10 @@ WRITE_HINTS = {**READ_HINTS, "readOnlyHint": False}
 #: The write tools whose ``idempotentHint`` is false, each with its reason. A
 #: new entry needs a spec amendment (§9.2).
 NON_IDEMPOTENT_WRITES: dict[str, str] = {
+    "reserve_number": (
+        "SW-27b. Each call takes a new number of the sequence, and no number"
+        " comes back (agent_coordination.md SW-27)."
+    ),
     "create_task": (
         "EA-6d. The hint is one value for every call, and a call with no"
         " idempotency_key makes a new task each time (spec §9.2)."
@@ -459,6 +485,10 @@ DESTRUCTIVE_WRITES: dict[str, dict[str, bool]] = {
                        "idempotentHint": True, "openWorldHint": False},
     "delete_comment": {"readOnlyHint": False, "destructiveHint": True,
                        "idempotentHint": True, "openWorldHint": False},
+    # SW-27c1. A release burns the number for good. The same mark twice
+    # changes nothing more.
+    "mark_number": {"readOnlyHint": False, "destructiveHint": True,
+                    "idempotentHint": True, "openWorldHint": False},
 }
 
 #: The tools of a write pair that write nothing, each with its reason. Each
@@ -602,6 +632,10 @@ NAMED_EDGE_INPUTS: frozenset[tuple[str, str]] = frozenset({
     ("list_projects", "text"),
     ("list_projects", "limit"),
     ("list_projects", "cursor"),
+    # MCP-G19c. `compact` of `get_project` leaves out the reads of the field
+    # definitions and the tags. `GET /projects/nodes/{project_id}` takes no
+    # such parameter.
+    ("get_project", "compact"),
     # MCP-G21. The gateway returns the whole list, and the edge pages it.
     ("list_members", "limit"),
     ("list_members", "cursor"),
@@ -669,6 +703,45 @@ def test_the_ea15_reads_are_listed_and_add_no_pair():
     assert TOOLS["get_task_context"].edge_inputs == frozenset({"comments"})
 
 
+def test_ea5_the_company_context_reads_auth_me_and_adds_no_pair():
+    """EA-5 (D-EA-6, corrected 2026-11-25). ``get_company_context`` reads
+    ``GET /auth/me``, the pair of ``whoami``, and no other route. So the
+    allowlist gains no entry: the branding pair stays out, and the tool's one
+    route is a named exception that EA-3 already held. It needs
+    ``context:read``, it has the hints of a read, and it is dark on
+    ``agent_resources_orgs``. Mutation: give the tool the route
+    ``/settings/branding``, or add that pair to ``MCP_ROUTES``, and this
+    test fails."""
+    from acb_auth.agent_oauth import CONTEXT_READ
+    from agent_edge.tools import TOOLS
+
+    tool = TOOLS["get_company_context"]
+    pair = ("GET", "/auth/me")
+    assert (tool.method, tool.route) == pair and tool.routes == (pair[1],)
+    assert pair in MCP_ROUTES and pair in NAMED_EXCEPTIONS
+    assert tool.required_scope == CONTEXT_READ
+    assert dict(tool.annotations) == READ_HINTS
+    assert tool.resources is True
+    assert not tool.params and not tool.edge_inputs and not tool.prior_writes
+    assert not tool.alt_writes and not tool.param_routes
+    assert tool.input_schema["properties"] == {}
+    assert ("GET", "/settings/branding") not in MCP_ROUTES
+    assert not {p for _, p in MCP_ROUTES if p.startswith("/settings")}
+    assert set(tool.output_schema["properties"]) == {"name", "slug"}
+    assert tool.output_schema["additionalProperties"] is False
+
+
+def test_only_get_company_context_needs_context_read():
+    """EA-5. ``context:read`` reaches one tool. A second needs a spec
+    amendment (§8)."""
+    from acb_auth.agent_oauth import CONTEXT_READ
+    from agent_edge.tools import TOOLS
+
+    assert [n for n, t in TOOLS.items() if t.required_scope == CONTEXT_READ] == [
+        "get_company_context"]
+    assert [n for n, t in TOOLS.items() if t.resources] == ["get_company_context"]
+
+
 def test_sw113_the_agent_map_is_a_read_of_the_one_overview_route():
     """WS-MCP SW-113 (``agent_coordination.md`` §3.12.7 rule 12). The tool
     reads the map of SW-102 through the overview route, and no other route.
@@ -689,6 +762,35 @@ def test_sw113_the_agent_map_is_a_read_of_the_one_overview_route():
     assert dict(tool.params) == {"project_id": "project_id", "show_quiet": "show_quiet"}
     classes = {(r.method, r.path): r.cls for r in m.MANIFEST}
     assert classes[pair] == "A"
+
+
+def test_sw114_report_subagent_is_the_one_write_of_the_children_route():
+    """WS-MCP SW-114 (``agent_coordination.md`` §3.12.7 rule 11). The tool
+    writes the POST of the children of a run, and no other route. It needs
+    ``projects:write``, it has the hints of a write, and it shows only while
+    the runs flag is on. The pair is class X in the chat manifest, so it is a
+    named entry of :data:`CLASS_X_WRITES`. The GET of the children stays off
+    the edge. Mutation: drop the pair from ``MCP_WRITE_ROUTES``, and this
+    test and rule 4 fail."""
+    from acb_auth.agent_oauth import PROJECTS_WRITE
+    from agent_edge.tools import TOOLS, WRITE_ANNOTATIONS
+
+    tool = TOOLS["report_subagent"]
+    pair = ("POST", "/projects/agent-runs/{run_id}/children")
+    assert (tool.method, tool.route) == pair and tool.routes == ()
+    assert pair in MCP_WRITE_ROUTES and pair in CLASS_X_WRITES
+    assert ("GET", pair[1]) not in MCP_ROUTES
+    assert tool.required_scope == PROJECTS_WRITE
+    assert dict(tool.annotations) == dict(WRITE_ANNOTATIONS)
+    assert tool.runs is True and not tool.edge_inputs and not tool.prior_writes
+    assert not tool.alt_writes
+    assert dict(tool.params) == {"run_id": "run_id", "agent_id": "agent_id",
+                                 "agent_type": "agent_label", "event": "event",
+                                 "model": "model"}
+    classes = {(r.method, r.path): r.cls for r in m.MANIFEST}
+    assert classes[pair] == "X" and classes[("GET", pair[1])] == "X"
+    reached = _reached(TOOLS)
+    assert ("GET", pair[1]) not in reached
 
 
 def test_rule_4_each_input_maps_to_a_parameter_of_its_route():
@@ -824,3 +926,59 @@ def test_rule_4_each_item_of_update_tasks_is_an_update_task_input():
     assert bulk.routes == one.routes and bulk.alt_writes == one.alt_writes
     assert bulk.params == {} and bulk.prior_writes == ()
     assert bulk.required_scope == one.required_scope
+
+
+def test_the_sequence_name_rule_is_one_rule():
+    """SW-27b. The edge checks the reserve path with
+    ``agent_oauth.SEQUENCE_NAME_PATTERN``. The route checks it with
+    ``NAME_RE``, and the CHECK of migration 477 holds it too. If the edge
+    rule were wider, a bad name would reach the route and answer 422; if it
+    were narrower, the edge would refuse a name that the route takes."""
+    from acb_auth.agent_oauth import SEQUENCE_NAME_PATTERN
+    from gateway.routes.projects.sequences import NAME_RE
+
+    assert NAME_RE.pattern == SEQUENCE_NAME_PATTERN
+
+
+def test_the_sequence_route_texts_have_one_copy():
+    """SW-27c1. The gateway sends the shared details of ``agent_oauth``, so
+    the edge's map by detail matches them."""
+    from acb_auth import agent_oauth
+    from gateway.routes.projects import sequences
+
+    assert sequences.RUN_NOT_YOURS is agent_oauth.SEQUENCE_RUN_NOT_YOURS
+    assert sequences.NOT_YOUR_RUN is agent_oauth.SEQUENCE_NOT_YOUR_RUN
+
+
+@pytest.mark.parametrize("detail,expected", [
+    ("agent_writes_disabled", "other"),
+    ("This number is not a number of your run.", "not_yours"),
+    ("Feature not enabled", "other"),
+])
+def test_mark_number_maps_a_403_by_its_detail(monkeypatch, detail, expected):
+    """Review P2. The tool's own mapping: a 403 of another cause keeps its
+    own text. Before the fix, every 403 read as "not your run". Mutation:
+    map ``texts={403: ...}`` again, and the "other" cases turn red."""
+    import asyncio
+
+    from acb_auth import agent_oauth
+    from agent_edge import tools as edge_tools
+    from agent_edge.gateway_client import Answer
+
+    if detail == "agent_writes_disabled":
+        detail = agent_oauth.WRITES_DISABLED_CODE
+    answer = Answer(status=403, body={"detail": detail})
+
+    async def fake_write(ctx, method, template, not_found, **kw):
+        keep = {k: v for k, v in kw.items()
+                if k in ("texts", "details", "coded", "prefixes", "coded_statuses")}
+        return edge_tools._written(answer, not_found, **keep)
+
+    monkeypatch.setattr(edge_tools, "_write", fake_write)
+    with pytest.raises(edge_tools.ToolError) as exc:
+        asyncio.run(edge_tools._mark_number(None, {
+            "reservation_id": "00000000-0000-4000-8000-000000000001", "state": "used"}))
+    if expected == "not_yours":
+        assert str(exc.value) == edge_tools.TEXT_MARK_NOT_YOURS
+    else:
+        assert str(exc.value) != edge_tools.TEXT_MARK_NOT_YOURS

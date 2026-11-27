@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -29,6 +30,8 @@ from tally_bridge.reader.values import Amount
 log = logging.getLogger("tally_bridge.localcopy")
 
 SUFFIX = ".copy"
+#: The temporary file of ``save``: the 32-hex name of ``_path``, then ``.tmp``.
+_OWN_TMP = re.compile(r"[0-9a-f]{32}\.tmp")
 
 
 @dataclass
@@ -124,6 +127,8 @@ class CopyStore:
     def __init__(self, folder: str | os.PathLike[str], keys: KeyProvider) -> None:
         self._folder = Path(folder)
         self._keys = keys
+        # TLY-2b: copied_at by company, kept while the file does not change.
+        self._times: dict[str, tuple[tuple[int, int], datetime | None]] = {}
 
     def _path(self, company: str) -> Path:
         name = hashlib.sha256(company.encode("utf-8")).hexdigest()[:32]
@@ -159,6 +164,29 @@ class CopyStore:
     def delete(self, company: str) -> None:
         self._path(company).unlink(missing_ok=True)
 
+    def copied_at(self, company: str) -> datetime | None:
+        """When the copy of *company* was made, or None. It decrypts a file
+        only when the file changed, so a link poll each 25 s stays cheap."""
+        try:
+            st = self._path(company).stat()
+        except FileNotFoundError:
+            self._times.pop(company, None)
+            return None
+        stamp = (st.st_mtime_ns, st.st_size)
+        cached = self._times.get(company)
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+        snap = self.load(company)
+        when = snap.copied_at if snap is not None else None
+        self._times[company] = (stamp, when)
+        return when
+
+    def oldest_copied_at(self, companies: tuple[str, ...] | list[str]) -> datetime | None:
+        """The oldest copy time of *companies* that have a copy, or None
+        (§3.8.13 point 7: "Reads use the copy of 14:05")."""
+        times = [t for t in (self.copied_at(c) for c in companies) if t is not None]
+        return min(times) if times else None
+
     def delete_all(self) -> int:
         """Delete every copy (Disconnect, uninstall). Returns the count."""
         if not self._folder.exists():
@@ -167,9 +195,12 @@ class CopyStore:
         for path in self._folder.glob(f"*{SUFFIX}"):
             path.unlink(missing_ok=True)
             gone += 1
-        # A crash between the write and the replace leaves a .tmp file.
+        # A crash between the write and the replace leaves a .tmp file. Only
+        # the store's own: a 32-hex name, as ``_path`` makes it. COPY_DIR is
+        # the customer's choice, so another .tmp there is not ours.
         for path in self._folder.glob("*.tmp"):
-            path.unlink(missing_ok=True)
+            if _OWN_TMP.fullmatch(path.name):
+                path.unlink(missing_ok=True)
         return gone
 
     def keep_only(self, companies: tuple[str, ...] | list[str]) -> int:

@@ -722,11 +722,13 @@ The owner asked on 2026-11-14 (task 3164) that AI Studio builds on connections. 
 3. **The connector list (IN-11).** One curated file lists each provider that a member can connect. Each row gives its sign-in kind, its owning app, what it unlocks, whether a built-in app shows its data, and where to find a key. The console, Studio, the result card and the chat read that file. It is not a marketplace (§1.3). **BUILT (2026-11-14, task 3174). Studio I8a (task 3168) is the first caller. It reads the label and the scope of a provider.** The file is `packages/acb_common/acb_common/connector_list.json`, with 16 rows. `acb_common.connector_list` reads it in Python. `src/lib/connectors.ts` reads it in TypeScript through `connectors.generated.ts`, which `scripts/gen_connectors.py` writes. Left: the Studio name check (I8, I1b), the console swap and the result card (IN-9).
 4. **A connection outlives its person (IN-12).** An org connection over OAuth acts as the admin who connected it (D98). The member removal names each such connection of the leaver, and an admin connects it again as another person.
 
-### 3.8 Local connectors: a program on the customer's machine (WS-LNK, task 3653, PROPOSED)
+### 3.8 Local connectors: a program on the customer's machine (WS-LNK, task 3653, APPROVED)
 
-> **Status: 📝 PROPOSED, 2026-11-17.** The owner has not approved this design. An agent builds no LNK slice before the owner approves it on task 3653. The epic is task 3654.
+> **Status: ✅ APPROVED, 2026-11-25 (D232).** The owner approved this section on task 3653 (answer `ccf82fd8`): "Approve §3.8, start TLY-2 first". It is the contract now. The epic is task 3654.
 
-> **Verified against code** on 2026-11-17 at `origin/main` `1128df4ed`. This section takes no D-number. The decision gets the next free number when the owner approves it.
+> TLY-2, the program's side, goes first, against a fake link. Each LNK slice of the Metorite side still asks the owner for its own "Approve the merge". The open points of §3.8.12 stay open.
+
+> **Verified against code** on 2026-11-17 at `origin/main` `1128df4ed`. The owner's approval is D232 (`work_plan.md` §3).
 
 #### 3.8.1 The ask and the rule
 
@@ -949,7 +951,7 @@ The approval screen asks three things. The program cannot decide them.
 
 | Choice | Default | Notes |
 |---|---|---|
-| **Who may use it** | "Only these people", offered first, with the approving admin chosen | The grant stays `integrations:use:mcp-<name>`. A role holds `integrations:use:*`, so a deny for each other member leaves a later joiner open (rule g). **A candidate fix, not verified:** LNK-3 marks the row, and the injection accepts only an exact allow override for that server. A new member holds none. `decide()` already tells an exact override from a role grant: it returns `allow-override` or `role` (`permissions.py:423-442`). The open point is the shared session, which folds the access of each member into one yes or no. The candidate binds both grant checks of rule g. A write of an override needs `admin:access:manage`. An approver with `integrations:manage` only cannot pick people. Then the row stays closed to every member, and the screen names an admin who can open it |
+| **Who may use it** | "Only these people", offered first, with the approving admin chosen | The grant stays `integrations:use:mcp-<name>`. A role holds `integrations:use:*`, so a deny for each other member leaves a later joiner open (rule g). **A candidate fix, not verified:** LNK-3 marks the row, and the injection accepts only an exact allow override for that server. A new member holds none. `decide()` already tells an exact override from a role grant: it returns `allow-override` or `role` (`permissions.py:423-442`). The open point is the shared session, which folds the access of each member into one yes or no. The candidate binds both grant checks of rule g. A write of an override needs `admin:access:manage`. An approver with `integrations:manage` only cannot pick people. Then the row stays closed to every member, and the screen names an admin who can open it. ⚠️ §3.9 (task 3985) replaces this candidate. LNK-3 uses the rule of §3.9 |
 | **The data notice** | The admin must accept it to approve | The words are LNK-Q2 |
 | **Read only** | Fixed in rung 2: `read_only_key` on, Always confirm off | Writes need rung 3, a second connector and Always confirm on |
 
@@ -970,7 +972,7 @@ Rung 1 already uses the product program. Only its transport differs from rung 2 
 
 #### 3.8.10 Changes to the draft contract of the build brief
 
-The local build brief of task 3655 (version 2) holds a draft contract in its §6.8. This section is PROPOSED. When the owner approves it, it becomes the contract, and it wins where the two differ.
+The local build brief of task 3655 (version 2) holds a draft contract in its §6.8. The owner approved this section (D232), so it is the contract, and it wins where the two differ.
 
 | The brief says | This section says | Why |
 |---|---|---|
@@ -999,7 +1001,7 @@ The local build brief of task 3655 (version 2) holds a draft contract in its §6
 | The door: the edge or a gateway route | The LNK-2 audit | The edge (§3.8.5) |
 | The queue primitive and the capacity ceiling | The LNK-2 audit | Pick by the measures of §3.8.5 |
 | Whether the frame and the session mark of rule d also bind a URL server | The board | A finding of its own. This section binds the link only |
-| Whether the exact-override candidate for "Only these people" works, and stays inside D12 | The LNK-3 audit, then the owner if it is a third axis | Keep the outcome of rule g. `decide()` already tells an override from a role grant. Use the candidate only if the shared session keeps that difference |
+| Whether "Only these people" works for a later joiner | Closed by §3.9 | The rule of §3.9 adds a deny at resolve time, and the shared session keeps a deny |
 | The questions LNK-Q1 to LNK-Q9 | The owner | §10 |
 
 #### 3.8.13 The program on the customer's machine (owner, 2026-11-18)
@@ -1048,6 +1050,178 @@ that we can sync periodically.
 6. **Protection.** The program encrypts the copy with DPAPI at machine scope. It deletes the copy of a company that leaves the allow-list. It deletes the whole copy at Disconnect and at uninstall.
 7. **Health.** Each poll also carries the time of the last good copy. The console then shows "TallyPrime is closed on OFFICE-PC. Reads use the copy of 14:05."
 8. **Where it stays.** The copy stays on the customer's machine, so nothing answers while that machine is off. A copy inside Metorite would answer with the machine off, but the books then leave the customer's machine. LNK-Q8 asks the owner.
+
+#### 3.8.14 The program's wire format (TLY-2a, for the LNK-2 audit to confirm)
+
+TLY-2a builds the program's side first, against a fake link (`tests/unit/test_tally_bridge_link.py`). So the program fixes the bodies of the five routes. LNK-1 and LNK-2 build the Metorite side to these bodies, or they change both sides in one pull request. Each body is JSON. The program follows no redirect.
+
+| Route | Auth | The program sends | Metorite answers |
+|---|---|---|---|
+| `POST /connectors/pair/start` | none | `domain`, `machine`, `version`, `kind` (`tally`) | 200: `device_code` (32 characters or more), `user_code` (8 characters of Crockford base 32, a dash allowed), `expires_in`, `interval` |
+| `POST /connectors/pair/poll` | none | `device_code` | 200: `credential` (`mlc_` and 43 characters), `connector_id`, `company_name`. 400: `error` is `authorization_pending`, `slow_down`, `expired_token` or `access_denied` |
+| `POST /connectors/link/poll` | `Bearer <credential>` | `tally` (`up` or `down`), `version`, `copy_at` (the time of the oldest last good copy of the allowed companies, ISO 8601, or `null`) | 200: `requests`, a list of at most 32 items. Each item has `id`, `method`, `headers`, `body` (text) and `deadline_s`, the seconds left at hand-out (at most 30). 401 with `{"error": "revoked"}` when the credential is revoked |
+| `POST /connectors/link/reply` | `Bearer <credential>` | `id`, `status`, `headers`, `body` | 200. 404 for an id of another connection or a late reply. The program drops a 404 |
+| `POST /connectors/link/revoke` | `Bearer <credential>` | nothing | 200, also for an unknown credential |
+
+**401 means revoked, and nothing else.** Only a 401 with the body `{"error": "revoked"}` makes the program delete its credential. The door answers a pause of the org (rule i), a closed gate or an error of the lookup with 403 or 503. A 401 with another body gets the same answer. The program then keeps its credential and tries again later.
+
+**What the program does with a request.**
+
+- It runs the request in its own process, on `/mcp` only, with at most 8 requests at once. It polls again at once, so a slow request does not hold up a connect.
+- Only `POST` passes. The MCP layer runs stateless with JSON answers, so it needs no `GET` stream and no `DELETE`.
+- Only the MCP headers pass, in each direction: `content-type`, `accept`, `mcp-session-id`, `mcp-protocol-version` and `last-event-id`.
+- A body over 1,000,000 bytes, a redirect or a failure of the MCP layer gets an error reply with the same id.
+- A request with no time left gets no reply.
+
+**The rest of the behaviour.**
+
+- A poll fails when the network fails or Metorite answers 5xx. The program then waits 1 s, 2 s, 4 s and so on up to 60 s, with 20 % jitter. The first good poll resets the wait.
+- A revoke deletes the credential on the machine and ends the loop. It deletes only a stored credential that is still the same, so a new pairing stays.
+- The program reads its stored state before each poll. An `unlink` or a new pairing ends a running loop at once.
+- An answer that comes back at once with no requests makes the program wait 1 s before the next poll.
+- Each poll carries `copy_at` (TLY-2b). The console can then say "Reads use the copy of 14:05" (§3.8.13 point 7). It is `null` when the copy is off or empty.
+
+### 3.9 Who can use an integration (task 3985, ACC-1 and ACC-2 BUILT)
+
+> **Status:** 🔨 **ACC-1 BUILT** (2026-11-26, task 3987, branch `mt-e90fb5c0-integration-access`, review fix rounds 1 and 2 done), dark behind `INTEGRATION_ACCESS_ORGS`. The flag flip waits for the owner preview. 🔨 **ACC-2 BUILT** (2026-11-26, task 3988, branch `mt-a65680e5-who-can-use`), the console control of §3.9.5, dark behind the same flag. ACC-3 and ACC-4 are a 📝 PLAN. The owner approved teams on 2026-11-26 (ACC-Q2), and ACC-Q4 in §10 is open.
+
+This section holds the one rule of "who may use a connection". §3.8.8 and rule g of §3.8.7 use it.
+
+**Five facts of ACC-1 that the design did not state:**
+
+1. **The write casts the service.** `jsonb_build_object` takes any type. So on asyncpg the SQL of §3.9.2 fails with "could not determine data type of parameter $1". So the write binds `CAST(:svc AS text)`. The bare removal passes on asyncpg, and it keeps the same cast.
+2. **A stale rule.** A rule can outlive its MCP server. `GET` lists it with `listed: false`, and `PUT` with `everyone` clears it. Any other mode on it gets 422.
+3. **The API route.** Each API connection holds `grant = admin` today, so only a holder of `integrations:manage` reaches it. Such a member passes each rule. So a rule changes the API route only when a member grant exists. The R8 suite opens one to prove the route reads the narrowed access.
+4. **The admin floor.** Both routes also take the `/admin` floor `require_admin_user` (`admin:members:read`). The `admin` role holds all three rights.
+5. **The preview lists.** `granted` and `denied` stay the member's own grants and overrides. A rule shows on its row of `integrations`, with the source `integration-rule`.
+
+#### 3.9.1 What exists
+
+| Fact | Evidence |
+|---|---|
+| An MCP server reaches a run, and an API connection answers, only with `integrations:use:<service>`. An MCP server is `mcp-<name>` and an API connection is `api-<template>`. A built-in tool reads its credential with no such check (§3.9.2) | `executor._integration_authorizer`, `_maf_mcp.mcp_service`, `routes/api_connections.py` |
+| Each check ends in `EffectiveAccess.has`, so a deny pattern in the resolved access stops each of them | `acb_auth/permissions.py` (`decide`) |
+| The roles `admin`, `manager` and `member` hold `integrations:use:*`. `guest` does not | migrations 131, 179 and 200 |
+| The only control is one switch for all integrations on one member page | `settings/members/[email]/page.tsx` |
+| A shared session folds each member's access. The fold keeps every deny | `EffectiveAccess.intersect`, `resolve_session_access` |
+| A run with no member gets no integration filter | `_integration_authorizer` returns `None` |
+
+#### 3.9.2 The model
+
+**Rule.** An organization may hold one access rule for each service. The rule only narrows. It never grants.
+
+**The services, a closed list.** Any other service gets 422.
+
+| Kind | Service name | Source |
+|---|---|---|
+| MCP server of the organization | `mcp-<name>` | `connections/mcp.py` (`mcp:<name>`) |
+| API connection | `api-<template>` | `connections/api/template.py` (`TEMPLATE_ID_PATTERN`) |
+
+**Not in scope.** The app connections have no rule: the CRM Zoho sync, mailboxes, WhatsApp and Google. No check of `integrations:use` gates their app screens (`routes/crm/import_zoho.py`, `routes/crm/stage_metadata.py`). ACC-Q4 asks about the app connections.
+
+**Not on the list: the built-in agent connectors** (the keys of `_REGISTRY` in `acb_skills/integrations.py`, ACC-1 fix round 2). A tool reads such a credential through `credential()`. That function reads the process environment first, and it checks no access (`web_tools._serpapi_search`, for example). So a rule on `serpapi`, `litellm` or `smtp` would stop nothing, and the console would show a control that does nothing. The PUT answers 422 for each key. ACC-Q4 asks about them too.
+
+| Mode | Who may use the service |
+|---|---|
+| No rule (everyone) | Each member whose roles and overrides allow it. This is today, and it is the default |
+| Chosen people | A member on the list of email addresses |
+| Chosen teams (ACC-Q2, approved) | A member of a listed `group:<slug>`, or on the list of addresses |
+| Admins only | A member who holds `integrations:manage`. It is a chosen rule with an empty list |
+
+The word `org` is not stored, because it is the same as no rule.
+
+1. A member who holds `integrations:manage` passes each rule. So an admin cannot lock out every admin.
+2. A member who fails a rule gets a deny of the exact permission `integrations:use:<service>` in the resolved access. So no check changes, and no second check exists.
+3. A rule never gives a permission. A `guest` on the list still has no integration. A per-member deny still wins.
+4. An exact allow override of one member does not pass a rule. The list is the one place.
+5. A member who joins later is not on a list. So the rule holds for a new member.
+6. A group change takes effect at the next resolve.
+7. A rule that the code cannot read means admins only for that service.
+
+**Storage.** The rules sit in `organization.settings` under `integration_access`, one key for each service:
+
+```json
+{"integration_access": {"mcp-tally": {"subjects": ["a@x.com"], "set_by": "b@x.com", "set_at": "..."}}}
+```
+
+This needs no table and no migration. `organization` has no row security, so each statement names the organization id of the session (R5). No other code writes this key.
+
+**The write.** One statement sets the key, and it creates the parent object when none exists. A plain `jsonb_set` on a missing parent changes nothing and reports success.
+
+```sql
+UPDATE organization SET settings = jsonb_set(settings, '{integration_access}',
+       COALESCE(settings->'integration_access', '{}'::jsonb) || jsonb_build_object(:svc, CAST(:rule AS jsonb)))
+ WHERE id = CAST(:org AS uuid)
+```
+
+The route checks that one row changed, and it reads the rule back. A removal deletes the key.
+
+**The read.** The read is a separate statement, and never a part of `_ACCESS_SQL`. A failure in `_ACCESS_SQL` removes all access, and it can mark the access tables as missing until a restart. The statement returns the raw JSON and the member's group slugs. It joins `org_group` with `g.organization_id = u.organization_id`, because `org_group` has no row security. `org_group_member` has the same row policy as `user_role`, so the group read agrees with the role read.
+
+- One pure function parses the rules and narrows the access. It never raises, because an exception in the run authorizer means "no filter".
+- A failed read refuses `integrations:use:*` to each member who holds no `integrations:manage`. It changes no other permission.
+- `resolve_access`, `resolve_access_in_org` and the access preview of one member use the same function. The preview shows the source `integration-rule`, and it lists each ruled service.
+
+**Group writes.** A group member write needs only `admin:members:manage` today, and a chat tool calls the same route. So the team mode has two more rules (`groups_sessions_authority.md` §1 and §5):
+
+1. A member write to a group that a rule names also needs `admin:access:manage`.
+2. Nobody can delete a group that a rule names.
+
+`org_group` rows scope and never authorize today. A team here decides who keeps a service. It never gives a permission. The owner accepted this on task 3985 (2026-11-26).
+
+#### 3.9.3 The sites that obey it
+
+Each site below reads the resolved access, so the rule reaches it with no change. The R8 suite proves each row.
+
+| Site | Effect of a refusal |
+|---|---|
+| Chat MCP injection (`_maf_servers`, `is_authorized`) | The server is not attached |
+| Integration credentials of a run (`acb_skills.integrations.build_integrations`). **Stored rules only** (ACC-Q4): it reads the keys of `_REGISTRY`, and the PUT accepts no rule on one | For a rule that a row already holds: no credential, and the agent gets a warning |
+| API connection calls (`routes/api_connections.py`) | 404, as for an unknown name |
+| MCP tool list refresh and live read (`connections/mcp_tools._may_use`) | Refused |
+| A shared session | The fold denies when one member fails the rule. The second limit below names the exception |
+| A delegated run | It acts as the member of its parent |
+
+**Limits, stated.**
+
+- A run with no member gets no filter, and every server attaches. The stream path adds MCP servers to each run, and the batch path adds them on a named chat thread. LNK-Q7 and rule c of §3.8.7 own this gap for link connectors.
+- An org-visible room expands to every member. So one restriction removes the service from each such room.
+- A room that expands past 200 members does not narrow. A failed read of the room members does not narrow either. In both cases, `resolve_session_access` falls back to the access of the actor, so the actor's own rule still applies. The access of the other members does not. This is the fold of `acb_auth/access.py` (`_MAX_PARTICIPANT_EXPANSION`), and ACC-1 did not change it.
+- Replay redaction compares allowed sets only (`routes/chat.py` `_render_message`, `chat_fold._run_authority`). A rule adds a deny, and it removes no allow. So a member that a rule refuses later can still read the tool output of an earlier shared run. A member who was in the room at that run also reads it again.
+- A key of `_REGISTRY`, such as `litellm` or `smtp`, takes no rule (§3.9.2). The resolver still narrows a rule that a row already holds, but a tool reads the credential with no check. `GET` shows such a rule with `listed: false`, and `PUT` with `everyone` clears it.
+- A member purge takes the address off each rule, in the purge transaction (`members.purge_member_rows`, the admin door and the operator door). A rule that becomes empty stays, and it then means admins only, plus its teams. An org purge deletes the org row, and its rules go with it. No other path deletes an `app_user` row.
+- A rule write, a member write to a group, a group delete and a member purge each lock the org row first. The rule write takes `FOR NO KEY UPDATE`, and the group writes take `FOR SHARE` (`_common.ORG_RULE_LOCKS`). So a rule check and its write never interleave with another of them.
+- The room caps read allow overrides only (`routes/rooms.py`). So they do not name the rule as the cause.
+- A rule controls use through the assistant and agents. It does not hide data that a sync already copied into Metorite, such as CRM records.
+- A member-scoped connection (`scope_kind = 'member'`) has no rule. The `grant = admin` mark of an API connection (`api_connections.md` §2.3a) still applies on top.
+- Tasks 2959 and 3351 are existing gaps, and this section does not close them.
+
+**How fast.** The rule holds at the next run. The one gateway process holds the only access cache, and the orchestrator runs inside it. A write clears the cache. A run in flight keeps its access, and a retry keeps its credential names.
+
+#### 3.9.4 Routes, audit and the flag
+
+- `GET /admin/integration-access` lists each service of the closed list with its rule. `PUT /admin/integration-access/{service}` takes `{"mode": "everyone"|"chosen"|"admins", "groups": [], "people": []}`.
+- Both need `integrations:manage` **and** `admin:access:manage`, because a rule is an access write.
+- A group must exist in the organization, and a person must be a member of it. An unknown service, group or address, and the word `org`, get 422.
+- Without either permission the answer is 403.
+- Each write calls `record_admin_change` with the service, the mode and the subjects, and then `invalidate()` for all members.
+- The flag `INTEGRATION_ACCESS_ORGS` is empty by default. For an organization off the flag, each route answers 404 and the console shows no control. The resolver applies a rule that exists, whatever the flag says. So a flag change never widens access.
+
+#### 3.9.5 The screens and the chat
+
+- **Console (slice b).** Each row of Connections gets "Who can use", with the three modes, a group picker and a people picker. A row with no rule says "Everyone".
+  - **Built (ACC-2).** The control sits under each MCP row and each API connection of the organization that the `GET` lists. No other row gets one. The screen calls a group a "team".
+  - A `GET` that answers 404 or 403 draws no control and no error. Another failure draws one line with "Try again".
+  - A stored rule that no row control covers sits under the list, in "Other stored rules". This holds when no filter is on. A rule with `listed: false` offers only "Set to Everyone", behind a confirm. A listed one offers "Change".
+  - With `readable: false`, a banner says that only members with `integrations:manage` can use each integration. Each row then shows "Admins only" as text, with no control, because no save can repair the value.
+  - "Chosen" with no team and no person warns before the save, and the button reads "Save as admins only".
+  - A refused save keeps each choice and shows the words of the gateway.
+  - The open editor never replaces a rule that the admin did not see. With no choice yet, it follows a newer rule. After a choice, it shows "This rule changed", and Save stays off until "Reload the rule".
+  - Each save and each "Set to Everyone" reads the rule first, and writes nothing if it changed. The `PUT` has no version check, so a write between that read and the `PUT` is still replaced.
+  - A stopped save moves the focus to "Reload the rule", or to the line that says why.
+  - Fences: `app/integrations/lib/whoCanUse.test.ts`, `app/integrations/lib/accessSave.test.ts`, `app/integrations/components/WhoCanUse.test.tsx` and `app/integrations/components/accessWiring.test.ts`.
+- **My access (slice c).** The People app tab "My access" lists the integrations of the organization for the member, each with "Yes" or "No" and the reason. It never shows another member's name or list.
+- **Chat (slice d).** An admin asks the assistant to change a rule, and a card confirms it. This waits for the owner decision of PAR-6b (task 3932).
 
 ---
 
@@ -1150,7 +1324,11 @@ Each test fails first, and then passes. The file is
 
 ### 7.4 Local connector slices (WS-LNK)
 
-Each slice is PROPOSED until the owner approves §3.8 on task 3653. A fence file is new, except where the row says "existing".
+The owner approved §3.8 on task 3653 (D232). A fence file is new, except where the row says "existing". TLY-2 ships in three parts:
+
+- TLY-2a (task 3663): the link client, against a fake link (§3.8.14).
+- TLY-2b (task 3968): the pair step of the setup page, and the copy time on each poll.
+- TLY-2c (task 3969): the setup guide.
 
 ```
 LNK-0 ─► LNK-1 ─► LNK-2 ─┬─► LNK-3 ─┬─► TLY-2 ─► rung 2 demo (task 3657)
@@ -1176,6 +1354,38 @@ LNK-2 needs LNK-1, because it checks the credential that LNK-1 mints. TLY-2 need
 | **TLY-3** | 3768 | The tray icon (§3.8.13): three states, and a click that opens the setup page | The icon shows each state within 10 seconds of a change. With the user signed out, the service still serves | The tests of the program | LOW. The owner may drop it | TLY-2 |
 | **TLY-4** | 3769 | The local copy (§3.8.13): the first copy, the copy of changes by `AlterID`, the read from the copy with its age, the maximum age, the encryption and the deletes. The time of the last good copy on each poll | With TallyPrime closed, a read answers from the copy and names its age. A copy older than the maximum age answers nothing. The copy on disk is not plain text. Disconnect deletes it | The tests of the program, on a synthetic company with a known set of changes | STANDARD: book data on disk | TLY-2, LNK-Q8, LNK-Q9 |
 
+### 7.5 Access rule slices (§3.9, task 3985)
+
+ACC-1 comes first. ACC-2 and ACC-3 need it.
+
+| Id | Rung | What | Gate | Done when |
+|---|---|---|---|---|
+| **ACC-1** (task 3987) 🔨 BUILT 2026-11-26, dark | 1 | Backend: the storage, the resolver step, the two routes, the audit line and the flag (§3.9.2 to §3.9.4). Modes: everyone, chosen people, chosen teams and admins only, with the two group-write rules | 🟢 AGENT-SAFE to build dark. HIGH risk. The flag flip waits for the owner preview | Rows ACC-a to ACC-g below |
+| **ACC-2** (task 3988) 🔨 BUILT 2026-11-26, dark | 1 | The "Who can use" control on each connection (§3.9.5) | 🟢 AGENT-SAFE to build. STANDARD: UI, with an owner preview | Visual review passes in four contexts |
+| **ACC-3** (task 3989) | 1 | The integrations list in My access, and `GET /auth/me/integrations` | 🟢 AGENT-SAFE to build. HIGH: it shows access | A member sees their own result only |
+| **ACC-4** (task 3990) | 2 | The chat tool for admins, behind a card | 🔴 Waits for the owner decision of PAR-6b | Chat parity row |
+
+**ACC-1 acceptance, R8** (`test_integration_access_r8.py`, two organizations, a real database):
+
+- **ACC-a.** With no rule, the resolved access of each of the five roles is the same as today.
+- **ACC-b.** For a refused member, the run authorizer refuses `mcp-x`, and `_maf_servers` drops the server. The `api-y` route answers 404. `_may_use` answers False. `build_integrations` drops a `_REGISTRY` key that a stored rule refuses, but the route takes no such rule (§3.9.2).
+- **ACC-i (fix round 2).** A PUT on each `_REGISTRY` key answers 422. A stored rule of one shows with `listed: false`, and `everyone` clears it.
+- **ACC-c.** A listed person passes. A new member is refused. A listed group member passes, and a removal refuses at the next resolve with no restart.
+- **ACC-d.** A holder of `integrations:manage` passes. A member with an exact allow override is refused. A guest on the list is refused.
+- **ACC-e.** A shared session with a refused participant denies, for an email, group or org subject. A delegated run also denies.
+- **ACC-f.** Organization B does not change. The first write on empty settings persists, and a second key keeps the first.
+- **ACC-g.** A malformed rule and a failed read refuse integrations only. Neither raises, and neither marks the access tables as missing.
+- **ACC-h (fix round 1).** A purge takes the address off each rule, and the resolver refuses the same address when it joins again. A PUT waits for a member write that passed the gate, and a gate waits for a rule write, then reads it.
+
+**ACC-1 acceptance, hermetic** (`test_integration_access_rules.py`):
+
+- Both routes answer 404 for an organization off the flag, and 403 without either permission.
+- An unknown service, group or address, and `org`, answer 422. So does each key of `_REGISTRY`.
+- Each write records the audit line and clears the cache.
+- Each service name equals the output of `mcp_service` in both modules, and of `api-<template>`.
+- The preview shows the rule as the source.
+- The group-write gate of §3.9.2 holds.
+
 ---
 
 ## 8. Verification commands
@@ -1197,7 +1407,27 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/missing
 
 Each slice adds its own test file to this list.
 
-**Verify WS-LNK (§3.8, PROPOSED).** Each test file below is new, except `test_pack_guards.py` and `test_tenant_redis.py`. LNK-1 to LNK-3 write the new files.
+**Verify ACC-1 (§3.9).** The first two files are new. No R8 suite may skip.
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+timeout 900 uv run pytest tests/unit/test_integration_access_rules.py tests/unit/test_integration_access_r8.py \
+  tests/unit/test_org_access_credentials.py tests/unit/test_delegated_integration_filter.py \
+  tests/unit/test_maf_mcp_injection.py tests/unit/test_maf_mcp_confirm.py tests/unit/test_api_connections_r8.py \
+  tests/unit/test_admin_groups.py tests/unit/test_identity_pool_timeout.py tests/unit/test_member_of_org_read.py \
+  tests/unit/test_session_authority.py tests/unit/test_org_access_control.py \
+  tests/unit/test_org_access_enforcement.py tests/unit/test_studio_live_preview.py -v -rs
+uv run ruff check packages/acb_auth apps/services/gateway/gateway/routes/admin
+```
+
+**Verify ACC-2 (§3.9.5).**
+
+```bash
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/integrations
+cd ../.. && uv run pytest tests/unit/test_chat_parity.py
+```
+
+**Verify WS-LNK (§3.8, APPROVED, D232).** Each test file below is new, except `test_pack_guards.py` and `test_tenant_redis.py`. LNK-1 to LNK-3 write the new files.
 
 ```bash
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
@@ -1277,3 +1507,12 @@ The owner answers these on task 3653. LNK-Q1 and LNK-Q7 gate LNK-1 and LNK-3. LN
 | **LNK-Q7** | May a run with no member use a link tool? | No. Refuse it (rule c of §3.8.7). A batch, scheduled or webhook run gets no MCP server today. Rule c closes the rest: a run that reaches the injection with no member, such as a `system:` principal. A later slice can give such a run a named member |
 | **LNK-Q8** | Does a copy of the books also live in Metorite, so that reads work while the customer's machine is off? | No, not now. The copy stays on the customer's machine (§3.8.13). A copy in Metorite moves the books into our database, and the data notice of LNK-Q2 must then say so. Ask again if customers' machines are off too often |
 | **LNK-Q9** | The default interval of the local copy, and its default maximum age | Every 30 minutes while TallyPrime is open, and a maximum age of 7 days. The admin can change both. Each answer from the copy names its age, so the member judges it |
+
+### Access rule questions (§3.9, task 3985)
+
+The owner answers these on task 3985. The default is not open: the owner ask of 2026-11-26 names "everyone" as the default. The agent decides that an admin always keeps access, because an admin can open any rule again. The owner may overrule it.
+
+| Id | Question | Recommendation |
+|---|---|---|
+| **ACC-Q2** | May a team decide who keeps an integration? A change of that team's members then also needs the access right | ✅ **Yes** (owner, task 3985, 2026-11-26, answer to "Yes to all three"). A team only narrows, and it gives no permission |
+| **ACC-Q4** | Do the app connections (CRM Zoho, mailboxes, WhatsApp, Google) get a rule in a later slice? Do the built-in agent connectors (the keys of `_REGISTRY`) get one? | Later, one app at a time. The assistant and agents come first. A built-in connector first needs a check in `credential()` or in each tool that reads it. Today `credential()` reads the process environment first, so a rule would stop nothing (ACC-1 fix round 2) |
