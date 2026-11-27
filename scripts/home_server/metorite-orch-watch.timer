@@ -1,0 +1,14 @@
+# Every 5 minutes (CIV-ORCH, task 4058). The timer ships DISABLED: `install`
+# copies it and `enable` turns it on. Enabling it is OWNER-GATE (`deploy`).
+# The job is cheap (no model, no session), so the memory floor of lane rule 11
+# does not apply.
+[Unit]
+Description=Metorite orchestrator watch every 5 minutes (CIV-ORCH)
+
+[Timer]
+OnBootSec=4min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

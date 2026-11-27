@@ -70,6 +70,11 @@ _OWNER_PREDICATE = re.compile(
 #: EM-T3d added the fourteenth, and EM-G7 added ``oauth_providers``. A new
 #: entry needs a reason that a reviewer can check against the code.
 OWNER_SCOPE_EXEMPT: dict[str, str] = {
+    "mark_done_state": (
+        "Task 3995 (§6.6). Reads no table and no mailbox, and takes no value "
+        "from the request. It answers whether EMAIL_MARK_DONE_ORGS names the "
+        "bound tenant."
+    ),
     "resolve_metorite_files_route": (
         "H-392 (owner, 2026-10-24). Reads no email table and no mailbox. It "
         "resolves Metorite files through their own stores, as the member: an "

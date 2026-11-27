@@ -23,6 +23,7 @@
  */
 import type { ChatMessage } from "@/lib/chatStore";
 import type { SteerOutcome } from "@/lib/chatSteer";
+import { DELETE_EARLIER_ANSWER } from "@/lib/replyCard";
 
 /** The custom event that marks a member's turn as a card answer. */
 export const CARD_ANSWER_EVENT = "card_answer";
@@ -106,6 +107,17 @@ const ENVELOPE =
 const ROWS_LEAD = "\n\nThe card listed these rows, by id:\n";
 const ROW_LINE = /^([A-Za-z0-9_.:-]{1,64}): (.*)$/;
 
+/**
+ * A decline: `REJECT`, or the exact "Delete it" answer of a card that names an
+ * earlier draft (task 3978, `email_app_master_plan.md` §18.13.1). A late
+ * "Delete it" goes as a new message that no tool takes, so it deleted nothing,
+ * and the turn draws as "Rejected". `chat_recovery.card_answer_agrees` reads it
+ * the same way.
+ */
+export function isRejectAnswer(answer: string): boolean {
+  return /^REJECT$/i.test(answer) || answer === DELETE_EARLIER_ANSWER;
+}
+
 /** The ids that an `APPROVE {"rows": [...]}` names, or null. */
 function approvedIds(answer: string): string[] | null {
   const m = /^APPROVE\s+(\{[\s\S]*\})$/i.exec(answer);
@@ -136,7 +148,7 @@ export function parseCardAnswerEnvelope(text: string): CardAnswer | null {
     question = question.slice(0, at);
   }
   question = question.trim().slice(0, QUESTION_MAX);
-  if (/^REJECT$/i.test(answer)) return { kind: "confirmation", question, decision: "reject" };
+  if (isRejectAnswer(answer)) return { kind: "confirmation", question, decision: "reject" };
   // HRD-22: a late approve with a grant adds one paragraph after "APPROVE"
   // (`chat_recovery.LATE_APPROVE_NOTE`). It is still an approve.
   if (/^APPROVE(?:\n\n[\s\S]*)?$/i.test(answer)) {
@@ -201,7 +213,7 @@ export function markerAgrees(text: string, d: CardAnswer): boolean {
     const shown = d.answer ?? "";
     return shown === answer.slice(0, ANSWER_MAX) || (shown === "" && answer === "(no answer)");
   }
-  const decision = /^REJECT$/i.test(answer) ? "reject" : /^APPROVE/i.test(answer) ? "approve" : null;
+  const decision = isRejectAnswer(answer) ? "reject" : /^APPROVE/i.test(answer) ? "approve" : null;
   if (!decision || d.decision !== decision) return false;
   const ids = decision === "approve" ? approvedIds(answer) : null;
   if (d.rows) {

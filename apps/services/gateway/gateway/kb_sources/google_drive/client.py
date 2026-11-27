@@ -6,8 +6,9 @@ Spec: ``project-docs/specs/knowledge_curation.md`` §7.1 and §7.2 steps 1 and
 **Metadata only.** Discovery reads ``files.list`` with a ``fields`` mask and
 ``drives.list``. The change feed (KC-3) reads ``changes.getStartPageToken``
 and ``changes.list`` with a ``fields`` mask. Nothing asks ``alt=media`` and
-nothing calls ``files.export``. :meth:`GoogleDriveSource.fetch_text` and
-:meth:`GoogleDriveSource.fetch_bytes` raise ``NotImplementedError`` until KC-5.
+nothing calls ``files.export``. :meth:`GoogleDriveSource.fetch_document` raises
+``NotImplementedError("KC-5b")`` until the real fetch ships (KC-5a built the
+index pass and its fake adapter).
 
 **The change feed (KC-3).** One page of ``changes.list`` becomes one
 :class:`ChangePage`. A removed change and a trashed file are a removal. A
@@ -85,7 +86,7 @@ from gateway.kb_sources.base import (
     ANYONE,
     KIND_FILE,
     KIND_FOLDER,
-    NOT_IN_KC1,
+    NOT_IN_KC5A,
     READER_ANYONE,
     READER_DOMAIN,
     READER_GROUP,
@@ -98,6 +99,7 @@ from gateway.kb_sources.base import (
     CursorExpired,
     DiscoverCursor,
     DiscoverPage,
+    FetchedFile,
     NodeAccess,
     OAuthClientConfig,
     RateLimited,
@@ -770,11 +772,8 @@ class GoogleDriveSource:
 
     # ── Later slices ──────────────────────────────────────────────────────
 
-    async def fetch_text(self, cred: SourceCredential, node: SourceNode) -> str:
-        raise NotImplementedError(NOT_IN_KC1)
-
-    async def fetch_bytes(self, cred: SourceCredential, node: SourceNode) -> bytes:
-        raise NotImplementedError(NOT_IN_KC1)
+    async def fetch_document(self, cred: SourceCredential, node: SourceNode) -> FetchedFile:
+        raise NotImplementedError(NOT_IN_KC5A)
 
     def deep_link(self, node: SourceNode) -> str:
         return node.web_url or f"https://drive.google.com/open?id={node.ext_id}"

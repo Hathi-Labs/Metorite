@@ -2918,7 +2918,9 @@ def premerge(work: Path) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         encoding="utf-8",
-        env={**os.environ, **GIT_ENV},
+        # PREMERGE_NOW: 10:00 UTC, outside each release freeze window (task 3415).
+        # On the live clock, a run from 20:20 to 21:30 UTC exits 75 before this check.
+        env={**os.environ, **GIT_ENV, "PREMERGE_NOW": "1794736800"},
         timeout=120,
     )
 

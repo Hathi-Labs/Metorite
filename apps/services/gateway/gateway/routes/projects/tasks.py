@@ -54,6 +54,7 @@ from gateway.routes.projects.checks import (
     check_patch_values,
     clean_check_text,
 )
+from gateway.routes.projects.claim_gate import check_claim_gate
 from gateway.routes.projects.claim_scope import (
     apply_warning,
     check_claim_scope,
@@ -132,7 +133,7 @@ from gateway.routes.projects.custom_fields import (
     apply_values,
     load_definitions,
 )
-from gateway.routes.projects.cycles import detach_moved_tasks
+from gateway.routes.projects.cycles import detach_moved_tasks, sprints_allowed
 from gateway.routes.projects.epic_contract import (
     EpicContractIn,
     clean_contract,
@@ -174,6 +175,7 @@ from gateway.routes.projects.relations import (
     insert_task_link,
 )
 from gateway.routes.projects.tags import apply_task_tags
+from gateway.routes.projects.team_scope import TeamScope, resolve_team_scope
 from gateway.routes.projects.text_links import link_from_text, saved_texts
 from gateway.routes.projects.watchers import ensure_watchers
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
@@ -481,7 +483,16 @@ class MoveTask(BaseModel):
 
 
 class AssigneesIn(BaseModel):
+    """The body of ``PUT /tasks/{task_id}/assignees``.
+
+    LBB-2c (``engineering_practice.md`` §7b.10): an agent may send
+    ``agent_label``, the display name of its session, as ``ClaimIn`` takes it.
+    The claim gate of a self-add reads it. A person's body that names one is
+    422 (``agent_runs.agent_label_of``). The model ignores other keys, as
+    before."""
+
     assignees: list[str]
+    agent_label: str | None = Field(default=None, max_length=200)
 
 
 class TaskCreateIn(TaskIn):
@@ -580,6 +591,11 @@ DESCENDANTS_CTE = """WITH RECURSIVE walk AS (
 #: MCP-G19a. The page cap of a compact read. A plain read keeps
 #: ``MAX_PAGE_SIZE``.
 COMPACT_MAX_PAGE_SIZE = 500
+#: MCP-G19c. ``task_number`` is a BIGINT, so a larger number is a 422 and not
+#: a cast error in SQL.
+TASK_NUMBER_MAX = 9_223_372_036_854_775_807
+#: MCP-G19c. The longest ``type_name`` filter. The edge holds the same cap.
+MAX_TYPE_NAME = 100
 #: A compact read still selects ``t.*``: ``row_to_model`` builds a full
 #: ``TaskModel``, and a narrow SELECT leaves required fields (``source``) as
 #: None, which is a 500. The edge trims the row to the compact keys.
@@ -612,12 +628,49 @@ class TaskListResponse(ListResponse):
     status_categories: dict[str, str | None] | None = None
 
 
+#: WS-39 SP-3a (`project_management_app.md` §13.6 row SP-3a). The values of
+#: ``cycle`` on ``GET /projects/tasks``. ``none`` is the backlog of the
+#: Backlog canvas: each task that sits in no open (planned or active) cycle.
+CYCLE_FILTERS: tuple[str, ...] = ("none",)
+
+#: A task that sits in no open cycle, over the task alias ``t``. The partial
+#: unique index ``uq_pm_cycle_tasks_one_open`` (task_id WHERE cycle_open)
+#: serves it. A closed cycle is history, so its rows do not count.
+NO_OPEN_CYCLE_SQL = (
+    "NOT EXISTS (SELECT 1 FROM pm_cycle_tasks ct"
+    " WHERE ct.task_id = t.id AND ct.cycle_open)"
+)
+
+
+def cycle_filter_clauses(cycle: str | None, user: UserContext) -> list[str]:
+    """The WHERE clauses of ``cycle``, or none when it is absent.
+
+    The flag comes first: while ``PROJECTS_SPRINTS_ORGS`` does not hold the
+    session's org, the filter answers 404 as each cycle route does, so a dark
+    feature shows nothing (``cycles.sprints_allowed``, the one reader). Then an
+    unknown value is a 422, never a silent fall back to every task. Like
+    ``unheld``, it is NOT in ``build_task_filters``: who sits in a cycle
+    changes by the hour, so a saved view cannot pin it.
+    """
+    if cycle is None:
+        return []
+    if not sprints_allowed(getattr(user, "organization_id", None)):
+        raise HTTPException(status_code=404, detail="Not Found")
+    if cycle not in CYCLE_FILTERS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown cycle filter. One of: {list(CYCLE_FILTERS)}.",
+        )
+    return [NO_OPEN_CYCLE_SQL]
+
+
 async def _task_scope(
     db: Any, user: UserContext, vis: Any, *, project_id: str | None,
     include_subtree: bool, parent_task_id: str | None, include_descendants: bool,
     mine: bool, include_triage: bool, unheld: bool,
     agent_clauses: list[str], agent_params: dict[str, Any],
     filters: dict[str, Any],
+    team: TeamScope | None = None,
 ) -> tuple[str, str, str, dict[str, Any]]:
     """``(walk_cte, walk_join, where, params)`` of one task read.
 
@@ -625,10 +678,16 @@ async def _task_scope(
     org, group grants, connection pins) to the project scope and the filters.
     ``GET /projects/tasks`` and ``GET /projects/tasks/stats`` both call it, so
     a count and a list read the same set. The fence is
-    ``tests/unit/test_board_stats_r8.py``.
+    ``tests/unit/test_board_stats_r8.py``. ``GET /projects/teams`` counts the
+    tasks of a team through it too (T-1).
     """
     clauses: list[str] = [task_visibility_clause(vis)]
     params: dict[str, Any] = dict(vis.params)
+    if team is not None:
+        # WS-39 T-1. ANDed beside the visibility clause, so a team scope
+        # narrows the read and never widens it (§14.9 rule 5).
+        clauses.append(team.project_clause("t.project_id"))
+        params.update(team.params)
     if mine:
         # ANDed beside the visibility clause, so "mine" narrows the
         # board and never widens it (WS-64 OP-11).
@@ -778,9 +837,23 @@ async def list_tasks(
     updated_after: str | None = None,
     created_after: str | None = None,
     title_prefix: str | None = None,
+    # MCP-G19c. The type of a task, by id or by name, and its number. All
+    # optional. `build_task_filters` holds them.
+    # Plain defaults, not `Query(...)`: tests and other routes call this
+    # function directly, and a `Query` default is not a value.
+    type_id: str | None = None,
+    type_name: str | None = None,
+    task_number: int | None = None,
     # MCP-G19a. Small rows and a page of up to COMPACT_MAX_PAGE_SIZE: the row
     # query, the stage of each status, and nothing else. The agent door reads it.
     compact: bool = False,
+    # WS-39 SP-3a. `none`: only the tasks that sit in no open cycle, the
+    # backlog of the Backlog canvas (`cycle_filter_clauses`). Dark behind
+    # `PROJECTS_SPRINTS_ORGS`, like the cycle routes.
+    cycle: str | None = None,
+    # WS-39 T-1. A team slug or `all` (`team_scope.py`). A slug narrows the
+    # read to the projects of one team of the caller. Dark behind TEAMS_ORGS.
+    team: str | None = None,
 ) -> TaskListResponse:
     """The one task-list endpoint every surface reads through.
 
@@ -823,8 +896,18 @@ async def list_tasks(
     agent_clauses, agent_params = agent_filter_clauses(
         agent_focus, agent_worked, actor(user),
     )
+    # WS-39 SP-3a. ANDed beside the visibility clause, so it only narrows.
+    agent_clauses = [*agent_clauses, *cycle_filter_clauses(cycle, user)]
 
     mine = check_scope(scope)
+    if type_name is not None and len(type_name) > MAX_TYPE_NAME:
+        raise HTTPException(
+            status_code=422, detail=f"type_name is at most {MAX_TYPE_NAME} characters.",
+        )
+    if task_number is not None and not 1 <= task_number <= TASK_NUMBER_MAX:
+        raise HTTPException(
+            status_code=422, detail="task_number is not a valid task number.",
+        )
     if compact and page.page_size > COMPACT_MAX_PAGE_SIZE:
         raise HTTPException(
             status_code=422,
@@ -852,8 +935,10 @@ async def list_tasks(
                 watching=watching, top_level=top_level, has_parent=has_parent,
                 is_epic=is_epic, assigned=assigned, updated_before=updated_before,
                 updated_after=updated_after, created_after=created_after,
-                title_prefix=title_prefix,
+                title_prefix=title_prefix, type_id=type_id, type_name=type_name,
+                task_number=task_number,
             ),
+            team=await resolve_team_scope(db, user, vis, team),
         )
         total = (await db.execute(
             text(f"{walk_cte}SELECT count(*) FROM pm_tasks t{walk_join}{where}"),
@@ -909,6 +994,9 @@ async def list_tasks(
         if with_overlay:
             # WS-64 OP-11 — the caller's own overlay, one query for the page.
             await attach_my_overlay(db, vis, page_rows)
+        if compact:
+            # MCP-G19c. The name of the type of each row, in one read.
+            await attach_type_name(db, vis, page_rows)
         counts: dict[str, int] | None = None
         categories: dict[str, str | None] | None = None
         if with_status_counts:
@@ -986,6 +1074,9 @@ async def task_stats(
     updated_after: str | None = None,
     created_after: str | None = None,
     title_prefix: str | None = None,
+    # WS-39 T-1. The team scope of `GET /projects/tasks`, so a count and the
+    # list read the same set under a team too.
+    team: str | None = None,
 ) -> dict:
     """Counts of the tasks this caller can see (MCP-G19a).
 
@@ -1024,6 +1115,7 @@ async def task_stats(
                 updated_after=updated_after, created_after=created_after,
                 title_prefix=title_prefix,
             ),
+            team=await resolve_team_scope(db, user, vis, team),
         )
         total = (await db.execute(
             text(f"{walk_cte}SELECT count(*) FROM pm_tasks t{walk_join}{where}"),
@@ -1075,6 +1167,35 @@ async def attach_status_category(db: Any, vis: Any, rows: list[dict]) -> None:
     found = await status_categories_of(db, vis, ids)
     for row in rows:
         row["status_category"] = found.get(str(row.get("status_id") or ""))
+
+
+#: MCP-G19c. The name of each type on one page, in one read. The tenant is
+#: on the read beside RLS (R5).
+_TYPE_NAME_SQL = (
+    "SELECT ty.id, ty.name FROM pm_task_types ty"
+    " WHERE ty.id = ANY(CAST(:ids AS uuid[]))"
+    "   AND ty.organization_id = CAST(:vis_org AS uuid)"
+)
+
+
+async def attach_type_name(db: Any, vis: Any, rows: list[dict]) -> None:
+    """Stamp ``type_name`` on each row: the name of its type, or ``None``.
+
+    The member can see the task, so the member can see the name of its type.
+    A row with no type, or a type the read cannot find, keeps ``None``.
+    """
+    ids = sorted({str(r["type_id"]) for r in rows if r.get("type_id")})
+    found: dict[str, str] = {}
+    if ids:
+        found = {
+            str(r.id): r.name
+            for r in (await db.execute(
+                text(_TYPE_NAME_SQL),
+                {"ids": ids, "vis_org": vis.params.get("vis_org")},
+            )).fetchall()
+        }
+    for row in rows:
+        row["type_name"] = found.get(str(row.get("type_id") or ""))
 
 
 async def status_categories_of(
@@ -2705,8 +2826,18 @@ async def set_assignees(
     has ``warning`` and ``outside_apps``. Mode ``refuse`` answers 403
     ``outside_apps`` and writes nothing. Only a task that already holds the
     session member is not checked. Another assignee is not a pass.
+
+    LBB-2c (``engineering_practice.md`` §7b.10). An agent may send
+    ``agent_label``, and the claim gate of a self-add checks the PRs of that
+    label. With no label, the gate checks the PRs bound to no label, as
+    before. A person's body that names a label is 422, before any read.
     """
+    from gateway.routes.projects import agent_runs
+
     agent_call = getattr(user, "agent", None) is not None
+    # LBB-2c: the display label of the agent's session, as `claim_task` reads
+    # it. A person's is 422.
+    label = agent_runs.agent_label_of(user, payload.agent_label)
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
@@ -2743,11 +2874,17 @@ async def set_assignees(
         # write, and `refuse` has no second door. Another assignee in
         # `current` is not a pass: only the session member is.
         me = actor(user).strip().lower()
+        self_add = agent_call and me in wanted and not holds_task(user, current)
         scope_note = (
             await check_claim_scope(db, user, task, current, vis)
-            if agent_call and me in wanted and not holds_task(user, current)
+            if self_add
             else None
         )
+        # LBB-2 (engineering_practice.md §7b.2): the claim gate, right after
+        # the scope check and before any write. LBB-2c (§7b.10): the label of
+        # the PUT picks the bucket. With none, the PRs bound to no label.
+        if self_add:
+            await check_claim_gate(db, user, task_id, vis, label)
         assigned = await _write_assignees(
             db, user, task_id=task_id, project_id=str(task.project_id),
             wanted=wanted, current=current,
@@ -2832,11 +2969,15 @@ async def _insert_claim_assignees(db: Any, task_id: str, wanted: list[str], *,
     return written
 
 
-def _refuse_claim(code: str, message: str) -> NoReturn:
+def _refuse_claim(code: str, message: str,
+                  prs: list[dict[str, Any]] | None = None) -> NoReturn:
     """Raise the 422 of a refused claim. Inside the transaction, so a
-    refusal after a write rolls that write back."""
-    raise HTTPException(status_code=422,
-                        detail={"error": code, "message": message})
+    refusal after a write rolls that write back. LBB-2: the claim gate
+    (``claim_gate.check_claim_gate``) adds *prs*, the PRs to land first."""
+    detail: dict[str, Any] = {"error": code, "message": message}
+    if prs is not None:
+        detail["prs"] = prs
+    raise HTTPException(status_code=422, detail=detail)
 
 
 class ClaimIn(BaseModel):
@@ -2985,6 +3126,10 @@ async def claim_task(
         # (AGENT_CLAIM_SCOPE_MODES).
         # Before any write, so a refusal writes nothing.
         scope_note = await check_claim_scope(db, user, seen, current, vis)
+        # LBB-2 (engineering_practice.md §7b.2): the claim gate. An agent
+        # with an old open PR that no merger queued lands it first. Before
+        # any write, and before the run opens, so a refusal writes nothing.
+        await check_claim_gate(db, user, task_id, vis, label)
         wanted = sorted({me} - current)
         await assert_assignable_here(db, str(seen.project_id), set(wanted))
         # Final fix (review P2): `added` is the set that THIS insert wrote,

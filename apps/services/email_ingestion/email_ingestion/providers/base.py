@@ -668,6 +668,13 @@ class BaseEmailProvider(ABC):
     #: because some test fakes do not subclass this class.
     forwards_natively: bool = False
 
+    #: True when :meth:`trash_message` takes the stored Message-ID of the
+    #: mail as ``message_id=`` and refuses a mail with another one (task
+    #: 4095, ``email_app_master_plan.md`` §18.13.3). Only IMAP does, because
+    #: an IMAP UID can name another mail after a change of UIDVALIDITY. Call
+    #: the trash through :func:`trash_checked`, which reads this flag.
+    TRASH_CHECKS_MESSAGE_ID: bool = False
+
     def __init__(self, credentials: dict[str, Any]):
         self.credentials = credentials
 
@@ -859,6 +866,7 @@ class BaseEmailProvider(ABC):
     async def bulk_apply(
         self, provider_message_ids: list[str], action: str,
         failed_out: list[str] | None = None,
+        *, message_ids: dict[str, str | None] | None = None,
     ) -> dict[str, str]:
         """Apply one of :attr:`BULK_ACTIONS` to many messages.
 
@@ -877,6 +885,10 @@ class BaseEmailProvider(ABC):
         The default walks the per-message API one call at a time — correct
         everywhere, slow at volume. Providers with a native batch endpoint
         override this (see :class:`GmailProvider`).
+
+        ``message_ids`` maps each provider id to the stored Message-ID of its
+        row (task 4095). A trash passes it through :func:`trash_checked`, so
+        an IMAP id with no entry fails and lands in ``failed_out``.
         """
         rekeys: dict[str, str] = {}
         for pmid in provider_message_ids:
@@ -885,7 +897,8 @@ class BaseEmailProvider(ABC):
                 if action == "archive":
                     new_id = await self.move_to_folder(pmid, "archive")
                 elif action == "trash":
-                    new_id = await self.trash_message(pmid)
+                    new_id = await trash_checked(
+                        self, pmid, (message_ids or {}).get(pmid))
                 elif action in ("read", "unread"):
                     await self.apply_flags(pmid, is_read=action == "read")
                 elif action in ("star", "unstar"):
@@ -1201,6 +1214,30 @@ class BaseEmailProvider(ABC):
         shows the alt text, as before.
         """
         return InlineRead()
+
+
+def trash_checks_message_id(provider: Any) -> bool:
+    """True when the trash of ``provider`` checks the stored Message-ID.
+
+    Task 4095 (§18.13.3). It reads :attr:`BaseEmailProvider.TRASH_CHECKS_MESSAGE_ID`
+    and asks for ``True`` itself, because an attribute of a ``MagicMock`` fake
+    is a mock and not ``True``."""
+    return getattr(provider, "TRASH_CHECKS_MESSAGE_ID", False) is True
+
+
+async def trash_checked(
+    provider: Any, provider_message_id: str, message_id: str | None,
+) -> str | None:
+    """Trash one mail, with its stored Message-ID when the provider checks it.
+
+    Task 4095 (§18.13.3). Each caller that has the row of the mail calls the
+    trash through this function. IMAP gets ``message_id=``, and it raises,
+    and moves nothing, when the mail at the UID has another Message-ID or
+    when ``message_id`` is empty. Gmail and Outlook get the call as before,
+    so their signature and each test fake stay as they are."""
+    if trash_checks_message_id(provider):
+        return await provider.trash_message(provider_message_id, message_id=message_id)
+    return await provider.trash_message(provider_message_id)
 
 
 def local_folder_after_move(provider: Any, name: str) -> str | None:

@@ -168,7 +168,7 @@ FORBIDDEN_EVERYONE = (
 )
 ROW_KEYS = {
     "run_id", "activity_id", "task_id", "task_number", "task_title", "agent_name",
-    "client_via", "asked_at", "run_started_at", "project_path", "question",
+    "agent_label", "client_via", "asked_at", "run_started_at", "project_path", "question",
     "can_answer", "why",
 }
 
@@ -423,10 +423,10 @@ def _flag_off(monkeypatch: Any) -> None:
 
 
 async def _ask(w: Any, call: Any, task: str | None = None, *, agent: Any = None,
-               question: str = "Which database?") -> tuple[str, str]:
+               question: str = "Which database?", **start: Any) -> tuple[str, str]:
     """A run and an open question, from the real routes: ``(run id, question id)``."""
     who = agent or w.agent
-    run = await _start(w, call, user=who, task=task or w.task)
+    run = await _start(w, call, user=who, task=task or w.task, **start)
     asked = await _act(call, who, run["id"], **_select(question))
     assert asked.status_code == 201, asked.text
     assert asked.json()["run"]["status"] == "awaiting"
@@ -513,6 +513,7 @@ class TestTheRead:
             assert isinstance(row["task_number"], int)
             assert row["why"] == "created" and row["can_answer"] is True
             assert row["client_via"] == VIA and row["agent_name"] == "Claude Code"
+            assert row["agent_label"] is None  # the run sent no label
             assert row["asked_at"] and row["run_started_at"]
             assert row["project_path"] == [
                 {"id": w.mid["id"], "name": "Application"},
@@ -539,6 +540,15 @@ class TestTheRead:
             assert why == {w.task_both: "created", w.task_held: "created"}
             why = {r["task_id"]: r["why"] for r in await _rows(call, w.member)}
             assert why == {w.task_both: "my_agent", w.task_held: "assigned"}
+
+    async def test_a_row_names_the_lane_of_its_run(self, w):
+        """Task 4071. Box lanes share one client, so the row carries the label."""
+        async with _session(w.p) as call:
+            run, _question = await _ask(w, call, agent_label="lane-devx")
+            [row] = await _rows(call, w.creator)
+            assert row["run_id"] == run
+            assert row["agent_label"] == "lane-devx"
+            assert row["agent_name"] == "Claude Code"
 
     async def test_an_answer_takes_the_row_off_the_list(self, w):
         async with _session(w.p) as call:

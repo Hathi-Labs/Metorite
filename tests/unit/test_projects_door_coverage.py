@@ -292,12 +292,16 @@ def test_status_editing_and_template_apply_stay_off():
         assert not row.op and row.off_door == reason, pair
 
 
-def test_goals_and_teams_have_no_route_yet():
-    """§19.16 names them, and the router serves no route of either. When one
-    comes, its row needs a door op, and this test fails as a reminder."""
+def test_goals_and_new_team_routes_are_not_on_the_door():
+    """§19.16 names them. The one team read of T-1 stays off the door until
+    T-6 (task 2537). When another goal or team route comes, its row needs a
+    door decision, and this test fails as a reminder."""
+    teams_read = ("GET", "/projects/teams")
     hits = sorted(pair for pair in _router_routes()
-                  if re.search(r"/goals?\b|/teams?\b", pair[1]))
-    assert not hits, f"give these routes a door op in FIRST_ACTS: {hits}"
+                  if re.search(r"/goals?\b|/teams?\b", pair[1]) and pair != teams_read)
+    assert not hits, f"decide the door op of these routes: {hits}"
+    row = _table()[teams_read]
+    assert not row.op and row.off_door == p.TEAMS_READ
 
 
 # ── 7. The approval path (§19.5) ────────────────────────────────────────────

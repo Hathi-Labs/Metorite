@@ -413,7 +413,8 @@ def test_the_delete_of_a_package_is_covered_by_its_chat_tool() -> None:
         assert r.reaches("studio_delete_package", verb, path), (key, verb, path)
     # 1 after A5c-2 paid the two delete requests, plus Keep and Restore of PKG-10e-2 (task 2971, paid by P-9).
     # STU-K1a-ui (task 1203) added the template list and the one-step install (3 to 5). STU-K1d (task 2967) pays both with chat tools (5 to 3).
-    assert cp.DEBT_CEILING["studio"] == 3
+    # SBX-1b (task 3984) added the tool-gaps read of /studio, paid by P-9 (3 to 4).
+    assert cp.DEBT_CEILING["studio"] == 4
 
 
 #: PAR-8a: each Workflows row whose UI path fits ``/api/workflows/hooks/{}`` by

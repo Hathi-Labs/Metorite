@@ -399,6 +399,7 @@ def test_one_caller_reads_the_flag() -> None:
         },
         "tool_packs_orgs": {
             "packages/acb_skills/acb_skills/tool_packs.py",
+            "packages/acb_common/acb_common/flag_registry.py",
             "packages/acb_common/acb_common/settings.py",
         },
         "TOOL_PACKS": {
@@ -1495,7 +1496,12 @@ def test_the_org_admin_pack_stays_dark_and_names_only_its_tools() -> None:
 # -- 10b. The people pack (P-5b-1, chat_parity.md section 6.4, task 3114) ------
 
 #: The four reads of the people pack, in the order of the family.
-PEOPLE_TOOLS = ("people_directory", "people_me", "people_work", "reach_preview")
+PEOPLE_READS = ("people_directory", "people_me", "people_work", "reach_preview")
+#: The five self writes of P-5b-2 (task 3943), in the order of the family.
+PEOPLE_WRITES = ("update_my_profile", "set_my_skills", "set_my_credentials",
+                 "add_my_absence", "remove_my_absence")
+#: Each tool of the people pack, in the order of the family.
+PEOPLE_TOOLS = PEOPLE_READS + PEOPLE_WRITES
 
 #: The six reads of the notes pack (task 3963), in the order of the family.
 NOTES_TOOLS = (
@@ -1515,8 +1521,10 @@ def test_the_people_family_is_a_pack_of_org_admin() -> None:
             assert not set(PEOPLE_TOOLS) & set(fam["tools"]), slug
 
 
-def test_the_pack_loader_builds_the_people_tools_as_read_only_coroutines() -> None:
-    """Mutation: the owner module drops a tool, or a tool says it writes -> red."""
+def test_the_pack_loader_builds_the_people_tools_as_coroutines() -> None:
+    """The four reads say read-only. The five self writes of P-5b-2 (task 3943)
+    say they write, so a held chat holds them off. Mutation: the owner module
+    drops a tool, a read says it writes, or a write says it reads -> red."""
     import inspect
 
     from acb_skills.tool_annotations import get_annotations
@@ -1525,9 +1533,12 @@ def test_the_pack_loader_builds_the_people_tools_as_read_only_coroutines() -> No
     tools = tp.owner_tools("people", module)
     assert tuple(tool_name(fn) for fn in tools) == PEOPLE_TOOLS
     assert all(inspect.iscoroutinefunction(fn) for fn in tools)
-    for name in PEOPLE_TOOLS:
+    for name in PEOPLE_READS:
         hints = get_annotations(name)
         assert hints and hints["read_only"] is True and hints["open_world"] is False, name
+    for name in PEOPLE_WRITES:
+        hints = get_annotations(name)
+        assert hints and hints["read_only"] is False and hints["open_world"] is False, name
 
 
 def test_the_people_pack_stays_dark_and_names_only_its_tools() -> None:
@@ -1552,7 +1563,7 @@ def test_no_people_tool_takes_an_organization_a_caller_or_an_address() -> None:
                 "member", "member_email", "user", "user_email", "acting_user", "actor",
                 "email", "email_address", "owner_email", "as_user", "impersonate", "admin"}
     tools = tp.owner_tools("people", load_agent_module(ORG_ADMIN_DIR))
-    assert len(tools) == len(PEOPLE_TOOLS) == 4
+    assert len(tools) == len(PEOPLE_TOOLS) == 9
     for fn in tools:
         params = set(inspect.signature(inspect.unwrap(fn)).parameters)
         assert not params & identity, (fn.__name__, sorted(params & identity))

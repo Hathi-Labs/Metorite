@@ -541,6 +541,12 @@ class _FakeDB:
         if "FROM organization LIMIT 1" in s:
             return _Rows([{"one": 1}] if self.provisioned else [])
 
+        if "settings -> 'integration_access'" in s and "FROM organization WHERE id" in s:
+            # ACC-1: the rules that the group gates read (`_common`), for the
+            # org the statement names. No rule unless a test seeds one.
+            row = self.organizations.get(p["org"]) or {}
+            return _Rows([{"rules": row.get("integration_access")}] if row else [])
+
         if "FROM organization WHERE id" in s:
             # `/auth/me` naming the caller's org back to the browser. Answered
             # BY ID, which is the whole change: it used to be answered by the

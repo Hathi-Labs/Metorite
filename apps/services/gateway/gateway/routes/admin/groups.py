@@ -24,6 +24,7 @@ from fastapi import Depends, HTTPException
 from gateway.routes.admin._common import (
     _log,
     _tenant_session,
+    assert_group_rule_gate,
     get_member,
     get_org_id,
     invalidate_for,
@@ -376,6 +377,9 @@ async def delete_group(
                     "Remove them first."
                 ),
             )
+        # ACC-1 (integrations_console.md §3.9.2): nobody deletes a group that
+        # a rule of who can use an integration names.
+        await assert_group_rule_gate(db, org_id, slug, admin, deleting=True)
         await db.execute(
             text("DELETE FROM org_group WHERE id = CAST(:gid AS uuid)"),
             {"gid": group["id"]},
@@ -424,6 +428,11 @@ async def add_group_member(
     async with _tenant_session() as db:
         org_id = await get_org_id(db, admin)
         group = await _get_group(db, org_id, slug)
+        # ACC-1 (integrations_console.md §3.9.2): a team that a rule names
+        # decides who keeps an integration, so its member writes also need
+        # `admin:access:manage`. The chat tool of the org-admin pack calls
+        # this route, so the gate covers it too.
+        await assert_group_rule_gate(db, org_id, slug, admin)
         member = await get_member(db, org_id, req.email)
 
         await db.execute(
@@ -499,6 +508,8 @@ async def remove_group_member(
     async with _tenant_session() as db:
         org_id = await get_org_id(db, admin)
         group = await _get_group(db, org_id, slug)
+        # ACC-1: the same gate as the add (integrations_console.md §3.9.2).
+        await assert_group_rule_gate(db, org_id, slug, admin)
         member = await get_member(db, org_id, email)
         result = await db.execute(
             text(

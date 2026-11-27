@@ -110,7 +110,7 @@ def questions_sql(scope_sql: str, vis: Any) -> str:
     so the rule of an open question has one text.
     """
     return (
-        f"SELECT r.id AS run_id, r.client_via,"
+        f"SELECT r.id AS run_id, r.client_via, r.agent_label,"
         f"       COALESCE(r.started_at, r.created_at) AS run_started_at,"
         f"       t.id AS task_id, t.task_number, t.title AS task_title, t.project_id,"
         f"       {question_reason_sql('r')} AS why,"
@@ -178,6 +178,11 @@ def question_row(
         "task_number": int(run.task_number) if run.task_number is not None else None,
         "task_title": run.task_title,
         "agent_name": agent_oauth.client_label(via) if via else None,
+        # Task 4071. The label of the session (SW-7b, migration 418), such as
+        # `lane-devx`. Many lanes share one client on a box, so the label tells
+        # them apart. It is text that a client sent, cleaned on write
+        # (`agent_runs.clean_agent_label`). The client draws it as text.
+        "agent_label": getattr(run, "agent_label", None),
         "client_via": via,
         "asked_at": wire(question.created_at),
         "run_started_at": wire(run.run_started_at),

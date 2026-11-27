@@ -1,7 +1,7 @@
 {
   "name": "Organization Members",
   "app": "chat",
-  "description": "The owner of the org-admin tool pack. It holds the tools of Organisation: list the members and the sign-in requests that wait, set the roles of a member, suspend or reactivate a member, and approve or deny a sign-in request. It also lists, makes, changes and deletes groups and their members, makes and deletes custom roles, reads and replaces the overrides of a member, reads what a removal would seal, removes or purges a member, renames the organization, reads the seats, and gives or frees the seat of a member. It also holds the tools of the Integrations app: read the connections, the services, the plugins, GitHub, the skills and the agent connections, test a service or an MCP server, propose the setup of an API, disconnect a connection, remove a plugin, disconnect GitHub, revoke an agent connection, and set the switches of an MCP server. Each change shows one card first. Each tool calls the admin and Integrations routes as the member, and the routes decide each right. The main assistant loads these tools in a turn about the members or the Integrations. This agent is not a second assistant, and a hand-off to it is refused. It also holds the four reads of the people pack: the people directory, your own row, the open work of a person, and the Reach preview. It also holds the one act of the dark calendar-connections pack: sync a connected calendar now, or show or hide the member's tasks in it, after one card. It also holds the six reads of the notes pack: your meetings, one meeting with its transcript, the Note Taker settings, the templates, your glossary and your copilot instructions. It also holds the four tools of the dark chat-files pack: list the files of this chat and the history of a file, save the text of a file, move an upload into Agent Data, and delete a file. Each of the three writes shows one card first.",
+  "description": "The owner of the org-admin tool pack. It holds the tools of Organisation: list the members and the sign-in requests that wait, set the roles of a member, suspend or reactivate a member, and approve or deny a sign-in request. It also lists, makes, changes and deletes groups and their members, makes and deletes custom roles, reads and replaces the overrides of a member, reads what a removal would seal, removes or purges a member, renames the organization, reads the seats, and gives or frees the seat of a member. It also holds the tools of the Integrations app: read the connections, the services, the plugins, GitHub, the skills and the agent connections, test a service or an MCP server, propose the setup of an API, disconnect a connection, remove a plugin, disconnect GitHub, revoke an agent connection, and set the switches of an MCP server. Each change shows one card first. Each tool calls the admin and Integrations routes as the member, and the routes decide each right. The main assistant loads these tools in a turn about the members or the Integrations. This agent is not a second assistant, and a hand-off to it is refused. It also holds the four reads of the people pack: the people directory, your own row, the open work of a person, and the Reach preview. It also holds the one act of the dark calendar-connections pack: sync a connected calendar now, or show or hide the member's tasks in it, after one card. It also holds the six reads of the notes pack: your meetings, one meeting with its transcript, the Note Taker settings, the templates, your glossary and your copilot instructions. The people pack also holds five writes of your own row, each after one card: the profile, the skills, the credentials, and the add and the removal of an absence. No write changes an email address. It also holds the four tools of the dark chat-files pack: list the files of this chat and the history of a file, save the text of a file, move an upload into Agent Data, and delete a file. Each of the three writes shows one card first.",
   "version": "0.1.0",
   "author": "Metorite",
   "tags": [
@@ -25,6 +25,7 @@
     "ask_questions"
   ],
   "own_tool_scope": [
+    "add_my_absence",
     "add_org_group_member",
     "answer_access_request",
     "create_org_group",
@@ -60,6 +61,7 @@
     "read_member_access",
     "read_seats",
     "remove_member",
+    "remove_my_absence",
     "remove_org_group_member",
     "rename_org",
     "revoke_agent_connection",
@@ -67,6 +69,9 @@
     "set_member_overrides",
     "set_member_roles",
     "set_member_status",
-    "set_seat"
+    "set_my_credentials",
+    "set_my_skills",
+    "set_seat",
+    "update_my_profile"
   ]
 }
