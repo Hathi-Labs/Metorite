@@ -10,6 +10,7 @@
  */
 import {
   type LensCounts,
+  type LensFilters,
   type LensGroup,
   type LensModel,
   type LensSession,
@@ -20,9 +21,10 @@ import {
   matchesFind,
   membersOf,
   personSessions,
+  splitSessions,
 } from "./agentLenses";
 
-/** A scope with more sessions than this draws the overview tiles. */
+/** A scope that shows more sessions than this draws the overview tiles. */
 export const OVERVIEW_ABOVE = 40;
 /** The session cards of one orchestrator before a bucket opens. */
 export const SESSION_CARDS_MAX = 12;
@@ -63,9 +65,53 @@ export function scopeSessions(model: LensModel, person: string): LensSession[] {
   return person ? model.sessions.filter((s) => s.person === person) : model.sessions;
 }
 
-/** True when a scope is too large for one card each. */
-export function usesOverview(model: LensModel, person: string): boolean {
-  return scopeSessions(model, person).length > OVERVIEW_ABOVE;
+/**
+ * How many cards the Graph and the Board draw for a scope (AMR-5a): the
+ * sessions that the chips, the find box and the open folds let through, and
+ * each orchestrator card. An orchestrator draws whatever its chip says. Under a
+ * find it draws for a match, its own or one under it.
+ */
+export function drawnCards(
+  model: LensModel,
+  filters: LensFilters,
+  opened: ReadonlySet<string>,
+  nameOf: (email: string) => string,
+): number {
+  const find = filters.find.trim();
+  let cards = 0;
+  for (const p of model.people) {
+    if (filters.person && p.person !== filters.person) continue;
+    for (const group of p.groups) {
+      const shown = splitSessions(group.sessions, filters, opened.has(group.key), nameOf).shown.length;
+      const orch = group.orch !== null && (!find || shown > 0 || matchesFind(group.orch, find, nameOf(group.orch.person)));
+      cards += shown + (orch ? 1 : 0);
+    }
+  }
+  return cards;
+}
+
+const NO_FOLDS: ReadonlySet<string> = new Set();
+
+/**
+ * True when a scope draws too many cards for one canvas. A session that a chip
+ * or a find hides does not count.
+ */
+export function usesOverview(model: LensModel, filters: LensFilters, nameOf: (email: string) => string): boolean {
+  return drawnCards(model, filters, NO_FOLDS, nameOf) > OVERVIEW_ABOVE;
+}
+
+/**
+ * The folds that the Graph and the Board may draw open. A fold that was opened
+ * on the List, or before a refresh or a chip added cards, closes when the open
+ * folds together pass the bound.
+ */
+export function boundedFolds(
+  model: LensModel,
+  filters: LensFilters,
+  opened: ReadonlySet<string>,
+  nameOf: (email: string) => string,
+): ReadonlySet<string> {
+  return drawnCards(model, filters, opened, nameOf) > OVERVIEW_ABOVE ? NO_FOLDS : opened;
 }
 
 export function subTotals(sessions: readonly LensSession[]): SubCounts {
