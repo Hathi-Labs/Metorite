@@ -355,9 +355,10 @@ DISCOVERY_EVERY = timedelta(hours=24)
 #: call removes the module from it. A row from before this key has none.
 MODULE_COUNT_GOOD_KEY = "good_at"
 #: Task 3870: the delete walk of a generic module takes the stored count only
-#: when that count answered less than :data:`DISCOVERY_EVERY` plus this time
-#: ago. The count is read again at the end of a run, after the walk, so a
-#: count read on time is at most one day and one run old at a walk.
+#: when that count answered :data:`DISCOVERY_EVERY` plus this time or less
+#: before the start of the walk, or after it. The core walk counts at its
+#: start too. A walk can pause at the reserve, and a paused run reads no
+#: count, so the age is measured to the start and never to the end.
 MODULE_COUNT_MARGIN = timedelta(hours=1)
 #: The deleted lists cost 2 credits each, so an idle run reads them hourly.
 DELETED_EVERY = timedelta(hours=1)
@@ -2916,8 +2917,9 @@ async def _end_seen_walk(
     the switch, so a wrong delete there could never heal. Else
     :func:`_drop_stale` decides, with the count of :func:`_module_estimate`,
     so the walk spends no credit. :func:`_walk_count` gives that count only
-    when it is fresh and its last call answered, else the walk refuses. A refusal keeps the old ``seen_prev``. One
-    log line names the module and the counts, never a record.
+    when it was fresh at the start of the walk and its last call answered,
+    else the walk refuses. A refusal keeps the old ``seen_prev``. One log
+    line names the module and the counts, never a record.
     """
     if seen.start is None:
         return seen.prev
@@ -2926,7 +2928,7 @@ async def _end_seen_walk(
     if seen.prev is not None and seen.start - seen.prev < MODULE_WALK_GAP:
         return seen.prev
     before = _whole((ctx.counts.get(entity) or {}).get("deleted")) or 0
-    known = _walk_count(ctx, entity)
+    known = _walk_count(ctx, entity, seen.start)
     if not await _drop_stale(
         ctx, db, entity, MODULE_TABLE, seen.prev, seen.count, known, failed_ids,
     ):
@@ -2939,20 +2941,23 @@ async def _end_seen_walk(
     return seen.start
 
 
-def _walk_count(ctx: _Ctx, entity: str) -> int | None:
+def _walk_count(ctx: _Ctx, entity: str, start: datetime) -> int | None:
     """The count of a generic module that its delete walk may trust (task
     3870), else None, and the walk then refuses with ``count_unknown``.
 
     :func:`_module_estimate` keeps the last count that answered, and moves
     its stamp also when the call fails, so Sync health still shows a number.
-    The walk asks more: the last count call of the module answered, and it
-    answered less than :data:`DISCOVERY_EVERY` plus
-    :data:`MODULE_COUNT_MARGIN` ago. A row with no
-    :data:`MODULE_COUNT_GOOD_KEY` gives None, so an old row fails closed.
+    The walk asks more. The last count call of the module answered, and it
+    answered :data:`DISCOVERY_EVERY` plus :data:`MODULE_COUNT_MARGIN` or
+    less before *start*, the start of the walk, or after it. So a count that
+    was stale at the start passes only when a newer call answered. A failed
+    call during the walk removes the good stamp, and the walk refuses. A row
+    with no :data:`MODULE_COUNT_GOOD_KEY` gives None, so an old row fails
+    closed.
     """
     state = _row(ctx, MODULE_COUNTS_ROW).state or {}
     good = _parse((state.get(MODULE_COUNT_GOOD_KEY) or {}).get(entity))
-    if good is None or ctx.started - good > DISCOVERY_EVERY + MODULE_COUNT_MARGIN:
+    if good is None or start - good > DISCOVERY_EVERY + MODULE_COUNT_MARGIN:
         return None
     return _whole((state.get("counts") or {}).get(entity))
 

@@ -578,12 +578,14 @@ async def _count_run(world: World, *, at: datetime, entity: str = INVOICES, **kw
     await engine._module_estimate(_ctx(cursors, started=at, entity=entity, **kw), entity)
 
 
-async def _real_run(world: World, *, at: datetime, entity: str = INVOICES) -> engine._Ctx:
+async def _real_run(
+    world: World, *, at: datetime, entity: str = INVOICES, **kw: Any,
+) -> engine._Ctx:
     """One run of the module step in its real order: the changed pass, which
     ends the walk, then the count. Each takes the cursors that runs before it
-    saved, the counts row too."""
+    saved, the counts row too. A run at the reserve reads no count."""
     world.now = at
-    ctx = _ctx(dict(world.saved), started=at, entity=entity)
+    ctx = _ctx(dict(world.saved), started=at, entity=entity, **kw)
     await engine._changed_pass(ctx, entity)
     await engine._module_estimate(ctx, entity)
     return ctx
@@ -645,6 +647,60 @@ async def test_a_walk_refuses_a_count_older_than_a_day_and_the_margin(world: Wor
 #: ``engine.MODULE_COUNT_MARGIN``. A copy, so this file collects and fails
 #: on its assertions against the code of before the rule.
 COUNT_MARGIN = timedelta(hours=1)
+
+
+async def _paused_walk(world: World, *, good_before: timedelta) -> None:
+    """i3 has strike one. The count answered *good_before* before ``W2``.
+    The walk starts at ``W2``, reads one page and pauses at the reserve, so
+    that run reads no count."""
+    _start(world)
+    await _count_run(world, at=W1 - timedelta(hours=1))
+    await _real_run(world, at=W1)  # i3: strike one
+    await _count_run(world, at=W2 - good_before)
+    world.page_size = 1
+    await _real_run(world, at=W2, budget=engine.MODULES_RESERVE + 1)
+    paused = _state(world)
+    assert paused["seen_start"] == W2.isoformat() and paused["seen_count"] == 1
+    assert not _gone(world, "i3")
+
+
+async def test_a_walk_over_25_hours_with_a_count_good_at_its_start_deletes(
+    world: World,
+) -> None:
+    """The run that ends the walk is 30 hours after its start, and no count
+    was read during the walk. The core walk counts at its start too."""
+    await _paused_walk(world, good_before=timedelta(hours=1))
+    done = await _real_run(world, at=W2 + timedelta(hours=30))
+    assert _gone(world, "i3")
+    assert done.counts[INVOICES]["deleted"] == 1
+    assert _seen_prev(world) == W2.isoformat()
+
+
+async def test_a_walk_whose_count_was_stale_at_its_start_refuses(world: World) -> None:
+    await _paused_walk(world, good_before=timedelta(hours=26))
+    refused = await _real_run(world, at=W2 + timedelta(hours=2))
+    assert not _gone(world, "i3"), "a walk deleted by a count stale at its start"
+    assert refused.counts[INVOICES][engine.DELETE_KEPT_FLAG] == 1
+    assert _refused_for(world, "count_unknown")
+    assert _seen_prev(world) == W1.isoformat()
+
+
+async def test_a_count_call_that_fails_during_the_walk_makes_it_refuse(
+    world: World,
+) -> None:
+    """The count was good 1 hour before the start, inside the window. The
+    next count call, during the walk, fails. The walk must not keep the
+    good stamp of the call before."""
+    await _paused_walk(world, good_before=timedelta(hours=1))
+    world.count_fails = True
+    calls = world.count_calls
+    await _count_run(world, at=W2 + timedelta(hours=23))
+    assert world.count_calls == calls + 1, "the count call was due, and failed"
+    refused = await _real_run(world, at=W2 + timedelta(hours=24))
+    assert not _gone(world, "i3"), "a walk trusted a count whose last call failed"
+    assert refused.counts[INVOICES][engine.DELETE_KEPT_FLAG] == 1
+    assert _refused_for(world, "count_unknown")
+    assert _seen_prev(world) == W1.isoformat()
 
 
 @pytest.mark.parametrize(("age", "kept"), [

@@ -1720,11 +1720,15 @@ each of these on a real database:
     delete that the guard of the task refuses (more than 20 % and more than
     25 rows), and more. The count is the one that `_module_estimate` keeps,
     so the walk spends no credit. The walk takes that count only when the
-    last count call of the module answered, less than 25 hours ago
-    (`DISCOVERY_EVERY` plus `MODULE_COUNT_MARGIN`). The counts row keeps the
-    time of that call under `good_at`, and a failed call removes it. Else
-    the count is unknown and the walk refuses. A counts row from before
-    `good_at` reads as unknown too. A refusal deletes
+    last count call of the module answered. That call must be 25 hours or
+    less before the start of the walk (`DISCOVERY_EVERY` plus
+    `MODULE_COUNT_MARGIN`), or after the start. The core walk counts at its
+    start too. A walk can pause at the reserve over several runs, and a
+    paused run reads no count, so the age goes to the start. The counts row
+    keeps the time of that call under `good_at`. A failed call, also one
+    during the walk, removes it. Else the count is unknown and the walk
+    refuses. A counts row from before `good_at` reads as unknown too. A
+    refusal deletes
     nothing, keeps `seen_prev`, sets `delete_kept` in the counts of the run
     and logs one line of counts. A module key keeps no `refused` count, and
     its refusal never sets `walk_short`, so the switch does not wait for it.
