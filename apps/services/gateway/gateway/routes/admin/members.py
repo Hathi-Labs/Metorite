@@ -22,7 +22,6 @@ from acb_auth import (
     InvalidPermission,
     UserContext,
     agent_run_permission,
-    build_access,
     feature_permission,
     integration_use_permission,
     require_permission,
@@ -40,7 +39,6 @@ from acb_auth.console_resolve import (
     remove_member_on_console,
 )
 from acb_auth.integration_access import RULE_SOURCE, USE_ALL, USE_PREFIX
-from acb_auth.integration_access import narrow as narrow_by_rules
 from acb_auth.permissions import matched_by
 from acb_common.assistant_profile import CLEAR_FOR_MEMBER_SQL_TEMPLATE, mark_changed
 from fastapi import Depends, HTTPException
@@ -49,7 +47,9 @@ from gateway.package_host.sharing import OTHERS_SEE_THE_INSTALL
 from gateway.routes.admin._common import (
     PURGE_OUTCOME,
     _iso,
+    _load_overrides,
     _log,
+    _role_permission_map,
     _tenant_session,
     assert_not_self_demotion,
     assert_not_self_lockout,
@@ -57,6 +57,7 @@ from gateway.routes.admin._common import (
     get_member,
     get_org_id,
     invalidate_for,
+    member_rule_access,
     provision_member,
     record_admin_change,
     require_admin_user,
@@ -1470,38 +1471,9 @@ async def set_member_roles(
 
 # ── Per-user access + overrides ─────────────────────────────────────────────
 
-async def _load_overrides(db: Any, user_id: str) -> list[dict[str, Any]]:
-    rows = (
-        await db.execute(
-            text(
-                "SELECT permission, effect, reason, set_by, set_at "
-                "  FROM user_permission_override "
-                " WHERE user_id = CAST(:uid AS uuid) ORDER BY permission"
-            ),
-            {"uid": user_id},
-        )
-    ).mappings().all()
-    return [dict(r) for r in rows]
-
-
-async def _role_permission_map(db: Any, user_id: str) -> dict[str, list[str]]:
-    """``{role_slug: [permission, ...]}`` for the member's assigned roles."""
-    rows = (
-        await db.execute(
-            text(
-                "SELECT r.slug AS slug, rp.permission AS permission "
-                "  FROM user_role ur "
-                "  JOIN org_role r            ON r.id = ur.role_id "
-                "  JOIN org_role_permission rp ON rp.role_id = r.id "
-                " WHERE ur.user_id = CAST(:uid AS uuid)"
-            ),
-            {"uid": user_id},
-        )
-    ).mappings().all()
-    out: dict[str, list[str]] = {}
-    for r in rows:
-        out.setdefault(r["slug"], []).append(r["permission"])
-    return out
+# `_load_overrides` and `_role_permission_map` live in `_common` (ACC-3), so
+# `my_integrations.py` reads the same rows. They are imported above under the
+# same names.
 
 
 def _agent_names() -> list[str]:
@@ -1591,7 +1563,8 @@ async def get_member_access(
     """The member's effective access, with provenance for every decision.
 
     ACC-1: the integration rules of the org apply here as in the resolver,
-    through the same function (``acb_auth.integration_access.narrow``). The
+    through the same function (``acb_auth.integration_access.narrow``), in
+    the one step ``_common.member_rule_access`` (ACC-3). The
     list of integrations holds each ruled service too, so an MCP server or an
     API connection with a rule shows here.
     """
@@ -1603,15 +1576,10 @@ async def get_member_access(
         overrides = await _load_overrides(db, member["id"])
         rules = await read_integration_rules(db, org_id, member["id"])
 
-    base = build_access(
-        [p for perms in role_perms.values() for p in perms],
-        [(o["permission"], o["effect"]) for o in overrides],
-        roles=roles,
-        is_active=member["status"] == "active",
-    )
-    narrowed = narrow_by_rules(
-        base, rules.raw, email=member["email"], groups=rules.groups,
-        read_failed=rules.failed,
+    # ACC-3: the one base-and-narrow step, shared with `GET /auth/me/integrations`.
+    base, narrowed = member_rule_access(
+        role_perms, overrides, roles=roles,
+        is_active=member["status"] == "active", email=member["email"], rules=rules,
     )
     access = narrowed.access
     explain = partial(
