@@ -4,14 +4,35 @@
  * At 390 px a board page shows ONE lane at a time, and a row of lane tabs picks which. From a tablet up, all
  * lanes show and the tabs are gone. The switch is CSS (`max-sm:`), so the server and the first paint agree.
  * Only a board of a page with the `board` preset asks for it (`phoneSwitch` sets `phone: "switch"` on the node).
- * The Move to menu and the keyboard move keep working: a card moved out of the shown lane leaves it, and the
- * live line says where it went.
+ * A card moved with the Move to menu leaves the shown lane, and the live line says where it went.
+ *
+ * The keyboard move takes the shown lane with it. While a card is held, the lane under the hold shows, and
+ * the lane of the held card stays in the page out of sight, so the card keeps focus (`laneMark` "held").
+ * After a drop or a refusal, the shown lane is the lane of the card, and the card takes focus there.
  */
 
 /** The lane that shows on a phone: the wanted one when it exists, else the first. `null` for no lane. */
 export function activeLane(laneIds: readonly string[], wanted: string | null | undefined): string | null {
   if (laneIds.length === 0) return null;
   return wanted && laneIds.includes(wanted) ? wanted : laneIds[0];
+}
+
+/** The lane on screen: the lane under a held card wins over the wanted lane. */
+export function shownLane(
+  laneIds: readonly string[],
+  wanted: string | null | undefined,
+  hold: { over: string } | null,
+): string | null {
+  return activeLane(laneIds, hold ? hold.over : wanted);
+}
+
+/**
+ * How a phone draws a lane. `shown`: on screen. `held`: out of sight but still focusable, because it holds
+ * the card that the keyboard carries (`display: none` would drop focus to the body). `off`: not drawn.
+ */
+export function laneMark(laneId: string, shown: string | null, hold: { from: string } | null): "shown" | "held" | "off" {
+  if (laneId === shown) return "shown";
+  return hold?.from === laneId ? "held" : "off";
 }
 
 /** The tabs of the switcher: the title and the count of each lane. */

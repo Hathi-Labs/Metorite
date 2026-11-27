@@ -3,11 +3,13 @@
  *
  * Mutation 1: let `activeLane` return a lane that does not exist. "falls back to the first lane" turns red.
  * Mutation 2: let `phoneSwitch` change its input. "never changes its input" turns red.
+ * Mutation 3: let `shownLane` ignore the hold. "follows the lane under the held card" turns red.
+ * Mutation 4: let `laneMark` say `off` for the lane of the held card. "keeps the lane of the held card" turns red.
  */
 import { describe, expect, it } from "vitest";
 
-import { activeLane, laneTabs, phoneSwitch } from "./laneSwitch";
-import { parseBoard } from "./boardModel";
+import { activeLane, laneMark, laneTabs, phoneSwitch, shownLane } from "./laneSwitch";
+import { keyStep, parseBoard, type Hold } from "./boardModel";
 
 describe("activeLane", () => {
   it("keeps the wanted lane, and falls back to the first lane for a lane that is gone", () => {
@@ -18,6 +20,36 @@ describe("activeLane", () => {
   });
   it("is null for a board with no lane", () => {
     expect(activeLane([], "a")).toBeNull();
+  });
+});
+
+describe("a keyboard move on a phone", () => {
+  const ids = ["a", "b", "c"];
+  const card = { id: "1", lane: "a" };
+  const press = (hold: Hold | null, key: string) => keyStep(hold, key, card, ids).hold;
+  const marks = (wanted: string | null, hold: Hold | null) =>
+    ids.map((id) => laneMark(id, shownLane(ids, wanted, hold), hold));
+
+  it("follows the lane under the held card", () => {
+    let hold = press(null, " ");
+    expect(shownLane(ids, null, hold)).toBe("a");
+    hold = press(hold, "ArrowRight");
+    expect(shownLane(ids, null, hold)).toBe("b");
+    hold = press(hold, "ArrowRight");
+    expect(shownLane(ids, null, hold)).toBe("c");
+    hold = press(hold, "ArrowLeft");
+    expect(shownLane(ids, null, hold)).toBe("b");
+  });
+
+  it("keeps the lane of the held card in the page, so the card keeps focus", () => {
+    const hold = press(press(null, " "), "ArrowRight");
+    expect(marks(null, hold)).toEqual(["held", "shown", "off"]);
+    expect(marks(null, press(hold, "ArrowLeft"))).toEqual(["shown", "off", "off"]);
+  });
+
+  it("goes back to the wanted lane when the hold ends, and marks no lane held", () => {
+    expect(shownLane(ids, "c", null)).toBe("c");
+    expect(marks("b", null)).toEqual(["off", "shown", "off"]);
   });
 });
 
