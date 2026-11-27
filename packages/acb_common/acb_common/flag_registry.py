@@ -1501,3 +1501,25 @@ class FlagRegistry(BaseSettings):
     # send mail or WhatsApp and spend credits, so a flip is the owner's. Fence:
     # tests/unit/test_workflows_unattended_flag.py.
     workflow_unattended_orgs: str = ""
+
+
+#: Task 4086. The flags whose flip stays the owner's in every window
+#: (CLAUDE.md §3a rule 3): a flip moves money or credits, reaches a real person
+#: or a third party, or changes who may act as whom. `scripts/flag_flip.py`
+#: refuses each one without `--owner-approved <answer id>`. A new flag of that
+#: kind goes here, in its sorted place. Fence: tests/unit/test_flag_flip.py
+#: checks that each name is a field above.
+OWNER_ONLY_FLAGS: frozenset[str] = frozenset({
+    "agent_access_orgs",
+    "agent_change_access_orgs",
+    "crm_cutover_orgs",
+    "due_push_orgs",
+    "github_app_orgs",
+    "integration_access_orgs",
+    "outlook_all_mail_webhook_orgs",
+    "proactive_kind_modes",
+    "studio_residency_orgs",
+    "whatsapp_assistant_orgs",
+    "whatsapp_assistant_writes_orgs",
+    "workflow_unattended_orgs",
+})
