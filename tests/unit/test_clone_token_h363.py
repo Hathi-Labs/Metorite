@@ -702,15 +702,23 @@ _ALLOWED_SECRET_URLS: frozenset[tuple[str, str]] = frozenset({
 
 def test_no_source_builds_a_url_with_a_secret() -> None:
     hits: list[str] = []
+    allowed_seen: dict[tuple[str, str], int] = {}
     for top in ("apps", "packages"):
         for path in (REPO_ROOT / top).rglob("*.py"):
             if "node_modules" in path.parts or "/tests/" in path.as_posix():
                 continue
+            rel = path.relative_to(REPO_ROOT).as_posix()
             text = path.read_text(encoding="utf-8", errors="replace")
             for n, line in enumerate(text.splitlines(), 1):
-                rel = path.relative_to(REPO_ROOT).as_posix()
-                if _SECRET_URL.search(line) and (rel, line.strip()) not in _ALLOWED_SECRET_URLS:
-                    hits.append(f"{path.relative_to(REPO_ROOT)}:{n}: {line.strip()[:120]}")
+                if not _SECRET_URL.search(line):
+                    continue
+                key = (rel, line.strip())
+                # An allowed line passes once. A second copy of it fails.
+                if key in _ALLOWED_SECRET_URLS:
+                    allowed_seen[key] = allowed_seen.get(key, 0) + 1
+                    if allowed_seen[key] == 1:
+                        continue
+                hits.append(f"{rel}:{n}: {line.strip()[:120]}")
     assert not hits, "a URL with a secret in it:\n" + "\n".join(hits)
 
 
