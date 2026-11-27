@@ -1057,6 +1057,70 @@ in this section when its builder starts, and its own spec-auditor run.
 **Out of scope.** Closing a PR (the owner closes, from the close list of task
 4019). A change to `TOOL_PACKS`. Any flag flip by a builder.
 
+### 7b.4 LBB-4: zero orphans at a stop (task 4042)
+
+**Status: not built.** Tier STANDARD (a hook and a box script, no server
+code). It needs no `guard-write` grant: `stop-children.mjs` already calls the
+hook, so `.claude/settings.json` does not change.
+
+**Narrowed scope.** The box wind-down script cannot see which PR belongs to
+which lane: it holds no Metorite credential, and every lane pushes as one
+GitHub user. So the box part changes the message that the script sends, and
+the Stop hook does the check in each session.
+
+**The hook.** `.claude/hooks/stop-disposition.mjs` gains `openPrs(entries)`.
+- A PR is the session's when the transcript holds one of these: a
+  `gh pr create` result with its URL, a `git push` to the head branch of a PR
+  that the session named, or an `add_task_reference` call with a pull request
+  URL.
+- A PR has a disposition when, after the session's last push to it, the
+  transcript holds one of these:
+  - a `hand_over.sh <N>` run that exited 0.
+  - a command that appends a `REQUEUE` line for `<N>` to
+    `~/lanes/merge-queue.tsv`.
+  - an `add_task_reference` call on its URL with `landing` `queued`,
+    `parked` or `gone`.
+  - a `release_task` whose handoff `next` names `PR <N>` and a lane
+    (`lane-*` or `pc-*`).
+- A bare `release_task` with no lane is not a disposition ("released for
+  other agents").
+- The switch is `STOP_DISPOSITION_PRS`: `off` (the default) does nothing.
+  `warn` prints the list to stderr and lets the Stop go on. `block` blocks the
+  Stop once, as the claim check does (`stop_hook_active` true passes).
+- The message names each PR and the two choices: queue it with a live merger,
+  or hand it to a named landing owner.
+- It fails open and runs only in a background job, as the hook does today.
+
+**The wind-down message.** `~/lanes/winddown.sh` moves into the repo as
+`scripts/home_server/lanes/winddown.sh`. It keeps its `wake` loop, but it
+takes the lane session ids as arguments, not as fixed lines. Its message
+drops "queue a PR only if it is ready and green". It says: "For each open PR
+that you pushed, queue it with a live merger (`hand_over.sh` or a `REQUEUE`
+line), or hand it to a named landing lane in a NOTE and in the
+`release_task` handoff."
+
+**Done when.**
+1. With `STOP_DISPOSITION_PRS` unset, the hook's output is the same as on
+   main for every existing test.
+2. With `block`, a transcript that opened PR N and ends with a bare
+   `release_task` is blocked once, and the message names PR N.
+3. Each of the four dispositions clears PR N. A push after the disposition
+   brings PR N back.
+4. With `warn`, the list goes to stderr and the Stop goes on.
+5. `winddown.sh` holds the new message and no fixed session id.
+
+**Verify with.**
+
+```
+node .claude/hooks/stop-disposition.test.mjs
+node .claude/hooks/stop-children.test.mjs
+PYTEST_ADDOPTS="-o timeout_method=thread" uv run pytest -p no:cacheprovider \
+  tests/unit/test_winddown.py tests/unit/test_task_routine.py
+```
+
+**Flip.** `warn` first, by metorite-78 in the box lane environment, then
+`block` after one day with no false block.
+
 ## 8. What to fix before customer #1 — in order
 
 This list names them so that nobody finds them again from zero. Each belongs
