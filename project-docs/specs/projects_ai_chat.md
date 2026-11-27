@@ -802,6 +802,7 @@ Each slice is one pull request. Each one is useful alone.
 | **S14 · No forged agent rows** — ✅ **BUILT 2026-09-28** | The server mints the agent row of a run when the run starts · no client inserts an agent row or a system row · an empty minted row stays hidden · a creator owns only a room with no rows, and migration 221 backfills every creator's owner row (§20) | AGENT-SAFE. D-PM-39 decided by the owner 2026-09-28 |
 | **S15 · Chat is saved on production** — ✅ **BUILT 2026-09-29** | A JSON body to the gateway names its content type, so a save gets no 422 · each chat, room, fold, mint, run-trace and blob write binds the tenant · `_load_room` binds it too, so no member owns a room that they cannot see · an empty server answer keeps the browser cache · an R8 suite, a smoke check and an alarm (§21) | AGENT-SAFE. A live defect, audited by the diagnosis of 2026-09-29 |
 | **H-229 · Chat attachments** — ✅ **BUILT 2026-10-04** | `read_attachment` reads the text of a `.docx`, PDF, `.txt`, `.md` or `.csv` file attached in this chat, by pure parsing · an upload to a shared agent lands in its thread's own folder · an older flat upload reads only in the thread that the blob history names (§22) | AGENT-SAFE. Restores the flow that D85 stopped |
+| **CIV-SMOKE-TURN · The smoke runs a real turn** — ✅ **BUILT 2026-11-27, dark** (task 4061) | The release smoke runs one short model turn with tools on, in the smoke org. The stream ends with `done`, the saved answer has text, and no gateway line of the turn holds a Traceback (red with `LOG_FORMAT=json` only, and a warning today). `SMOKE_CHAT_TURN` and `SMOKE_CHAT_TURN_CAP_USD` in the box `.env`, both unset. Two cap guards: the smoke's own count of turns, and the metered spend. `deploy/smoke_chat.sh --turn-only` (§21.10) | HIGH: the deploy path. The owner sets the cap before the switch goes on |
 | **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-11-30 (`.claude/OWNER_GRANTS.md`, PR #487) |
 | **Delete** | `delete_project`, `delete_task` from class X to C | Blocked on WS-40 |
 
@@ -3984,10 +3985,10 @@ Then it runs `scripts/smoke_chat_persist.py`.
 
 - Exit 1 (a step failed) and exit 2 (the environment is wrong) make the run
   red at once, with no retry. An ssh blip retries, 3 tries in total.
-- The script has a time bound of 935 s, and its header gives the sum. The
-  job gives one ssh 990 s. A session that goes past that is a timeout, with
+- The script has a time bound of 1175 s, and its header gives the sum. The
+  job gives one ssh 1230 s. A session that goes past that is a timeout, with
   its own message and no retry, and the job gives a warning. The job
-  timeout is 60 min.
+  timeout is 72 min.
 - Only a smoke that ran and failed is red. When ssh cannot reach the box for
   the whole connect budget, or drops on all 3 tries, the job gives a
   warning and stays green. That keeps the H-142 contract for the pull path:
@@ -4023,6 +4024,58 @@ Then it runs `scripts/smoke_chat_persist.py`.
   delete, and no database access. A failed sweep prints `WARN 0` and does
   not fail the smoke.
 - The fence is `tests/unit/test_deploy_smoke_wiring.py`.
+
+**The smoke can run one real model turn (CIV-SMOKE-TURN, task 4061, built
+2026-11-27, dark).** On 2026-11-26, 25 flags went on, and no real turn tested
+them for hours. So the persist run can also run one short turn of the
+orchestrator, with its tools on, in the smoke session. The module is
+`scripts/smoke_chat_turn.py`, and its lines start with `T`.
+
+- The operator sets `SMOKE_CHAT_TURN=1` and `SMOKE_CHAT_TURN_CAP_USD` in
+  `/opt/acb/app/.env`. The script reads both on each run, so a change needs no
+  restart. Both are unset, so the turn is off. The owner has not set the cap.
+- On with no cap is `REFUSED`, exit 2, and the smoke writes nothing.
+- T1 has two guards, and either one skips the turn. A skip prints a
+  `WARNING T1` line, the smoke stays green, and `deploy.yml` shows a
+  `Model turn skipped` warning.
+- The count guard does not need Redis. The smoke keeps its own count of this
+  UTC month's turns in `/var/lib/acb/smoke-chat-turn.json`. It writes the
+  count + 1 before the turn, so a crash still counts the turn. It skips when
+  the count times `SMOKE_CHAT_TURN_EST_USD` (default 0.25) is at or over the
+  cap. A corrupt file, a file it cannot write, or a lock that another smoke
+  holds skips the turn.
+- The metering guard reads the smoke org's cost rollup of this UTC month
+  through `GET /api/observability/cost`. The rollup is in Redis, and a model
+  with no price writes no cost, so it is a second guard and not the cap. An
+  empty rollup is unknown. Zeros with no calls are also unknown after a
+  counted turn of this month.
+- T2 needs the `done` event, and T3 needs an assistant row with text. Each
+  failure is exit 1, with no PASS line.
+- T4 reads `journalctl -u acb-gateway -o json` from the turn start to now. A
+  Traceback on a line with the thread id of this turn is red. That works
+  with `LOG_FORMAT=json`, where the executor binds `thread_id` to each line
+  of the run. Any other Traceback, or a log that acb cannot read, is a
+  `WARNING T4` line. Another tenant can own that line. T4 prints the count
+  and the times of the hits only, and never the log text.
+- Before the flip, the owner runs `journalctl -u acb-gateway -n 1` as acb.
+  If acb cannot read it, add acb to the `systemd-journal` group. Without
+  that, T4 cannot check the log.
+- T4 can be red only with `LOG_FORMAT=json` in the gateway environment.
+  The box used the console format on 2026-11-27. Then a Traceback spans
+  many journal lines, its line holds no thread id, and T4 only warns.
+- After the first turn, the owner checks that the cost rollup of the smoke
+  org shows `calls > 0`. A model with no price writes no calls. Then each
+  later turn of the month skips with a warning.
+- The cap needs about 7 turns a day times `SMOKE_CHAT_TURN_EST_USD` (0.25)
+  for a month, which is about 53 USD. A lower cap stops the turn early in
+  the month, with a warning on each deploy.
+- A retry of the smoke after an ssh drop can run up to 3 turns in one
+  release. The count guard counts each one.
+- The turn takes at most 227 s of `SMOKE_TURN_S` (240 s).
+- `bash deploy/smoke_chat.sh --turn-only` runs the turn alone. A later
+  `flag_flip.sh` calls it after a flip.
+- The fence is `tests/unit/test_smoke_chat_turn.py`, with the wiring in
+  `tests/unit/test_deploy_smoke_wiring.py`.
 
 **The alarm stays manual.** `alarm_chat_persist.sh` counts write failures in
 the last 10 minutes of the gateway journal. After a deploy, that window holds
@@ -7613,6 +7666,40 @@ migration, no flag and no new route. BUILT 2026-11-09 on branch
   - `voiceDictation.test.ts` tests the label of the Stop button.
   - `src/lib/theme/conformance.test.ts` holds the colour rules.
 
+**VOX-8 (task 2505). The mic hears the languages the member speaks.** HIGH,
+because it changes the metered door. Design: `personalization.md` §5.3a.
+Needs PZ-52 for the list. **DEFERRED by the owner on 2026-11-09.** It opens
+only when Sarvam, now first on `tier-stt`, shows a wrong-language guess.
+
+- **Why:** the owner said on 2026-11-09: "just because our preference is
+  English doesn't mean that it should not understand Hindi as input."
+- **Files:** `chat_transcribe.py`, `acb_auth/console_resolve.py`
+  (`transcribe_on_console`), and in the Console `main.py`
+  (`audio_transcriptions`), `router.py`, `stt_sarvam.py` and
+  `stt_assemblyai.py`.
+- **Do:**
+  - The gateway loads `style.languages` of the proven member on the server. It
+    sends them as the form field `language_hints`: lowercase base tags
+    joined by commas, at most 6 and 64 characters. It never reads a language
+    from the request (R5).
+  - The door accepts the optional field `language_hints`. It drops a tag that
+    is not well formed. It ignores a field that is too long or too big. It
+    never answers 4xx because of it.
+  - Sarvam sends no `language_code`, so the vendor detects the language.
+  - AssemblyAI: a model id that names languages wins. Otherwise it sends the
+    supported tags as `language_codes`, `en` first when present. It sends
+    nothing when fewer than two tags are supported.
+  - The usage row is the same with or without a hint. Billing reads the
+    seconds of the WAV, as in VOX-6.
+- **Done when:** a clip on `tier-stt` with the list `en,hi,kn` makes the
+  AssemblyAI request carry `language_codes: ["en","hi"]` and the Sarvam
+  request carry no `language_code`. A client field `language_hints` on the
+  gateway route changes nothing.
+- **Fence (R7):** `tests/unit/test_customer_console_stt_language_hints.py`
+  (R8) pins both request bodies, the drop of `kn` and of a bad tag, the model
+  id that wins, and equal usage rows. `tests/unit/test_chat_transcribe_hints.py`
+  pins that the gateway reads the profile and ignores the client.
+
 ### 31.6 Owner calls
 
 **The owner accepted all four recommendations on 2026-11-08 at 08:42 UTC**, on
@@ -7632,7 +7719,7 @@ Deepgram, OpenAI or Groq on `tier-stt`. VOX-2 follows, for Sarvam. VOX-3 goes
 in parallel with VOX-1, because the two touch different code. VOX-5 follows
 VOX-3.
 VOX-6 follows VOX-2, because it copies the same handler pattern. It serves
-the chat mic (VOX-1) and the operator Try box (VOX-4).
+the chat mic (VOX-1) and the operator Try box (VOX-4). VOX-8 follows PZ-52 (`personalization.md` §5.3a), because it reads the list that PZ-52 stores.
 
 ### 31.8 What §31 does not do
 

@@ -26,7 +26,10 @@
  * SW-19a (task 862). The queue lives in Metorite (D134), so the hook asks the
  * MCP edge for `my_work` first, with a short time limit. A row with the reason
  * `check_due` is a Check that is due (SW-23). The hook reads ONE credential: the
- * box token in `METORITE_BOX_TOKEN` (docs/box_connect.md). A hook cannot reuse
+ * box token in `METORITE_BOX_TOKEN` (docs/box_connect.md). When that is unset,
+ * it runs the installed header helper `~/.local/bin/metorite-box-headers` (no
+ * shell, 3 s) and takes the bearer from its JSON. The helper's refusal bearer
+ * counts as no credential (EA-19g, task 1819). A hook cannot reuse
  * the OAuth sign-in of Claude Code, so a session with no box token (a laptop,
  * a cloud or CI session) has "no credential" and prints the HANDOFF.md snapshot
  * with its date. So does a session whose call fails or runs out of time,
@@ -48,6 +51,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
+import { homedir } from "node:os";
 
 /** Entries older than this are surfaced with a warning — see `stale()`. */
 const STALE_DAYS = 21;
@@ -129,9 +133,36 @@ async function readJson(res) {
  * The live context, or `{ reason }` with a fixed text that holds no secret.
  * Every failure is a reason, never a throw, and never a long wait.
  */
+/** The bearer that the header helper prints when it refuses box.env. */
+const HELPER_REFUSED = "box-token-helper-refused";
+const HELPER_MS = 3000;
+
+/**
+ * The box token: METORITE_BOX_TOKEN, else the bearer of the installed header
+ * helper (EA-19g). Returns null for no credential. It never throws, and it
+ * never logs the token. The helper's stderr is dropped, and its refusal bearer
+ * is no credential.
+ */
+function boxToken() {
+  const fromEnv = process.env.METORITE_BOX_TOKEN;
+  if (fromEnv) return fromEnv;
+  const helper = join(process.env.HOME || homedir(), ".local", "bin", "metorite-box-headers");
+  try {
+    const out = execFileSync(helper, [], {
+      encoding: "utf-8", timeout: HELPER_MS, stdio: ["ignore", "pipe", "ignore"],
+    });
+    const auth = JSON.parse(out)?.Authorization;
+    if (typeof auth !== "string" || !auth.startsWith("Bearer ")) return null;
+    const token = auth.slice(7);
+    return token && token !== HELPER_REFUSED && !/\s/.test(token) ? token : null;
+  } catch {
+    return null;
+  }
+}
+
 async function liveContext() {
-  const token = process.env.METORITE_BOX_TOKEN;
-  if (!token) return { reason: "no credential: METORITE_BOX_TOKEN is not set" };
+  const token = boxToken();
+  if (!token) return { reason: "no credential: no METORITE_BOX_TOKEN and no box token from the header helper" };
   const url = mcpUrl();
   if (!url) return { reason: "the Metorite address is not allowed" };
   const signal = AbortSignal.timeout(LIVE_MS);

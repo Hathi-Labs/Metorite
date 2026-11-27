@@ -6,7 +6,11 @@ Spec: ``project-docs/specs/agent_sandbox.md`` §12.2 decisions 8, 9 and 13.
 call for each HTTP request (``sandbox_capabilities.open_door_call``). The
 sandbox sibling of branch 0 (``acb_auth.deps._sandbox_user``) fills it at its
 last step. A request that the sibling did not admit passes through byte for
-byte. For an admitted call, the middleware buffers the answer up to
+byte, with one step before its status. When the sibling refused a live
+capability for a code of ``COUNTED_REFUSALS``, the middleware adds 1 to the
+refusal counter of the token BEFORE it forwards ``http.response.start``
+(``sandbox_capabilities.count_refusal``, §12.4 decision 9). So the count
+exists before the client reads the status. For an admitted call, the middleware buffers the answer up to
 :data:`~acb_auth.sandbox_capabilities.ANSWER_CAP_BYTES` (4 MB). A larger
 answer becomes the 422 ``sandbox_response_too_large``, and no byte of it
 leaves. After the answer it writes the line ``sandbox.door.call``.
@@ -52,6 +56,8 @@ class SandboxDoorLimits:
 
         async def capped_send(message: Any) -> None:
             if not holder.admitted:
+                if message.get("type") == "http.response.start":
+                    await sandbox_capabilities.count_refusal(holder)
                 await send(message)
                 return
             kind = message.get("type")
@@ -94,6 +100,9 @@ class SandboxDoorLimits:
                 size = 0 if state["over"] else state["size"]
                 self._log(holder, state["status"], code, size)
         finally:
+            # A refusal whose answer never started still counts (no-op when
+            # the count ran, or when the call was not refused).
+            await sandbox_capabilities.count_refusal(holder)
             sandbox_capabilities.close_door_call(token)
 
     @staticmethod

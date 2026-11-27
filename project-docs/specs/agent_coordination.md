@@ -4,6 +4,8 @@
 
 **Status: ACTIVE (SW-0, 2026-10-30). SW-68a (the plan order of `my_work`) is built, 2026-11-08. The rest of SW-68 is open. The replan of 2026-11-09 (task 2518) sets the queue order, the lane scope and pull start (SW-100, new). It parks SW-17, SW-20, SW-22, SW-69, SW-74, SW-75, SW-89, SW-90 and SW-92. SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b (change an answer) is built and dark, 2026-11-11. SW-43c (the chat tools and the agent text) is built, 2026-11-11, and the flag can go on. SW-32 (a plan on each run) is built, dark behind the runs flag, 2026-11-11, branch `mt-f4ce39a1-run-plan`, task 1049. It is not merged yet. SW-16a (the link tools) is built, 2026-11-08. SW-16b (the write fence) is open.**
 
+**CIV-14g (the watcher hand-off of the answer rule, §5.8) is built, not merged, 2026-11-07.**
+
 **SW-34b (the read-only door `/mcp/readonly`) is built, 2026-11-07.**
 
 **SW-27a (the project sequences: migration 477 and the reserve route) is merged, 2026-11-22 (`14972af16`). SW-27b (the MCP tool `reserve_number`, task 3893) is merged, 2026-11-24 (`eca634ead`). SW-27c2 (a merge marks the numbers used, task 3894) is merged, 2026-11-25 (`c61dc98d6`). SW-27c1 (`mark_number`, task 3938) is built and dark, 2026-11-25. SW-27c3 and SW-27d are open.**
@@ -12,7 +14,7 @@
 
 **SW-7b (a display label for each session) is built, 2026-11-11 (task 2858). migration 418.**
 
-**AMR-1 to AMR-3 (the lenses and the phone view of the Agents view, §3.12.8) are built and dark, 2026-11-26, behind `AGENT_LENSES_ORGS`.**
+**AMR-1 to AMR-3 (the lenses and the phone view of the Agents view, §3.12.8) are built and dark, 2026-11-26, behind `AGENT_LENSES_ORGS`.** **AMR-4 (the Agents view at scale, §3.12.9) is built and dark behind the same flag, 2026-11-26.**
 
 **SW-104 (the machine and the model on each run) is built, 2026-11-21 (task 3625). migration 470.**
 
@@ -34,7 +36,7 @@
 
 **P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **Only the code part of SW-44 (item 4) is built, and it is dark (2026-11-07). SW-63 is built. SW-53 (GitHub per organization) is built and dark, 2026-11-07. Its backfill is not built.**
 
-**1045a (the `waiting` state, migration 403) is built, 2026-11-06. It also carries SW-4 item 2. The owner's change of 2026-11-07 is built: own sub-agents keep a run working, and `agent` is a wait on another agent. 1045b (linked events count as life, migration 421) is built, 2026-11-12. 1045c is open.**
+**1045a (the `waiting` state, migration 403) is built, 2026-11-06. It also carries SW-4 item 2. The owner's change of 2026-11-07 is built: own sub-agents keep a run working, and `agent` is a wait on another agent. 1045b (linked events count as life, migration 421) is built, 2026-11-12. 1045c is built in the client, 2026-11-12: the look, the line and Release in the run panel. 1045d (PR 2746) sends `agent_stranded` on each task row, so the board card shows the strand.**
 
 This spec gates every SW slice (D135.4). The decisions are **D140** in `work_plan.md` §3.
 
@@ -250,6 +252,8 @@ The delegate (SW-29a) stores this reference. It names the member and the stamp, 
 | A delegate never widens what an agent can see | SW-29a: an R8 test that a delegate on a task the agent's member cannot see gives the agent nothing |
 | The session key comes only from the signed header | Built: `test_mcp_edge_signing.py` |
 | Guidance never overrides the server's rules | SW-31: a prompt fence in `test_mcp_edge_prompts.py` |
+
+**Amendment, 2026-11-26 (owner directive "land before build", `engineering_practice.md` §7b.2, task 4041).** One module may read `agent_label` for a decision: `gateway/routes/projects/claim_gate.py`. It may refuse an agent's own new claim while that label holds an old open PR. It never opens, grants or shows anything. A lane that changes its label escapes it, so it guides agents that cooperate, and it is not a security control. The label still reaches no authorization check. Fence: `tests/unit/test_agent_label_fence.py` names this one module as the allowed decision reader.
 
 ### 3.8 Metorite and Linear, side by side
 
@@ -895,6 +899,29 @@ The owner approved two mockups on 2026-11-26: a new Agents view, and a simpler p
 - **One level for each screen.** A person opens their orchestrators. An orchestrator opens its sessions. A session opens in a bottom sheet.
 - **One answer path.** The phone uses the list of agent questions (`QuestionsView`). The graph does not draw on a phone.
 
+#### 3.12.9 The Agents view at scale (AMR-4, 2026-11-26)
+
+The owner asked on 2026-11-26 that the view of §3.12.8 stays usable with hundreds of sessions. The flag `AGENT_LENSES_ORGS` keeps these rules dark too. Where this section and §3.12.8 differ, this section wins.
+
+- **Aggregate first.** A canvas draws at most 40 session cards, plus the orchestrator card. Past that it groups, and each group says what it holds.
+- **Six states.** Needs you, Failed, Working, Waiting, Idle and Done. Idle and Done start off. "Done" is the word of the ended state `completed`. Its look is the key `lens_done` of `statusAccent.ts`. So a `completed` run keeps its gray chip on every other surface. The test `AgentRepairs.test.ts` holds that rule.
+- **The overview.** A scope with more than 40 sessions draws one tile for each orchestrator, under its person, on the Graph and the Board. The tile that wants the most attention comes first. A tile holds its counts, one square for each session (the most urgent first, at most 96) and a bar of its subagents. The sessions with no orchestrator make one "No orchestrator" tile for each person.
+- **Quiet orchestrators.** A tile with only idle and done sessions folds into one row for its person. A find opens that row.
+- **Levels.** A tile, or a square, opens the graph of that orchestrator. A breadcrumb leads back: All agents, then a person, then an orchestrator.
+- **The bound.** One orchestrator draws its card and at most 12 session cards, ranked needs you, failed, working and waiting. The rest fold into one node for each state. The node shows its squares and opens 12 more. A node that fills the canvas then walks on to its next cards, so a member reaches every session by clicking. The canvas never passes 40 session cards, plus the orchestrator card. The selected session always draws.
+- **Subagents are a count.** A card shows the short form, an icon with "7 · 2 working" and the failed count beside its icon. So the task or the question keeps most of the line. The accessible name and the tip say "7 subagents · 2 working · 1 failed". A List row and the details say it in full. One session at a time opens its subagents in the graph, as at most 8 rows and then "+N more". The details list each one by state, with the done ones folded. A stopped or released subagent reads Idle.
+- **Ways to the work.** "Question 1 of N" walks the questions that wait on the member, the oldest first. Each step opens the orchestrator, centres the card and opens the details. Find reaches the names of the subagents.
+- **Zoom.** Under 60 % zoom, a card shows its name only.
+- **The phone.** The first screen shows four counts: needs you, failed, working and waiting. It shows one question card, with a step back and a step forward. Then it shows the people with their squares. A person shows orchestrators as rows. An orchestrator shows its sessions by state, 10 cards and then "Show more". Idle and Done are rows that open. The answer keeps the one path of `QuestionsView`.
+- **Long lists.** A list of more than 50 rows draws only the rows on screen (`lib/windowedList.ts`). This holds for the List, the session and task lists of the details, the subagent list and the cards of a phone level. The row heights are rem, and the sums use the applied root font size, so each density works. No library.
+- **The toolbar.** With the dock closed, it stays one row at 1280 pixels and wider. In a narrow column it first hides the words of the chips and of the lens switch. The icon and the count stay, and each control keeps its word as its accessible name. It never scrolls the page sideways.
+- **Two more reads.** Both are query values of the map read, and both act only for an org that `AGENT_LENSES_ORGS` holds. For any other org the gateway does not read them. A bad value answers the one 404 of the map.
+- **`detail=summary`.** It lists at most 1000 session nodes, each with ONE lead run. That is the run that asks, then the run that waits, then the newest open run. With no open run, it is the newest ended run. `children` is empty. Each session holds `subagents`: `total`, `working`, `failed`, `done` and at most 40 distinct `names`. Each session holds `tasks`: the `number` and the `title` of at most 20 tasks of its runs, the lead task first. The title is one line of untrusted text. The find box reads them.
+- **Failed and Done on the summary.** A node with no open run reads `failed` or `done` when its newest ended run is `failed` or `completed`. That run ended in the last 24 hours (`MAP_ENDED_WINDOW_S`). A newest run that stopped, or ended in another way, lists no node. A node with an open run keeps the state rule of the map.
+- **The counted subagents.** They are the children of the open runs and of the runs that ended in the window, for the listed nodes.
+- **`session=<node id>`.** It gives the runs of one node, at most 300, with the quiet ones. It gives its children too, at most 200, open and ended. Each child has its state. A node that the caller may not see gives the empty map, as an unknown id does. The view reads it only when a session opens, and again with each new map.
+- **Visibility.** Both reads go through the ONE `seen` text of the map (D12), in the scope of `project_id`. No answer holds a session key or an address. The org comes from the session (R5). The edge tool `get_agent_map` sends neither value.
+
 ### 3.13 What other apps do: agent-autoloop (SW-0d, task 2506)
 
 **Source.** The repository `KKKKhazix/agent-autoloop` (third party, MIT, TypeScript, created 2026-11-03). The notes are the comment "Research notes, 2026-11-09 (agent-autoloop)" on epic 321. They come from the English README, the protocol doc, the Claude plugin and the MCP command of that repository.
@@ -1183,6 +1210,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Scope.** A run with `stranded` set draws in the warning tone with "no word since 14:31". It offers Release to a person who may end the run. The data comes from the `stranded` field of the run wire.
 - **Done when.** A vitest maps a stranded run to its look in light and dark. `visual-review` passes.
 - **Fence.** `agentCardLook.test.ts`.
+- **Status.** Built in the client, 2026-11-12. `agentCardLook` maps a strand to the warning edge. `strandedLine` writes the line. The run panel shows it on its own row, with the existing Release at the end. 1045d (PR 2746) sends the task row field `agent_stranded`. Captures at 1440 px and 390 px exist, dark and light, with compact (2026-11-27). The `visual-review` verdict is open.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** 1045a. Real data needs SW-10b.
 
 #### 1054 · A verb for the nudge in the Projects bell
@@ -1539,11 +1567,21 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **One session for one wake.** A wake is a run id plus its `last_activity_at`. An attempt file with `O_CREAT | O_EXCL` per wake means a second tick starts nothing. A new answer changes the stamp, so it is a new wake. A wake that no session took up is tried again after 2 hours, at most 3 times.
 - **Each session is a transient unit.** The watcher runs as a `oneshot` unit, and systemd kills what stays in its cgroup. So each session starts with `systemd-run --user --collect --unit=answer-<slug>`. The live count is the number of running `answer-*` units, and the cap is 2. It starts nothing when less than 5000 MB is free (lane rule 11). A sweep removes a `wt-answer-*` worktree that holds no change and no commit, after 24 hours, and only when no session runs.
 - **The credential (decided by the owner, 2026-11-06, task 1731).** The watcher has its own read-only token: a box token (D-EA-5, `external_agent_access.md` §10.9) with the scope `projects:read` only. The owner makes it in Integrations, AI agents once EA-19c and EA-19d merge. The owner drops it in `~/.config/metorite/watcher.env` (mode 0600) through the secrets drop (`docs/secrets_drop.md`). The script reads it from the environment and never prints it, and no child gets it. A session that the watcher starts uses the login of its own lane. The default session command allows the Metorite tools only (`--allowedTools mcp__metorite__*`), and `WATCHER_CLAUDE_CMD` overrides it.
+- **The command needs `-p` (task 4050).** `WATCHER_CLAUDE_CMD` must hold `-p`. The watcher puts the prompt right after `-p`, because `--allowedTools` takes each word after it. A command with no `-p` fails before the watcher makes a worktree.
 - **A known gap: other clients.** `list_agent_runs` lists the runs of every client of the member. The watcher cannot tell a run of the owner's PC from a run of the box, so the 2-minute quiet window is its only guard. A session that cannot claim the run (another connection holds it) ends with `release_task`.
-- **OPEN, the answer rule (owner, task 1731).** The platform says a session acts on an answer only when `yours` is true and it asked the question itself. A fresh session did not ask. So the session the watcher starts reads the run and, under today's rule, must not act on the answer. The question is on the task.
+- **DECIDED, the answer rule (owner, option A, task 1731, 2026-11-07).** A session that the watcher started may act on an answer when three things are true. The answer is the newest person prompt on the run, and its `member` is the member of the run. The run is the one that the first prompt of the session names. No later activity withdrew the answer. A restart, erase or stop answer still needs a session that asked it itself. CIV-14g builds this exception.
 - **Status.** BUILT 2026-11-06, dark, not merged (Metorite task 1731). `answer_watcher.sh install` copies the script and the units and enables nothing. `enable` refuses a token file that is not mode 0600. Enabling the timer is OWNER-GATE (`deploy`). Two Opus readers reviewed the first draft. They found the oneshot kill, the lost `stale` answers, a second answer that never started, a lock cap that did not cap, and the answer rule above. The text and the code now fix all but the last.
 - **Fence.** `uv run pytest tests/unit/test_answer_watcher.py`, with a fake `list_agent_runs`, a fake starter and a fake live count. It covers one start for one wake, a new answer, a `stale` run, the skips, the live cap, the vet, the retries, a failed read, the transient unit, the token never in a child, and the sweep.
 - **Risk.** HIGH (it starts sessions with credentials). **Gate.** AGENT-SAFE to build. OWNER-GATE to enable the timer (`deploy`) and to mint the token.
+
+#### CIV-14g · The answer rule names the watcher hand-off (Metorite task 2197)
+
+- **Scope.** The edge text of the answer rule names one exception, `prompts.WATCHER_EXCEPTION`. It shows in `ANSWER_BODY_ON` and `ANSWER_BODY_OFF`, so `my_work`, `list_agent_runs` and `work_on_task` carry it. Each short pointer of the instructions names "a watcher hand-off". The watcher prompt starts with the fixed text `ANSWER WATCHER HAND-OFF for run`, then the run id. It holds ids only.
+- **The exception is narrow.** It holds only for the run that the first prompt names. It holds only for the newest person prompt, when its member is the member of the run and no later activity withdrew it. It never allows a restart, an erase or a stop.
+- **The cut.** Claude Code cuts the instructions at 4096 characters. With sessions off, the cut left 3 characters, so the off pointer is shorter now. The last kept sentence ends at 4093 (off) and 4091 (on).
+- **Status.** BUILT 2026-11-07, not merged (Metorite task 2197). It changes text only.
+- **Fence.** `tests/unit/test_mcp_edge_prompts.py` `TestTheAnswerRule`: the watcher tests and the cut test. `tests/unit/test_answer_watcher.py`: the prompt starts with the marker, and the marker of the watcher equals the marker of the edge.
+- **Risk.** HIGH (the answer rule, MCP-G4). **Gate.** AGENT-SAFE. Enabling the watcher timer stays OWNER-GATE (`deploy`).
 
 ### 5.9 P8 — deferred, the owner decides
 
@@ -2251,7 +2289,7 @@ They keep their own gates.
 
 #### AMR-1 · The Graph lens of the Agents view
 
-- **Metorite task.** To make (the board was not reachable on 2026-11-26). Epic 321.
+- **Metorite task.** 4020. Epic 321.
 - **Scope.** §3.12.8 for the Graph and the details. The flag `AGENT_LENSES_ORGS`, its shell field `agent_lenses`, and `waiting_on` and `waiting_until` on each run of the map read and of `get_agent_map`.
 - **Done when.** With the flag on, the canvas shows the four columns, and each line comes from a field of the read. With the flag off, the canvas is the map of SW-103. A waiting run gives its wait, and every other run gives two nulls.
 - **Fence.** `lib/agentLenses.test.ts`, `lib/agentGraph.test.ts`, `components/AgentLenses.test.ts`, `tests/unit/test_agent_map_r8.py` and `tests/unit/test_auth_me_shell.py`.
@@ -2259,7 +2297,7 @@ They keep their own gates.
 
 #### AMR-2 · The Board and List lenses, and the toolbar
 
-- **Metorite task.** To make. Epic 321.
+- **Metorite task.** 4021. Epic 321.
 - **Scope.** The toolbar of §3.12.8, and the Board and List lenses over the same model. The words and the icons of a state come from `AGENT_STATES` and the board lanes.
 - **Done when.** Each lens shows the same sessions under the same filters.
 - **Fence.** `lib/agentLenses.test.ts` and `components/AgentLenses.test.ts`.
@@ -2267,11 +2305,20 @@ They keep their own gates.
 
 #### AMR-3 · The phone view of the Agents view
 
-- **Metorite task.** To make. Epic 321.
+- **Metorite task.** 4022. Epic 321.
 - **Scope.** The phone view of §3.12.8.
 - **Done when.** At 390 pixels, no graph draws. A question that waits on the member takes an answer on its card. A session opens in the bottom sheet.
 - **Fence.** `components/AgentLenses.test.ts`.
 - **Risk.** STANDARD UI. **Gate.** AGENT-SAFE, dark. **Depends on.** AMR-1.
+
+#### AMR-4 · The Agents view at scale
+
+- **Metorite task.** 4023. Epic 321.
+- **Scope.** §3.12.9. It holds the overview tiles, the bound, the subagent counts, the question pager, the phone levels, the windowed lists and the two reads.
+- **Done when.** A fleet of 500 sessions and 2000 subagents draws at most 40 session cards on a canvas, plus the orchestrator card. R8: the summary holds no child row, and one session reads its own rows only, under the reach of the map. With the flag off, the map answers as before. The first overview draws under 1 second after the map answers.
+- **Fence.** `tests/unit/test_agent_map_r8.py`, `tests/unit/test_agent_label_fence.py`, `lib/agentScale.test.ts`, `components/AgentScale.test.ts` and `components/AgentRepairs.test.ts`.
+- **Risk.** STANDARD UI, with a change to a shared read. **Gate.** AGENT-SAFE, dark. D145 owner preview before the flip. **Depends on.** AMR-1 to AMR-3, SW-39.
+- **Built and dark, 2026-11-26.** The repairs after the verifier and the review are in, 2026-11-26.
 
 #### SW-39 · Child runs
 
@@ -2546,6 +2593,7 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 | SW-101b | The command of SW-101 |
 | SW-112 | `npx vitest run src/app/projects/lib/agentMap.test.ts src/app/projects/lib/commands.test.ts src/app/projects/components/ViewTabs.test.ts src/lib/theme/conformance.test.ts` in `workbench/control_plane`, then `uv run pytest -q -p no:cacheprovider tests/unit/test_chat_parity.py`, then `visual-review` |
 | AMR-1 to AMR-3 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_map_r8.py tests/unit/test_auth_me_shell.py tests/unit/test_auth_me_shell_r8.py`, `npx vitest run src/app/projects src/lib/shell/shellPrefs.test.ts src/lib/theme` in `workbench/control_plane`, then `visual-review` |
+| AMR-4 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_map_r8.py tests/unit/test_agent_label_fence.py tests/unit/test_app_requests_r8.py tests/unit/test_chat_parity.py`, `npx vitest run src/app/projects src/lib src/components` in `workbench/control_plane`, then `visual-review` |
 | SW-113 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_coverage.py tests/unit/test_agent_map_r8.py tests/unit/test_mcp_edge_prompts.py` |
 | SW-39 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_child_runs_r8.py tests/unit/test_agent_runs_r8.py tests/unit/test_tenant_coverage.py` (new file first) |
 | SW-114 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_child_runs_r8.py tests/unit/test_mcp_edge_coverage.py`, and `node --test` on the hook tests |
@@ -2739,4 +2787,5 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 - **2026-11-17.** The orchestration map for task 3617. It adds §3.12, §5.12, §7.2, Q19 to Q21 (§8.2), one row in §3.7 and item 6 of SW-51. The board holds the slices SW-102 to SW-111 (tasks 3623 to 3632) and the demo tasks 3619 to 3622. It adds no code.
 - **2026-11-19.** The Agents view on each project, for task 3794. It adds §3.12.7, Q22 and Appendix C. It adds the rows SW-101b, SW-112, SW-113, SW-39 and SW-114, with the tasks 3794 to 3797 and 3799. Rung M5 has the demo task 3798. It widens SW-102, SW-104 and SW-105. It adds no code.
 - **2026-11-26.** The lenses and the phone view of the Agents view, from the owner's mockup. It adds §3.12.8 and the rows AMR-1 to AMR-3.
+- **2026-11-26, at scale.** The owner's rules for a large fleet. It adds §3.12.9, the row AMR-4 and its verify row. The slice is built and dark behind `AGENT_LENSES_ORGS`.
 - **2026-11-21.** The agent-autoloop research for task 2506 (SW-0d). It adds §3.13, a hop limit in SW-95, retry in SW-78 and the row SW-38. It adds no code.

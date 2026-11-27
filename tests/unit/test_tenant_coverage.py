@@ -310,6 +310,22 @@ def test_the_tool_gaps_table_is_tenant_scoped() -> None:
     assert "ALTER TABLE tool_gaps FORCE  ROW LEVEL SECURITY" in policies
 
 
+def test_the_user_tool_runs_table_is_tenant_scoped() -> None:
+    """SBX-4b1 (``agent_sandbox.md`` §7.3, §12.4 decision 10, task 3986).
+    ``user_tool_runs`` holds the steps of a member of an org, so it must never
+    be exempt, and the committed phases must carry it (R5). Mutation: remove
+    the table from ``generated/04``, and this fails."""
+    gen = _generator()
+    assert "user_tool_runs" in gen.discover_tables()
+    assert "user_tool_runs" not in gen.EXEMPT
+    assert "user_tool_runs" not in gen.HOMONYM_BLOCKED
+    generated = _REPO / "infra" / "postgres" / "generated"
+    add = (generated / "01_add_columns.sql").read_text(encoding="utf-8")
+    policies = (generated / "04_policies.sql").read_text(encoding="utf-8")
+    assert "ALTER TABLE user_tool_runs\n    ADD COLUMN IF NOT EXISTS" in add
+    assert "ALTER TABLE user_tool_runs FORCE  ROW LEVEL SECURITY" in policies
+
+
 def test_the_crm_settings_table_is_tenant_scoped() -> None:
     """WS-53 CRM-T5 (``crm_platform.md`` §3.1, §16 Q3). ``crm_settings`` holds
     the CRM mode of an organization and who in it may open the CRM. It must
@@ -548,6 +564,21 @@ def test_the_shared_mailbox_tables_are_tenant_scoped(table: str) -> None:
         encoding="utf-8",
     )
     assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
+def test_the_focus_sessions_table_is_tenant_scoped() -> None:
+    """WS-MDC CC-5a (``my_day_command_centre.md`` §9.3, D-MD-5). A focus
+    session holds the minutes of one member of one organization. It may not
+    be exempt, and the committed policy phase must carry it (R5). RLS covers
+    the org, and the routes add the member."""
+    gen = _generator()
+    assert "focus_sessions" in gen.discover_tables()
+    assert "focus_sessions" not in gen.EXEMPT
+    assert "focus_sessions" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE focus_sessions FORCE  ROW LEVEL SECURITY" in policies
 
 
 def test_the_signature_image_table_is_tenant_scoped() -> None:

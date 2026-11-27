@@ -8,6 +8,10 @@
  * layout is the pure `layoutGraph`. `@xyflow/react` pans and zooms it
  * (§3.12.4 rule 6), as the map of SW-103 does.
  *
+ * AMR-4 (§3.12.9): one orchestrator of a large fleet draws bounded, with one
+ * bucket for each state of the rest. A session opens its sub-agent rows. Under
+ * 60 % zoom the cards show their names only.
+ *
  * ⚠️ **Read only.** Nothing drags, connects or edits. A click selects a node,
  * and the details open beside the graph.
  */
@@ -21,6 +25,7 @@ import {
   ReactFlow,
   ReactFlowProvider,
   useReactFlow,
+  useStore,
   type Edge,
   type Node,
   type NodeProps,
@@ -36,21 +41,31 @@ import {
   type Graph,
   type GraphEdgeKind,
   type GraphNode,
+  type OpenSubs,
   blockSentence,
   blockWord,
   layoutGraph,
+  layoutOrchestrator,
   relatedNodes,
 } from "../lib/agentGraph";
 import {
   type LensFilters,
+  type LensGroup,
   type LensModel,
+  type LensSession,
+  type LensState,
   activeCount,
   countStates,
   foldWord,
   lensEdge,
+  lensWord,
   machineWord,
+  subWords,
 } from "../lib/agentLenses";
+import { type BucketWindows, NAMES_ONLY_BELOW, bucketWord } from "../lib/agentScale";
+import { BucketRow } from "./AgentBoardList";
 import { CARD_FACE, CountLine, FoldRow, SessionCard, pressKeys } from "./AgentSessionCard";
+import { Square } from "./AgentSquares";
 
 export const GRAPH_LABEL = "Graph of people, orchestrators and sessions";
 
@@ -66,6 +81,12 @@ interface NodeActions {
   onPick: (node: GraphNode) => void;
   onFold: (sessionId: string) => void;
   onHover: (id: string | null) => void;
+  /** AMR-4: opens or closes the sub-agents of a session. */
+  onToggleSubs: (sessionId: string) => void;
+  onBucket: (state: LensState, rest: number) => void;
+  onPickSession: (session: LensSession) => void;
+  /** Opens the details of a session by its id. */
+  onPickId: (sessionId: string) => void;
 }
 
 interface NodeData extends Record<string, unknown>, NodeActions {
@@ -74,6 +95,10 @@ interface NodeData extends Record<string, unknown>, NodeActions {
   dim: boolean;
   nowMs: number;
   nameOf: (email: string) => string;
+  subsOpen: boolean;
+  namesOnly: boolean;
+  /** False for one orchestrator: its sessions already fold into buckets. */
+  canFold: boolean;
 }
 
 function ring(selected: boolean): string {
@@ -81,12 +106,62 @@ function ring(selected: boolean): string {
 }
 
 export function GraphCard({ data }: { data: NodeData }) {
-  const { node, selected, nowMs, nameOf, onPick, onFold } = data;
+  const { node, selected, nowMs, nameOf, onPick, onFold, subsOpen, namesOnly, onToggleSubs } = data;
   const pick = () => onPick(node);
   if (node.kind === "session") {
-    return <SessionCard session={node.session} nowMs={nowMs} selected={selected} onOpen={pick} />;
+    return (
+      <SessionCard
+        session={node.session}
+        nowMs={nowMs}
+        selected={selected}
+        onOpen={pick}
+        subsOpen={subsOpen}
+        onToggleSubs={() => onToggleSubs(node.session.id)}
+        namesOnly={namesOnly}
+      />
+    );
   }
   if (node.kind === "fold") return <FoldRow word={foldWord(node.folded)} onShow={pick} />;
+  if (node.kind === "bucket") {
+    const n = node.sessions.length;
+    return (
+      <BucketRow
+        word={bucketWord(node, lensWord(node.state), node.shown)}
+        sessions={node.sessions}
+        nowMs={nowMs}
+        max={namesOnly ? 0 : n > 24 ? 12 : 16}
+        onOpen={() => data.onBucket(node.state, node.rest)}
+        onPick={data.onPickSession}
+      />
+    );
+  }
+  if (node.kind === "sub" || node.kind === "submore" || node.kind === "subnote") {
+    const open = () => data.onPickId(node.sessionId);
+    return (
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={open}
+        onKeyDown={pressKeys(open)}
+        data-agent-graph-sub={node.kind}
+        className="flex h-full w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md border border-border bg-card px-2 text-xs text-foreground shadow-sm hover:bg-secondary"
+      >
+        {node.kind === "sub" ? (
+          <>
+            <Square state={node.row.state} />
+            <span className="min-w-0 truncate font-medium">{node.row.name}</span>
+            {namesOnly ? null : <span className="shrink-0 text-muted-foreground">{lensWord(node.row.state)}</span>}
+          </>
+        ) : node.kind === "submore" ? (
+          <span className="truncate text-primary">+{node.count} more · open the list</span>
+        ) : (
+          <span className="truncate text-muted-foreground">
+            {node.failed ? "The subagents did not load. Open the session." : "Loading the subagents…"}
+          </span>
+        )}
+      </div>
+    );
+  }
   if (node.kind === "person") {
     const counts = countStates(node.sessions);
     return (
@@ -132,27 +207,43 @@ export function GraphCard({ data }: { data: NodeData }) {
             onKeyDown={pressKeys(pick)}
             className={CARD_FACE}
           >
-            <span className="flex min-w-0 items-center gap-2 pr-7">
+            <span className={`flex min-w-0 items-center gap-2 ${s.subs.total > 0 ? "pr-12" : "pr-7"}`}>
               <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-secondary text-muted-foreground">
                 <Icon name="Bot" size={15} aria-hidden />
               </span>
               <span className="flex min-w-0 flex-col">
-                <span className="truncate text-sm font-semibold">{s.name}</span>
-                <span className="truncate text-xs text-muted-foreground">{sub}</span>
+                <span className={`truncate font-semibold ${namesOnly ? "text-xl" : "text-sm"}`}>{s.name}</span>
+                {namesOnly ? null : <span className="truncate text-xs text-muted-foreground">{sub}</span>}
               </span>
             </span>
-            <CountLine counts={countStates(node.members)} />
+            {namesOnly ? null : <CountLine counts={countStates(node.members)} />}
           </div>
         </div>
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          icon={node.folded ? "ChevronRight" : "ChevronDown"}
-          aria-label={`${node.folded ? "Unfold" : "Fold"} ${s.name}`}
-          aria-expanded={!node.folded}
-          onClick={() => onFold(s.id)}
-          className="!absolute right-1.5 top-1.5 z-10"
-        />
+        {data.canFold ? (
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            icon={node.folded ? "ChevronRight" : "ChevronDown"}
+            aria-label={`${node.folded ? "Unfold" : "Fold"} ${s.name}`}
+            aria-expanded={!node.folded}
+            onClick={() => onFold(s.id)}
+            className="!absolute right-1.5 top-1.5 z-10"
+          />
+        ) : null}
+        {s.subs.total > 0 && !namesOnly ? (
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            icon="GitFork"
+            selected={subsOpen}
+            aria-expanded={subsOpen}
+            aria-label={`${subsOpen ? "Hide" : "Show"} ${subWords(s.subs)} of ${s.name}`}
+            title={subWords(s.subs)}
+            data-agent-sub-toggle={s.id}
+            onClick={() => onToggleSubs(s.id)}
+            className={`!absolute top-1.5 z-10 ${data.canFold ? "right-8" : "right-1.5"}`}
+          />
+        ) : null}
       </div>
     );
   }
@@ -240,6 +331,37 @@ export function startViewport(
     x: (box.width - (x1 - x0) * zoom) / 2 - x0 * zoom,
     y: (height < box.height ? (box.height - height) / 2 : 0) - y0 * zoom,
   };
+}
+
+/** Tells the graph when the zoom is so low that a card can show its name only. */
+function ZoomWatch({ onChange }: { onChange: (namesOnly: boolean) => void }) {
+  const far = useStore((s) => s.transform[2] < NAMES_ONLY_BELOW);
+  useEffect(() => onChange(far), [far, onChange]);
+  return null;
+}
+
+/** A request to centre one node. A new `n` asks again. */
+export interface GraphFocus {
+  id: string;
+  n: number;
+}
+
+/** Centres the node that a question or a square asked for, once, when it draws. */
+function CenterOn({ graph, focus }: { graph: Graph; focus: GraphFocus | null }) {
+  const { getZoom, setCenter } = useReactFlow();
+  const done = useRef(0);
+  useEffect(() => {
+    if (!focus || done.current === focus.n) return undefined;
+    const node = graph.nodes.find((n) => n.id === focus.id);
+    if (!node) return undefined;
+    // After the first view, and after the dock has taken its width.
+    const timer = window.setTimeout(() => {
+      done.current = focus.n;
+      void setCenter(node.x + node.w / 2, node.y + node.h / 2, { zoom: Math.max(getZoom(), READABLE_ZOOM) });
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [focus, graph, getZoom, setCenter]);
+  return null;
 }
 
 /** Sets the first view when the box has a size, and again when the person or the scale changes. */
@@ -335,6 +457,7 @@ const LEGEND_EDGES: ReadonlyArray<[string, string]> = [
   ["live", "Working"],
   ["steady", "Waiting"],
   ["warning", "Needs you"],
+  ["destructive", "Failed"],
   ["breathing", "Idle"],
 ];
 const LEGEND_LINES: ReadonlyArray<[GraphEdgeKind, string]> = [
@@ -343,9 +466,10 @@ const LEGEND_LINES: ReadonlyArray<[GraphEdgeKind, string]> = [
   ["wait", "Waits on something else"],
 ];
 
-function Legend() {
+function Legend({ wide = false }: { wide?: boolean }) {
   return (
-    <Panel position="bottom-right" className="hidden xl:block">
+    // One orchestrator has three columns of cards, so its legend needs a wider window.
+    <Panel position="bottom-right" className={wide ? "hidden 2xl:block" : "hidden xl:block"}>
       <dl
         aria-label="Legend"
         className="grid grid-cols-[1.75rem_auto] items-center gap-x-2 gap-y-1 rounded-xl border border-border bg-card px-3 py-2 text-[11px] text-muted-foreground shadow-md"
@@ -401,7 +525,18 @@ export interface AgentGraphLensProps {
   nameOf: (email: string) => string;
   /** False while the dock is open: the narrower graph has no room for it. */
   legend?: boolean;
+  /** AMR-4: draw this one orchestrator, bounded, in place of the whole map. */
+  orchestrator?: { person: string; group: LensGroup } | null;
+  windows?: BucketWindows;
+  onBucket?: (state: LensState, rest: number) => void;
+  /** The one session whose sub-agents show. */
+  subs?: OpenSubs | null;
+  onToggleSubs?: (sessionId: string) => void;
+  focus?: GraphFocus | null;
 }
+
+const NOOP = () => {};
+const NO_WINDOWS: BucketWindows = {};
 
 export function AgentGraphLens({
   model,
@@ -413,6 +548,12 @@ export function AgentGraphLens({
   nowMs,
   nameOf,
   legend = true,
+  orchestrator = null,
+  windows = NO_WINDOWS,
+  onBucket = NOOP,
+  subs = null,
+  onToggleSubs = NOOP,
+  focus = null,
 }: AgentGraphLensProps) {
   const { resolvedTheme } = useTheme();
   const unit = useRootScale();
@@ -420,9 +561,25 @@ export function AgentGraphLens({
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
   const [waits, setWaits] = useState(true);
   const [hover, setHover] = useState<string | null>(null);
+  const [namesOnly, setNamesOnly] = useState(false);
+  const pin = selectedId?.startsWith("s:") ? selectedId.slice(2) : null;
+  const person = orchestrator?.person ?? "";
+  const group = orchestrator?.group ?? null;
   const graph = useMemo(
-    () => layoutGraph(model, { filters, collapsed, opened, waits, unit, nameOf }),
-    [model, filters, collapsed, opened, waits, unit, nameOf],
+    () =>
+      group
+        ? layoutOrchestrator(person, group, {
+            states: filters.states,
+            find: filters.find,
+            windows,
+            pin,
+            subs,
+            waits,
+            unit,
+            nameOf,
+          })
+        : layoutGraph(model, { filters, collapsed, opened, waits, unit, nameOf, subs }),
+    [model, filters, collapsed, opened, waits, unit, nameOf, person, group, windows, pin, subs],
   );
   const orchestrators = useMemo(
     () => model.people.flatMap((p) => p.groups.flatMap((g) => (g.orch ? [g.orch.id] : []))),
@@ -443,6 +600,14 @@ export function AgentGraphLens({
       else onPick(node);
     },
     [onOpenGroup, onPick],
+  );
+  const pickSession = useCallback((session: LensSession) => onPick({ kind: "session", session, id: `s:${session.id}`, x: 0, y: 0, w: 0, h: 0 }), [onPick]);
+  const pickId = useCallback(
+    (sessionId: string) => {
+      const session = model.byId.get(sessionId);
+      if (session) pickSession(session);
+    },
+    [model, pickSession],
   );
   const lit = useMemo(
     () => (hover && graph.nodes.some((n) => n.id === hover) ? relatedNodes(graph, hover) : null),
@@ -465,13 +630,20 @@ export function AgentGraphLens({
           onPick: pick,
           onFold,
           onHover: setHover,
+          subsOpen: (node.kind === "session" || node.kind === "orch") && subs?.sessionId === node.session.id,
+          namesOnly,
+          canFold: !group,
+          onToggleSubs,
+          onBucket,
+          onPickSession: pickSession,
+          onPickId: pickId,
         },
         draggable: false,
         connectable: false,
         selectable: false,
         focusable: false,
       })),
-    [graph, selectedId, lit, nowMs, nameOf, pick, onFold],
+    [graph, selectedId, lit, nowMs, nameOf, pick, onFold, subs, namesOnly, group, onToggleSubs, onBucket, pickSession, pickId],
   );
   const edges: Edge[] = useMemo(
     () =>
@@ -497,7 +669,15 @@ export function AgentGraphLens({
     [graph, lit],
   );
   return (
-    <div ref={box} role="group" aria-label={GRAPH_LABEL} data-agent-graph="" className="min-h-0 flex-1" style={{ minHeight: 360 }}>
+    <div
+      ref={box}
+      role="group"
+      aria-label={GRAPH_LABEL}
+      data-agent-graph={group ? "orchestrator" : ""}
+      data-agent-names-only={namesOnly ? "" : undefined}
+      className="min-h-0 flex-1"
+      style={{ minHeight: 360 }}
+    >
       <ReactFlowProvider>
         <ReactFlow
           nodes={nodes}
@@ -518,13 +698,16 @@ export function AgentGraphLens({
           proOptions={{ hideAttribution: true }}
         >
           <Background gap={20} size={1.2} />
-          <StartView box={box} graph={graph} resetKey={`${filters.person}|${filters.find.trim()}|${unit}`} />
+          <StartView box={box} graph={graph} resetKey={`${group?.key ?? filters.person}|${filters.find.trim()}|${unit}`} />
+          <ZoomWatch onChange={setNamesOnly} />
+          <CenterOn graph={graph} focus={focus} />
           <KeepSelected box={box} graph={graph} selectedId={selectedId} />
-          {legend ? <Legend /> : null}
+          {/* The sub-agent column takes the room of the legend. */}
+          {legend && !subs ? <Legend wide={group !== null} /> : null}
           <Controls
             waits={waits}
             onWaits={() => setWaits((v) => !v)}
-            canFold={orchestrators.length > 0}
+            canFold={!group && orchestrators.length > 0}
             allFolded={allFolded}
             onFoldAll={() => setCollapsed(new Set(allFolded ? [] : orchestrators))}
           />

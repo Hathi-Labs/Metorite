@@ -1224,6 +1224,10 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # SW-45: the free tasks of the member's own apps, for `my_work`. A read. It
     # answers no rows while `AGENT_CLAIM_SCOPE_MODES` is off for the org.
     ("GET", "/projects/my/own-app-free"),
+    # LBB-2 (engineering_practice.md §7b.2): the open PRs to land of the
+    # caller, for the `land_your_pr` rows of `my_work`. A read. It answers no
+    # rows while both claim gate flags are off for the org.
+    ("GET", "/projects/agent-work/landing"),
     # MCP-G21: the members that `set_assignees` would accept, for `list_members`.
     ("GET", "/projects/assignable-members"),
     # SP-12: the order of work under one goal, epic or project, for `get_plan`.
@@ -1435,6 +1439,27 @@ def write_window_s() -> int:
     ``agent_write_window_s``, or :data:`WRITE_WINDOW_S` for a value below 1.
     """
     return _positive(get_settings().agent_write_window_s, WRITE_WINDOW_S)
+
+
+#: MCP-G17f (spec §5.5, task 4032). The longest grace window of a refresh
+#: token, in seconds. A longer window lets a stolen refresh token live too
+#: long after its own client spent it. The recorded collisions were 2 s
+#: apart, so 60 s covers them with room to spare.
+REFRESH_REUSE_GRACE_MAX_S = 60
+
+
+def refresh_reuse_grace_s() -> int:
+    """The grace window of a spent refresh token, in seconds (MCP-G17f).
+
+    The ONE reader of ``agent_refresh_reuse_grace_s``. A value that is not a
+    whole number, or is below 1, gives 0, and 0 turns the window off. A value
+    above :data:`REFRESH_REUSE_GRACE_MAX_S` gives that cap. The token store
+    reads it at each rotation (``agent_tokens`` rule 5).
+    """
+    value = get_settings().agent_refresh_reuse_grace_s
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return 0
+    return min(value, REFRESH_REUSE_GRACE_MAX_S)
 
 
 #: EA-13a (spec §12.2 item 1, EA3-47). The longest ``<slug>`` of a client

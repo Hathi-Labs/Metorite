@@ -99,6 +99,12 @@ import { TagManager } from "./components/TagManager";
 import { BulkBar } from "./components/BulkBar";
 import { FilterChrome } from "./components/CompactFilterBar";
 import { ViewTabs } from "./components/ViewTabs";
+import { BacklogCanvas } from "./components/BacklogCanvas";
+import { WorkStyleDialog } from "./components/WorkStyleDialog";
+import { probeSprints } from "./lib/backlogCanvas";
+import { WORK_STYLE_LABEL } from "./lib/projectMenu";
+import { backlogOffered, canvasOnScreen, canvasesFor, stylePickerOffered } from "./lib/viewTabs";
+import { savedStyleTitle, workStyleOf } from "./lib/workStyle";
 import { chromeKind, compactChromeEnabled, loadedOfTotal } from "./lib/compactChrome";
 import {
   isMyTasksApp,
@@ -524,6 +530,7 @@ function ProjectNav({
   onManageFields,
   onManageTags,
   onManageLifecycle,
+  onWorkStyle,
   counts,
   questionsOn = false,
   personal = NO_ROOTS,
@@ -566,6 +573,11 @@ function ProjectNav({
   onManageFields: (space: ProjectRow) => void;
   onManageTags: (space: ProjectRow) => void;
   onManageLifecycle: (space: ProjectRow) => void;
+  /**
+   * WS-39 SP-3a — "How this team works", on any row. Absent while the org is
+   * off `PROJECTS_SPRINTS_ORGS` (`stylePickerOffered`), so no row offers it.
+   */
+  onWorkStyle?: (node: ProjectRow) => void;
 }) {
   // Filed work leaves the live tree and waits in one collapsed section at the
   // foot (owner, 2026-10-21; ClickUp, Linear and Notion all do this).
@@ -826,6 +838,14 @@ function ProjectNav({
               onManageLifecycle(space);
               onPicked?.();
             }}
+            onWorkStyle={
+              onWorkStyle
+                ? (node) => {
+                    onWorkStyle(node);
+                    onPicked?.();
+                  }
+                : undefined
+            }
           />
           ) : null}
           {personalSplit.count > 0 ? (
@@ -937,6 +957,14 @@ function ProjectNav({
           onManageLifecycle(space);
           onPicked?.();
         }}
+        onWorkStyle={
+          onWorkStyle
+            ? (node) => {
+                onWorkStyle(node);
+                onPicked?.();
+              }
+            : undefined
+        }
       />
 
       {/* Archived — its own section, closed until asked for. No section when
@@ -1179,6 +1207,38 @@ function ProjectsWorkspace() {
   // columns is the wrong first screen on a 390px one. An explicit pick wins on
   // both, and survives a resize.
   const [chosenMode, setChosenMode] = useState<ViewMode | null>(null);
+  /**
+   * WS-39 SP-3a — the canvases this node offers. The Backlog shows only on a
+   * Sprints node, and only while `PROJECTS_SPRINTS_ORGS` holds the org: the
+   * cycle list answers 404 while it does not (`lib/backlogCanvas.probeSprints`).
+   * `canvasesFor` is the one answer, and the tab row, the toolbar, the phone
+   * sheet and the palette all read `offeredModes`.
+   *
+   * The flag holds a whole org, so the first answer holds for each node. The
+   * page asks with the selected node, of any style, until one read answers.
+   * The picker "How this team works" reads the same answer
+   * (`stylePickerOffered`), so an org off the flag sees no picker.
+   */
+  const [sprintsFlag, setSprintsFlag] = useState<boolean | null>(null);
+  const probeNode = selected && sprintsFlag === null ? selected.id : null;
+  const sprintsProbe = useCachedResource(
+    probeNode ? projectsKey(`nodes/${probeNode}/cycles`) : null,
+    () => probeSprints(() => projectsApi.cycles(probeNode as string)),
+  );
+  const probed = probeNode && sprintsProbe.data ? sprintsProbe.data.on : null;
+  useEffect(() => {
+    if (probed !== null) setSprintsFlag(probed);
+  }, [probed]);
+  const sprintsOn = sprintsFlag ?? probed;
+  const pickerOn = stylePickerOffered(sprintsOn);
+  const offeredModes: ViewMode[] = useMemo(
+    () =>
+      canvasesFor(VIEW_MODES, backlogOffered(workStyleOf(selected), sprintsOn)).map(
+        (entry) => entry.id as ViewMode,
+      ),
+    [selected, sprintsOn],
+  );
+  const offeredKey = offeredModes.join("|");
   // SW-112 — the Agents canvas. The map read of the selected project says if it
   // is on offer: a 404, 401 or 403 is dark, and dark means absent. It re-reads
   // each 30 s only while the canvas is on screen.
@@ -1192,21 +1252,35 @@ function ProjectsWorkspace() {
     agentLenses || mapQuiet,
     selected?.id,
     mapRetry,
+    // AMR-4: the lenses read the summary, and one session's rows when it opens.
+    agentLenses,
   );
   // The last read that settled, for this organization. A load after a ready
   // read keeps the tab and the canvas, so a switch of project does not flash them.
   const settledRead = useRef<SettledRead>(null);
   const agentsOn = agentsOffered(agentMapRead.kind, settledRead.current);
   if (agentMapRead.kind !== "loading") settledRead.current = agentMapRead.kind;
-  // A chosen `agents` that is dark (or still unread) resolves to the default
-  // canvas. It never draws a blank pane.
+  // A pick that this node does not offer (the Backlog of a Sprints project,
+  // then a Flow project) falls back to the default canvas. Then a chosen
+  // `agents` that is dark (or still unread) resolves to the default canvas
+  // too. It never draws a blank pane.
   const defaultMode: ViewMode = isMobile ? "list" : "board";
-  const mode: ViewMode = resolveMode(chosenMode ?? defaultMode, agentMapRead.kind, defaultMode, settledRead.current);
+  const mode: ViewMode = resolveMode(
+    canvasOnScreen(chosenMode, offeredModes, defaultMode),
+    agentMapRead.kind,
+    defaultMode,
+    settledRead.current,
+  );
   const hiddenModes: readonly ViewMode[] = useMemo(() => (agentsOn ? [] : DARK_GATED_MODES), [agentsOn]);
   const modeOptions = useMemo(
-    () => MODE_OPTIONS.filter((entry) => !hiddenModes.includes(entry.id)),
-    [hiddenModes],
+    () =>
+      MODE_OPTIONS.filter(
+        (option) => offeredKey.split("|").includes(option.id) && !hiddenModes.includes(option.id),
+      ),
+    [offeredKey, hiddenModes],
   );
+  /** WS-39 SP-3a — the node whose "How this team works" dialog is open. */
+  const [workStyleFor, setWorkStyleFor] = useState<ProjectRow | null>(null);
   /**
    * The Overview canvas (owner ask 2026-08-31): the SAME dashboard a space
    * shows, offered beside a project's task views. It reads `summary`, which
@@ -1217,6 +1291,13 @@ function ProjectsWorkspace() {
   const overview = mode === "overview";
   // The Agents canvas shows no task chrome, as the Overview shows none.
   const agentsCanvas = mode === "agents";
+  /**
+   * WS-39 SP-3a — the Backlog canvas reads its own query, so the filter bar,
+   * the agent strip, the bulk bar and the triage rail hide, as on the
+   * Overview: none of them acts on it.
+   */
+  const backlogCanvas = mode === "backlog";
+  const ownChrome = overview || backlogCanvas;
   /**
    * ⚠️ `loading` means NOTHING TO SHOW — it is not "a request is running".
    *
@@ -2272,6 +2353,7 @@ function ProjectsWorkspace() {
             onManageFields={manageRoot(setManagingFields)}
             onManageTags={manageRoot(setManagingTags)}
             onManageLifecycle={manageSpace(setManagingLifecycle)}
+            onWorkStyle={pickerOn ? setWorkStyleFor : undefined}
           />
         ) : (
           <ModeSwitch
@@ -2291,7 +2373,7 @@ function ProjectsWorkspace() {
     // `creating` is here so the drawer re-injects when a draft opens or
     // closes. Without it, the "+" in the drawer drew nothing: the snapshot
     // kept the tree as it was before the tap (2026-10-10).
-  }, [isMobile, sheet, shownMode, selected, visibleRoots, creating, openDrawer, closeDrawer]);
+  }, [isMobile, sheet, shownMode, selected, visibleRoots, creating, openDrawer, closeDrawer, modeOptions]);
 
   // Dismissing the drawer from the outside (the backdrop, or the Menu tab
   // replacing the content) has to clear `sheet`, or the effect above reopens
@@ -3675,7 +3757,13 @@ function ProjectsWorkspace() {
 
   const commandCtx: CommandContext = {
     mode: isMyTasksApp(app) ? myTasks.mode : mode,
-    modes: isMyTasksApp(app) ? MY_TASKS_MODES.map((entry) => entry.id) : undefined,
+    // SP-3a: a project offers its own canvases, so "Backlog view" shows on a
+    // Sprints node only.
+    modes: isMyTasksApp(app)
+      ? MY_TASKS_MODES.map((entry) => entry.id)
+      : selected
+        ? offeredModes
+        : undefined,
     agentsOn,
     hasProject: Boolean(selected),
     isRoot: Boolean(selected && !selected.parent_project_id),
@@ -3713,7 +3801,8 @@ function ProjectsWorkspace() {
     Boolean(managingStatuses) ||
     Boolean(managingLifecycle) ||
     Boolean(savingTemplateOf) ||
-    Boolean(pickingUnder);
+    Boolean(pickingUnder) ||
+    Boolean(workStyleFor);
 
   // The listener is attached ONCE and reads through this, rather than being
   // re-subscribed on every filter keystroke. Written from an effect rather
@@ -4901,6 +4990,22 @@ function ProjectsWorkspace() {
                 Lifecycle policy
               </button>
             ) : null}
+            {/* WS-39 SP-3a — the work style of this node: any level. Only
+                while the org holds PROJECTS_SPRINTS_ORGS (`stylePickerOffered`). */}
+            {pickerOn ? (
+              <button
+                type="button"
+                role="menuitem"
+                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted"
+                onClick={() => {
+                  setManageOpen(false);
+                  setWorkStyleFor(selected);
+                }}
+              >
+                <Icon name="Workflow" className="h-3.5 w-3.5 text-muted-foreground" />
+                {WORK_STYLE_LABEL}
+              </button>
+            ) : null}
             <div className="my-1 h-px bg-border" role="separator" />
             <button
               type="button"
@@ -5312,11 +5417,12 @@ function ProjectsWorkspace() {
         </div>
       ) : null}
 
-      {selected && chromeKind({ overview: overview || agentsCanvas, phone: isMobile, compact: compactChrome }) !== "none" ? (
+      {selected && chromeKind({ overview: ownChrome || agentsCanvas, phone: isMobile, compact: compactChrome }) !== "none" ? (
         <FilterChrome
           compact={compactChrome}
           // MOB-1: a phone's Overview keeps the View button, the way back.
-          viewOnly={overview || agentsCanvas}
+          // SP-3a: so does the Backlog canvas.
+          viewOnly={ownChrome || agentsCanvas}
           phone={isMobile}
           modes={modeOptions}
           onMode={(next) => setChosenMode(next)}
@@ -5384,7 +5490,7 @@ function ProjectsWorkspace() {
 
       {/* OP-1: on a phone with the compact chrome, the strip folds to one chip
           in the active-filter row of the tool bar above. */}
-      {selected && !overview && !agentsCanvas && agentRunsOn && !(compactChrome && isMobile) ? (
+      {selected && !ownChrome && !agentsCanvas && agentRunsOn && !(compactChrome && isMobile) ? (
         <AgentWorkStrip
           summary={agentSummary?.projectId === selected.id ? agentSummary.counts : null}
           // The "waiting" button IS the "Waiting on me" filter, so the two
@@ -5395,7 +5501,7 @@ function ProjectsWorkspace() {
         />
       ) : null}
 
-      {selected && !overview && !agentsCanvas && picked.size > 0 ? (
+      {selected && !ownChrome && !agentsCanvas && picked.size > 0 ? (
         <BulkBar
           personLabels={personLabels}
           count={picked.size}
@@ -5478,7 +5584,7 @@ function ProjectsWorkspace() {
 
       {/* WS-27u — the front door. Renders nothing when the queue is empty;
           a ruling reloads the board because an accept just added a card. */}
-      {selected && !overview && !agentsCanvas ? (
+      {selected && !ownChrome && !agentsCanvas ? (
         <TriageRail
           projectId={selected.id}
           statuses={statuses}
@@ -5517,6 +5623,13 @@ function ProjectsWorkspace() {
               "empty",
               "Nothing here yet. Projects appear once a space is granted to you."
             )
+          ) : mode === "backlog" ? (
+            <BacklogCanvas
+              node={selected}
+              phone={isMobile}
+              statuses={statuses}
+              onOpenTask={(id) => void openTaskById(id)}
+            />
           ) : mode === "agents" ? (
             <AgentsCanvas
               read={agentMapRead}
@@ -6161,6 +6274,32 @@ function ProjectsWorkspace() {
         />
       ) : null}
 
+      {/* WS-39 SP-3a — "How this team works". A save changes which canvases
+          the node offers, so the selected row takes the fresh style at once
+          and the tree reads again. */}
+      {workStyleFor ? (
+        <WorkStyleDialog
+          node={workStyleFor}
+          level={levelOf(visibleRoots, workStyleFor.id)}
+          onClose={() => setWorkStyleFor(null)}
+          onSaved={(fresh) => {
+            setSelected((current) =>
+              current && current.id === fresh.id ? { ...current, work_style: fresh.work_style } : current
+            );
+            setTreeKey((k) => k + 1);
+            toast.show({
+              key: `project-style:${fresh.id}`,
+              variant: "success",
+              title: savedStyleTitle(
+                fresh.name,
+                workStyleOf(fresh),
+                levelOf(visibleRoots, workStyleFor.id),
+              ),
+            });
+          }}
+        />
+      ) : null}
+
       {managingLifecycle ? (
         <LifecyclePolicy
           project={managingLifecycle}
@@ -6370,6 +6509,7 @@ function ProjectsWorkspace() {
               onManageFields={manageSpace(setManagingFields)}
               onManageTags={manageSpace(setManagingTags)}
               onManageLifecycle={manageSpace(setManagingLifecycle)}
+              onWorkStyle={pickerOn ? setWorkStyleFor : undefined}
             />
           </nav>
         ) : null}
@@ -6464,6 +6604,7 @@ function ProjectsWorkspace() {
                   // are one tab row. The View popover no longer holds them.
                   <ViewTabs
                     canvas={shownMode}
+                    canvases={offeredModes}
                     onCanvas={pickMode}
                     views={tabViews}
                     activeViewId={activeViewId}
@@ -6472,7 +6613,7 @@ function ProjectsWorkspace() {
                       // lens, it opens on the canvas it was saved from.
                       setAttentionFor(null);
                       setAgentsOpen(false);
-                      if (mode === "overview" || mode === "agents" || attentionLens || agentsLens) {
+                      if (ownChrome || agentsCanvas || attentionLens || agentsLens) {
                         setChosenMode(view.view_type === "board" ? "board" : "list");
                       }
                       applyView(view);

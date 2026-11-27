@@ -218,6 +218,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # projects_ai_chat.md §31 VOX-1: the orgs whose chat shows the mic. Each
     # clip draws AI credits, so only the operator writes it.
     "CHAT_VOICE_ORGS",
+    # my_day_command_centre.md §9.2 (WS-MDC CC-2): the orgs where the Today
+    # chip reads the one Today predicate. It changes what each member sees, so
+    # only the owner writes it (gate enforcement-flip).
+    "TODAY_RULE_ORGS",
     # §18.10: the orgs whose chat shows a new mail on the card that the member
     # edits. It changes the card of a send, so only the operator writes it.
     "EMAIL_EDIT_CARD_ORGS",
@@ -243,6 +247,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # outside API through a connection. It opens an egress path for the org,
     # so only the operator writes it.
     "API_CONNECTIONS_ORGS",
+    # integrations_console.md §3.9 ACC-1: the orgs whose admins may set who
+    # can use each integration. It opens an access-control route for the org,
+    # so only the operator writes it.
+    "INTEGRATION_ACCESS_ORGS",
     # projects_ai_chat.md §32 EAC-1: the orgs whose chat shows the card of a
     # new task as a form that the member edits. It changes what a card writes,
     # so only the operator writes it.
@@ -320,6 +328,11 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # the member's own apps. A tenant that set it would change the claims of
     # every org, so only the operator writes it.
     "AGENT_CLAIM_SCOPE_MODES",
+    # LBB-2: CLAIM_GATE_ORGS refuses an agent's claim of new work while its
+    # old pull requests wait, and CLAIM_GATE_SHADOW_ORGS only logs it. A tenant
+    # that set either would change the claims of every org, so only the
+    # operator writes them.
+    "CLAIM_GATE_ORGS", "CLAIM_GATE_SHADOW_ORGS",
     # WS-ALN ALN-1: the orgs whose task writes enqueue an `align.check` job.
     # A queued row waits for the worker, so only the operator writes it
     # (project_alignment.md §5 item 8).
@@ -462,6 +475,12 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     "METORITE_ALARM_CHANNEL", "METORITE_ALARM_CREDS", "METORITE_ALARM_GH_REPO",
     "METORITE_ALARM_GH_USER", "METORITE_ALARM_HOST", "METORITE_ALARM_LOG",
     "METORITE_ALARM_STATE",
+    # CIV-ORCH (task 4058): the lane keeper's cursor of orch-events.log, for
+    # tests. A tenant must never save it.
+    "KEEPER_ORCH_CURSOR",
+    # CIV-LIVE (task 4060): the stop log that the weekly review reads, and a
+    # fixed time for its test (delivery_review.sh). A tenant must never save these.
+    "LANE_STOPS", "LANE_STOPS_NOW",
     # SBX-13: the sandbox door client reads the run capability from this name
     # (sandbox/metorite_door.py). The broker sets it in the tool container. A
     # tenant must never save it.
@@ -616,6 +635,9 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # STU-E12a: CORE_EVENTS_ORGS opens the core app events for an org, so a
     # tenant that set it could open them for every org on the box.
     "CORE_",
+    # WS-MDC CC-5a: FOCUS_LOG_ORGS opens the focus-session log for an org,
+    # so a tenant that set it could open the log for every org on the box.
+    "FOCUS_LOG_",
     # WS-OB GD-5a: GUIDE_ORGS opens the tour's entries for an org, so a
     # tenant that set it could open them for every org on the box.
     "GUIDE_",

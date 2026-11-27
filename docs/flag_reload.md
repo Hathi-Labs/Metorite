@@ -34,7 +34,9 @@ map of SW-103. The view reads the map of SW-102, so it also needs
 `AGENTS_VIEW_ORGS` and `AGENT_MAP_ORGS`. Its one reader is
 `gateway.agent_lenses_flag.agent_lenses_allowed`, and each shell read asks it.
 `GET /auth/me/shell` serves the answer as `agent_lenses`, so a tab shows a
-change at its next shell read. A reload applies a change. The flip stays
+change at its next shell read. AMR-4: the map read asks the same reader on
+each call. For a listed org it also answers `detail=summary` and `session=`
+(`agent_coordination.md` §3.12.9). A reload applies a change. The flip stays
 OWNER-GATE (`enforcement-flip`), after the owner preview.
 
 `AGENT_QUESTIONS_ORGS` changes who may answer an agent's question
@@ -131,8 +133,17 @@ counts only a trash that the mail provider confirmed, and names each matching dr
 stays. `*` lists every org, and the default is empty. Empty means the card and the answer of
 before.
 
+The same flag turns on the question of task 3978 (§18.13.1). A member declines the card of
+`edit_draft`, or discards a new-mail card, for a draft that the chat saved. The card then asks
+"Keep the earlier draft, or delete it?". The question also needs `CHAT_CARD_REVISE_ORGS` for
+the org, because only its record knows the chat's draft. The new-mail card also needs
+`EMAIL_EDIT_CARD_ORGS`, which draws that card. With this flag on, each decline of the card of
+`edit_draft` says that the draft is still in Drafts.
+
 Its one reader is `acb_skills.draft_choice.draft_choice_on`. The email tool asks it at
-each trash, so a reload applies at once. A flip stays OWNER-GATE (`enforcement-flip`).
+each trash, before each new-mail card, in each `draft_reply` and in each `edit_draft`, so a
+reload applies at once. A flip stays
+OWNER-GATE (`enforcement-flip`).
 
 `CHAT_FOCUS_ORGS` turns on the item in focus of a chat
 (`chat_failure_modes.md` §6 row HRD-11a). For each listed org, the chat keeps
@@ -328,6 +339,25 @@ moves a chat, and answers 404 with the org off. The chat list sends
 the answer to the client as `chat_topics`, so a tab shows a change at its
 next shell read.
 
+`CLAIM_GATE_ORGS` turns on the claim gate. For each listed org, the gateway
+refuses an agent's claim, self-assign or run start on a new task with 422
+`land_your_pr` while its member and label hold an open PR older than 48 hours
+that no merger queued. The gate logs `claim.gate refused`. `*` lists every
+org, and the default is empty. Its one reader is
+`gateway.routes.projects.claim_gate.claim_gate_on`.
+
+`CLAIM_GATE_SHADOW_ORGS` turns on the shadow of the claim gate
+(`engineering_practice.md` §7b.2, LBB-2). For each listed org, an agent's
+claim of a new task that the gate would refuse logs `claim.gate would_refuse`
+with the PR numbers, and the claim goes on. `my_work` lists the
+`land_your_pr` rows. `*` lists every org, and the default is empty. Its one
+reader is `gateway.routes.projects.claim_gate.claim_gate_shadow_on`.
+
+The three doors and the route of `my_work` ask the two readers at each call,
+so a reload applies at the next request. With both lists empty, no claim
+reads the query of the gate. Each flip is OWNER-GATE (`enforcement-flip`):
+the shadow for Hathi Labs first, then the gate, then `*` (§7b.2 "The flip").
+
 `COMPUTE_RUN_ORGS` is the kill switch of the `compute` target of the sandbox
 broker (`agent_sandbox.md` §0c rung 6a', SBX-18). It does not turn compute on.
 Compute needs `compute:<org>` in `MAF_CODING_SCOPE`. That is a sealed owner
@@ -502,6 +532,11 @@ Its one reader is `gateway.retrieval.find.find_allowed`, and each search
 asks it. A reload applies a change. The flip is AGENT-SAFE under the
 `enforcement-flip` grant, after the FIND-1 eval.
 
+`FOCUS_LOG_ORGS` opens the focus-session log of My Day for an org
+(`my_day_command_centre.md` §9.3). With the org off the list, each
+`/projects/my/focus-sessions` route answers 404 before any database work. A
+reload applies it. The flip stays OWNER-GATE (`enforcement-flip`).
+
 `GITHUB_APP_ORGS` turns the Metorite GitHub App on for each named org
 (`agent_coordination.md` SW-53). `GITHUB_APP_ENABLED` stays the master, and a
 reload does not apply the master. With the master on, an empty list turns
@@ -523,6 +558,18 @@ orchestrator asks it at the start of each run, so a reload applies to the next
 run. Any value other than empty is OWNER-GATE, and only the owner flips it.
 The five tools join each request, so the flip takes the trade of the tool cap
 in `chat_parity.md`, PAR-8b facts for the owner.
+
+`INTEGRATION_ACCESS_ORGS` opens the two admin routes that set who can use each
+integration (`integrations_console.md` §3.9.4, ACC-1). Off,
+`GET /admin/integration-access` and `PUT /admin/integration-access/{service}`
+answer 404, and the console shows no control. `*` lists every org, and the
+default is empty. The flag gates the routes only. The access read applies a
+stored rule whatever the flag says. So when the flag goes off, no member gets
+an integration back.
+
+Its one reader is `gateway.routes.admin._common.integration_access_allowed`.
+Each request asks it, so a reload applies at once. The flip waits for the
+owner preview, and it stays OWNER-GATE (`enforcement-flip`).
 
 `MCP_IMAGE_UPLOAD_ORGS` lets an outside agent upload an image to a task and
 put images on a question (`external_agent_access.md` §12.9, CIV-14b). Off, the
@@ -734,6 +781,10 @@ The route also needs `STUDIO_ORGS`, and it refuses each run until the owner
 sets `STUDIO_SKILL_TESTS_CAP_CREDITS`. That cap has no default, and it needs a
 restart, because it is no `*_ORGS` key. A reload applies a change to this
 flag. Any value other than empty is OWNER-ONLY, because it spends credits.
+
+`TODAY_RULE_ORGS` moves the Today chip of My work and its count to the one
+Today rule (`my_day_command_centre.md` §9.2). A reload applies it, and the flip
+stays OWNER-GATE (`enforcement-flip`).
 
 `TOOL_FAILURE_LOG_ORGS` turns on the record of tool failures for each listed
 org (`tool_failure_log.md` §6, TOF-2b). A capture site writes one row in the

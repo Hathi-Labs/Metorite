@@ -147,6 +147,14 @@ function register(hooks: EditHooks, step: Step): UndoEntry {
   return entry;
 }
 
+/**
+ * WS-39 SP-3a — the same guard for a write that is not a task PATCH. The
+ * Backlog canvas records a cycle move through it (`backlogCanvas.ts`), so a
+ * move has the one-at-a-time rule of every other Undo of the app.
+ */
+export { register as registerUndoStep };
+export type { Step as UndoStep };
+
 export interface TaskEdit {
   /** The row as it was BEFORE the write. */
   before: object;

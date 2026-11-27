@@ -6,7 +6,7 @@
 --
 -- SET NOT NULL + FK + index. ⚠️ THIS IS THE ACCESS EXCLUSIVE PHASE — it scans each table. Apply in a window, table by table if necessary, and never behind a long-running transaction (see the generator docstring: that is the exact shape of the 14h44m outage).
 --
--- Tables in this phase: 204
+-- Tables in this phase: 206
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -3062,6 +3062,18 @@ ALTER TABLE failure_org_days ADD CONSTRAINT failure_org_days_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS failure_org_days_org_idx ON failure_org_days (organization_id);
 
+-- focus_sessions
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM focus_sessions WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: focus_sessions still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE focus_sessions ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE focus_sessions ADD CONSTRAINT focus_sessions_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS focus_sessions_org_idx ON focus_sessions (organization_id);
+
 -- tool_gaps
 DO $$
 BEGIN
@@ -3073,3 +3085,15 @@ ALTER TABLE tool_gaps ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE tool_gaps ADD CONSTRAINT tool_gaps_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS tool_gaps_org_idx ON tool_gaps (organization_id);
+
+-- user_tool_runs
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM user_tool_runs WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: user_tool_runs still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE user_tool_runs ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE user_tool_runs ADD CONSTRAINT user_tool_runs_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS user_tool_runs_org_idx ON user_tool_runs (organization_id);

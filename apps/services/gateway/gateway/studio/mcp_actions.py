@@ -164,6 +164,47 @@ def tool_changed(approved: Mapping[tuple[str, str], str] | None, server: str,
     return not isinstance(want, str) or want != tool_text_hash(tool)
 
 
+def skill_tool_map(ids: Iterable[str], tools: Mapping[str, Sequence[Mapping[str, Any]]], *,
+                   approved: Mapping[tuple[str, str], str] | None,
+                   ) -> tuple[dict[str, str], frozenset[str]]:
+    """TOF-5a-1. The MCP tools that a skill may name, and the ids not approved.
+
+    Pure. *ids* are the ``mcp:<server>.<tool>`` ids that the skills of ONE
+    turn name. *tools* holds the cached ``tools/list`` of each server that the
+    member can reach, and only of those servers. *approved* is the read of
+    ``mcp_approvals.approved_hashes`` for the bound org.
+
+    Returns ``(served, unapproved)``. *served* maps an id to its local name
+    (``skill_packs.mcp_local_name``). An id is served when its tool is in the
+    cached list AND :func:`tool_changed` says False: a row alone is not
+    enough. An id whose server is in *tools* but whose tool has no approval,
+    has another hash, or is not in the list is in *unapproved*. An id of a
+    server that *tools* does not hold is in neither, so it gives
+    ``action_unserved``. ``None`` for *approved* (a failed read) gives
+    nothing at all, so no ``mcp:`` action is served (fail closed)."""
+    from acb_skills.skill_packs import mcp_local_name
+
+    served: dict[str, str] = {}
+    refused: set[str] = set()
+    if approved is None:
+        return served, frozenset()
+    for raw in ids:
+        uses = str(raw).strip()
+        ref = parse_uses(uses)
+        local = mcp_local_name(uses)
+        if ref is None or ref.source != MCP_SOURCE or local is None:
+            continue
+        server, tool = str(ref.server), str(ref.tool)
+        if server not in tools:
+            continue
+        item = next((t for t in unique_tools(tools[server]) if t.get("name") == tool), None)
+        if item is None or tool_changed(approved, server, item):
+            refused.add(uses)
+            continue
+        served[uses] = local[1]
+    return served, frozenset(refused)
+
+
 def _needs_card(item: Mapping[str, Any]) -> bool:
     return mcp_needs_confirmation(tool_hints(item.get("annotations")))
 
@@ -230,7 +271,9 @@ def mcp_rows(servers: Iterable[Server],
                 "output_schema": None,
                 "connection": f"{MCP_SOURCE}:{server.name}",
                 "app": None,
-                # The ONE map from an action to a chat tool. It gives None today.
+                # The ONE map from an action to a chat tool. It gives None for
+                # an ``mcp:`` id. TOF-5a-1 serves a skill through the map of
+                # :func:`skill_tool_map`, never through this column.
                 "tool": action_tool(uses),
                 "server": server.name,
                 "mcp_tool": name,
