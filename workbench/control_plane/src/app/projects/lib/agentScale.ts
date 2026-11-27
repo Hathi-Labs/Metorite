@@ -367,10 +367,12 @@ function share(open: readonly Draft[], options: PlanOptions): Map<string, { show
   const kept = !latest ? 0 : window ? roomFor(latest, window.state) : Math.min(WINDOW_ROOM, latest.cards);
   if (latest) for (const s of latest.ranked) if (URGENT.includes(latest.rankOf(s))) take(latest, s, CARDS_MAX);
   const own = () => (latest ? cards.get(latest.person)!.size : 0);
+  /** The cards of the selection among them. They take none of the kept room. */
+  const selection = own();
   for (const state of URGENT) {
     for (const d of bySize) {
       if (d === latest) continue;
-      for (const s of d.ranked) if (d.rankOf(s) === state) take(d, s, CARDS_MAX - Math.max(kept - own(), 0));
+      for (const s of d.ranked) if (d.rankOf(s) === state) take(d, s, CARDS_MAX - Math.max(kept - (own() - selection), 0));
     }
   }
   const nexts = new Map<string, Map<LensState, number>>();

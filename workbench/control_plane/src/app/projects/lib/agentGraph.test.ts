@@ -513,6 +513,30 @@ describe("no state node is dead", () => {
     expect(cards(g)).toContain("lane");
     expect(cards(g)).toHaveLength(CARDS_MAX);
   });
+  it("keeps the room of the click beside the selected agent of that person", () => {
+    const m = buildLensModel(
+      mapOf(
+        [
+          ...Array.from({ length: 40 }, (_, i) => session(`b${i}`, { person: "ben@x.test", state: "failed" })),
+          session("p"),
+          session("boss"),
+          session("lane", { state: "done" }),
+          ...Array.from({ length: 20 }, (_, i) => session(`w${i}`)),
+        ],
+        [],
+        [{ from: "boss", to: "lane" }],
+      ),
+    );
+    let view = foldView(NEW_VIEW, "p:ana@x.test", true, "ana@x.test");
+    const at = { mode: "all" as const, pin: "p" };
+    const bucket = kind(layoutGraph(m, options({ ...at, ...view })), "bucket").find(
+      (b) => b.state === "done" && b.person === "ana@x.test",
+    )!;
+    view = bucketView(view, "ana@x.test", "done", bucket.next);
+    const drawn = cards(layoutGraph(m, options({ ...at, ...view })));
+    expect(drawn).toEqual(expect.arrayContaining(["p", "lane"]));
+    expect(drawn).toHaveLength(CARDS_MAX);
+  });
   it("draws a new agent of its state on each state node click, in many fleets", () => {
     const states = ["waiting_on_person", "failed", "working", "waiting", "quiet", "done"];
     let seed = 7;
@@ -533,13 +557,15 @@ describe("no state node is dead", () => {
       ];
       const m = buildLensModel(mapOf(sessions, [], lines), new Map(), { email: "ana@x.test" });
       let view = NEW_VIEW;
+      const pin = fleetNo % 2 ? m.sessions[random(m.sessions.length)].id : null;
       for (let click = 0; click < 6; click += 1) {
-        const g = layoutGraph(m, options({ mode: "all", ...view }));
+        const g = layoutGraph(m, options({ mode: "all", pin, ...view }));
         const buckets = kind(g, "bucket");
         if (buckets.length === 0) break;
         const bucket = buckets[random(buckets.length)];
         view = bucketView(view, bucket.person, bucket.state, bucket.next);
-        const after = layoutGraph(m, options({ mode: "all", ...view }));
+        const after = layoutGraph(m, options({ mode: "all", pin, ...view }));
+        if (pin) expect(cards(after)).toContain(pin);
         expect(cards(after).length).toBeLessThanOrEqual(CARDS_MAX);
         const fresh = bucket.sessions.filter((s) => cards(after).includes(s.id));
         expect(fresh.length, `fleet ${fleetNo} click ${click} ${bucket.state}`).toBeGreaterThan(0);
