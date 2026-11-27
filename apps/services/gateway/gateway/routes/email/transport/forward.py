@@ -396,7 +396,8 @@ async def _record_forward(
         item_id=str(row.id), mailbox_id=str(row.account_id),
         features={"sender_domain": member_actions.domain_of(
             _sender_address(row.from_address))},
-        targets=member_actions.sent_to(req.to, refused))
+        targets=member_actions.sent_to(
+            [*req.to, *(req.cc or []), *(req.bcc or [])], refused))
 
 
 async def _fetch_files(

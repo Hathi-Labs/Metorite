@@ -22,6 +22,13 @@ no label. Its landing mark is NULL, or ``queued`` for more than
 :data:`QUEUED_TTL_HOURS`, or ``parked`` on a task that is not in backlog or
 todo. No run of its task waits on a person (``awaiting``).
 
+**Another session works on it** (§7b.10, LBB-2c, task 4064). A PR does not
+count while an open run on its task belongs to another session: a run whose
+member is not the caller's member, or whose label is not the caller's label.
+The run must still hold the task (``NOT filters.holder_free_sql``), so a run
+whose lease ended, or whose connection is gone, does not hide the PR. When
+that run ends, the PR counts again for the session of its owner run.
+
 **The owner run** (§7b.8, LBB-2b, task 4056). The owner run of a reference
 ``f`` is the run ``n`` on the same task that held the task when the reference
 was added: ``n.created_at <= f.created_at``, and ``n.ended_at`` NULL or
@@ -69,7 +76,12 @@ from gateway.routes.projects.core import (
     row_to_dict,
     task_visibility_clause,
 )
-from gateway.routes.projects.filters import AGENT_RUN_ANSWER_WAITS_SQL, BOUND_ORG_SQL
+from gateway.routes.projects.filters import (
+    AGENT_RUN_ANSWER_WAITS_SQL,
+    AGENT_RUN_OPEN_STATUSES,
+    BOUND_ORG_SQL,
+    holder_free_sql,
+)
 from sqlalchemy import text
 
 _log = get_logger("gateway.projects.claim_gate")
@@ -168,7 +180,13 @@ def _counted_sql(vis: Any) -> str:
     index of the runs. The join is inner, so a reference with no owner run
     drops out. ``:me`` is the member in lower case, and ``:label`` the cleaned
     label or NULL. Each read of ``pm_agent_runs`` names ``task_id IS NOT
-    NULL``, so an app run never counts (AD-16)."""
+    NULL``, so an app run never counts (AD-16).
+
+    §7b.10 (LBB-2c): the last ``NOT EXISTS`` drops a reference while an open
+    run of another session (another member, or ``IS DISTINCT FROM`` the
+    label) holds its task. It stays inline, because the label fence names
+    this function as the one decision reader of the label."""
+    open_list = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
     return (
         "SELECT f.id AS ref_id, f.ref, f.url, f.task_id, t.task_number,"
         " CAST(floor(extract(epoch FROM (now() - f.created_at)) / 3600) AS int)"
@@ -204,6 +222,12 @@ def _counted_sql(vis: Any) -> str:
         "   AND NOT EXISTS (SELECT 1 FROM pm_agent_runs w"
         "                    WHERE w.task_id IS NOT NULL AND w.task_id = f.task_id"
         "                      AND w.status = 'awaiting')"
+        "   AND NOT EXISTS (SELECT 1 FROM pm_agent_runs o"
+        "                    WHERE o.task_id IS NOT NULL AND o.task_id = f.task_id"
+        f"                     AND o.status IN ({open_list})"
+        f"                     AND NOT {holder_free_sql('o')}"
+        "                      AND (lower(btrim(o.member_email)) IS DISTINCT FROM :me"
+        "                           OR o.agent_label IS DISTINCT FROM CAST(:label AS text)))"
         f"  AND {task_visibility_clause(vis)}"
         " ORDER BY f.created_at ASC, f.id ASC"
         " LIMIT :n"

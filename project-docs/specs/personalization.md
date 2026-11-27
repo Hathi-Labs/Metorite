@@ -47,9 +47,9 @@ other private chats, and at most 3 of their due tasks. The block shows only
 with `ASSISTANT_BRIEFING_ORGS` on for the org. See §15.4 "As built, PZ-34",
 §15.9 and D-PZ-38 in §15.11.
 
-**§19 MM-1 BUILT 2026-11-27, dark, not merged** (task 2878, PR 2498). The
-act record of §19.4 is in: the table `member_action`, the one writer, the
-purge, the prune and the email seams. It writes no row until
+**§19 MM-1, MM-1b and MM-2 BUILT, dark** (2026-11-27). MM-1 (task 2878, PR
+2498) and MM-2 (task 2879, PR 2508) are merged. MM-1b (task 3614, PR 2513)
+records the chat card answer. The act record of §19.4 writes no row until
 `MEMBER_ACTIONS_ORGS` holds the org. No other slice of §19 is built.
 
 **§18 ACCEPTED 2026-11-08 (D196). No slice is built.** It adds the epic "Setup health" (Metorite task 940, slice SH-0 task 945). Each live app lists its setup items. The chat raises one missing item at a time, on the seam of the interview, inside the limits of D-PZ-13.
@@ -4380,9 +4380,9 @@ merge confirms the number (R1).
 
 ## 19. How I work: the member model of how the member acts (ACCEPTED, 2026-11-11)
 
-**Status: ACCEPTED, 2026-11-11 (D212). Only MM-1 is built, dark behind
-`MEMBER_ACTIONS_ORGS`, and not merged (task 2878, PR 2498).** Owner ask of
-2026-11-11, in chat. Epic task 2876. It extends §4, §12 and §15, and it
+**Status: ACCEPTED, 2026-11-11 (D212). MM-1 (task 2878, PR 2498) and MM-2
+(task 2879, PR 2508) are merged. MM-1b (task 3614, PR 2513) is built. All of
+them are dark behind `MEMBER_ACTIONS_ORGS`.** Owner ask of 2026-11-11, in chat. Epic task 2876. It extends §4, §12 and §15, and it
 changes no rule of them. The owner accepted the decisions D-PZ-47 to
 D-PZ-52 of §19.12 the same day.
 
@@ -4470,7 +4470,16 @@ and label of one mail. A fence fails on a second writer.
   writer records no row for it, because the member pressed nothing then.
   Fence: `tests/unit/test_member_action_writer.py` (section f).
 - A bulk archive (`POST /email/messages/bulk`) records nothing.
-- The card answer in `ask_tools` is MM-1b (task 3614), not MM-1.
+- MM-1b (task 3614) records the card answer in `ask_tools`, in
+  `orchestrator/card_act.py`. The outcome comes from `CARD_OUTCOMES`.
+  `approved` gives `card_approve`, and `declined` gives `card_reject`, with
+  `via` `card`. Only an answer of the run's own member records. A late
+  approve records too.
+- No other outcome records. A late decline, a WhatsApp reply code and a
+  `card_revise` record nothing yet.
+- **Open:** a yes on an email card also makes the send route write its own
+  row, with `via` `app`. This section does not say how to join the two rows.
+  The flag stays off until the owner decides.
 
 **The limits:**
 

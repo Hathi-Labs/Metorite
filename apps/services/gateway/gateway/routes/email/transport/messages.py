@@ -16,9 +16,15 @@ from acb_common.tool_refusals import strip_id_label
 from email_ingestion import html_tier
 from email_ingestion import storage as ingest_storage
 from email_ingestion.body_backfill import _html_to_text
-from email_ingestion.providers.base import canonical_folder, local_folder_after_move
+from email_ingestion.providers.base import (
+    canonical_folder,
+    local_folder_after_move,
+    trash_checked,
+    trash_checks_message_id,
+)
 from fastapi import Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
+from gateway.routes.email import act_features
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
     ATTACHMENT_CACHE_TTL_SECS,
@@ -43,6 +49,7 @@ from gateway.routes.email.core import (
     _row_to_message,
     _savepoint,
     _tenant_session,
+    _stored_message_id_before_trash,
     _truncate_body,
     folder_scope,
     router,
@@ -1242,17 +1249,20 @@ async def update_message(
         # update (acb_common.member_actions.record_act).
         # The test reads the NAME the member sent. The stored folder of a Gmail
         # move to a user label is also "archive" (O-GM-1), so it cannot tell.
+        acted_features: dict[str, Any] | None = None
+        if (target is not None and canonical_folder(target) == "archive") or updates.add_labels:
+            acted_features = await act_features.of_message(db, member_actions.org_of(user), message_id)
         if target is not None and canonical_folder(target) == "archive":
             await member_actions.record_act(
                 db, org=member_actions.org_of(user), member=user.email or "",
                 app="email", act="archive", via="app", item_kind="email",
-                item_id=message_id, mailbox_id=acted_mailbox)
+                item_id=message_id, mailbox_id=acted_mailbox, features=acted_features)
         for name in (updates.add_labels or [])[:5]:
             await member_actions.record_act(
                 db, org=member_actions.org_of(user), member=user.email or "",
                 app="email", act="label", via="app", item_kind="email",
                 item_id=message_id, mailbox_id=acted_mailbox,
-                features={"triage_label": name})
+                features={**(acted_features or {}), "triage_label": name})
 
         # The provider for the push. The build makes no network call. A failed
         # build keeps the push best-effort, as a failed push does.
@@ -1377,7 +1387,8 @@ async def snooze_message(
             await member_actions.record_act(
                 db, org=member_actions.org_of(user), member=user.email or "",
                 app="email", act="snooze", via="app", item_kind="email",
-                item_id=message_id, mailbox_id=str(row.account_id))
+                item_id=message_id, mailbox_id=str(row.account_id),
+                features=await act_features.of_message(db, member_actions.org_of(user), message_id))
         return {
             "ok": True,
             "message_id": message_id,
@@ -1409,6 +1420,10 @@ async def delete_message(
     and the next sync can bring the message back. ``reason`` is one fixed
     word, and never the text of an error."""
     async with _tenant_session() as db:
+        # Task 4100 (review P2): read the stored Message-ID BEFORE the UPDATE
+        # below writes ``trash``, so the folder gate of the read still sees a
+        # Drafts or Sent row. It is used only for an IMAP trash.
+        pre_mid = await _stored_message_id_before_trash(db, message_id)
         result = await db.execute(
             text(
                 """UPDATE email_messages SET folder = 'trash', updated_at = now()
@@ -1427,10 +1442,12 @@ async def delete_message(
         # The provider for the push. The build makes no network call.
         built: tuple[Any, str, str, Any] | None = None
         push_error: Exception | None = None
+        stored_mid: str | None = None  # task 4095: the IMAP trash checks it
         try:
             built = await _provider_for_message(
                 db, message_id, user.email or "anonymous"
             )
+            stored_mid = pre_mid if trash_checks_message_id(built[0]) else None
         except Exception as exc:  # noqa: BLE001
             push_error = exc
 
@@ -1445,7 +1462,7 @@ async def delete_message(
         new_pid = None
         try:
             if await provider.authenticate():
-                new_pid = await provider.trash_message(provider_msg_id)
+                new_pid = await trash_checked(provider, provider_msg_id, stored_mid)
                 confirmed = True
                 discarded = provider_msg_id in getattr(provider, "discarded_drafts", ())
         except Exception as exc:  # noqa: BLE001
