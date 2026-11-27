@@ -94,11 +94,10 @@ export const restNodeId = (person: string): string => `r:${person}`;
 export const bucketNodeId = (person: string, state: LensState): string => `k:${person}:${state}`;
 export const blockNodeId = (block: BlockKey): string => `b:${block}`;
 
-export function blockWord(_block: BlockKey): string {
-  return "You";
-}
+/** The word of the "waits on" node. */
+export const YOU_WORD = "You";
 
-export function blockSentence(_block: BlockKey, n: number): string {
+export function blockSentence(n: number): string {
   return n === 1 ? "1 session waits on you" : `${n} sessions wait on you`;
 }
 

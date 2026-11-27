@@ -1,30 +1,19 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  DEFAULT_STATES,
-  type LensFilters,
   buildLensModel,
   countStates,
-  foldWord,
   lensChip,
   lensEdge,
   lensIcon,
   lensWord,
+  matchesFind,
   sessionLine,
-  splitSessions,
 } from "./agentLenses";
 import { BEN, fleet, mapOf, run, session } from "./agentLensesFixtures";
 import { agentStateChip } from "@/lib/statusAccent";
 
 const NOW = Date.parse("2026-11-26T12:00:00Z");
-
-const all = (over: Partial<LensFilters> = {}): LensFilters => ({
-  states: new Set(DEFAULT_STATES),
-  person: "",
-  find: "",
-  ...over,
-});
-const name = (email: string) => email;
 
 describe("the words of a state", () => {
   it("come from the one agent vocabulary", () => {
@@ -122,23 +111,16 @@ describe("the line of a card", () => {
   });
 });
 
-describe("splitSessions", () => {
+describe("the find box", () => {
   const sessions = buildLensModel(fleet(), new Map(), BEN).sessions;
-  it("folds the states whose chip is off, and says idle", () => {
-    const split = splitSessions(sessions, all(), false, name);
-    expect(split.folded.map((s) => s.id).sort()).toEqual(["solo", "sub"]);
-    expect(foldWord(split.folded)).toBe("2 idle sessions");
-  });
-  it("opens a fold", () => {
-    expect(splitSessions(sessions, all(), true, name).folded).toEqual([]);
-  });
-  it("shows each match of a find, a folded one too", () => {
-    const split = splitSessions(sessions, all({ find: "solo" }), false, name);
-    expect(split.shown.map((s) => s.id)).toEqual(["solo"]);
-    expect(split.folded).toEqual([]);
+  const found = (find: string, person = (e: string) => e) =>
+    sessions.filter((s) => matchesFind(s, find, person(s.person))).map((s) => s.id);
+  it("shows each match, an idle one too", () => {
+    expect(found("solo")).toEqual(["solo"]);
+    expect(found("")).toHaveLength(5);
   });
   it("finds by the task number and by the name of the person", () => {
-    expect(splitSessions(sessions, all({ find: "#7" }), false, name).shown).toHaveLength(3);
-    expect(splitSessions(sessions, all({ find: "benny" }), false, () => "Benny").shown).toHaveLength(5);
+    expect(found("#7")).toHaveLength(3);
+    expect(found("benny", () => "Benny")).toHaveLength(5);
   });
 });

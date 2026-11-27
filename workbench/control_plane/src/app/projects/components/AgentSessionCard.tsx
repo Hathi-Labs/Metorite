@@ -11,7 +11,7 @@
  * It is the board's task card with the agent edge of `agentCardLook`
  * (`data-agent-edge`, drawn by `globals.css`): the spectrum travels while the
  * session works, a still edge waits, a warning edge needs a person, and a slow
- * glow is idle. The Graph, the Board, the List and the phone draw this one card.
+ * glow is idle. The map and the phone draw this one card.
  * Every name and line is untrusted text, drawn as text.
  */
 import Icon from "@/components/Icon";
@@ -30,7 +30,6 @@ import {
   lensWord,
   machineWord,
   sessionLine,
-  subParts,
   subWords,
 } from "../lib/agentLenses";
 
@@ -60,22 +59,6 @@ export function pressKeys(act: () => void) {
 export function sessionSpoken(s: LensSession, nowMs: number): string {
   const subs = subWords(s.subs);
   return `${s.name}. ${lensWord(s.state)}. ${sessionLine(s, nowMs)}. Machine ${machineWord(s)}.${subs ? ` ${subs}.` : ""}`;
-}
-
-/** The count of the sub-agents, with the failed ones in the destructive ink. */
-export function SubCount({ session }: { session: Pick<LensSession, "subs"> }) {
-  const parts = subParts(session.subs);
-  return (
-    <>
-      {[parts.total, parts.working].filter(Boolean).join(" · ")}
-      {parts.failed ? (
-        <>
-          {" · "}
-          <span className="text-destructive">{parts.failed}</span>
-        </>
-      ) : null}
-    </>
-  );
 }
 
 /**
@@ -217,23 +200,5 @@ export function CountLine({ counts }: { counts: LensCounts }) {
         </span>
       ))}
     </span>
-  );
-}
-
-/** The one line that stands for the folded sessions of a group. */
-export function FoldRow({ word, onShow }: { word: string; onShow: () => void }) {
-  return (
-    <div
-      role="button"
-      tabIndex={0}
-      aria-label={`Show ${word}`}
-      onClick={onShow}
-      onKeyDown={pressKeys(onShow)}
-      data-agent-fold=""
-      className="flex h-full min-h-10 w-full cursor-pointer items-center justify-between gap-2 rounded-lg border border-border bg-card px-2.5 py-1 text-xs text-muted-foreground hover:bg-secondary"
-    >
-      <span className="truncate">{word}</span>
-      <span className="shrink-0 font-medium text-primary">Show</span>
-    </div>
   );
 }

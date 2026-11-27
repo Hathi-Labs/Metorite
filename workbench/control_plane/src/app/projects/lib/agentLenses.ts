@@ -1,5 +1,5 @@
 /**
- * The Agents view · one model for the Graph, Board, List and phone views
+ * The Agents view · one model for the map and the phone view
  * (WS-MCP AMR-1 to AMR-3, `agent_coordination.md` §5.12).
  *
  * It turns the checked map read of `agentMap.ts` into people, orchestrator
@@ -374,18 +374,9 @@ export function countStates(sessions: readonly LensSession[]): LensCounts {
   return counts;
 }
 
-/* ── The filters of the toolbar ─────────────────────────────────────────── */
+/* ── The switch and the find box ────────────────────────────────────────── */
 
-export interface LensFilters {
-  /** The states that show. A state that is off folds into one line. */
-  states: ReadonlySet<LensState>;
-  /** One person, or "" for everyone. */
-  person: string;
-  /** Free text, over the session, its tasks, its machine and its model. */
-  find: string;
-}
-
-/** Idle starts folded (`agent_coordination.md` §3.12.2). Done starts folded too. */
+/** The states of the Active switch. Idle and Done fold (`agent_coordination.md` §3.12.2). */
 export const DEFAULT_STATES: readonly LensState[] = ["you", "failed", "working", "waiting"];
 
 /** A task as the find box reads it: its title and its number. */
@@ -410,38 +401,6 @@ export function findText(s: LensSession, personName: string): string {
 export function matchesFind(s: LensSession, find: string, personName: string): boolean {
   const q = find.trim().toLowerCase();
   return !q || findText(s, personName).includes(q);
-}
-
-export interface SplitGroup {
-  shown: LensSession[];
-  /** Folded into one line, because their state chip is off. */
-  folded: LensSession[];
-}
-
-/**
- * Which sessions of a group draw, and which fold. A find shows each match, a
- * folded one too, and hides the rest. `opened` unfolds one group.
- */
-export function splitSessions(
-  sessions: readonly LensSession[],
-  filters: LensFilters,
-  opened: boolean,
-  nameOf: (email: string) => string,
-): SplitGroup {
-  const q = filters.find.trim();
-  if (q) return { shown: sessions.filter((s) => matchesFind(s, q, nameOf(s.person))), folded: [] };
-  const shown: LensSession[] = [];
-  const folded: LensSession[] = [];
-  for (const s of sessions) (opened || filters.states.has(s.state) ? shown : folded).push(s);
-  return { shown, folded };
-}
-
-/** "3 idle sessions", "4 idle or done sessions", or "2 hidden sessions" for a fold of other states. */
-export function foldWord(folded: readonly LensSession[]): string {
-  const noun = folded.length === 1 ? "session" : "sessions";
-  const only = (...states: LensState[]) => folded.every((s) => states.includes(s.state));
-  const kind = only("idle") ? "idle" : only("done") ? "done" : only("idle", "done") ? "idle or done" : "hidden";
-  return `${folded.length} ${kind} ${noun}`;
 }
 
 /** The second line of a card: the question, else the wait, else the task. */

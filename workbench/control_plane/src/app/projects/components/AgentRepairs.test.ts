@@ -2,18 +2,13 @@
  * The repairs of the AMR-4 review (task 4023, `agent_coordination.md`
  * §3.12.9). Each test fails without its repair.
  */
-import { type ReactElement, type ReactNode, createElement, isValidElement } from "react";
+import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AGENT_STATES, agentStateChip, agentStateVisual } from "@/lib/statusAccent";
 
 import {
-  type LensGroup,
-  type LensSession,
-  type LensState,
-  LENS_STATES,
-  DEFAULT_STATES,
   buildLensModel,
   lensChip,
   lensIcon,
@@ -23,11 +18,9 @@ import {
 } from "../lib/agentLenses";
 import { mapOf, run, session } from "../lib/agentLensesFixtures";
 import { parseAgentMap, runStateChip } from "../lib/agentMap";
-import { type BucketWindows, CARDS_MAX, boundSessions, openBucket } from "../lib/agentScale";
 import { type ReadCache, putRead, readsOf } from "../lib/agentSessionReads";
 import { outcomeChip, outcomeIcon } from "../lib/agentsAtWork";
 import { pageView, remWindow, windowRange } from "../lib/windowedList";
-import { AgentListLens, BoundedBoard, BucketRow, type LensViewProps } from "./AgentBoardList";
 import { AgentDetails } from "./AgentDetails";
 import { SessionCard } from "./AgentSessionCard";
 import { AgentsPhone } from "./AgentsPhone";
@@ -42,87 +35,6 @@ afterEach(() => {
 const NOW = Date.parse("2026-11-26T12:00:00Z");
 const nameOf = (email: string) => email;
 const count = (text: string, needle: string) => text.split(needle).length - 1;
-
-/** `n` sessions of one state with no orchestrator, as one group. */
-function oneState(n: number, mapState: string): { group: LensGroup; sessions: LensSession[] } {
-  const model = buildLensModel(
-    mapOf(Array.from({ length: n }, (_, i) => session(`s${String(i).padStart(3, "0")}`, { state: mapState }))),
-  );
-  return { group: model.people[0].groups[0], sessions: model.sessions };
-}
-
-/** Every element of a tree that a component function returned. */
-function elements(node: ReactNode, out: ReactElement<Record<string, unknown>>[] = []): ReactElement<Record<string, unknown>>[] {
-  if (Array.isArray(node)) node.forEach((n) => elements(n, out));
-  else if (isValidElement<Record<string, unknown>>(node)) {
-    out.push(node);
-    elements(node.props.children as ReactNode, out);
-  }
-  return out;
-}
-
-describe("1 · a bucket reaches every session by clicking", () => {
-  const FLEETS: ReadonlyArray<[string, LensState]> = [
-    // On: 12 cards draw first. Off: none does.
-    ["working", "working"],
-    ["quiet", "idle"],
-  ];
-  for (const n of [35, 47, 150]) {
-    for (const [mapState, state] of FLEETS) {
-      it(`${n} ${state} sessions, from the bucket row of the board`, () => {
-        const { group } = oneState(n, mapState);
-        let windows: BucketWindows = {};
-        const seen = new Set<string>();
-        for (let click = 0; click < 40; click += 1) {
-          let tree: ReactNode = null;
-          const Probe = () => {
-            tree = BoundedBoard({
-              person: "ana@x.test", group, windows, selectedId: null, nowMs: NOW, nameOf,
-              filters: { states: new Set(DEFAULT_STATES), person: "", find: "" },
-              onOpenSession: () => {},
-              onBucket: (s, rest) => {
-                windows = openBucket(windows, s, rest);
-              },
-            });
-            return null;
-          };
-          renderToStaticMarkup(createElement(Probe));
-          const all = elements(tree);
-          const rows = all.filter((e) => e.type === BucketRow);
-          const cards = new Set(
-            // The cards are built by a helper, so each is an `li` keyed by its session.
-            all.filter((e) => e.type === "li").map((e) => String(e.key)),
-          );
-          cards.forEach((id) => seen.add(id));
-          if (rows.length === 0) break;
-          (rows[0].props.onOpen as () => void)();
-        }
-        expect(seen.size).toBe(n);
-      });
-    }
-  }
-  it("keeps the card that a selection displaces inside its bucket", () => {
-    // The selection is idle, whose chip is off, so no click on "working" draws it.
-    const { sessions } = buildLensModel(
-      mapOf([
-        ...Array.from({ length: 35 }, (_, i) => session(`w${String(i).padStart(2, "0")}`)),
-        session("sleeper", { state: "quiet" }),
-      ]),
-    );
-    const options = { states: new Set(DEFAULT_STATES), find: "", nameOf };
-    let windows: BucketWindows = {};
-    const seen = new Set<string>();
-    for (let click = 0; click < 10; click += 1) {
-      const { shown, buckets } = boundSessions(sessions, { ...options, windows, pin: "sleeper" });
-      expect(shown.length).toBeLessThanOrEqual(CARDS_MAX);
-      shown.forEach((s) => seen.add(s.id));
-      const bucket = buckets.find((x) => x.state === "working");
-      if (!bucket) break;
-      windows = openBucket(windows, bucket.state, bucket.rest);
-    }
-    expect(seen.size).toBe(36);
-  });
-});
 
 describe("3 · the windowed list at each density", () => {
   const rows = Array.from({ length: 500 }, () => 2.75);
@@ -146,23 +58,6 @@ describe("3 · the windowed list at each density", () => {
     const at16 = windowRange(rows.map((h) => h * 16), scrollTop, 800);
     // The drawn rows end above the view: a blank list.
     expect((at16.before / 16 + (at16.end - at16.start) * 2.75) * 16 * 0.92).toBeLessThan(scrollTop);
-  });
-  it("sizes the List by the applied root size", () => {
-    const model = buildLensModel(
-      mapOf(Array.from({ length: 200 }, (_, i) => session(`s${i}`)), []),
-    );
-    const props: LensViewProps = {
-      model,
-      filters: { states: new Set(LENS_STATES), person: "", find: "" },
-      opened: new Set(), onOpenGroup: () => {}, selectedId: null, onOpenSession: () => {},
-      onOpenPerson: () => {}, nowMs: NOW, nameOf,
-    };
-    const drawn = (px: number) => {
-      root.px = px;
-      return count(renderToStaticMarkup(createElement(AgentListLens, props)), "data-agent-list-row");
-    };
-    // The first view is 600 px: smaller rows fill it with more of them.
-    expect(drawn(12)).toBeGreaterThan(drawn(24));
   });
   it("reads a list that the page scrolls from the two tops", () => {
     expect(pageView(500, 100, 700)).toEqual({ top: 0, height: 700 });

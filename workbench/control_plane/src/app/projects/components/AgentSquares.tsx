@@ -11,7 +11,6 @@ import {
   type LensCounts,
   type LensSession,
   type SubCounts,
-  LENS_STATES,
   lensMark,
   lensWord,
   sessionLine,
@@ -117,20 +116,6 @@ export function SubBar({ subs }: { subs: SubCounts }) {
         ))}
       </span>
     </span>
-  );
-}
-
-export function SquareLegend() {
-  return (
-    <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
-      {LENS_STATES.map((state) => (
-        <span key={state} className="inline-flex items-center gap-1">
-          <Square state={state} />
-          {lensWord(state)}
-        </span>
-      ))}
-      <span>One square is one session, the most urgent first.</span>
-    </p>
   );
 }
 

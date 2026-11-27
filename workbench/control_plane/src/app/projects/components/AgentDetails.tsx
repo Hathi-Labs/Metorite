@@ -20,7 +20,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { relativeTime } from "@/lib/taskCard";
 
 import { type TaskRow, projectsApi } from "../lib/api";
-import { type BlockKey, blockOf, blockSentence, blockWord } from "../lib/agentGraph";
+import { type BlockKey, YOU_WORD, blockOf, blockSentence } from "../lib/agentGraph";
 import {
   DISPATCHED_BY_LABEL,
   DISPATCHED_LABEL,
@@ -80,7 +80,7 @@ export function selectionTitle(
   if (selection.kind === "person") {
     return model.people.some((p) => p.person === selection.person) ? nameOf(selection.person) : null;
   }
-  return blockSessions(model, selection.block).length > 0 ? blockWord(selection.block) : null;
+  return blockSessions(model, selection.block).length > 0 ? YOU_WORD : null;
 }
 
 export interface DetailsProps {
@@ -394,7 +394,7 @@ export function AgentDetails(props: DetailsProps) {
   return (
     <div className="flex flex-col gap-3" data-agent-details="block">
       <p className="text-xs text-muted-foreground">
-        {blockSentence(selection.block, sessions.length)}. The longest wait comes first.
+        {blockSentence(sessions.length)}. The longest wait comes first.
       </p>
       <SessionList sessions={sessions} nowMs={nowMs} onSelect={onSelect} />
     </div>

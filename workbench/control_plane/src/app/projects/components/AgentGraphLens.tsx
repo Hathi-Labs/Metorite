@@ -41,8 +41,8 @@ import {
   type GraphEdgeKind,
   type GraphNode,
   type GraphOptions,
+  YOU_WORD,
   blockSentence,
-  blockWord,
   layoutGraph,
   relatedNodes,
 } from "../lib/agentGraph";
@@ -328,15 +328,14 @@ export function GraphCard({ data }: { data: NodeData }) {
       </div>
     );
   }
-  const word = blockWord(node.block);
-  const sentence = blockSentence(node.block, node.sessions.length);
+  const sentence = blockSentence(node.sessions.length);
   return (
     <div data-agent-edge="warning" data-agent-graph-block={node.block} className={`h-full rounded-lg ${ring(selected)}`}>
       <div
         role="button"
         tabIndex={0}
         aria-pressed={selected}
-        aria-label={`${word}. ${sentence}.`}
+        aria-label={`${YOU_WORD}. ${sentence}.`}
         onClick={pick}
         onKeyDown={pressKeys(pick)}
         className={CARD_FACE}
@@ -346,7 +345,7 @@ export function GraphCard({ data }: { data: NodeData }) {
             <Icon name="MessageCircleQuestion" size={15} aria-hidden />
           </span>
           <span className="flex min-w-0 flex-col">
-            <span className="truncate text-sm font-semibold">{word}</span>
+            <span className="truncate text-sm font-semibold">{YOU_WORD}</span>
             <span className="truncate text-xs text-muted-foreground">{sentence}</span>
           </span>
         </span>

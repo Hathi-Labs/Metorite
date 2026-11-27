@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import { AGENT_DONE_KEY, AGENT_MARKS, agentStateVisual } from "@/lib/statusAccent";
 
 import {
-  DEFAULT_STATES,
   LENS_STATES,
   buildLensModel,
   lensMark,
@@ -13,31 +12,15 @@ import {
   subRows,
   subWords,
 } from "./agentLenses";
-import { BEN, bigFleet, fleet, mapOf, run, session } from "./agentLensesFixtures";
+import { BEN, fleet, mapOf, run, session } from "./agentLensesFixtures";
 import { parseAgentMap } from "./agentMap";
 import {
-  CARDS_MAX,
-  OVERVIEW_ABOVE,
-  SESSION_CARDS_MAX,
-  boundSessions,
-  findGroup,
-  openBucket,
-  overviewTiles,
   questionStops,
-  rankSessions,
   stepStop,
-  usesOverview,
 } from "./agentScale";
 import { keepReady, sessionRead, wantedSessions } from "./agentSessionReads";
 import { agentMapQuery } from "./api";
 import { windowRange } from "./windowedList";
-
-const nameOf = (email: string) => email;
-const ALL_ON = new Set(LENS_STATES);
-const bound = { states: new Set(DEFAULT_STATES), find: "", nameOf };
-const big = buildLensModel(bigFleet(500), new Map(), BEN);
-/** The group of an orchestrator of the big fleet, with many sessions. */
-const group = findGroup(big, "ben@x.test|o1")!.group;
 
 describe("the states of Failed and Done", () => {
   it("takes the words, the icons and the marks from the one vocabulary", () => {
@@ -97,84 +80,6 @@ describe("the subagents are a count", () => {
     });
     const rows = subRows([child("d", "completed", 1), child("w2", "working", 9), child("f", "failed", 5), child("w1", "working", 2)]);
     expect(rows.map((r) => r.id)).toEqual(["f", "w1", "w2", "d"]);
-  });
-});
-
-describe("the overview", () => {
-  it("starts past 40 sessions in scope", () => {
-    expect(usesOverview(buildLensModel(bigFleet(OVERVIEW_ABOVE)), "")).toBe(false);
-    expect(usesOverview(buildLensModel(bigFleet(OVERVIEW_ABOVE + 1)), "")).toBe(true);
-    expect(usesOverview(big, "ana@x.test")).toBe(true);
-    expect(usesOverview(buildLensModel(bigFleet(60)), "ana@x.test")).toBe(false);
-  });
-  it("gives one tile for each orchestrator, the most attention first, and folds the quiet", () => {
-    const people = overviewTiles(big, { person: "", find: "" }, nameOf);
-    const tiles = people.flatMap((p) => [...p.live, ...p.quiet]);
-    expect(tiles).toHaveLength(15);
-    expect(tiles.reduce((n, t) => n + t.sessions.length, 0)).toBe(500);
-    for (const p of people) {
-      const scores = p.live.map((t) => t.score);
-      expect(scores).toEqual([...scores].sort((a, b) => b - a));
-      expect(p.quiet.every((t) => t.score === 0)).toBe(true);
-    }
-    expect(tiles[0].sessions.map((s) => LENS_STATES.indexOf(s.state))).toEqual(
-      tiles[0].sessions.map((s) => LENS_STATES.indexOf(s.state)).sort((a, b) => a - b),
-    );
-  });
-  it("makes one No orchestrator tile for each person", () => {
-    const map = mapOf([session("a"), session("b"), session("c", { person: "ben@x.test" })]);
-    const tiles = overviewTiles(buildLensModel(map), { person: "", find: "" }, nameOf).flatMap((p) => p.live);
-    expect(tiles.map((t) => [t.person, t.orch, t.sessions.length])).toEqual([
-      ["ana@x.test", null, 2],
-      ["ben@x.test", null, 1],
-    ]);
-  });
-  it("keeps the matches of a find only", () => {
-    const tiles = overviewTiles(big, { person: "", find: "builder 42" }, nameOf).flatMap((p) => [...p.live, ...p.quiet]);
-    expect(tiles.flatMap((t) => t.sessions.map((s) => s.id))).toContain("s42");
-  });
-});
-
-describe("the bound of one orchestrator", () => {
-  it("draws at most 12 cards, ranked, and one bucket for each state of the rest", () => {
-    const { shown, buckets } = boundSessions(group.sessions, bound);
-    expect(shown).toHaveLength(SESSION_CARDS_MAX);
-    expect(shown).toEqual(rankSessions(shown));
-    expect(shown.length + buckets.reduce((n, b) => n + b.sessions.length, 0)).toBe(group.sessions.length);
-    expect(shown.every((s) => s.state !== "idle" && s.state !== "done")).toBe(true);
-    expect(new Set(buckets.map((b) => b.state)).size).toBe(buckets.length);
-  });
-  it("opens 12 more of one bucket", () => {
-    const rest = boundSessions(group.sessions, bound).buckets.find((b) => b.state === "done")!.sessions.length;
-    const windows = openBucket({}, "done", rest);
-    const { shown } = boundSessions(group.sessions, { ...bound, windows });
-    expect(shown.filter((s) => s.state === "done")).toHaveLength(Math.min(12, rest));
-  });
-  it("never passes 40 cards, however often a bucket opens", () => {
-    let windows = {};
-    const seen = new Set<string>();
-    for (let i = 0; i < 40; i += 1) {
-      const state = LENS_STATES[i % 3 === 0 ? 4 : i % 3 === 1 ? 5 : 2];
-      windows = openBucket(windows, state, 200);
-      const { shown } = boundSessions(group.sessions, { ...bound, states: ALL_ON, windows });
-      expect(shown.length).toBeLessThanOrEqual(CARDS_MAX);
-      shown.forEach((s) => seen.add(s.id));
-    }
-    expect(seen.size).toBeGreaterThan(CARDS_MAX - SESSION_CARDS_MAX);
-  });
-  it("moves a full bucket on to its next cards", () => {
-    let windows = openBucket({}, "idle", 100);
-    windows = openBucket(windows, "idle", 100);
-    windows = openBucket(windows, "idle", 100);
-    expect(windows.idle).toEqual({ skip: 0, count: 28 });
-    windows = openBucket(windows, "idle", 100);
-    expect(windows.idle).toEqual({ skip: 12, count: 28 });
-  });
-  it("always draws the selected session, in the place of the last card", () => {
-    const hidden = boundSessions(group.sessions, bound).buckets.at(-1)!.sessions.at(-1)!;
-    const { shown } = boundSessions(group.sessions, { ...bound, pin: hidden.id });
-    expect(shown).toHaveLength(SESSION_CARDS_MAX);
-    expect(shown.map((s) => s.id)).toContain(hidden.id);
   });
 });
 
