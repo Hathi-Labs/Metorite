@@ -21928,7 +21928,11 @@ writes nothing into the record.
    `draft_choice.settle`: a draft that is still in Drafts never counts.
 4. **No two lines read the same after a cut.** The tool cuts each line of a message in Trash,
    and each row of the rows card. Then `draft_choice.unique` runs on the cut text.
-5. **The visual review.** The captures and the findings are in the report of task 4026.
+5. **The visual review.** A rig drew the plain card, the rows card, both receipts, the question
+   card and the held card. It drew them dark, light, compact, comfortable, with a changed accent
+   and at 390 px. Three findings stay open. At 390 px, a long line of the plain card wraps
+   under its "-" mark. The receipt "Nothing changed" shows the raw head "Trashed 0 message(s):".
+   At 390 px, the status line of the held card cuts "Waiting for your answer".
 6. **A sender name that holds ": " keeps the subject.** `draft_choice.draft_parts` and
    `message_parts` give the sender and the subject apart. `_short_label` cuts each part by
    itself, before it joins them.
@@ -21940,8 +21944,10 @@ writes nothing into the record.
    short session. It reads the live draft with no session open, and it saves a rotated token
    in a later session. No work was needed.
 9. **A real Gmail and Outlook mailbox.** This item is outside task 4026.
-10. **The R8 suite.** `tests/unit/test_email_draft_decline_r8.py` runs against the scratch
-    database of `scripts/dev_db.sh`. The report of task 4026 gives the result.
+10. **The R8 suite.** `tests/unit/test_email_draft_decline_r8.py` ran against the scratch
+    database of `scripts/dev_db.sh` on 2026-11-27, and 3 tests passed. The build of its template
+    database took 703 seconds on a shared box. So run it with `--timeout 2400`, because the
+    default limit of 600 seconds stops the build.
 
 **Fences.** `tests/unit/test_email_draft_choice.py` (the tests under "Task 4026") and
 `src/components/email/draftTrashReceipt.test.ts`.
