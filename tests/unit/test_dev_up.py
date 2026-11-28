@@ -60,6 +60,8 @@ def _run(repo: Path, *args: str, flags: Path | None = None,
     env = {**os.environ, "DEV_UP_REPO": repo.as_posix()}
     env.pop("DEV_UP_FLAGS_HOST", None)
     env.pop("DEV_UP_TOOL_PACKS", None)
+    for name in ("DEV_UP_TOOL_BUILD", "DEV_UP_DEMO_ORG_ID", "DEV_UP_DOOR_UPSTREAM"):
+        env.pop(name, None)
     env["PROD_COPY_DIR"] = (copies or repo / "no-copies").as_posix()
     env.update(extra or {})
     if flags is not None:
@@ -151,6 +153,51 @@ class TestPreviewSwitches:
         gw = _print_env(tmp_path)["gateway"]
         assert "PUSH_PROMPT_ORGS" not in gw
         assert gw["DATABASE_URL"].startswith("postgresql+psycopg://acb_app:")
+
+
+class TestToolBuildSwitch:
+    DEMO = "0c0c0c0c-0000-4000-8000-0000000004b2"
+    NAMES = ("MAF_CODING_SCOPE", "SANDBOX_DOOR_ORGS", "SANDBOX_EGRESS_ENABLED",
+             "SANDBOX_EGRESS_DOOR_UPSTREAM", "USER_TOOL_FIND_ENABLED", "TOOL_SEARCH_ORGS")
+
+    @needs_bash
+    def test_the_tool_build_switch_is_opt_in(self, tmp_path):
+        """§12.4 done-when 36e (decision 16, audit B7). Off by default, the
+        switch sets nothing. On, it sets the settings of decision 16 for the
+        seeded demo org only, never ``*``, and only for the gateway. With
+        ``--data prod`` the start refuses with an error.
+
+        Mutations: set a name with the switch off, or name ``*`` for an org,
+        or let ``--data prod`` pass -> red."""
+        off = _print_env(tmp_path / "off", extra={"DEV_UP_DEMO_ORG_ID": self.DEMO})
+        for name in self.NAMES:
+            assert name not in off["gateway"], name
+        assert "USER_TOOL_FIND_ENABLED" not in off["gateway"]
+        on = _print_env(tmp_path / "on", extra={
+            "DEV_UP_TOOL_BUILD": "1", "DEV_UP_DEMO_ORG_ID": self.DEMO,
+            "DEV_UP_DOOR_UPSTREAM": "172.17.0.1:8400"})
+        gw = on["gateway"]
+        assert gw["MAF_CODING_SCOPE"] == f"tools:{self.DEMO}"
+        assert gw["SANDBOX_DOOR_ORGS"] == self.DEMO
+        assert gw["TOOL_SEARCH_ORGS"] == self.DEMO
+        assert gw["TOOL_PACKS_ORGS"] == self.DEMO
+        assert gw["SANDBOX_EGRESS_ENABLED"] == "true"
+        assert gw["USER_TOOL_FIND_ENABLED"] == "true"
+        assert gw["SANDBOX_EGRESS_DOOR_UPSTREAM"] == "172.17.0.1:8400"
+        assert "*" not in "".join(gw[n] for n in self.NAMES)
+        for name in self.NAMES:
+            assert name not in on["web"], name
+        for bad in ({"DEV_UP_DEMO_ORG_ID": "not-an-org"},
+                    {"DEV_UP_DEMO_ORG_ID": self.DEMO, "DEV_UP_DOOR_UPSTREAM": "gateway:80"}):
+            res = _run(tmp_path / "bad", "--print-env",
+                       extra={"DEV_UP_TOOL_BUILD": "1", **bad})
+            assert res.returncode != 0 and "dev_up:" in res.stderr, bad
+        copies = tmp_path / "copies"
+        res = _run(tmp_path / "prod", "--print-env", "--data", "prod", "--as", "a@b.test",
+                   copies=copies, extra={"DEV_UP_TOOL_BUILD": "1",
+                                         "DEV_UP_DEMO_ORG_ID": self.DEMO})
+        assert res.returncode != 0
+        assert "DEV_UP_TOOL_BUILD needs the demo data" in res.stderr, res.stderr
 
 
 class TestStudioSwitch:

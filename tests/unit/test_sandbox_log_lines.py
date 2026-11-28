@@ -165,3 +165,47 @@ def test_the_route_is_404_with_studio_or_the_flag_off(store, monkeypatch, off) -
     assert r.status_code == 404
     assert r.json() == {"detail": "Not found"}
     assert store == {"reads": 0, "sessions": 0}
+
+
+# ── 5. SBX-4b2: the line of build_tool (§9.1, §12.4 decision 15) ──────────
+
+from tests.unit.test_user_tool_build import (  # noqa: E402
+    BRIEF,
+    DOOR_TOKEN,
+    GAP,
+    NEED,
+    chat,  # noqa: F401  (a fixture)
+    engine,  # noqa: F401  (a fixture)
+)
+
+BUILD_FIELDS = {"org", "run", "gap", "outcome", "wall_ms", "rounds"}
+
+
+@pytest.mark.parametrize("case", ["passed", "declined", "refused", "failed"])
+async def test_the_build_line_holds_no_text(chat, case, monkeypatch) -> None:  # noqa: F811
+    """§12.4 done-when 34. ``sandbox.tool.build`` holds the org, the run,
+    the gap id, the outcome, the wall time and the rounds only. No need
+    text, no brief, no code and no token is in any line of the tool.
+
+    Mutation: add ``need=row.need`` to ``_log_build`` -> red."""
+    from orchestrator import sandbox_broker as sb
+
+    w = chat
+    logs = fk.Logs()
+    monkeypatch.setattr(w.ute, "_log", logs)
+    if case == "declined":
+        w.answers = [False]
+    elif case == "refused":
+        w.built = True
+    elif case == "failed":
+        w.broker.on_exec = lambda command, env: (
+            sb.ExecResult(1, f"Traceback {NEED} {DOOR_TOKEN}", 4, False, 0.1)
+            if "main.py" in command else None)
+    await w.ute.build_tool(GAP, ["crm:read"], BRIEF)
+    [line] = logs.events(w.ute.BUILD_EVENT)
+    assert set(line) == BUILD_FIELDS
+    assert line["gap"] == GAP and line["run"] == "run-sbx4b2"
+    every = repr(logs.lines)
+    for secret in (*[x for x in NEED.split() if len(x) > 4], "BRIEF-WORDS", DOOR_TOKEN,
+                   "print(", "Traceback"):
+        assert secret not in every, secret
