@@ -10,11 +10,16 @@
  * is open adds a column of at most `SUB_ROWS_MAX` rows. `planMap` bounds the
  * agent cards.
  *
+ * AMR-5b (§3.12.8, G8): an orchestrator whose run is outside the project draws
+ * as a context card in the orchestrator column, only while a lane that it
+ * dispatched draws. It has no chevron, and it counts in no total.
+ *
  * The lines (decision G1: no wait line, because a wait is a fact of the card):
  *  - `tree`  neutral: a node holds the node.
  *  - `dispatch` neutral, with an arrow: one agent dispatched another.
  */
 import {
+  type LensContext,
   type LensModel,
   type LensSession,
   type LensState,
@@ -22,7 +27,16 @@ import {
   matchesFind,
   membersOf,
 } from "./agentLenses";
-import { type PlanOptions, SUB_ROWS_MAX, isActive, orderGroups, personNodeId, planMap, sessionNodeId } from "./agentScale";
+import {
+  type PlanOptions,
+  SUB_ROWS_MAX,
+  contextNodeId,
+  isActive,
+  orderGroups,
+  personNodeId,
+  planMap,
+  sessionNodeId,
+} from "./agentScale";
 
 export type GraphNode = { id: string; x: number; y: number; w: number; h: number } & (
   /** The scope: everyone, or one person. */
@@ -32,6 +46,11 @@ export type GraphNode = { id: string; x: number; y: number; w: number; h: number
   /** `hidden`: the agents under it that draw no card. */
   | { kind: "orch"; session: LensSession; members: LensSession[]; hidden: number; folded: boolean; canFold: boolean }
   | { kind: "session"; session: LensSession }
+  /**
+   * AMR-5b. An orchestrator outside the project. `person` is the person it
+   * draws under, or `null` when it draws after the people. It never folds.
+   */
+  | { kind: "context"; context: LensContext; person: string | null }
   /** The idle and done agents of a person, under the Active switch. */
   | { kind: "rest"; person: string; count: number; open: boolean }
   /** `next`: where a click starts the next cards of the state (`StateNode.next`). */
@@ -75,7 +94,7 @@ export interface OpenSubs {
 /** The four columns, left to right. They never move, so a refresh keeps each node in place. */
 export const GRAPH_X = { root: 0, person: 166, orch: 388, session: 626 } as const;
 export const GRAPH_W = { root: 142, person: 206, orch: 214, session: 264, sub: 230 } as const;
-export const GRAPH_H = { root: 96, person: 72, card: 130, orch: 96, session: 82, row: 40, sub: 30 } as const;
+export const GRAPH_H = { root: 96, person: 72, card: 130, orch: 96, context: 72, session: 82, row: 40, sub: 30 } as const;
 export const ROOT_ID = "root";
 /** The space between the agents and the next column. */
 export const COLUMN_GAP = 32;
@@ -84,7 +103,7 @@ const ROOT_LOWEST = 140;
 const GAP = 10;
 const PERSON_GAP = 24;
 
-export { personNodeId, sessionNodeId };
+export { contextNodeId, personNodeId, sessionNodeId };
 export const restNodeId = (person: string): string => `r:${person}`;
 export const bucketNodeId = (person: string, state: LensState): string => `k:${person}:${state}`;
 /**
@@ -151,6 +170,14 @@ export function layoutGraph(model: LensModel, options: GraphOptions): Graph {
   const own = new Set<string>();
   const centers: number[] = [];
   let y = 0;
+  // AMR-5b: a context card draws only while a lane that it dispatched draws a card.
+  const drawn = new Set(rootFolded ? [] : plans.filter((p) => p.open).flatMap((p) => [...p.shown]));
+  const contexts = model.contexts.filter((c) => c.lanes.some((id) => drawn.has(id)));
+  /** A context draws under its person when that person is open on the map. Else after the people. */
+  const homeOf = new Map(
+    contexts.map((c) => [c.id, plans.some((p) => p.open && p.person === c.person) ? c.person : null]),
+  );
+  const placed = new Set<string>();
 
   for (const plan of rootFolded ? [] : plans) {
     const person = model.people.find((p) => p.person === plan.person)!;
@@ -176,11 +203,45 @@ export function layoutGraph(model: LensModel, options: GraphOptions): Graph {
       return centre;
     };
 
+    /**
+     * AMR-5b. A context card under this person, and the lanes of the person that
+     * it dispatched with no orchestrator of their own, which hang from it.
+     */
+    const contextCard = (c: LensContext, lanes: readonly LensSession[]) => {
+      const id = contextNodeId(c.id);
+      const from = y;
+      const inGroup = lanes.map((s) => card(s, id));
+      const tall = GRAPH_H.context * u;
+      const top = inGroup.length > 0
+        ? Math.max(Math.min((inGroup[0] + inGroup[inGroup.length - 1]) / 2 - tall / 2, from + ROOT_LOWEST * u), from)
+        : from;
+      put({ id, kind: "context", context: c, person: plan.person }, orchX * u, GRAPH_W.orch, GRAPH_H.context, top);
+      placed.add(c.id);
+      link(pid, id, "tree");
+      kids.push(top + tall / 2);
+      y = Math.max(y, top + tall + GAP * u);
+    };
+    /** The lanes of a group with no orchestrator: each context of this person takes its own first. */
+    const ownLanes = (lanes: readonly LensSession[]) => {
+      let left = [...lanes];
+      for (const c of contexts) {
+        if (homeOf.get(c.id) !== plan.person || placed.has(c.id)) continue;
+        const held = left.filter((s) => s.contexts.includes(c.id));
+        left = left.filter((s) => !held.includes(s));
+        contextCard(c, held);
+      }
+      for (const s of left) kids.push(card(s, pid));
+    };
+
     if (plan.open) {
       for (const group of orderGroups(person.groups, options.starts)) {
         const orch = group.orch;
         const lanes = group.sessions.filter((s) => plan.shown.has(s.id));
-        if (!orch || !plan.shown.has(orch.id)) {
+        if (!orch) {
+          ownLanes(lanes);
+          continue;
+        }
+        if (!plan.shown.has(orch.id)) {
           for (const s of lanes) kids.push(card(s, pid));
           continue;
         }
@@ -214,6 +275,8 @@ export function layoutGraph(model: LensModel, options: GraphOptions): Graph {
         const bottom = placeSubs(graph, subs, orch, { x: subX, top: Math.max(top, from), u });
         if (bottom > top) y = Math.max(y, bottom + (GAP - 6) * u);
       }
+      // A context of this person whose lanes are all of other people, or under an orchestrator.
+      ownLanes([]);
       const row = (node: DistributiveOmit<GraphNode, "x" | "y" | "w" | "h">) => {
         put(node, sessionX * u, GRAPH_W.session, GRAPH_H.row, y);
         link(pid, node.id, "tree");
@@ -266,6 +329,18 @@ export function layoutGraph(model: LensModel, options: GraphOptions): Graph {
     y = Math.max(y, top + h + GAP * u) + (PERSON_GAP - GAP) * u;
   }
 
+  // AMR-5b: a context whose person is not open on the map draws after the people.
+  for (const c of contexts) {
+    if (placed.has(c.id)) continue;
+    const id = contextNodeId(c.id);
+    const h = GRAPH_H.context * u;
+    nodes.push({ id, kind: "context", context: c, person: null, x: orchX * u, y, w: GRAPH_W.orch * u, h });
+    placed.add(c.id);
+    link(ROOT_ID, id, "tree");
+    centers.push(y + h / 2);
+    y += h + GAP * u;
+  }
+
   const tall = GRAPH_H.root * u;
   const middle = centers.length > 0 ? (centers[0] + centers[centers.length - 1]) / 2 : tall / 2;
   nodes.push({
@@ -291,6 +366,13 @@ export function layoutGraph(model: LensModel, options: GraphOptions): Graph {
       // Two fold nodes of one person say nothing: the person holds both.
       if (!own.has(s.id) && !own.has(dispatcher) && model.byId.get(dispatcher)?.person === s.person) continue;
       link(from, to, "dispatch");
+    }
+  }
+  // AMR-5b: a context card to each lane it dispatched, or what stands for it.
+  for (const c of contexts) {
+    for (const lane of c.lanes) {
+      const to = rep.get(lane);
+      if (to) link(contextNodeId(c.id), to, "dispatch");
     }
   }
 

@@ -66,6 +66,11 @@ export const WINDOW_ROOM = 12;
 
 export const personNodeId = (person: string): string => `p:${person}`;
 export const sessionNodeId = (id: string): string => `s:${id}`;
+/** AMR-5b. The node of an orchestrator outside the project. It holds a slot of the bound too. */
+export const contextNodeId = (id: string): string => `c:${id}`;
+
+/** The context cards that must draw with a session (AMR-5b): one for each context that dispatched it. */
+const contextCards = (s: Pick<LensSession, "contexts">): string[] => s.contexts.map(contextNodeId);
 
 /** Active = needs you, failed, working and waiting (`DEFAULT_STATES`). */
 export function isActive(s: Pick<LensSession, "state">): boolean {
@@ -150,7 +155,11 @@ export interface PersonPlan {
   /** The sessions that the person card counts: all of them, or the matches of a find. */
   sessions: LensSession[];
   open: boolean;
-  /** The sessions that draw a card, an orchestrator included. */
+  /**
+   * The sessions that draw a card, an orchestrator included. AMR-5b: it also
+   * holds the `contextNodeId` of each context card that a drawn lane brings,
+   * so the bound counts it.
+   */
   shown: ReadonlySet<string>;
   /** The "idle or done" node of the Active switch, or `null`. */
   rest: { count: number; open: boolean } | null;
@@ -169,7 +178,7 @@ interface Draft {
   rankOf: (s: LensSession) => LensState;
   /** Session id to the orchestrator that must draw with it. */
   holder: Map<string, LensSession>;
-  /** How many cards the person needs: the ranked ones and their orchestrators. */
+  /** How many cards the person needs: the ranked ones, their orchestrators and their context cards. */
   cards: number;
   open: boolean;
   /** The idle and done sessions that the rest node stands for. */
@@ -259,15 +268,20 @@ function draftOf(person: LensPerson, options: PlanOptions): Draft | null {
     ),
     rankOf,
     holder,
-    cards: wanted.length,
+    cards: wanted.length + new Set(wanted.flatMap(contextCards)).size,
     open,
     quiet: !q && mode === "active" && quiet.length > 0 ? quiet : null,
   };
 }
 
-/** Takes a session and the orchestrator that must draw with it, if both fit under `cap`. */
+/**
+ * Takes a session, the orchestrator and the context cards that must draw with
+ * it, if all fit under `cap`.
+ */
 function takeInto(shown: Set<string>, draft: Draft, s: LensSession, cap: number): boolean {
-  const need = [s.id, draft.holder.get(s.id)?.id].filter((id): id is string => id !== undefined && !shown.has(id));
+  const need = [...new Set([s.id, draft.holder.get(s.id)?.id, ...contextCards(s)])].filter(
+    (id): id is string => id !== undefined && !shown.has(id),
+  );
   if (shown.size + need.length > cap) return false;
   need.forEach((id) => shown.add(id));
   return true;
@@ -285,6 +299,7 @@ function roomFor(draft: Draft, state: LensState): number {
     ids.add(s.id);
     const orch = draft.holder.get(s.id);
     if (orch) ids.add(orch.id);
+    for (const id of contextCards(s)) ids.add(id);
   }
   return Math.min(WINDOW_ROOM, ids.size);
 }
@@ -451,7 +466,11 @@ export function planMap(model: LensModel, options: PlanOptions): PersonPlan[] {
   return drafts.map((draft) => {
     const { person, sessions } = draft;
     const mine = shared?.get(person);
-    const shown = mine?.shown ?? new Set(draft.ranked.flatMap((s) => [s.id, ...(draft.holder.has(s.id) ? [draft.holder.get(s.id)!.id] : [])]));
+    const shown =
+      mine?.shown ??
+      new Set(
+        draft.ranked.flatMap((s) => [s.id, ...(draft.holder.has(s.id) ? [draft.holder.get(s.id)!.id] : []), ...contextCards(s)]),
+      );
     if (!draft.open || (draft.cards > 0 && shown.size === 0)) {
       return { person, sessions, open: false, shown: new Set<string>(), rest: null, buckets: [] };
     }

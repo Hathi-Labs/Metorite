@@ -58,6 +58,7 @@ import {
   subWords,
   workLine,
 } from "../lib/agentLenses";
+import { OUTSIDE_PROJECT } from "../lib/agentMap";
 import { NAMES_ONLY_BELOW, subTotals } from "../lib/agentScale";
 import { EVERYONE } from "./AgentDetails";
 import { CARD_FACE, CHIP, CardFact, CountLine, SessionCard, SubShort, pressKeys } from "./AgentSessionCard";
@@ -285,6 +286,33 @@ export function GraphCard({ data }: { data: NodeData }) {
           )}
         </div>
         {node.canFold ? <Chevron folded={node.folded} name={name} onClick={fold} /> : null}
+      </div>
+    );
+  }
+  if (node.kind === "context") {
+    // AMR-5b: an orchestrator outside the project. No chevron: it never folds.
+    const c = node.context;
+    return (
+      <div
+        role="button"
+        tabIndex={0}
+        aria-pressed={selected}
+        aria-label={`Orchestrator ${c.name}. ${OUTSIDE_PROJECT}.${c.project ? ` ${c.project}.` : ""}`}
+        onClick={pick}
+        onKeyDown={pressKeys(pick)}
+        data-agent-graph-context={c.id}
+        className={`${CARD_FACE} ${ring(selected)}`}
+      >
+        <span className="flex min-w-0 items-center gap-1.5">
+          <Icon name="Bot" size={13} className="shrink-0 text-muted-foreground" aria-hidden />
+          <span className={`min-w-0 truncate font-semibold ${namesOnly ? "text-xl" : "text-sm"}`}>{c.name}</span>
+        </span>
+        {namesOnly ? null : (
+          <>
+            <span className="truncate text-[11px] text-muted-foreground">{OUTSIDE_PROJECT}</span>
+            {c.project ? <span className="truncate text-xs text-muted-foreground">{c.project}</span> : null}
+          </>
+        )}
       </div>
     );
   }

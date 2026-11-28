@@ -14,7 +14,7 @@
 
 **SW-7b (a display label for each session) is built, 2026-11-11 (task 2858). migration 418.**
 
-**AMR-1 to AMR-3 (the lenses and the phone view of the Agents view, §3.12.8) are built and dark, 2026-11-26, behind `AGENT_LENSES_ORGS`.** **AMR-4 (the Agents view at scale, §3.12.9) is built and dark behind the same flag, 2026-11-26.** **AMR-5a (task 4098, only the cards that draw count toward the overview) is built, 2026-11-27, and AMR-5 replaces it.** **AMR-5 (one Agents map, owner 2026-11-27) replaces the three lenses and the overview.** **AMR-5b (task 4111, the orchestrator outside the project, §3.12.8) is open, 2026-11-28.**
+**AMR-1 to AMR-3 (the lenses and the phone view of the Agents view, §3.12.8) are built and dark, 2026-11-26, behind `AGENT_LENSES_ORGS`.** **AMR-4 (the Agents view at scale, §3.12.9) is built and dark behind the same flag, 2026-11-26.** **AMR-5a (task 4098, only the cards that draw count toward the overview) is built, 2026-11-27, and AMR-5 replaces it.** **AMR-5 (one Agents map, owner 2026-11-27) replaces the three lenses and the overview.** **AMR-5b (task 4111, the orchestrator outside the project, §3.12.8) is built, 2026-11-28, on branch `amr5b-mt-d7ef1c56-context-orchestrator`. The visual review and the owner preview are open.**
 
 **SW-48 (the app lead may Release and Resume a teammate's run) is built and dark, behind `APP_LEAD_RUNS_ORGS` (task 1881).**
 
@@ -918,7 +918,7 @@ This replaces some rules of 2026-11-26. They are the Board, Graph and List switc
   - **The project name.** It is the name of that one project, and only when the viewer may see the project (`visible_project_paths`). Else it is null, for example for a member who sees the run only as its assignee. No project id leaves. An archived project acts as on the map of everyone.
   - **No total.** The client keeps a context row out of `sessions`. So no count, People, "Needs you N", Find or phone view holds it. On a phone, those lanes still read "Started directly".
   - **The place.** It draws in the orchestrator column, only while a lane that it dispatched draws. It counts in the bound of 40 cards, and a drawn lane brings it, as a lane brings its orchestrator.
-  - **Under a person.** When its person is on the map and in the People choice, it draws under that person. The lanes of that person that it dispatched, with no orchestrator of their own, hang from it.
+  - **Under a person.** When its person is on the map, open and in the People choice, it draws under that person. The lanes of that person that it dispatched, with no orchestrator of their own, hang from it.
   - **After the people.** Else it draws after the people, with a plain line from the scope. It brings no person card. The lanes of other people keep the dispatch line from it.
   - **No chevron.** A context node does not fold. This is the one exception to "One chevron".
   - **The card.** It reads the name, "Outside this project" and the project name when the read gives one. A click opens the details with the same three facts. The details never read `session=` for it.
@@ -2369,8 +2369,9 @@ They keep their own gates.
 - **Scope.** The bullet "The orchestrator outside the project" of §3.12.8 (G8), for the summary read with a `project_id` only. The read adds the context node and its lines. The client keeps it out of `sessions`, and the map draws it in the orchestrator column.
 - **Non-goals.** The plain map of SW-102, `get_agent_map`, `session=` and the phone view do not change.
 - **Done when.** R8: an orchestrator run in project B and lane runs in project A give the context node and the lines in the read of A. A viewer who cannot see B gets no node and no line, and the answer names nothing of B. A viewer who sees the run but not its project gets the node with no project. The totals of the project do not change. The map test draws the context orchestrator with its mark. The lane does the visual review.
-- **Fence.** `tests/unit/test_agent_map_r8.py`, `lib/agentMap.test.ts`, `lib/agentScale.test.ts`, `lib/agentGraph.test.ts` and `components/AgentMapNodes.test.ts`.
+- **Fence.** `tests/unit/test_agent_map_r8.py` (`TestTheOrchestratorOutside`) and `lib/agentOutside.test.ts`. `MAP_CONTEXT_KEYS` fixes the keys of a context row.
 - **Risk.** HIGH (a visibility read). **Gate.** AGENT-SAFE. `AGENT_LENSES_ORGS` is on for one org, so the next release shows it there. D145 owner preview before the merge. **Depends on.** AMR-5.
+- **Built, 2026-11-28.** The read runs at most three more statements, and only in the scope of a project. Step 1 finds the dispatcher runs that the lines of the scope do not resolve. Step 2 runs only when step 1 finds one. Step 3 runs only when step 2 finds a node that is not listed. A lane that a context node dispatched is still in no orchestrator group, so the phone view and the details of the lane do not name it.
 
 #### SW-39 · Child runs
 

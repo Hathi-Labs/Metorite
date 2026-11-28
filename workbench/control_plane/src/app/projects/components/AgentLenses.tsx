@@ -47,7 +47,7 @@ import {
   stepStop,
 } from "../lib/agentScale";
 import { type ReadSession, useSessionReads, wantedSessions } from "../lib/agentSessionReads";
-import { AgentDetails, type LensSelection, selectionNodeId, selectionTitle } from "./AgentDetails";
+import { AgentDetails, type LensSelection, selectedSessionId, selectionNodeId, selectionTitle } from "./AgentDetails";
 import { AgentGraphLens, EVERYONE, type GraphFocus, type NodeActions } from "./AgentGraphLens";
 import { NO_MATCH_COPY } from "./AgentSquares";
 import { AgentsPhone } from "./AgentsPhone";
@@ -277,7 +277,7 @@ export function AgentLenses({
     choice === ME_VALUE
       ? (model?.people.find((p) => p.person.toLowerCase() === mine)?.person ?? (mine || ME_VALUE))
       : choice;
-  const selected = selection?.kind === "session" ? selection.id : null;
+  const selected = selectedSessionId(selection);
   // Decision G4: the order of the orchestrators holds over a new read.
   const [starts, setStarts] = useState<ReadonlyMap<string, number>>(() => new Map());
   const seenStarts = model ? rememberStarts(starts, model.sessions, nowMs) : starts;
@@ -331,6 +331,7 @@ export function AgentLenses({
     if (node.kind === "root") setSelection({ kind: "root", person: node.person });
     else if (node.kind === "person") setSelection({ kind: "person", person: node.person });
     else if (node.kind === "session" || node.kind === "orch") setSelection({ kind: "session", id: node.session.id });
+    else if (node.kind === "context") setSelection({ kind: "context", id: node.context.id });
   }, []);
   /** Unfolds the way to a session, selects it and centres its card. */
   const goToSession = useCallback(
