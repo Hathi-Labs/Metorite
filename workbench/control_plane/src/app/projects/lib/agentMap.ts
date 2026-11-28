@@ -398,6 +398,9 @@ export function parseAgentMap(raw: unknown): AgentMap | null {
   for (const item of rows(body.children)) {
     const row = record(item);
     if (!row) continue;
+    // SW-116. A child with a `job_kind` is an external job, not a sub-agent.
+    // The map draws no job until AMR-6 (task 4205) gives jobs their own rows.
+    if (text(row.job_kind)) continue;
     const child_id = text(row.child_id);
     const run_id = text(row.run_id);
     const session_id = sessionOfRun.get(run_id);
