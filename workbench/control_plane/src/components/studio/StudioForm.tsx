@@ -22,7 +22,7 @@ import { accentForHue } from "@/lib/statusAccent";
 import {
   FLAG_HUE, type Draft, isLines, labelOf, manyUnsupported, quantityReading,
 } from "@/lib/studio/blocks";
-import { MAX_QR_CHARS, ratingRange } from "@/lib/studio/fieldCheck";
+import { MAX_CODED_CHARS, MAX_QR_CHARS, ratingRange } from "@/lib/studio/fieldCheck";
 import type { StudioDataDoor } from "@/lib/studio/dataDoor";
 import type { FieldSpec } from "@/lib/studio/fieldCheck";
 import {
@@ -64,6 +64,7 @@ function hintOf(f: FieldSpec): string | undefined {
       : f.format === "code128" ? "Printable ASCII characters, up to 80"
       : `Any text, up to ${MAX_QR_CHARS.toLocaleString("en-US")} characters`;
   }
+  if (f.type === "coded") return `A code of the system ${f.system ?? ""}, up to ${MAX_CODED_CHARS} characters`;
   return HINTS[f.type];
 }
 
@@ -146,6 +147,8 @@ function Control({ field, draft, id, errorId, onChange, onBlur }: ControlProps) 
         <Input {...common} inputMode={field.format === "ean13" ? "numeric" : undefined} value={String(draft)}
           className="font-mono" onChange={(e) => onChange(e.target.value)} />
       );
+    case "coded":
+      return <Input {...common} value={String(draft)} className="font-mono" onChange={(e) => onChange(e.target.value)} />;
     case "quantity": {
       const p = (draft ?? {}) as Parts;
       return (

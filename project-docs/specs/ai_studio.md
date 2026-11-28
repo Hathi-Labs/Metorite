@@ -1035,7 +1035,10 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **C20** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/C20.md) |
 | **C21** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/C21.md) |
 | **C22** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/C22.md) |
-| **C23** | open | STD | AGENT-SAFE | [row](ai_studio_rows/C23.md) |
+| **C23a** | 🔨 BUILT, dark (2026-11-14, task 2354) | STD | AGENT-SAFE | [row](ai_studio_rows/C23a.md) |
+| **C23b** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/C23b.md) |
+| **C23c** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/C23c.md) |
+| **C23d** | open | STD | AGENT-SAFE | [row](ai_studio_rows/C23d.md) |
 | **C24a** | 🔨 BUILT, dark (2026-11-14) | STD | AGENT-SAFE | [row](ai_studio_rows/C24a.md) |
 | **C24b** | open | STD | AGENT-SAFE | [row](ai_studio_rows/C24b.md) |
 | **C25** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/C25.md) |

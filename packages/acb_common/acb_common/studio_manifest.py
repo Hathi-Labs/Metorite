@@ -341,6 +341,8 @@ class FieldDef(_Strict):
     prefix: str | None = None
     pad: int | None = None
     reset: str | None = None
+    #: C23a. The code system of a `coded` field, as `ICD-10`.
+    system: str | None = None
 
 
 #: The cap of the tabs of a record page (STU-AF5b, §5.5). `lib/studio/manifest.ts` holds the same

@@ -22,7 +22,7 @@ export type Draft = string | boolean | string[] | { [part: string]: string };
 export const FIELD_TYPE_LIST: readonly FieldType[] = [
   "text", "longText", "number", "money", "date", "datetime", "checkbox", "select",
   "multiSelect", "person", "relation", "file", "url", "email", "phone", "geo",
-  "richText", "rating", "duration", "quantity", "percent", "barcode", "autonumber",
+  "richText", "rating", "duration", "quantity", "percent", "barcode", "autonumber", "coded",
 ];
 
 const isObject = (v: unknown): v is Record<string, unknown> =>
@@ -91,8 +91,9 @@ const rangeOf = (x: unknown): QuantityRange | undefined =>
 /** The C14 parts of a field: the bounds of a rating, the units of a quantity, the format of a barcode. */
 export function extrasOf(
   r: Record<string, unknown>,
-): Pick<FieldSpec, "min" | "max" | "units" | "format" | "normal" | "critical" | "conversions" | "prefix" | "pad" | "reset"> {
+): Pick<FieldSpec, "min" | "max" | "units" | "format" | "normal" | "critical" | "conversions" | "prefix" | "pad" | "reset" | "system"> {
   return {
+    system: typeof r.system === "string" ? r.system : undefined,
     prefix: typeof r.prefix === "string" ? r.prefix : undefined,
     pad: typeof r.pad === "number" ? r.pad : undefined,
     reset: typeof r.reset === "string" ? r.reset : undefined,
@@ -231,6 +232,8 @@ function scalarText(f: FieldSpec, v: unknown): string {
     }
     case "percent":
       return typeof v === "number" ? `${formatPercent(v)}%` : "";
+    case "coded":
+      return isObject(v) && typeof v.code === "string" ? v.code : "";
     default:
       return typeof v === "string" ? v : "";
   }
@@ -328,6 +331,7 @@ function scalarDraft(f: FieldSpec, v: unknown): string {
   if (f.type === "relation" || f.type === "file") return isObject(v) && typeof v.id === "string" ? v.id : "";
   if (f.type === "duration" && typeof v === "number") return formatDuration(v);
   if (f.type === "percent" && typeof v === "number") return formatPercent(v);
+  if (f.type === "coded") return isObject(v) && typeof v.code === "string" ? v.code : "";
   return String(v);
 }
 
@@ -426,6 +430,9 @@ export function draftToValue(f: FieldSpec, d: Draft): unknown {
       return typeof d === "string" && d.trim() !== "" ? d.trim() : undefined;
     case "autonumber":
       return undefined; // the store fills it: no form sends it
+    case "coded":
+      // The form holds the code only. The system is the one of the field.
+      return typeof d === "string" && d.trim() !== "" ? { system: f.system, code: d.trim() } : undefined;
     default:
       return typeof d === "string" ? scalarValue(f, d) : undefined;
   }

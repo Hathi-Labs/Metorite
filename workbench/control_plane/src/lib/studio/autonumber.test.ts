@@ -13,7 +13,7 @@ const title: FieldSpec = { key: "title", type: "text" };
 
 describe("the autonumber type", () => {
   it("is the 23rd type of the one list", () => {
-    expect(FIELD_TYPE_LIST).toHaveLength(23);
+    expect(FIELD_TYPE_LIST).toHaveLength(24);
     expect(FIELD_TYPE_LIST[22]).toBe("autonumber");
   });
   it("checks the stored form: a prefix, then digits", () => {

@@ -73,7 +73,8 @@ def _field(spec: dict[str, Any]) -> FieldSpec:
         units=tuple(spec["units"]) if spec.get("units") else None, format=spec.get("format"),
         normal=sf.range_of(spec.get("normal")), critical=sf.range_of(spec.get("critical")),
         conversions=sf.conversions_of(spec.get("conversions")),
-        prefix=spec.get("prefix"), pad=spec.get("pad"), reset=spec.get("reset"))
+        prefix=spec.get("prefix"), pad=spec.get("pad"), reset=spec.get("reset"),
+        system=spec.get("system"))
 
 
 OPEN_CLOSED = ["Open", "Closed"]
@@ -186,6 +187,23 @@ VALUES.update({
         "FV-0042", "0001", "FV-12345", "fv_9.A/b-3", "FV-", "", "FV-0042x", "ABCDEFGHIJKL0001",
         "ABCDEFGHIJKLM0001", "123456789012345", "FV 0042", 42, None,
     ]),
+    # C23a. {system, code}. The codes are made up: no data of a code system ships.
+    "coded": ({"system": "X-SYS"}, [
+        {"system": "X-SYS", "code": "X-0001"}, {"system": "X-SYS", "code": "a"},
+        {"system": "X-SYS", "code": "Z9.99 b"}, {"system": "X-SYS", "code": Rep("c", 64)},
+        {"system": "X-SYS", "code": Rep("c", 65)}, {"system": "X-SYS", "code": ""},
+        {"system": "OTHER", "code": "X-0001"}, {"system": "x-sys", "code": "X-0001"},
+        {"system": "X-SYS", "code": "X-0001", "display": "A"}, {"system": "X-SYS"},
+        {"code": "X-0001"}, {"system": "X-SYS", "code": "X\t1"},
+        {"system": "X-SYS", "code": "X\u007f1"}, {"system": "X-SYS", "code": " X-0001"},
+        {"system": "X-SYS", "code": "X-0001 "}, {"system": "X-SYS", "code": "X-0001\u00a0"},
+        {"system": "X-SYS", "code": 1},
+        {"system": 1, "code": "X-0001"}, "X-0001", None,
+        # The limit counts code points, not UTF-16 units: 64 astral characters pass, 65
+        # fail, in Python and in the TypeScript twin (verifier P2 of C23a).
+        {"system": "X-SYS", "code": Rep("\U0001F600", 64)},
+        {"system": "X-SYS", "code": Rep("\U0001F600", 65)},
+    ]),
 })
 # A barcode of the other two formats, and a rating with its own bounds.
 EXTRA_CASES: list[tuple[str, dict[str, Any], list[Any]]] = [
@@ -195,6 +213,8 @@ EXTRA_CASES: list[tuple[str, dict[str, Any], list[Any]]] = [
 ]
 
 MANY_CASES: list[tuple[str, dict[str, Any], Any]] = [
+    ("coded", {"system": "X-SYS"}, [{"system": "X-SYS", "code": "X-1"}, {"system": "X-SYS", "code": "X-2"}]),
+    ("coded", {"system": "X-SYS"}, [{"system": "X-SYS", "code": "X-1"}, {"system": "OTHER", "code": "X-2"}]),
     ("text", {}, ["a", "b"]),
     ("text", {}, []),
     ("text", {}, "a"),
@@ -396,6 +416,8 @@ def test_ts_limits_equal_the_python_constants():
         "MAX_AUTONUMBER_PREFIX": sf.MAX_AUTONUMBER_PREFIX,
         "MAX_AUTONUMBER_PAD": sf.MAX_AUTONUMBER_PAD,
         "MAX_AUTONUMBER": sf.MAX_AUTONUMBER,
+        "MAX_CODE_SYSTEM_CHARS": sf.MAX_CODE_SYSTEM_CHARS,
+        "MAX_CODED_CHARS": sf.MAX_CODED_CHARS,
     }
     assert found == want
 

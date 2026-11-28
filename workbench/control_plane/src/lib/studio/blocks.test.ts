@@ -38,7 +38,7 @@ const tagOf = (html: string, id: string): string =>
   html.match(new RegExp("<[^>]*id=\"" + id + "\"[^>]*>"))?.[0] ?? "";
 
 describe("the sample fields", () => {
-  it("hold each of the 22 types that a member writes", () => {
+  it("hold each of the 23 types that a member writes", () => {
     // The store fills an autonumber (C15a), so a form holds none. C15b draws it.
     expect(new Set(SAMPLE_FIELDS.map((f) => f.type))).toEqual(
       new Set(FIELD_TYPE_LIST.filter((t) => t !== "autonumber")));

@@ -322,6 +322,18 @@
           "default": null,
           "title": "Reset"
         },
+        "system": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "System"
+        },
         "to": {
           "anyOf": [
             {
@@ -358,7 +370,8 @@
             "quantity",
             "percent",
             "barcode",
-            "autonumber"
+            "autonumber",
+            "coded"
           ],
           "title": "Type",
           "type": "string"
