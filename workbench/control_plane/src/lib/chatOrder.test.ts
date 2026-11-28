@@ -99,6 +99,20 @@ describe("the recovery poll places a row by the server's order", () => {
     expect(ids(mergePolledRows([p, r, s], [p, s, r]))).toEqual(["p", "s", "r"]);
   });
 
+  it("a compaction checkpoint keeps its place before the kept tail", () => {
+    // The checkpoint is a system row that the client inserts. The gateway
+    // never inserts a client's system row (S14), so no read returns it, and
+    // `activeContextSlice` must still find the kept tail after it.
+    const old = msg("o1", "user");
+    const ckpt = msg("compact-1", "system", "[CONTEXT SUMMARY of 40 earlier messages] …");
+    const k1 = msg("k1", "user");
+    const k2 = msg("k2", "assistant");
+    const k3 = msg("k3", "user");
+    const local = [old, ckpt, k1, k2];
+    expect(mergePolledRows(local, [old, k1, k2])).toBe(local);
+    expect(ids(mergePolledRows(local, [old, k1, k2, k3]))).toEqual(["o1", "compact-1", "k1", "k2", "k3"]);
+  });
+
   it("rows older than the poll's window keep the top", () => {
     const old1 = msg("old1", "user");
     const old2 = msg("old2", "assistant");
