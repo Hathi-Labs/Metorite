@@ -64,13 +64,17 @@ describe("what gives no line", () => {
     expect(projectSummary(undefined)).toBeNull();
   });
 
-  it("a description that is only a heading gives no line, and offers More", () => {
-    expect(projectSummary("## Start here")).toEqual({ line: "", more: true });
+  it("a description that is only a heading gives that heading as the line, and no More", () => {
+    expect(projectSummary("## Start here")).toEqual({ line: "Start here", more: false });
+  });
+
+  it("a heading with more after it gives the heading, and offers More", () => {
+    expect(projectSummary(["# **The map** (2026)", "", "- one", "- two"].join("\n"))).toEqual({ line: "The map (2026)", more: true });
   });
 
   it("a list, a table, a quote and a code block give no line", () => {
     const text = "- one\n- two\n\n| a | b |\n|---|---|\n\n> quoted\n\n```\ncode here. More code.\n```";
-    expect(projectSummary(text)?.line).toBe("");
+    expect(projectSummary(text)).toEqual({ line: "", more: true });
   });
 });
 

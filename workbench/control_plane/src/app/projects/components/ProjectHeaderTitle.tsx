@@ -165,7 +165,7 @@ export function ProjectHeaderTitle({
       {about ? (
         narrow ? (
           <Modal open={open} onClose={close} title={ABOUT_TITLE} placement="sheet" size="md" className="max-h-[85vh]">
-            <div className="min-h-0 overflow-y-auto p-3 text-sm" data-header-about="">
+            <div className="min-h-0 min-w-0 max-w-full overflow-x-hidden overflow-y-auto p-3 text-sm [&_table]:w-max [&_table]:min-w-full" data-header-about="">
               <MarkdownBody content={description as string} />
             </div>
           </Modal>
@@ -178,7 +178,7 @@ export function ProjectHeaderTitle({
             className="w-[34rem] max-w-[90vw] max-h-[560px]"
             panelProps={{ role: "dialog", "aria-label": ABOUT_TITLE }}
           >
-            <div className="p-3 text-sm" data-header-about="">
+            <div className="min-w-0 max-w-full p-3 text-sm [&_table]:w-max [&_table]:min-w-full" data-header-about="">
               <p className="mb-2 text-xs font-medium text-muted-foreground">{ABOUT_TITLE}</p>
               <MarkdownBody content={description as string} />
             </div>
@@ -212,7 +212,7 @@ export function PhoneProjectTitle({ title, description = null }: { title: string
         <span className="truncate">{title}</span>
       </Button>
       <Modal open={open} onClose={() => setOpen(false)} title={ABOUT_TITLE} placement="sheet" size="md" className="max-h-[85vh]">
-        <div className="min-h-0 overflow-y-auto p-3 text-sm" data-header-about="">
+        <div className="min-h-0 min-w-0 max-w-full overflow-x-hidden overflow-y-auto p-3 text-sm [&_table]:w-max [&_table]:min-w-full" data-header-about="">
           <MarkdownBody content={description} />
         </div>
       </Modal>

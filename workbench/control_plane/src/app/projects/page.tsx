@@ -5113,9 +5113,9 @@ function ProjectsWorkspace() {
           >
             {attentionHere && attentionHere.total > 0 ? (
               <>
-                <span className="tabular-nums">{attentionHere.total}</span>
-                <span className="ml-1">
-                  {attentionHere.total === 1 ? "needs attention" : "need attention"}
+                <span>
+                  <span className="tabular-nums">{attentionHere.total}</span>
+                  {attentionHere.total === 1 ? " needs attention" : " need attention"}
                 </span>
               </>
             ) : (

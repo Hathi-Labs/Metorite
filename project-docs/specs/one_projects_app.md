@@ -1710,7 +1710,7 @@ Each fence is advisory until its slice builds.
 
 ## 9e. The project header: the title, one plain line, and About (2026-11-27)
 
-**Status: PLANNED, nothing built. ORD-0 (task 4069) wrote this section.** PR 2915 dropped it, and ORD-0b (task 4161) landed it on 2026-11-28. HDR-1 is rung 1 of the ladder in `project_management_app.md` §13.9.5.
+**Status: HDR-1 is built on branch hdr1-header-mt-0e18ffaf (task 4072). HDR-2 is not built. ORD-0 (task 4069) wrote this section.** PR 2915 dropped it, and ORD-0b (task 4161) landed it on 2026-11-28. HDR-1 is rung 1 of the ladder in `project_management_app.md` §13.9.5.
 
 ### 9e.1 The owner's ask
 
@@ -1752,11 +1752,12 @@ The sketch shows the layout. Its counts are examples.
    - It removes the Markdown marks.
    - It keeps the first sentence. Under 40 characters, it adds the next sentence.
    - It keeps at most 160 characters. A longer line stops at the end of a word, with "…".
+   - When no paragraph is left, the line is the text of the first heading, with its marks removed and the same cut. "More" shows when anything else follows. An empty description gives no line.
 4. **More opens About.** When the description holds more than the line, "More" ends the line. It opens **About this project**: a popover on a desktop and a sheet on a phone. About draws the whole description with `MarkdownBody`.
 5. **The facts follow the line.** "12 sub-projects" replaces "Includes 12 subprojects" at the end of the summary line, after a dot.
 6. **No description, no second line.** The header then shows the title only. HDR-2 adds "Add a description" for a member who may edit the project.
 7. **One attention control.** The badge and the lens button become one button, "36 need attention". It is pressed while the lens is open, and it hides when the count is 0.
-8. **The phone.** Below 640 px the summary line hides. A tap on the title opens About.
+8. **The phone.** On a real phone (below 768 px, `isMobile`) the page draws the compact `AppTopBar` and no header. The title in that bar opens About as a sheet. In a narrow desktop pane (below 640 px), the summary line hides. A tap on the title opens About.
 9. **The one look.** The title, the line and About take their colours and sizes from `globals.css` and the tokens of `DESIGN_SYSTEM.md`. They add no colour of their own.
 
 **The real descriptions are the test.** The rule must give a useful line for the two long briefs on the board:
@@ -1770,7 +1771,7 @@ The sketch shows the layout. Its counts are examples.
 
 | Slice | Task | Scope | Done when | Risk |
 |---|---|---|---|---|
-| **HDR-1** | 4072 | Rules 1 to 5 and 7 to 9, and HDR-Q1 (§9e.5). `lib/projectSummary.ts` is new, with its test | Metorite Application shows its full title and the line of the table above. More opens the whole description. The attention count shows once. The header shows no Agents button while the Agents tab shows. `visual-review` passes at four widths, in light mode, at compact density and under a changed accent. The owner sees the captures on the task before the merge (D145), because the owner asked for this look | STANDARD UI |
+| **HDR-1** | 4072 | **Built** (branch hdr1-header-mt-0e18ffaf). Rules 1 to 5 and 7 to 9, and HDR-Q1 (§9e.5). `lib/projectSummary.ts` is new, with its test | Metorite Application shows its full title and the line of the table above. More opens the whole description. The attention count shows once. The header shows no Agents button while the Agents tab shows. `visual-review` passes at four widths, in light mode, at compact density and under a changed accent. The owner sees the captures on the task before the merge (D145), because the owner asked for this look | STANDARD UI |
 | **HDR-2** | 4073 | Rule 6. Edit in About for a member who may edit the project, through the existing project update route | A member who may edit sees "Add a description" and Edit. A member who only reads sees neither. No new route | STANDARD UI |
 
 HDR-2 depends on HDR-1. The demo of HDR-1 is task 4074.

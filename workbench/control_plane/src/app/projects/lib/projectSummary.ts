@@ -92,7 +92,14 @@ export function projectSummary(description: string | null | undefined): ProjectS
   }
 
   const otherText = lines.some((text, i) => (i < start || i > end || start < 0) && text.trim() !== "");
-  if (start < 0) return { line: "", more: true };
+  if (start < 0) {
+    // No paragraph is left. The first heading gives the line, with its marks gone.
+    const heading = lines.find((text) => HEADING.test(text));
+    const title = heading ? plain(heading.replace(/^\s{0,3}#{1,6}\s*/, "").replace(/\s+#+\s*$/, "")) : "";
+    const shown = cut(title);
+    const rest = lines.filter((text) => text !== heading && text.trim() !== "").length > 0;
+    return { line: shown, more: rest || shown !== title };
+  }
 
   let paragraph = lines.slice(start, end + 1).join(" ").trim();
   // A bold label at the start ("**What this app is.**") names the paragraph, so it goes.
