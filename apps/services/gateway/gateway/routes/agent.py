@@ -2702,6 +2702,7 @@ def _mint_run_row(
     from gateway.routes.chat import (
         MessageRecord,
         _ensure_session,
+        _newest_stamp,
         _upsert_messages,
     )
 
@@ -2722,7 +2723,11 @@ def _mint_run_row(
             error=str(exc)[:200],
         )
         return
+    # Task 4146: the turn goes after every row of the chat. The read shares
+    # this call's time budget, and a failed read gives None.
+    newest = _newest_stamp(thread_id, organization_id=organization_id)
     if prompt is not None:
+        prompt = _prompt_after(prompt, newest)
         _write_prompt_row(
             thread_id, prompt, member=member, agent_name=agent_name,
             organization_id=organization_id,
@@ -2732,7 +2737,7 @@ def _mint_run_row(
             thread_id,
             [MessageRecord(
                 id=message_id, role="assistant", content="",
-                timestamp=_mint_stamp(int(time.time() * 1000), prompt),
+                timestamp=_mint_stamp(int(time.time() * 1000), prompt, newest),
                 author_email=agent_name, author_kind="agent",
             )],
             actor_email=run_member, agent_name=agent_name,
@@ -2812,17 +2817,36 @@ class PromptToSave(BaseModel):
     member_typed: bool = False
 
 
-def _mint_stamp(now_ms: int, prompt: PromptToSave | None) -> int:
+def _mint_stamp(
+    now_ms: int, prompt: PromptToSave | None, newest: int | None = None,
+) -> int:
     """The stamp of a run's agent row (task 4146).
 
     It is the server's clock, and one millisecond after the run's prompt at
     least. The prompt is stamped first, in the same worker call, so the two
     can share one millisecond. The gateway then sorts by ``id``, and a random
-    id puts the reply above its prompt.
+    id puts the reply above its prompt. *newest* is the newest stamp of the
+    chat (``chat._newest_stamp``), and the row goes after it too.
     """
-    if prompt is None:
-        return now_ms
-    return max(now_ms, prompt.timestamp_ms + 1)
+    stamp = now_ms
+    if prompt is not None:
+        stamp = max(stamp, prompt.timestamp_ms + 1)
+    if newest is not None:
+        stamp = max(stamp, newest + 1)
+    return stamp
+
+
+def _prompt_after(prompt: PromptToSave, newest: int | None) -> PromptToSave:
+    """*prompt*, stamped after every row of its chat (task 4146).
+
+    *newest* is the newest stamp of the chat, read before the write
+    (``chat._newest_stamp``). A slow browser clock, or a row that code from
+    before task 4146 saved with a fast stamp, would otherwise sort the new
+    turn above the reply before it. With no read, the stamp stays.
+    """
+    if newest is None or prompt.timestamp_ms > newest:
+        return prompt
+    return prompt.model_copy(update={"timestamp_ms": newest + 1})
 
 
 def prompt_to_save(
@@ -2949,7 +2973,7 @@ def _save_steered_prompt(
     the answer to a steer. A steer starts no run, so no mint shares this
     call. The chat row is made first when it is missing.
     """
-    from gateway.routes.chat import _ensure_session
+    from gateway.routes.chat import _ensure_session, _newest_stamp
 
     try:
         _ensure_session(
@@ -2963,9 +2987,11 @@ def _save_steered_prompt(
             error=str(exc)[:200],
         )
         return False
+    # Task 4146: the steer goes after every row of the chat.
+    newest = _newest_stamp(thread_id, organization_id=organization_id)
     return _write_prompt_row(
-        thread_id, prompt, member=member, agent_name=agent_name,
-        organization_id=organization_id,
+        thread_id, _prompt_after(prompt, newest), member=member,
+        agent_name=agent_name, organization_id=organization_id,
     )
 
 

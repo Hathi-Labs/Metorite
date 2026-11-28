@@ -1867,6 +1867,37 @@ async def _held_permissions(
         return frozenset()
 
 
+#: The newest stamp of one chat (task 4146). The index
+#: ``chat_message_session_ts_idx`` (session_id, timestamp_ms DESC) answers it.
+_NEWEST_STAMP_SQL = (
+    "SELECT max(timestamp_ms) FROM chat_message WHERE session_id = :sid"
+)
+
+
+def _newest_stamp(session_id: str, *, organization_id: str | None) -> int | None:
+    """The newest ``timestamp_ms`` of *session_id*, or None. Never raises.
+
+    The run route puts a new turn after it (``routes/agent.py``
+    ``_prompt_after``, ``_mint_stamp``). A slow browser clock, or a row that
+    old code saved with a fast stamp, then never sorts the new turn above
+    the reply before it. The read runs under the run's tenant (R5). A failed
+    read gives None, and the run keeps the stamps it had.
+    """
+    from acb_graph import tenant_session  # noqa: PLC0415
+    from sqlalchemy import text  # noqa: PLC0415
+
+    try:
+        with tenant_session(organization_id) as s:
+            value = s.execute(text(_NEWEST_STAMP_SQL), {"sid": session_id}).scalar()
+    except Exception as exc:  # The read must never stop a run.
+        _log.warning(
+            "chat.newest_stamp_failed",
+            session_id=session_id[:12], error=str(exc)[:200],
+        )
+        return None
+    return int(value) if value is not None else None
+
+
 def _bounded_by_server_clock(
     messages: list[MessageRecord], now_ms: int | None = None,
 ) -> list[MessageRecord]:

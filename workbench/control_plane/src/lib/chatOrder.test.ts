@@ -77,6 +77,28 @@ describe("the recovery poll places a row by the server's order", () => {
       .toEqual([H1.id, PROMPT.id, REPLY.id]);
   });
 
+  it("a tab that missed more rows than the window holds keeps its old thread on top", () => {
+    const m = ["m1", "m2", "m3"].map((id) => msg(id, "user"));
+    const n = ["n1", "n2"].map((id) => msg(id, "user"));
+    expect(ids(mergePolledRows(m, n))).toEqual(["m1", "m2", "m3", "n1", "n2"]);
+  });
+
+  it("a saved reply above the window is never taken for a partial", () => {
+    const old = msg("old", "assistant", "Done.");
+    const w1 = msg("w1", "user", "Again");
+    const n = msg("n", "assistant", "Done. More.");
+    expect(ids(mergePolledRows([old, w1], [w1, n]))).toEqual(["old", "w1", "n"]);
+  });
+
+  it("a steer that the server saved before the reply's first words draws above the reply after the run", () => {
+    // A behaviour change of task 4146, on purpose: the poll now draws what
+    // a reload draws.
+    const p = msg("p", "user", "Find the mail");
+    const r = msg("r", "assistant", "I found it.");
+    const s = msg("s", "user", "Only from Akram", { customEvents: [{ name: "steered", value: {} }] });
+    expect(ids(mergePolledRows([p, r, s], [p, s, r]))).toEqual(["p", "s", "r"]);
+  });
+
   it("rows older than the poll's window keep the top", () => {
     const old1 = msg("old1", "user");
     const old2 = msg("old2", "assistant");

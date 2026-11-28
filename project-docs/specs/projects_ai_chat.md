@@ -3718,7 +3718,7 @@ into a chat. The poll, the re-attach and the history load call it.
    server yet.
 4. The content of a row only grows, as the poll did before.
 
-**The server rule.** The saved order must not depend on a fast browser
+**The server rule.** The saved order must not depend on the browser's
 clock.
 
 1. `prompt_to_save` keeps the browser's stamp only when it is not after
@@ -3729,12 +3729,14 @@ clock.
 3. `save_messages` caps each client stamp at the server's clock. Without
    this cap, the browser's save of a reply kept a fast stamp, and the next
    prompt sorted above that reply.
+4. A new prompt, a steer and a minted reply sort after every row of their
+   chat (`_newest_stamp`, `_prompt_after`). This covers a slow browser
+   clock, and a row that code from before this fix saved with a fast
+   stamp. The read shares the mint's time budget, and a failed read keeps
+   the stamps of items 1 and 2.
 
-**Not done.** A browser clock that is BEHIND the server can still sort a
-new prompt above the reply before it. The reply carries the server's
-clock, and the prompt keeps the slow stamp. A floor at the newest stamp of
-the chat would close it. That floor needs a read on the path to the first
-byte, so it is a later slice.
+**Not done.** When the run route's save of the prompt fails, the browser
+saves the turn later. That stamp has the cap of item 3, and no floor.
 
 **Fences.** `workbench/control_plane/src/lib/chatOrder.test.ts` and
 `tests/unit/test_chat_prompt_saved_at_start.py` (R8).

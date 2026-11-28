@@ -832,3 +832,72 @@ def test_a_fast_browser_save_of_the_prompt_before_the_run_keeps_the_reply_after_
     assert _send_and_close(alice, body)[0] == 200
     _save(alice, sid, [_reply_row("a-u1", "Here is the plan.", _now_ms())])
     assert _shown(alice, sid) == ["u1", "a-u1"]
+
+
+# ── A new turn sorts after every row of its chat (task 4146) ────────────────
+#
+# Mutation this block catches (R7): the floor at the newest stamp of the
+# chat removed from ``_mint_run_row`` or ``_save_steered_prompt``. A row
+# that old code saved with a fast stamp, or a slow browser clock, then
+# sorts the new turn above the reply before it.
+
+def _old_turn(sid: str, org: str, ts: int) -> None:
+    """A turn that code from before task 4146 saved with a fast stamp."""
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+
+    _upsert_messages(sid, [MessageRecord(
+        id="u0", role="user", content="An old question", timestamp=ts,
+    )], actor_email=_ALICE, agent_name="orchestrator", organization_id=org)
+    _upsert_messages(sid, [MessageRecord(
+        id="a-u0", role="assistant", content="An old answer.", timestamp=ts + 1,
+        author_kind="agent",
+    )], actor_email=_ALICE, agent_name="orchestrator", author_from_run=True,
+        organization_id=org)
+
+
+@_DB_GATE
+def test_a_turn_after_rows_saved_with_a_fast_stamp_still_sorts_last(graph_as_app, world):
+    a = graph_as_app.org_a
+    sid = _sid()
+    alice = _client(_user(_ALICE, a))
+    _new_session(alice, sid)
+    _old_turn(sid, a, _now_ms() + 60_000)
+    body = _run_body(sid, "u1", "A new question")
+    body["payload"]["user_message_ts"] = _now_ms() + 65_000
+    assert _send_and_close(alice, body)[0] == 200
+    _save(alice, sid, [_reply_row("a-u1", "A new answer.", _now_ms())])
+    assert _shown(alice, sid) == ["u0", "a-u0", "u1", "a-u1"]
+
+
+@_DB_GATE
+def test_a_slow_browser_clock_still_sorts_the_new_prompt_after_the_last_reply(
+        graph_as_app, world):
+    a = graph_as_app.org_a
+    sid = _sid()
+    alice = _client(_user(_ALICE, a))
+    body = _run_body(sid, "u0", "First question")
+    body["payload"]["user_message_ts"] = _now_ms()
+    assert _send_and_close(alice, body)[0] == 200
+    _save(alice, sid, [_reply_row("a-u0", "First answer.", _now_ms())])
+    body2 = _run_body(sid, "u1", "Second question")
+    body2["payload"]["user_message_ts"] = _now_ms() - 60_000
+    assert _send_and_close(alice, body2)[0] == 200
+    _save(alice, sid, [_reply_row("a-u1", "Second answer.", _now_ms())])
+    assert _shown(alice, sid) == ["u0", "a-u0", "u1", "a-u1"]
+
+
+@_DB_GATE
+def test_a_steer_from_a_slow_browser_clock_sorts_after_the_reply_it_follows(
+        graph_as_app, world):
+    a = graph_as_app.org_a
+    sid = _sid()
+    alice = _client(_user(_ALICE, a))
+    body = _run_body(sid, "u0", "Find the mail")
+    body["payload"]["user_message_ts"] = _now_ms()
+    assert _send_and_close(alice, body)[0] == 200
+    _save(alice, sid, [_reply_row("a-u0", "I found two mails.", _now_ms())])
+    world.route = "STEER"
+    steer = _run_body(sid, "s1", "Only from Akram")
+    steer["payload"]["user_message_ts"] = _now_ms() - 60_000
+    assert _send_and_close(alice, steer)[0] == 202
+    assert _shown(alice, sid) == ["u0", "a-u0", "s1"]

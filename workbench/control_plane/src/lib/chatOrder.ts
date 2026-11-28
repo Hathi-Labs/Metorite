@@ -13,9 +13,11 @@
  *    that the chat holds already takes the server's order, in the slots
  *    that those rows hold now. A new row goes after its nearest server
  *    predecessor in the list, else before its nearest server successor in
- *    the list. With no server row in the list, it goes before every local
- *    row. Nothing here compares a timestamp or an id: a browser clock and a
- *    server clock disagree, and a random id says nothing about order.
+ *    the list. With no server row in the list, the caller decides
+ *    (`noAnchor`): a read of the full history goes before every local row,
+ *    and the poll's newest window goes after them. Nothing here compares a
+ *    timestamp or an id: a browser clock and a server clock disagree, and a
+ *    random id says nothing about order.
  * 2. **So a reply never draws before the prompt of its own turn.** The
  *    gateway saves the prompt first (`routes/agent.py`), and its order puts
  *    the prompt first.
@@ -39,6 +41,12 @@ export interface ServerMergeOptions {
   /** Whether a chat row that the server did not return stays. The default
    *  keeps every row. */
   keepLocal?: (m: ChatMessage) => boolean;
+  /** Where the server's rows go when no row of theirs is in the list.
+   *  `"start"` (the default) suits a read of the full history: a local row
+   *  that the server lacks is newer. `"end"` suits the poll's newest window:
+   *  a tab that missed more rows than the window holds keeps its old thread
+   *  on top. */
+  noAnchor?: "start" | "end";
 }
 
 /**
@@ -52,6 +60,7 @@ export function mergeServerRows(
 ): ChatMessage[] {
   const combine = opts.combine ?? ((_l: ChatMessage, s: ChatMessage) => s);
   const keepLocal = opts.keepLocal ?? (() => true);
+  const atEnd = opts.noAnchor === "end";
 
   // The server's rows, each id once, in the server's order.
   const rows: ChatMessage[] = [];
@@ -85,11 +94,11 @@ export function mergeServerRows(
   });
 
   // 3. Each new row goes after its nearest server predecessor in the list,
-  //    else before its nearest server successor, else before every local row.
+  //    else before its nearest server successor, else where `noAnchor` says.
   const present = new Set(out.map((m) => m.id));
   rows.forEach((s, i) => {
     if (present.has(s.id)) return;
-    let pos = 0;
+    let pos = atEnd ? out.length : 0;
     let j = i - 1;
     while (j >= 0 && !present.has(rows[j].id)) j--;
     if (j >= 0) {
@@ -156,21 +165,30 @@ export function growRow(local: ChatMessage, rm: ChatMessage): ChatMessage {
  *
  * A server reply that extends a local partial of ANOTHER id takes that
  * partial's place (refresh recovery: a local id against an old server id).
- * Only a row that the server does not know is such a partial. A reply that
- * the server returned under its own id is never one, so a new reply such as
- * "Done. More." never replaces "Done." two turns up.
+ * Such a partial is a row that this window does not return, after the last
+ * row of the chat that the window does return. A reply that the server
+ * returned under its own id is never one, and neither is a row above the
+ * window. So a new reply such as "Done. More." never replaces "Done." two
+ * turns up.
+ *
+ * With no row of the window in the chat, the window goes after the chat's
+ * rows (`noAnchor: "end"`): a tab that missed more rows than the window
+ * holds keeps its old thread on top, as the poll did before.
  */
 export function mergePolledRows(local: readonly ChatMessage[], remote: readonly ChatMessage[]): ChatMessage[] {
   const serverIds = new Set(remote.map((m) => m.id));
   const localIds = new Set(local.map((m) => m.id));
   const localAssistantContents = local.filter((m) => m.role === "assistant").map((m) => m.content);
+  let lastKnown = -1;
+  local.forEach((m, i) => { if (serverIds.has(m.id)) lastKnown = i; });
   let base: ChatMessage[] = local as ChatMessage[];
   const server: ChatMessage[] = [];
   for (const rm of remote) {
     if (localIds.has(rm.id)) { server.push(rm); continue; }
     if (rm.role === "assistant" && rm.content) {
       const partial = base.findIndex(
-        (m) =>
+        (m, i) =>
+          i > lastKnown &&
           m.role === "assistant" &&
           !serverIds.has(m.id) &&
           !!m.content &&
@@ -196,7 +214,7 @@ export function mergePolledRows(local: readonly ChatMessage[], remote: readonly 
     }
     server.push(rm);
   }
-  return mergeServerRows(base, server, { combine: growRow });
+  return mergeServerRows(base, server, { combine: growRow, noAnchor: "end" });
 }
 
 /**
