@@ -39,10 +39,15 @@ from typing import Any
 
 from acb_common.public_address import PublicAddressRefused, pinned_public_address
 
+from ..addresses import (
+    first_raw_header,
+    parse_address_list,
+    parse_sender,
+    raw_header_values,
+)
 from .base import (
     Attachment,
     BaseEmailProvider,
-    EmailAddress,
     EmailFolder,
     EmailMessage,
     SyncResult,
@@ -1111,50 +1116,6 @@ def _decode_imap_header(value: str) -> str:
         return value
 
 
-def _parse_imap_address(raw: str) -> EmailAddress | None:
-    """Parse an email address from an IMAP header value."""
-    if not raw:
-        return None
-    decoded = _decode_imap_header(raw)
-    if "<" in decoded and ">" in decoded:
-        name = decoded.split("<")[0].strip().strip('"')
-        email = decoded.split("<")[1].split(">")[0].strip()
-        return EmailAddress(name=name, email=email)
-    return EmailAddress(name="", email=decoded.strip())
-
-
-def _parse_imap_address_list(raw: str) -> list[EmailAddress]:
-    """Parse a comma-separated list of email addresses."""
-    if not raw:
-        return []
-    decoded = _decode_imap_header(raw)
-    addresses: list[EmailAddress] = []
-    for part in _split_imap_addresses(decoded):
-        addr = _parse_imap_address(part.strip())
-        if addr and addr.email:
-            addresses.append(addr)
-    return addresses
-
-
-def _split_imap_addresses(raw: str) -> list[str]:
-    """Split comma-separated addresses respecting quoted names."""
-    parts: list[str] = []
-    current: list[str] = []
-    in_quote = False
-    for ch in raw:
-        if ch == '"':
-            in_quote = not in_quote
-            current.append(ch)
-        elif ch == "," and not in_quote:
-            parts.append("".join(current).strip())
-            current = []
-        else:
-            current.append(ch)
-    if current:
-        parts.append("".join(current).strip())
-    return parts
-
-
 def _parse_imap_internaldate(raw_date: str) -> datetime | None:
     """Parse IMAP INTERNALDATE format into a timezone-aware datetime."""
     if not raw_date:
@@ -1200,7 +1161,7 @@ def _parse_imap_fetch(msg_data: list) -> list[EmailMessage]:
             else:
                 raw_body = str(item[1]) if item[1] else ""
 
-            msg = _parse_imap_raw_message(raw_body, uid, flags, internaldate_match)
+            msg = _parse_one_imap_message(raw_body, uid, flags, internaldate_match)
             if msg:
                 messages.append(msg)
 
@@ -1232,11 +1193,40 @@ def _parse_imap_fetch_full(msg_data: list) -> list[EmailMessage]:
 
         raw_body = item[1].decode("utf-8", errors="replace") if isinstance(item[1], bytes) else str(item[1])
 
-        msg = _parse_imap_raw_message(raw_body, uid, flags, internaldate_match)
+        msg = _parse_one_imap_message(raw_body, uid, flags, internaldate_match)
         if msg:
             messages.append(msg)
 
     return messages
+
+
+def _decode_body(payload: bytes, charset: str) -> str:
+    """The text of one body part. A charset that Python does not know, such as
+    ``unknown-8bit`` or ``x-mac-roman``, reads as UTF-8 with each bad byte
+    replaced, as the inbound receiver does. The mail is stored, never skipped
+    (task 4016)."""
+    try:
+        return payload.decode(charset, errors="replace")
+    except (LookupError, TypeError, ValueError):
+        return payload.decode("utf-8", errors="replace")
+
+
+def _parse_one_imap_message(
+    raw: str, uid: str, flags: list[str], internaldate: str
+) -> EmailMessage | None:
+    """One message of a FETCH batch, or None when it does not parse.
+
+    One bad message never fails the whole batch (task 4016). The batch gives
+    the other messages, and a log line names the UID. The sync cursor still
+    moves past the UID, because ``sync_messages`` takes it from UIDNEXT. So
+    the sync does not try that message again, and it stays on the server.
+    """
+    try:
+        return _parse_imap_raw_message(raw, uid, flags, internaldate)
+    except Exception as exc:
+        _log.warning("IMAP message uid=%s did not parse (%s), so the sync "
+                       "skips it", uid, type(exc).__name__)
+        return None
 
 
 def _parse_imap_raw_message(
@@ -1250,10 +1240,12 @@ def _parse_imap_raw_message(
 
     # Headers
     subject = _decode_imap_header(str(parsed.get("Subject", "(no subject)")))
-    from_addr = _parse_imap_address(str(parsed.get("From", "")))
-    to_addrs = _parse_imap_address_list(str(parsed.get("To", "")))
-    cc_addrs = _parse_imap_address_list(str(parsed.get("Cc", "")))
-    bcc_addrs = _parse_imap_address_list(str(parsed.get("Bcc", "")))
+    # The address headers parse RAW, never the decoded value of the policy
+    # (task 4016). Each ``From`` header counts, so two senders give none.
+    from_addr = parse_sender(raw_header_values(parsed, "From"))
+    to_addrs = parse_address_list(first_raw_header(parsed, "To"))
+    cc_addrs = parse_address_list(first_raw_header(parsed, "Cc"))
+    bcc_addrs = parse_address_list(first_raw_header(parsed, "Bcc"))
     thread_id_raw = str(parsed.get("Message-ID", "")).strip()
     in_reply_to = str(parsed.get("In-Reply-To", "")).strip()
 
@@ -1284,21 +1276,21 @@ def _parse_imap_raw_message(
                 payload = part.get_payload(decode=True)
                 if payload:
                     charset = part.get_content_charset() or "utf-8"
-                    body_text = payload.decode(charset, errors="replace")
+                    body_text = _decode_body(payload, charset)
             elif content_type == "text/html" and "attachment" not in disposition:
                 payload = part.get_payload(decode=True)
                 if payload:
                     charset = part.get_content_charset() or "utf-8"
-                    body_html = payload.decode(charset, errors="replace")
+                    body_html = _decode_body(payload, charset)
     else:
         content_type = parsed.get_content_type()
         payload = parsed.get_payload(decode=True)
         if payload:
             charset = parsed.get_content_charset() or "utf-8"
             if content_type == "text/html":
-                body_html = payload.decode(charset, errors="replace")
+                body_html = _decode_body(payload, charset)
             else:
-                body_text = payload.decode(charset, errors="replace")
+                body_text = _decode_body(payload, charset)
 
     # Flags
     is_seen = "\\Seen" in flags

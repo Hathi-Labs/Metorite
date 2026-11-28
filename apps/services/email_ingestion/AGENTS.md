@@ -26,6 +26,7 @@ providers/
 ├── factory.py     — build_provider, the one name-to-class seam
 ├── app_credentials.py — oauth_app, the one reader of the OAuth app credentials
 inbound.py         — aiosmtpd inbound SMTP receiver (persists to email_messages)
+addresses.py       — the one parse of an address header (From, To, Cc, Bcc)
 scheduler.py       — Background sync scheduler (per-account asyncio tasks)
 persist.py         — the message upsert
 reconcile.py       — the reconcile of rows that the provider deleted
@@ -105,6 +106,16 @@ All providers implement the `BaseEmailProvider` abstract interface:
    - A stored UID can name another mail after a change of UIDVALIDITY. So the trash takes the stored Message-ID as `message_id=`, reads the Message-ID at the UID with `BODY.PEEK`, and compares the two.
    - A mismatch raises and moves nothing. A missing Message-ID on either side does the same. Fence: `test_email_imap_trash_uidvalidity.py`.
    - Each caller that has the row calls the trash through `base.trash_checked`. The gateway reads the stored value with `core._trash_message_id` or `core._trash_message_ids`. A call with no `message_id` fails closed on IMAP. Fence: `test_email_imap_trash_uidvalidity_r8.py` (R8).
+20. **The parse of an address header.** `addresses.py` is the one parse, for IMAP, the inbound receiver and Gmail (task 4016). Never take the text inside the first `<...>` pair, because a display name can hold `"<ceo@company.test>"`.
+   - It splits the RAW header and decodes a display name only after the split. IMAP and the inbound receiver read the raw value through `raw_header_values`, never `str(msg.get(...))`.
+   - `parse_sender` gives an empty address for a sender that is malformed or ambiguous, never a guess. Two `From` headers with different addresses give an empty address too.
+   - Each address outside quotes and comments must be the sender. So `john@x.com <john@x.com>` keeps its sender, and `ceo@company.test <mallory@evil.test>` gets none.
+   - More than `SENDER_MAX_VALUES` `From` values, or more than `SENDER_MAX_CHARS` characters in all, give no sender. The policy parser is slow on some text, and the receiver runs on the event loop.
+   - The parse never raises, and a name or an address holds no NUL. In `providers/imap.py`, the sync logs and skips one message that does not parse, so the rest of the batch stays. Fence for the NUL: `test_email_from_nul_r8.py` (R8).
+   - Fence: `test_email_from_parser.py`. It also refuses a `split("<")` in this package.
+   - The capture of an email (`gateway/routes/tasks/capture_email.py`) shows a stored sender through `_sender_label`. A name that holds `@` or `<`, and is not the address, shows the real address. Fence: `test_capture_email_sender_label.py`.
+   - ⚠️ Only the capture does this. The mail list, the conversation view and the CRM timeline still show the display name alone.
+   - A body charset that Python does not know reads as UTF-8 with each bad byte replaced (`imap._decode_body`), so the sync stores that mail. Fence: `test_email_imap_body_charset.py`.
 
 ## Inbound SMTP Server
 
