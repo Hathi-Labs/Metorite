@@ -7,10 +7,13 @@ migration on main is 315.
 
 **Built.** KG-1 (`585046f02`), KG-2 (`ccdf3c109`, dark, backfill open) and
 KG-3a (`a373b0152`, migration 314), KG-3b (`d7cc083d4`) and KG-4 (`8d9e643ea`,
-migration 355) are merged. KG-5 is built dark on its branch, with no
-migration (2026-11-07). KG-6 to KG-14 are not built. CI-R1a (§9.1) is
-built: one edge vocabulary in `acb_common/edge_vocabulary.py`. §9 holds the
-state of each slice.
+migration 355) are merged. KG-5 (`5b290f2cd`, no migration) is merged,
+dark. KG-9 is built, dark. KG-6 to KG-8 and KG-10 to KG-14 are not built.
+The kb_links edges are written in production (`GRAPH_SWEEP_ORGS=*`), and no
+code reads them yet: `graph.read_edges` has no caller (checked 2026-11-28).
+CI-R1a (§9.1) is built: one edge vocabulary
+in `acb_common/edge_vocabulary.py`. §9 holds the state of each slice. KG-20
+to KG-28 are the rows of rungs 2 and 5 of the company intelligence plan (D235, `building_blocks.md` §10).
 
 **Read first.** `work_plan.md` D105, D106, D112, D128 and D132.
 `knowledge_base.md` §20 owns the read seam. `company_context.md` owns the
@@ -81,9 +84,9 @@ none of them.
 
 | Piece | Where | State |
 |---|---|---|
-| The read seam | `apps/services/gateway/gateway/retrieval/company.py` (`GET /search/company`), `retrieval/sources.py` (`REGISTRY`, seven sources, `Hit`) | Live. `COMPANY_SEARCH_ENABLED` is on in production |
+| The read seam | `apps/services/gateway/gateway/retrieval/company.py` (`GET /search/company`), `retrieval/sources.py` (`REGISTRY`, nine sources since `studio` and `chat` joined, `Hit`. Checked 2026-11-28) | Live. `COMPANY_SEARCH_ENABLED` is on in production |
 | The tool | `packages/acb_skills/acb_skills/company_search_tools.py` (`search_company`) | Live, in the orchestrator core tools |
-| Page links | `kb_links`, migration 272. Written by `routes/knowledge/backlinks.sync_page_links` | Live. Page rows only |
+| Page links | `kb_links`, migration 272. Written by `routes/knowledge/backlinks.sync_page_links` | Live. Page rows, and since KG-4 and KG-5 the structural and resolved edges of the nightly `graph.sweep` (`GRAPH_SWEEP_ORGS=*` in production). No code reads the edges yet (checked 2026-11-28) |
 | The entity registry | `kb_entities`, migration 301. `gateway/kb_entities/registry.py` and `resolver.py` | Built at KC-8a. Rows exist only where a page or an alias needs one |
 | The embed door | `gateway/kb_index/embed.py` | Built. Knowledge uses it behind `KNOWLEDGE_EMBED`. Email uses it since KG-2 |
 | Email full text | `email_messages.fts`, migration 314 | Live. The backfill ran (Metorite task 920) |
@@ -111,6 +114,49 @@ one vocabulary names both.
   record as the node. So one thing never has two nodes.
 - **A kind with no reader never shows.** A `meeting` node waits for its
   source (KG-12). Until then the graph step drops it.
+
+### 3.1a Node kinds and object types (settled 2026-11-28, CI-0)
+
+Two lists, two homes. A node kind says WHICH app record a pointer names. An
+object type says WHAT the record is. The graph holds the first list. The
+meaning model holds the second (`building_blocks.md` §10.1).
+
+**The node kinds.** The twelve kinds of §3.1, and five more for rung 1 slice
+3 (task 4164). The migration is expand only. It widens `NODE_KINDS` and both
+CHECKs of `kb_links` (`source_kind` and `target_kind`).
+
+| New kind | The id | The record |
+|---|---|---|
+| `project` | `pm_projects.id` | A project. The target CHECK already takes it |
+| `calendar_event` | `calendar_entries.id` | An event that is not a to-do |
+| `document` | `kb_documents.id` | An indexed Drive document. The same word as the `source_kind` of `kb_chunks` |
+| `studio_record` | `studio_records.id` | A record of a Studio object |
+| `connection_record` | `<connection_id>:<record key>`, as text | A record of an outside API or database, such as a Zoho Books customer |
+
+Not now: `invoice`, `ticket` and chat. The CRM invoices are P 2738, and
+their kind comes in a later expand. A ticket is a task type, so its kind is
+`task`.
+
+**The object types.** A closed list: `person`, `company`, `deal`,
+`invoice`, `thread`, `task`, `page`, `project`, `event` and `document`. A
+core kind maps to its type by a fixed table in code:
+
+| Node kinds | Object type |
+|---|---|
+| `email`, `whatsapp` | `thread` |
+| `person`, `contact` | `person` |
+| `lead`, `deal` | `deal` |
+| `company` | `company` |
+| `task` | `task` |
+| `page` | `page` |
+| `project` | `project` |
+| `calendar_event`, `meeting` | `event` |
+| `document`, `artifact` | `document` |
+| `entity` | None. A Knowledge entity (a product, a topic) is not one of the ten types |
+
+A `connection_record` and a `studio_record` take the type of the certified
+map of their source (SEM-20, SEM-21). An uncertified record has no type, and
+a rule that needs a type skips it. `kb_links` never stores a type.
 
 ### 3.2 `kb_links` — as built, and after KG-4
 
@@ -439,9 +485,9 @@ here in the same pull request (R4).
 | **KG-1** (task 785) | ✅ BUILT 2026-10-28, `585046f02` | The eval of §7.2. `company_context.md` §12 holds the as-built record | One command prints the score. The baseline is on epic 783 | `test_search_company_eval.py`, `test_search_company_eval_r8.py` | `uv run python -m evals.search_company.run --fixture` | LOW · AGENT-SAFE |
 | **KG-2** (task 787) | ✅ BUILT 2026-10-29, `ccdf3c109`, dark. The backfill and its cost are open | Email embeddings through the embed door, and `scripts/backfill_email_embeddings.py`. `company_context.md` §12 holds the as-built record | No embed call outside `embed.py`. Both orgs hold vectors. The cost is a comment on task 787 | `test_no_embed_outside_door.py`, `test_email_embeddings_backfill_r8.py` | `uv run pytest tests/unit/test_no_embed_outside_door.py -q` | HIGH · The backfill and `email_semantic_search_enabled`: **OWNER-GATE** (approved 2026-10-29) |
 | **KG-3a** (task 788) | ✅ BUILT 2026-10-28, `a373b0152`, migration 314 | Email search under FORCE RLS, a stored tsvector. The backfill ran (task 920) | The email source answers inside its 1.5 s | `test_email_fts_column_r8.py` | `uv run pytest tests/unit/test_email_fts_column_r8.py -p no:xdist -rs -q` | HIGH · AGENT-SAFE |
-| **KG-3b** (task 788) | Open. After the KG-2 backfill | Hybrid search for each source with vectors, email first. One global sort by the CX-1 score (reciprocal rank fusion, k = 60) in place of `_interleave`, behind `CONTEXT_RECENCY`. A cache of the query embedding for the turn. The `--fixture` verdict gains the p50 and p95 limits of §7.3 | The eval runs with `CONTEXT_RECENCY` off and on, and the pull request writes both. A paraphrase of an email subject finds the mail. With the flag off, the output is byte-identical | `test_company_search_fusion.py` (new), `test_search_company_eval.py` | `uv run pytest tests/unit/test_company_search_fusion.py tests/unit/test_search_company_eval.py -q` | STANDARD · AGENT-SAFE to build. The embed spend: **OWNER-GATE** |
-| **KG-4** (task 789) | Built dark 2026-11-05, migration 355, branch `kg4-structural-edges-mt-2a446b84`. Not merged. The sweep is the job kind `graph.sweep`, seeded once a night (Q4) by a `worker.seed_hooks` hook. It needs `JOB_QUEUE` and `GRAPH_SWEEP_ORGS` | The expand migration of §3.2. The sweep of §4.1 that writes the KG-4 relations as EXTRACTED, with no model. The edge read and the removal of §4.4 in `gateway/kb_entities/graph.py`. Behind `GRAPH_SWEEP_ORGS`. `participant` moved to KG-5, because no stored id names a participant | R8: each KG-4 relation appears on a seeded org. Org B reads and writes no edge of org A. A second sweep writes 0 rows. A removed edge stays removed after a sweep. The page-link reads give the same answer as before | `test_kg_links_r8.py` (new). `test_kg_links_writer.py` (new): one writer for each form, no graph row with `page_id`, every relation names its evidence end, no write of a relation outside `RELATIONS`, and `RELATIONS` equals the pinned list of §4.1. `test_tenant_coverage.py`, `test_kb_backlinks_r8.py` | `uv run pytest tests/unit/test_kg_links_writer.py tests/unit/test_kg_links_r8.py tests/unit/test_kb_backlinks_r8.py -p no:xdist -rs -q` | HIGH (migration, RLS) · AGENT-SAFE |
-| **KG-5** (task 790) | Built dark 2026-11-07, branch `kg5-resolve-entities`, stacked on KG-4. Not merged. No migration. The forms run in the `graph.sweep` job, behind `GRAPH_SWEEP_ORGS`. `registry.add_aliases` adds a sender domain that names one company to the aliases of its customer entity | Exact identifiers to records, with no model: an address or a phone to a person or a contact, a domain to a company. Aliases through the registry. AMBIGUOUS rows for two candidates | R8 covers the exact case, the ambiguous case and the free-mail case. The eval improves on the person and company questions | `test_kg_resolve_r8.py` (new), `test_kc_entities.py` | `uv run pytest tests/unit/test_kg_resolve_r8.py tests/unit/test_kc_entities.py -p no:xdist -rs -q` | HIGH (tenancy, identity) · AGENT-SAFE |
+| **KG-3b** (task 788) | ✅ BUILT, merged in `d7cc083d4` (#1890), dark (checked 2026-11-28) | Hybrid search for each source with vectors, email first. One global sort by the CX-1 score (reciprocal rank fusion, k = 60) in place of `_interleave`, behind `CONTEXT_RECENCY`. A cache of the query embedding for the turn. The `--fixture` verdict gains the p50 and p95 limits of §7.3 | The eval runs with `CONTEXT_RECENCY` off and on, and the pull request writes both. A paraphrase of an email subject finds the mail. With the flag off, the output is byte-identical | `test_company_search_fusion.py` (new), `test_search_company_eval.py` | `uv run pytest tests/unit/test_company_search_fusion.py tests/unit/test_search_company_eval.py -q` | STANDARD · AGENT-SAFE to build. The embed spend: **OWNER-GATE** |
+| **KG-4** (task 789) | ✅ BUILT 2026-11-05, merged in `8d9e643ea` (#1744), migration 355, dark. The sweep is the job kind `graph.sweep`, seeded once a night (Q4) by a `worker.seed_hooks` hook. It needs `JOB_QUEUE` and `GRAPH_SWEEP_ORGS` | The expand migration of §3.2. The sweep of §4.1 that writes the KG-4 relations as EXTRACTED, with no model. The edge read and the removal of §4.4 in `gateway/kb_entities/graph.py`. Behind `GRAPH_SWEEP_ORGS`. `participant` moved to KG-5, because no stored id names a participant | R8: each KG-4 relation appears on a seeded org. Org B reads and writes no edge of org A. A second sweep writes 0 rows. A removed edge stays removed after a sweep. The page-link reads give the same answer as before | `test_kg_links_r8.py` (new). `test_kg_links_writer.py` (new): one writer for each form, no graph row with `page_id`, every relation names its evidence end, no write of a relation outside `RELATIONS`, and `RELATIONS` equals the pinned list of §4.1. `test_tenant_coverage.py`, `test_kb_backlinks_r8.py` | `uv run pytest tests/unit/test_kg_links_writer.py tests/unit/test_kg_links_r8.py tests/unit/test_kb_backlinks_r8.py -p no:xdist -rs -q` | HIGH (migration, RLS) · AGENT-SAFE |
+| **KG-5** (task 790) | ✅ BUILT 2026-11-07, merged in `5b290f2cd` (#1881), dark. No migration. The forms run in the `graph.sweep` job, behind `GRAPH_SWEEP_ORGS`. `registry.add_aliases` adds a sender domain that names one company to the aliases of its customer entity | Exact identifiers to records, with no model: an address or a phone to a person or a contact, a domain to a company. Aliases through the registry. AMBIGUOUS rows for two candidates | R8 covers the exact case, the ambiguous case and the free-mail case. The eval improves on the person and company questions | `test_kg_resolve_r8.py` (new), `test_kc_entities.py` | `uv run pytest tests/unit/test_kg_resolve_r8.py tests/unit/test_kc_entities.py -p no:xdist -rs -q` | HIGH (tenancy, identity) · AGENT-SAFE |
 | **KG-6** (task 791) | Open. After KG-3b and KG-4 | The graph step of §5, `Source.open` for each source (§6), the budget and the time of §7. Behind `GRAPH_SEARCH_ORGS`. The graph output never goes through `routes/knowledge/core.read_links`, because that read checks visibility for page targets only | A private task, another member's email, a CRM record without CRM access, a page in a closed space and a project outside a `group:<slug>` grant never appear as neighbours. The eval shows the gain, and p95 stays under 3 s. With the flag off, the output is byte-identical | `test_kg_neighbours_r8.py` (new), `test_company_search_graph.py` (new: the budget, the cap, the order, the flag off), `test_company_search_sources.py` | `uv run pytest tests/unit/test_company_search_graph.py tests/unit/test_company_search_sources.py tests/unit/test_kg_neighbours_r8.py -p no:xdist -rs -q` | HIGH (visibility) · AGENT-SAFE |
 | **KG-7** (task 792) | Open. After KG-6 | `get_entity`: a name or a citation in, one entity with its aliases and its neighbours across apps out, each item a link. It reuses the KG-6 read and budget. It joins the core tool pack. No model | On staging, Mira answers "what is going on with <customer>" with one tool call. The eval holds 10 such questions | `test_get_entity_tool.py` (new): no model call, a refusal with no member, the KG-6 visibility | `uv run pytest tests/unit/test_get_entity_tool.py tests/unit/test_kg_neighbours_r8.py -p no:xdist -rs -q` | STANDARD · AGENT-SAFE |
 | **KG-8** (task 793) | Open. After KG-7 | `search_company` and `get_entity` on the Metorite MCP, as reads with no approval (D124), with the member's own visibility | An external agent finds a Fracktal email, deal and page on staging. The MCP returns no record the member cannot open | `test_mcp_edge_coverage.py`, `test_mcp_company_search_r8.py` (new) | `uv run pytest tests/unit/test_mcp_edge_coverage.py tests/unit/test_mcp_company_search_r8.py -p no:xdist -rs -q` | HIGH (auth surface) · AGENT-SAFE |
@@ -451,6 +497,18 @@ here in the same pull request (R4).
 | **KG-12** (task 796) | Open. After KG-3b | Meetings, calendar events and attachment text as sources, each behind its app's own read | The eval holds questions for each new source, and they pass. Each new source checks its gate | `test_company_search_sources.py`, `test_company_search_r8.py` | `uv run pytest tests/unit/test_company_search_sources.py tests/unit/test_company_search_r8.py -p no:xdist -rs -q` | HIGH (visibility) · AGENT-SAFE |
 | **KG-13** (task 797) | Open. After KG-10 | Clusters of each org's graph by code (community detection). The hubs: key accounts, busy projects, main topics. The gardener and an admin report read them | An admin sees the clusters for Fracktal on staging. No model runs | `test_kg_clusters.py` (new): deterministic, no model import, one org only | `uv run pytest tests/unit/test_kg_clusters.py -q` | STANDARD · AGENT-SAFE |
 | **KG-14** (task 1005) | Open. After KC-13 | A shared agent's `NOTES.md` moves into org knowledge (D132.5, H-237), with the visibility of the room it learned in. The agent reads its notes back through `search_company`. A one-off moves the old notes, with a count | No shared agent writes `NOTES.md`. A member who cannot see the room cannot read its notes | `test_shared_agent_notes_r8.py` (new) | `uv run pytest tests/unit/test_shared_agent_notes_r8.py -p no:xdist -rs -q` | HIGH (visibility) · AGENT-SAFE |
+| **KG-20** (task 4175) | Open. Rung 2 (task 4165). After the R1 row that widens `NODE_KINDS` | The records of an outside connection (a Zoho Books customer, a row of an API or a database) become graph nodes, as pointers `(connection_id, record_id)` only, never content (D105). The sweep reads each record through its connection seam, as the `connected_by` member. A record that leaves its source loses its node at the next sweep | R8: a node holds an id and a label, and no field value of the record. Org B reads no node of org A. A member without the grant of the connection sees no such node | `test_kg_connection_nodes_r8.py` (new) | `uv run pytest tests/unit/test_kg_connection_nodes_r8.py -p no:xdist -rs -q` | HIGH (third-party data, identity) · AGENT-SAFE, dark |
+| **KG-21** (task 4176) | Open. Rung 2. After KG-20 | The exact keys grow: a phone in E.164 form, and a tax or GST id, beside the email and the domain of KG-5. The same AMBIGUOUS rule as KG-5. A key that names two records in one app links neither | R8: a GST id on a Zoho Books customer and on a CRM company links them, with the reason `tax_id`. Two candidates give AMBIGUOUS. No link joins two orgs | `test_kg_resolve_r8.py` (extended) | `uv run pytest tests/unit/test_kg_resolve_r8.py -p no:xdist -rs -q` | HIGH (identity) · AGENT-SAFE, dark |
+| **KG-22** (task 4177) | Open. Rung 2. After KG-21 | A probabilistic match for the records that no exact key links: the Fellegi-Sunter method of Splink, written in SQL, for each tenant, with no model and no egress. A high threshold, because a false merge costs more than a missed one. A pair under the threshold and over a floor becomes a proposal for KG-23, never a link | The weights are fixed in code and give the same result each run. A pair over the threshold links with the reason `probable` and its score. Nothing calls a model or the network | `test_kg_match_probabilistic.py` (new, pure), `test_kg_match_probabilistic_r8.py` (new: no pair crosses two orgs) | `uv run pytest tests/unit/test_kg_match_probabilistic.py tests/unit/test_kg_match_probabilistic_r8.py -p no:xdist -rs -q` | HIGH (identity) · AGENT-SAFE, dark |
+| **KG-23** (task 4178) | Open. Rung 2. After KG-22 | Confirm, split and Undo. A proposed link is a kind of the waiting seam ("Needs you") for an admin. Each merge stores its split, so one click splits the entity. A correction by a member pins the result, and a later sweep keeps it | An admin confirms a link on a card, then splits it, and the two records stand apart again. A pinned split survives the next sweep | `test_kg_link_confirm_r8.py` (new), `test_waiting_seam_r8.py` | `uv run pytest tests/unit/test_kg_link_confirm_r8.py tests/unit/test_waiting_seam_r8.py -p no:xdist -rs -q` | HIGH (identity) · AGENT-SAFE, dark. The card is a new screen: owner preview |
+| **KG-24** (task 4179) | **Accepted (D236.1).** Rung 5 (task 4168). After KC-9, KG-11 and KG-30 | A timeline across apps: dated facts as pointers, read from `kb_facts` (KC-9, `knowledge_curation.md`) and the `kb_links` edges, in time order, for one entity. Each item is re-checked through its owning app | R8: the timeline of one company shows its invoices, tickets and deal notes in order, and never a record that the member cannot open | `test_kg_timeline_r8.py` (new) | `uv run pytest tests/unit/test_kg_timeline_r8.py -p no:xdist -rs -q` | HIGH (visibility) · AGENT-SAFE, dark |
+| **KG-25** (task 4180) | Open. Rung 5. After KG-24 | A join over several sources, as the member: each source is read through its own seam, and the join runs in `compute_run` (SBX-18, SBX-19) or the data engine of WS-43y2b. No row is copied into a store | R8: a join over invoices and tickets gives the same total as each source alone. A source that the member cannot read adds no row | `test_cross_source_join_r8.py` (new) | `uv run pytest tests/unit/test_cross_source_join_r8.py -p no:xdist -rs -q` | STANDARD · **OWNER-GATE** for the `compute:` flip (SBX-G13) |
+| **KG-26** (task 4181) | Open. Rung 5. After KG-25 | The answer names its level (§13.4): a fact (a plain query), an association (a correlation, a trend break, an anomaly or a cohort), or a hypothesis (a causal claim, KG-28 only). The answer check (`acb_skills/answer_check.py`) refuses the words "caused by" in an answer below the hypothesis level | A golden case: an association answer that says "caused by" fails the check. The same answer with "consistent with" passes | `test_answer_level_label.py` (new) | `uv run pytest tests/unit/test_answer_level_label.py -q` | STANDARD · AGENT-SAFE |
+| **KG-27** (task 4182) | Open. Rung 5. After KG-26 | Each figure of an answer over several sources goes through the one number check (`acb_common/number_check.py`). A figure that no source holds is refused | A figure changed by one unit in a fixture fails the check | `test_number_check.py` (extended), `test_answer_level_label.py` | `uv run pytest tests/unit/test_number_check.py tests/unit/test_answer_level_label.py -q` | STANDARD · AGENT-SAFE |
+| **KG-28** (task 4183) | Later. Rung 5 pilot. After KG-27 | A causal hypothesis, only with a graph that a person draws and the refutation tests of DoWhy. No automatic causal discovery in the product. A cause is never claimed without a before-and-after or an experiment | A refutation test that fails stops the answer at the association level | `test_causal_pilot_refutes.py` (new) | `uv run pytest tests/unit/test_causal_pilot_refutes.py -q` | STANDARD · **OWNER-GATE** (a new dependency) |
+| **KG-29** (task 4213) | **Accepted (D236.3).** Rung 6 (task 4169). After KG-21 | Writes driven by events (§13.3). A change of a record puts one job on the job queue or the workflow engine. The job runs the resolver, the edge writer and the fact writer for that record only. The nightly `graph.sweep` stays, as the repair pass. No new bus | R8: a new CRM contact with a known address gets its edges within the job's run, with no sweep. A second job for the same record writes nothing new. The sweep repairs a lost job | `test_kg_event_writes_r8.py` (new), `test_job_effects_fence.py` | `uv run pytest tests/unit/test_kg_event_writes_r8.py tests/unit/test_job_effects_fence.py -p no:xdist -rs -q` | HIGH (writes, tenancy) · AGENT-SAFE, dark |
+| **KG-30** (task 4214) | **Accepted (D236.1).** Rung 6. After KG-29 and KC-9 | Typed signals on the timeline (§13.1, §13.8): `kb_facts` gains a signal kind with an event type from a closed list, a date, a state, and an amount only where a rule names it. No free-text column. Each signal is rebuilt from its app, and a purge drops it after its keep time | R8: a signal row has no text column. A purge drops a row past its keep time. Org B reads no signal of org A. A rebuild from the app gives the same rows | `test_kg_signals_r8.py` (new) | `uv run pytest tests/unit/test_kg_signals_r8.py -p no:xdist -rs -q` | HIGH (a migration, D105) · AGENT-SAFE, dark |
+| **KG-31** (task 4215) | **Accepted (D236.2).** Rung 2 (task 4165). After KG-23 | Strict visibility of what exists (§13.5): one function decides whether a member may see an entity, a link, a name, an alias or a merge reason. The map, search, `get_entity` and the MCP read call it | R8: a member who can open no source record of an entity gets no trace of it. An alias from a hidden record never shows. A link with one hidden end never shows. The four readers give the same result | `test_kg_entity_visibility_r8.py` (new) | `uv run pytest tests/unit/test_kg_entity_visibility_r8.py -p no:xdist -rs -q` | HIGH (visibility) · AGENT-SAFE |
 
 A test file marked "new" does not exist yet. The slice that names it writes
 it, red first (R8).
@@ -539,3 +597,136 @@ the owner or a decision gives one. Build to the default.
 - **The KG rows of `company_context.md` §12** are the as-built record of
   KG-1, KG-2 and KG-3a. From today this spec owns every KG slice, and the
   KG-3b row there points here.
+
+---
+
+## 13. The company memory layer (CI-0, D235, 2026-11-28)
+
+**Status: ACTIVE.** The owner accepted D-A, D-B and D-C on task 4150 on
+2026-11-28, 14:01 UTC (answer `920e399b`, D236). The binding brief
+is the comment of metorite-78 on task 4163 (2026-11-28, 07:47 UTC).
+`building_blocks.md` §10 places the layer in the cohesion map.
+
+### 13.1 What it is
+
+The company memory layer is ONE layer in five parts. Each part has one home.
+**The graph is the index that joins them.** It is not a copy of the data.
+
+| Part | What it holds | Its home | Stored here? |
+|---|---|---|---|
+| Records | The content: mails, deals, invoices, tasks | The owning apps | No. The apps stay the system of record (D105) |
+| Identity | One entity for each real thing, with its pointers to each app | `kb_entities` | Pointers and names only |
+| Links | Typed edges between pointers, with provenance, confidence, and `valid_from` and `valid_to` | `kb_links` | Pointers only |
+| Timeline | Dated events about an entity: "invoice became overdue", "deal moved to Negotiation", "ticket opened" | `kb_facts` (KC-9) | Typed signals only, never free text (D236.1) |
+| Meaning and memory | What the data means, and what members and the org care about | WS-SEM, the member profile and org memory | Definitions and preferences, never a copy of a record |
+
+### 13.2 Measured in production (2026-11-28, read-only counts by metorite-78)
+
+- `kb_links` holds about 143,000 live edges. 116,430 are email to person
+  (EXTRACTED) in 6 orgs. 17,376 are AMBIGUOUS, in 1 org. 5,307 are email to
+  contact, and 1,734 are task to task.
+- The CRM edges (contact to company 665, deal to contact 568, deal to company
+  520, domain to company 136) are in 1 org only.
+- No edge names WhatsApp, a calendar event, accounting or an outside
+  connection.
+- The nightly `graph.sweep` is the only writer, so a link can be 24 hours
+  old. No code reads `kb_links`.
+- The KG-1 eval rose from recall@5 0.400 to 0.550, at p50 0.87 s. It holds no
+  question across apps yet.
+
+### 13.3 The write path
+
+**Target (D236.3, accepted 2026-11-28):**
+
+1. A record changes in an app.
+2. An event goes to the job queue or the workflow engine. No new bus.
+3. The resolver finds or makes the entity (KG-21 to KG-23). Exact keys
+   come first, then the probabilistic match. Then a person confirms.
+4. The edge writer adds the links, structure first: keys, address, domain,
+   phone.
+5. The fact writer adds a timeline signal (D236.1).
+6. The nightly sweep stays, as the repair pass.
+
+The target freshness is minutes, because a risk nudge a day late is of no
+use (rung 6). A model reads unstructured pages at write time only (D128).
+Row KG-29 builds it.
+
+### 13.4 The read path
+
+A question goes through six steps:
+
+1. **Meaning.** The member's words resolve through the org glossary (MEM-10)
+   and the source model (SEM-14), and pick the sources.
+2. **Identity.** Which Acme? The chat asks when the name is AMBIGUOUS.
+3. **Neighbourhood and timeline.** At most 2 hops, inside the token budget of
+   §7.1.
+4. **Live reads.** The content comes from the owning apps, as the member.
+5. **Compute.** Only when the question needs a join or statistics (KG-25).
+6. **The answer.** A citation for each item, a level label (fact,
+   association or hypothesis, KG-26) and `number_check` on each figure
+   (KG-27).
+
+### 13.5 Visibility of what exists (D236.2, accepted 2026-11-28)
+
+§6 already drops a neighbour that the member cannot open. D236.2 makes the rule
+strict for identity too:
+
+1. A member sees an entity only when the member can open at least one of its
+   source records.
+2. A member sees a link only when the member can open both ends.
+3. A name, an alias or a merge reason that comes from a record the member
+   cannot open never shows. Existence is data.
+4. The map, search, `get_entity` and the MCP read apply the same function.
+
+Row KG-31 builds it. Rung 1 (task 4164) reads by §6 already.
+
+### 13.6 The traces
+
+Each demo traces end to end before its build starts.
+
+**Rung 1, "Tell me everything about Acme":**
+
+1. "Acme" resolves to one `kb_entities` row, with pointers to a CRM company
+   and a mail domain. The Books customer joins from rung 2 (KG-20).
+2. The read takes the edges from `kb_links`.
+3. Each pointer is checked through its app as the member. A pointer that the
+   member cannot open drops.
+4. The live content comes from each app: subject lines, the deal stage, the
+   invoice state.
+5. One card returns, with a citation on each row. The budget is p95 under
+   3 s.
+
+**Rung 6, an overdue invoice, open tickets and a quiet deal:**
+
+1. Timeline facts of the entity start the detector (LOOP-29).
+2. The detector checks the 3 conditions inside 14 days.
+3. The router picks the record owner (LOOP-30). It checks visibility, the
+   budget and the quiet hours. Reach sends a card with the evidence links.
+4. The response is logged, and the action rate is counted for each rule
+   (LOOP-32).
+
+This trace uses the typed signals (D236.1) and the fresh writes (D236.3).
+
+**Rung 5, "Why did collections slow in October?":** a timeline query and a
+compute join, with the label "association". Never "caused by".
+
+### 13.7 What a member gains
+
+| Person | Today | With the layer |
+|---|---|---|
+| A sales rep before a call | Opens 4 apps | One card: the open deal, the last mails, an unpaid invoice, an open ticket |
+| Finance | An export and a spreadsheet | "Who owes more than 30 days and has an active deal?" in one answer |
+| Support | Sees the ticket only | "This customer is also in a large open deal", so the ticket goes up |
+| The CEO | Asks people | "Top 5 risks this week", each with evidence and an owner |
+| Every member | Explains terms and preferences again | The chat keeps the terms, the preferences and the concerns |
+
+### 13.8 The owner decisions of this section
+
+The owner ticked all three on task 4150 on 2026-11-28, 14:01 UTC (answer
+`920e399b`). `work_plan.md` D236 records them.
+
+| Id | Question | Answer | The rows it frees |
+|---|---|---|---|
+| **D-A** | May the timeline keep small typed signals: an event type, a date, a state, and an amount where a rule needs it? They are rebuilt from the apps, kept for a limited time, under RLS, and never free text. This bends D105 | **Yes (D236.1)**, as signals, not content | KG-30, KG-24, LOOP-29 |
+| **D-B** | Strict visibility of what exists (§13.5) | **Yes (D236.2)** | KG-31 |
+| **D-C** | Writes driven by events, with the nightly sweep as repair (§13.3) | **Yes (D236.3)** | KG-29, LOOP-29 |

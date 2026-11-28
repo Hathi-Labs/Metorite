@@ -6527,6 +6527,49 @@ The owner approved the design on 2026-11-27, in chat to metorite-78, after the m
 
 Fence: the fences that `projects_ai_chat.md` §24.11 names for each slice, advisory until its slice builds them. `tests/unit/test_decision_ids.py` fails when two D234 entries merge. **Re-check this number at merge.**
 
+### D235 — Company intelligence: member concerns, nudges routed by role, the blocks Memory and Roles and reporting lines, a connect-time map that a person certifies, and the rung order (DECIDED, 2026-11-28)
+
+The owner asked for company intelligence on 2026-11-28, in chat to metorite-78 (task 4150). Metorite must graph and search every source, and find causes and risks across silos. It must remember what each member cares about, and nudge the right person by role.
+
+Vijay Varada ticked all five options on task 4150 (answer `d8c22baa`). Owner spec: `specs/building_blocks.md` §10 (the cohesion map). Epic: task 4150. Design: CI-0, task 4163. Research: `research/company_intelligence_2026-11.md`.
+
+```text
+"I just want to ensure that across these AI systems, there is some sort of cohesion instead of overlap and competing features that might get in each other's way."
+```
+
+1. **Member concerns.** The member profile may hold what a member worries about, or asks Metorite to watch, as the kind `concern`. Only that member sees it, and the member can edit or delete it. It is kept only after the member says yes. Managers never read it. It changes ranking and tone, never access. `personalization.md` §20 holds it.
+2. **Nudges routed by role.** A risk nudge goes to the record owner first. After 2 days with no act it goes to the team lead, then to an admin. Each step is re-checked against what that person may open. This amends a non-goal of `proactive_reach.md` §2.2, for a routed recipient only (RE-11). The non-goal is "no message to anyone but the member". A message to a person outside the org stays an Action Broker act.
+3. **Two new blocks.** "Memory" (member and org) and "Roles and reporting lines" join `building_blocks.md` §2. The second is used only to route a nudge. It opens no read and adds no subject (D12).
+4. **A model proposes the map of an outside source, once, at connect time.** An admin certifies it. Retrieval stays free of models (D128). Metorite borrows the method of NVIDIA auto-ontology and does not install it. Model calls go through the Router.
+5. **The rung order** is 1, 2, 4, 3, 6, then 5.
+
+   | Rung | Task | The demo |
+   |---|---|---|
+   | 1 | 4164 | Ask across apps |
+   | 2 | 4165 | The same customer everywhere |
+   | 4 | 4167 | Memory |
+   | 3 | 4166 | Outside data understood |
+   | 6 | 4169 | Risks reach the right person |
+   | 5 | 4168 | Correlate and explain |
+
+The binding rules stay: D105, D128, D132, D12, no score for a person, and a finding's entity is never a person. This decision flips no flag and opens no owner gate.
+
+The owner answered D-A, D-B and D-C of the same task later that day. D236 records them.
+
+Fence: `tests/unit/test_cohesion_map.py` for the map. The fences of each row of `building_blocks.md` §10.3, advisory until their slices build them. `tests/unit/test_decision_ids.py` fails when two D235 entries merge. **Re-check this number at merge.**
+
+### D236 — The company memory layer: typed signals on the timeline, strict visibility of what exists, and writes driven by events (DECIDED, 2026-11-28)
+
+Vijay Varada ticked all three options on task 4150 on 2026-11-28, 14:01 UTC (answer `920e399b`). Owner spec: `knowledge_graph.md` §13. Epic: task 4150. Design: CI-0, task 4163.
+
+1. **D-A: typed signals on the timeline.** `kb_facts` may keep small typed signals. Each signal holds an event type from a closed list, a date and a state. It holds an amount only where a rule needs it. It holds no free text. Metorite rebuilds each signal from its app, keeps it for a limited time, and isolates it per org under RLS. This bends D105 for signals only, and never for content. Rows KG-24, KG-30 and LOOP-29.
+2. **D-B: strict visibility of what exists.** A member sees an entity only when the member can open at least one of its source records. A member sees a link only when the member can open both ends. A name, an alias or a merge reason from a hidden record never shows. Row KG-31.
+3. **D-C: writes driven by events.** A record change puts one job on the job queue or the workflow engine. The graph is then fresh within minutes. The nightly `graph.sweep` stays as the repair pass. No new bus. Rows KG-29 and LOOP-29.
+
+The binding rules of D235 stay. This decision flips no flag and opens no owner gate. Each row keeps its own risk tier and fence in `knowledge_graph.md` §9 and `proactive_loop.md`.
+
+Fence: the fences of KG-24, KG-29, KG-30, KG-31 and LOOP-29, advisory until their slices build them. `tests/unit/test_decision_ids.py` fails when two D236 entries merge. **Re-check this number at merge.**
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 
