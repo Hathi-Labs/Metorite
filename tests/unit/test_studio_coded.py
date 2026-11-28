@@ -1,7 +1,7 @@
 """WS-STU C23a — the coded field type, with no database (hermetic).
 
 The value cases live in ``test_studio_fields.py`` and in the golden file. This file
-holds the parts that no table of values covers: the text of migration 445, the
+holds the parts that no table of values covers: the text of migration 520 (445 at build), the
 refusal of a changed ``system`` in a sync, and the PKG-13 choice.
 """
 
@@ -15,7 +15,7 @@ from gateway.package_host import field_values
 from gateway.studio import objects_store as store
 
 _ROOT = Path(__file__).resolve().parents[2]
-_MIGRATION = _ROOT / "infra/postgres/445_studio_coded_value.sql"
+_MIGRATION = _ROOT / "infra/postgres/520_studio_coded_value.sql"
 
 
 def test_the_migration_widens_both_checks_to_the_whole_list_and_adds_no_table() -> None:

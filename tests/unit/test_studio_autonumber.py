@@ -170,7 +170,7 @@ def test_the_migration_forces_rls_and_keys_by_the_pair() -> None:
     assert "period = '' OR period ~ '^\\d{4}-\\d{2}-\\d{2}$'" in sql
     assert "SET LOCAL lock_timeout" in sql
     assert "REFERENCES organization (id) ON DELETE CASCADE\n                     DEFAULT" in sql
-    # Both type CHECKs hold the list as it stood at 444, in order. 445 widens them again.
+    # Both type CHECKs hold the list as it stood at 444, in order. 520 (C23a, 445 at build) widens them again.
     for check in ("studio_object_fields_type", "package_field_value_field_type"):
         body = sql.split(f"ADD CONSTRAINT {check} CHECK", 1)[1].split(";")[0]
         assert re.findall(r"'(\w+)'", body) == list(sf.FIELD_TYPES[:23]), check

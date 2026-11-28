@@ -1,5 +1,5 @@
 -- ============================================================================
--- 445_studio_coded_value.sql — the `coded` field type (WS-STU C23a, task 2354).
+-- 520_studio_coded_value.sql — the `coded` field type (WS-STU C23a, task 2354).
 --
 -- What: two wider CHECKs and no table.
 --       `studio_object_fields_type` (migration 323) and
@@ -18,7 +18,7 @@
 -- file sets lock_timeout first, as 422 and 444 do. The hot-type CHECK stays as
 -- it is, because a coded field is never hot.
 --
--- The number is taken at build time (R1): 445 was booked for this task.
+-- The number is taken at build time (R1): 445 was booked at build; it is 520 at merge (migration-book.txt, 2026-11-28).
 -- Check it again at merge. Pinned by tests/unit/test_studio_objects_r8.py and
 -- tests/unit/test_package_field_values.py, which find the latest file that
 -- defines each CHECK by CONTENT, never by number (R1).
