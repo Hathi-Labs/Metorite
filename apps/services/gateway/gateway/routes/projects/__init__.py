@@ -86,6 +86,7 @@ from gateway.routes.projects import sequences as _sequences  # noqa: F401
 from gateway.routes.projects import reports as _reports  # noqa: F401
 from gateway.routes.projects import relations as _relations  # noqa: F401
 from gateway.routes.projects import search as _search  # noqa: F401
+from gateway.routes.projects import spreadsheet as _spreadsheet  # noqa: F401
 from gateway.routes.projects import tags as _tags  # noqa: F401
 from gateway.routes.projects import tasks as _tasks  # noqa: F401
 from gateway.routes.projects import teams as _teams  # noqa: F401

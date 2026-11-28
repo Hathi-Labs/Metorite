@@ -54,6 +54,11 @@ _CORE_STANDARD_TOOL_NAMES: frozenset[str] = frozenset({
     # in-tree agents set a tool_scope that would narrow a family away.
     # No shell, no egress. Fence: ``tests/unit/test_package_artifacts.py``.
     "package_artifacts",
+    # An Excel file of records or a table (DOC-6, owner 2026-11-28: "the Excel
+    # and PDF skills should be there as a core part of our core tools"). The
+    # server reads the records as the member, through the CRM and Projects
+    # access rules. Fence: ``tests/unit/test_make_spreadsheet.py``.
+    "make_spreadsheet",
     "emit_generative_ui",                # rich/interactive HITL UI (genui_2)
     "load_design_system",                # on-demand design language (genui_2 §7)
     "load_artifact_kit",                 # on-demand @cc/ui component reference
@@ -2310,6 +2315,14 @@ def _collect_injectable_platform_tools(agent_name: str | None = None) -> list[An
     try:
         from acb_skills.documents import make_document
         _all_tools = [*_all_tools, make_document]
+    except ImportError:
+        pass
+
+    # An .xlsx of a CRM or Projects query, or of a small table (DOC-6). The
+    # gateway reads the rows as the member and builds the file.
+    try:
+        from acb_skills.spreadsheets import make_spreadsheet
+        _all_tools = [*_all_tools, make_spreadsheet]
     except ImportError:
         pass
 

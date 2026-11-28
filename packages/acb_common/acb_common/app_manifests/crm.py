@@ -65,9 +65,11 @@ _CONNECTION = (
     "agent. The door stays off."
 )
 
-#: A CSV file is a download of the app. The door gives the records.
+#: An export file is a download of the app. The door gives the records. The
+#: chat may export records as a file (DOC-6, owner 2026-11-28), and an outside
+#: agent may not.
 _EXPORT = (
-    "A CSV file is a download of the app. The door reads the records through "
+    "An export file is a download of the app. The door reads the records through "
     "its own ops."
 )
 
@@ -154,6 +156,7 @@ CRM = App(
               sandbox_write=True),
         Route("GET", "/crm/export/organizations.csv", "", "A", planned="CRM-M2l", off_door=_EXPORT),
         Route("GET", "/crm/export/all.zip", "", "X", reason=_DOWNLOAD),
+        Route("GET", "/crm/export/workbook.xlsx", "make_spreadsheet", "A", off_door=_EXPORT),
         # ── package_fields.py (WS-PKG PKG-14a, dark behind PACKAGE_HOST_ORGS) ──
         Route("GET", "/crm/leads/{record_id}/package-fields", "", "X", reason=_PACKAGE_FIELDS),
         Route("PUT", "/crm/leads/{record_id}/package-fields/{install_id}/{field_key}", "",

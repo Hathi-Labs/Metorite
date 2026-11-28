@@ -414,6 +414,10 @@ Workspace folders visible in the Files Viewer: **outputs/** (default for generat
     # "bundle". Gated, so an agent that opts the tool out never reads it.
     Section("core", ("package_artifacts",), """- **package_artifacts(paths?, name?)** — When the member asks to zip, package or bundle files, call this. With no paths it zips every file this chat produced. It shows ONE download card for the .zip, so do not list the files' links again. On WhatsApp it cannot send a file, so say so.
 """),
+    # DOC-6 (chat_parity.md §DOC, owner 2026-11-28): an Excel file from a query.
+    # The server reads the rows, so no record goes through the model.
+    Section("core", ("make_spreadsheet",), """- **make_spreadsheet(spec)** — An export, Excel or spreadsheet request is make_spreadsheet. Give it a query and a shape: the server reads the records as the member and writes every matching row (up to 10,000) into one .xlsx card. Never read records to retype them, and never write a .csv with write_artifact for an export. In the answer, give the row count and the filters of the result. Say that you made a file only when it answered ``ok``.
+"""),
     # projects_ai_chat.md §14.10 (owner 2026-10-16): a report is a card, a full
     # view and a PDF from one spec. Gated, so an agent without the tool never
     # reads it. It comes before the file rules above for a report.
@@ -592,6 +596,12 @@ COMPACT_SECTIONS: tuple[Section, ...] = (
     Section("core", ("package_artifacts",), (
         "package_artifacts(paths?,name?) — zip this chat's files into one "
         "download card when the member asks to zip, package or bundle them"
+    )),
+    Section("core", ("make_spreadsheet",), (
+        "make_spreadsheet(spec) — an export or Excel request: give a query and a "
+        "shape, the server writes all matching rows (up to 10,000) into an .xlsx "
+        "card. Never retype records. State the row count and filters; claim the "
+        "file only on ok"
     )),
     Section("documents", ("make_report",), (
         "make_report(spec) — A report is make_report: a card, a full view and "

@@ -1309,6 +1309,7 @@ owner and the board set its order (D118), and a customer waits for it.
 | 3 | DOC-3: `edit_document`. Cell values and formulas of a `.xlsx`, and text of a `.docx` | 4029 | HIGH | DOC-1 | Not built |
 | 4 | DOC-4: the result goes on an email draft in the same turn | 4030 | STANDARD | DOC-2 | Not built |
 | 5 | The demo of the rung, on production | 4031 | none | DOC-2 to DOC-4 | Not built |
+| 6 | DOC-6: `make_spreadsheet`. The chat makes an Excel file from a query | 4144 | STANDARD | none | Built |
 
 #### Acceptance
 
@@ -1334,6 +1335,47 @@ owner and the board set its order (D118), and a customer waits for it.
   the draft card.
 - **Verify.** Each slice names its test file in its pull request. DOC-1 runs its
   container tests with the marker `sandbox_docker`.
+
+#### DOC-6: the chat makes an Excel file (task 4144, owner 2026-11-28)
+
+A customer team could not export its CRM customers to Excel from the chat on
+2026-11-27. The owner asked for the Excel skill as a core tool, in whatever
+shape the member needs. DOC-6 needs none of the rules 1 to 3 above, because it
+opens no file of a member. It writes a new file from Metorite's own records.
+
+**Decision (D-number at merge, `work_plan.md` §3).** The chat may export
+records as a file. This reverses the manifest note "A CSV file is a download of
+the app" (`app_manifests/crm.py`). An outside agent still may not: the two new
+routes stay off the door. The owner decided it on task 4128 (activity
+0f67eb81).
+
+**The shape of the seam.**
+
+- `make_spreadsheet` (`acb_skills/spreadsheets.py`) is in the core floor, so
+  every agent holds it. A WhatsApp run does not get it.
+- **The rows never pass through the model.** The model sends a query and a
+  shape. The tool asks the gateway to build the file from the query, as the
+  member, and gets back an artifact:
+  `GET /crm/export/workbook.xlsx` or `GET /projects/export/workbook.xlsx`.
+  Each route sits on the router of its app, so the access rules of that app
+  hold.
+- A `rows` source (at most 500 rows) holds a small table that the model already
+  has. One file takes CRM sources, or task sources, or rows.
+- There is one XLSX writer, `gateway/xlsx_export.py`. Task 4139 (Excel in the
+  Export menus) uses it. Its cell rule is the rule of the sandbox data engine.
+- **The cap.** A CRM file holds at most 10,000 rows. A task file holds at most
+  5,000 rows, the cap of the Projects export route. Over the cap, the answer
+  says so and gives no partial file.
+- A filter or a field that does not exist is refused by name. A filter is never
+  dropped.
+
+**Fences (R7).** Each test file holds one part.
+
+- `tests/unit/test_xlsx_export.py`: the cell rule parity, the formula guard,
+  the shape and the cap.
+- `tests/unit/test_make_spreadsheet.py`: the tool.
+- `tests/unit/test_make_spreadsheet_r8.py`: a member who cannot see a record
+  never gets it.
 
 #### Where the converter runs (DECIDED 2026-11-26, §7 item 14)
 

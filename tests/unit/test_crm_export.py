@@ -286,7 +286,9 @@ def test_there_is_no_partial_file_path_at_all() -> None:
     the export, and the row query's LIMIT is ``cap + 1`` purely so the render
     can refuse — no branch renders fewer rows than matched."""
     source = SOURCE.read_text(encoding="utf-8")
-    body = source[source.index("async def _export"):]
+    # DOC-6: the read moved to `read_filtered`, the one read of the CSV and the
+    # Excel export. The body runs from there to the end of the module.
+    body = source[source.index("async def read_filtered"):]
     assert "OFFSET" not in body
     assert "query.limit" not in body, (
         "`ListQuery.limit` is clamped to MAX_PAGE_SIZE — binding it here is "
