@@ -1392,7 +1392,10 @@ async def test_one_build_for_each_gap_at_a_time(
 
     async def slow(title: str, detail: str = "", context: str = "", **kw: Any) -> Any:
         waiting.set()
-        await release.wait()
+        # A bound wait: a second card (the mutant) times out here and the
+        # asserts below fail, in place of a hang.
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(release.wait(), 5)
         return await real(title, detail, context, **kw)
 
     monkeypatch.setattr(ask_tools, "request_confirmation", slow)
