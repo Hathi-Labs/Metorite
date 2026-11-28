@@ -572,6 +572,9 @@ async def test_each_round_starts_clean(engine: Any) -> None:
             seen["site"] = (engine.tool_data / "site").exists()
             seen["outputs"] = sorted(p.name for p in (engine.tool_data / "outputs").iterdir())
             seen["input"] = (engine.tool_data / "input.json").exists()
+            seen["extra"] = sorted(
+                p.name for p in engine.tool_data.iterdir()
+                if p.name not in ("pkg", "outputs", "site"))
         return plain(command, env_file)
 
     engine.broker.on_exec = run
@@ -584,8 +587,9 @@ async def test_each_round_starts_clean(engine: Any) -> None:
                                                                   encoding="utf-8")
         (engine.tool_data / "outputs" / "deep").mkdir()
         (engine.tool_data / "input.json").write_text("{}", encoding="utf-8")
+        (engine.tool_data / "leaked-token.txt").write_text("msbx_old", encoding="utf-8")
         await build.run_smoke()
-    assert seen == {"site": False, "outputs": [], "input": False}
+    assert seen == {"site": False, "outputs": [], "input": False, "extra": []}
     assert (engine.tool_data / "outputs").is_dir(), "outputs/ stays: the container mounts it"
 
 
@@ -650,6 +654,8 @@ async def test_a_fault_in_a_round_still_writes_its_row(
     async with ute.start_build({"crm:read"}) as build:
         write_package(engine.tool_data / "pkg", package_files())
         if fault == "unsafe_path":
+            (engine.tool_data / "site").mkdir()
+
             def unsafe(*_a: Any, **_k: Any) -> bool:
                 raise safe_open.UnsafePath("a link in the way")
 
@@ -731,6 +737,43 @@ async def test_the_install_alone_ends_by_the_build_deadline(engine: Any) -> None
     assert failed is not None and (failed.outcome, failed.error_class) == (
         "timeout", ute.INSTALL_TIMEOUT)
     assert took < 1.5, f"the install ran {took:.1f} s past a budget of 0.3 s"
+
+
+async def test_a_cancel_mid_round_revokes_and_writes_cancelled_rows(engine: Any) -> None:
+    """Decisions 3 and 4, the cancel path. A cancel while the smoke command
+    runs propagates as ``CancelledError``. The rows read ``smoke/cancelled``
+    and ``build/cancelled``, no capability is live, no grant is left, and
+    ``release_tool`` ran. Mutation: swallow the cancel in ``run_smoke`` ->
+    red."""
+    ute = engine.ute
+    passing(engine.broker)
+    plain = engine.broker.on_exec
+    running = asyncio.Event()
+
+    async def run(command: str, env_file: Any) -> Any:
+        if command == ute.SMOKE_COMMAND:
+            running.set()
+            await asyncio.Event().wait()  # held until the cancel
+        return plain(command, env_file)
+
+    engine.broker.on_exec = run
+
+    async def build() -> None:
+        async with ute.start_build({"crm:read"}) as b:
+            write_package(engine.tool_data / "pkg", package_files())
+            await b.run_smoke()
+
+    task = asyncio.create_task(build())
+    await asyncio.wait_for(running.wait(), 10)
+    assert engine.stores.live == {DOOR_TOKEN}, "the capability is live during the command"
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    rows = [(r["phase"], r["outcome"]) for r in engine.stores.rows]
+    assert rows == [("smoke", "cancelled"), ("build", "cancelled")]
+    assert engine.stores.live == set(), "a capability outlived the cancel"
+    assert engine.broker.hosts is None, "a grant outlived the cancel"
+    assert engine.broker.calls[-1] == ("release",)
 
 
 async def test_a_second_build_in_the_thread_gets_busy(

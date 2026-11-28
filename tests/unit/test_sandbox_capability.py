@@ -806,9 +806,10 @@ class TestDoneWhen8TheChecks:
 async def test_the_smoke_round_revokes_its_capability(door, monkeypatch, tmp_path):
     """SBX-4b1 done-when 19 (§12.4 decisions 4 and 7), R8. The real ``mint``,
     ``lookup`` and ``revoke_step`` of the step engine on a real database. The
-    token is live while the smoke command runs, and dead after the round: a
-    pass, an exit 1 and a sandbox fault. Mutation: skip ``revoke_step`` on a
-    failure -> red."""
+    token is live while the smoke command runs, and dead at the end of its
+    own round, before the next round mints: a pass, an exit 1 and a sandbox
+    fault. Mutation: skip ``revoke_step`` at the end of a round, so only the
+    end of the build revokes -> red."""
     from acb_skills import user_tool_build as ute
     from orchestrator import sandbox_broker as sb
 
@@ -846,11 +847,16 @@ async def test_the_smoke_round_revokes_its_capability(door, monkeypatch, tmp_pat
 
             broker.on_exec = run
             results = []
+            between: list[Any] = []
             async with ute.start_build({"crm:read"}) as build:
                 write_package(broker.tool_data / "pkg", package_files(lock=""))
                 for name in modes:
                     mode["now"] = name
                     results.append(await build.run_smoke())
+                    # Before the next round mints: this round's token is dead.
+                    between.append(await sandbox_capabilities.lookup(tokens[-1]))
+            assert between == [None, None, None], (
+                "a smoke capability lived into the next round")
             return [results, [await sandbox_capabilities.lookup(t) for t in tokens]]
 
     results, after = await _scoped(world, go)

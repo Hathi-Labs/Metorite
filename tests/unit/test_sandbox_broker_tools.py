@@ -329,3 +329,21 @@ async def test_a_refused_claim_leaves_no_orphan_container(
     assert idle.container_id in docker.removals(), "the dropped victim kept its container"
     assert not busy.removed
     await broker.stop()
+
+
+async def test_a_failed_start_frees_the_thread(
+    broker: sb.SandboxBroker, docker: FakeDocker, tools_on: dict[str, Any],
+) -> None:
+    """Decision 1: a failed start of ``acquire_tool`` frees the lock of (org,
+    thread), so the next build of the thread starts. Mutation: keep the key
+    on a failure -> red ("already runs")."""
+    thread = _thread()
+    docker.fail_run = True
+    with bound_run(ORG, thread=thread), pytest.raises(sb.SandboxUnavailable):
+        await broker.acquire_tool()
+    docker.fail_run = False
+    with bound_run(ORG, thread=thread):
+        handle = await broker.acquire_tool()
+    assert not handle.failed
+    await broker.release_tool(handle)
+    await broker.stop()

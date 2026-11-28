@@ -186,7 +186,7 @@ def _json(raw: bytes, code: str) -> Any:
 
 def _schema(value: Any) -> Any:
     """*value* when it is a valid JSON Schema, or :class:`PackageRefused`."""
-    import jsonschema
+    import jsonschema  # type: ignore[import-untyped]
 
     if not isinstance(value, dict | bool):
         raise PackageRefused(TOOL_JSON)
@@ -198,7 +198,7 @@ def _schema(value: Any) -> Any:
 
 
 def _valid(schema: Any, value: Any) -> bool:
-    import jsonschema
+    import jsonschema  # type: ignore[import-untyped]
 
     try:
         return bool(jsonschema.Draft202012Validator(schema).is_valid(value))
@@ -449,16 +449,22 @@ class ToolBuild:
     # ── the steps ───────────────────────────────────────────────────────────
 
     async def _clean_round(self) -> None:
-        """Delete ``site/``, the content of ``outputs/`` and ``input.json``
-        (decision 2). ``outputs/`` stays, because the container mounts it."""
+        """Delete ``site/``, ``input.json``, each other top-level name but
+        ``pkg/``, and the content of ``outputs/`` (decision 2). ``outputs/``
+        stays, because the container mounts it."""
         from acb_skills import safe_open
 
         broker = _broker()
         root = self.tool_data
 
         def clean() -> None:
-            safe_open.remove_tree(root, SITE_DIR)
-            safe_open.unlink(root, INPUT_FILE)
+            # Each top-level name but `pkg/` and `outputs/` goes: `site/`,
+            # `input.json`, and any file that a smoke command of an earlier
+            # round wrote there. Its token is dead already (revoked at the
+            # end of its round), and no later round reads that file.
+            for name in os.listdir(root):
+                if name not in (PKG_DIR, OUTPUTS_DIR):
+                    safe_open.remove_tree(root, name)
             outputs = root / OUTPUTS_DIR
             st = os.lstat(outputs)
             if not stat.S_ISDIR(st.st_mode):

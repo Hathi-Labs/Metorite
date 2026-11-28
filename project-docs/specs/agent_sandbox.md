@@ -3042,13 +3042,13 @@ before SBX-9.
 SBX-4b1 adds one way in, as `run_compute` does for `compute` (main).
 
 - `read_tool_binding()` sits beside `read_compute_binding()`
-  (`sandbox_broker.py:942`). It sets the agent to `USER_TOOL_AGENT`
-  (`:147`).
+  (`sandbox_broker.py:945`). It sets the agent to `USER_TOOL_AGENT`
+  (`:150`).
   So the container key is (org, `user-tool`, thread), as §6.2 says.
 - The org, the member and the thread come from the run binding only (R5).
-- `SandboxBroker.acquire_tool()` (`:3549`) starts or reuses that container.
+- `SandboxBroker.acquire_tool()` (`:3560`) starts or reuses that container.
   It refuses unless `maf_coding_scope_allows(TOOLS_TARGET, org)` is true.
-  `acquire()` keeps its refusal (`:3294`).
+  `acquire()` keeps its refusal (`:3297`).
 - Two new settings cap it: `user_tool_max_per_org` and
   `user_tool_max_total`, each with the default 1 (§5.6). At a cap it raises
   `SandboxBusy`.
@@ -3057,7 +3057,7 @@ SBX-4b1 adds one way in, as `run_compute` does for `compute` (main).
   second build in the thread gets "busy".
 - A `tools` container also counts against the broker's own caps (§6.2).
   At a cap, the oldest idle `tools` container stops. With none idle, the
-  build gets "busy" (`_make_tool_room`, `:3512`).
+  build gets "busy" (`_make_tool_room`, `:3523`).
 - Only the step engine calls `acquire_tool()`. A source scan in SBX-F11
   fails on a second caller.
 - **Dark until SBX-4b2.** The step engine grants egress with no card. So a
@@ -3065,12 +3065,12 @@ SBX-4b1 adds one way in, as `run_compute` does for `compute` (main).
   module imports the engine or calls `start_build`. SBX-4b2 lifts that scan
   in the same change as its card.
 
-**2. The mounts.** `mount_list` (`sandbox_broker.py:1277`) gets a `tools`
-branch, `tools_mounts` (`:1250`). It mounts no working dir of an agent and no
+**2. The mounts.** `mount_list` (`sandbox_broker.py:1280`) gets a `tools`
+branch, `tools_mounts` (`:1253`). It mounts no working dir of an agent and no
 tenant dir.
 
 `projects_mounts` mounts the run-data dir of the same thread read-write
-(`sandbox_broker.py:1168`). A folder inside that dir is still inside
+(`sandbox_broker.py:1171`). A folder inside that dir is still inside
 that mount. So the `tools` branch mounts a sibling dir outside it:
 `.run-data/<org slug>/<thread slug>.user-tool/`, called `<tool-data>` below.
 
@@ -3079,7 +3079,7 @@ that mount. So the `tools` branch mounts a sibling dir outside it:
 | `<tool-data>/` | `/workspace/.run` | Read-write |
 | `<tool-data>/outputs/` | `/workspace/outputs` | Read-write |
 
-- `RunBinding` gains `tool_data_rel` (`:718`), beside `run_data_rel`. It
+- `RunBinding` gains `tool_data_rel` (`:721`), beside `run_data_rel`. It
   derives from `agent_paths.run_data_rel`, and `agent_paths.py` does not
   change. A thread slug ends in 8 hex digits, so `<thread slug>.user-tool`
   is never the slug of another thread.
@@ -3094,8 +3094,8 @@ that mount. So the `tools` branch mounts a sibling dir outside it:
   real run.
 - Each build starts with an empty `pkg/`.
 - Each round deletes `site/`, `outputs/` and `input.json` first.
-- The run end deletes `<tool-data>` too. `_note_run_data` (`:3753`) records
-  the rel of `<tool-data>` for the thread. `end_run` (`:3811`) removes it with
+- The run end deletes `<tool-data>` too. `_note_run_data` (`:3764`) records
+  the rel of `<tool-data>` for the thread. `end_run` (`:3822`) removes it with
   `_remove_run_data`, as it removes the run-data dir (`maf_coding_engine.md`
   §16.3). The startup sweep `remove_all_run_data` removes the whole
   `.run-data` dir, so it covers `<tool-data>` with no change.
@@ -3121,7 +3121,7 @@ smoke test then moves through two grants:
   PyPI publishes its download counts as a public dataset. So a package name
   that the code asks for can carry data out. SBX-4b builds the narrow grant
   of step 2.
-- `EGRESS_TARGETS` (`:296`) gains `TOOLS_TARGET`. `projects` and `compute`
+- `EGRESS_TARGETS` (`:299`) gains `TOOLS_TARGET`. `projects` and `compute`
   stay out.
 - `check_grant_hosts` refuses the door name while
   `sandbox_egress_door_upstream` is empty. So a stack with no door upstream
@@ -3133,7 +3133,7 @@ smoke test then moves through two grants:
   the smoke grant of one round each make their own network. The second
   grant removes the network of the first.
 
-**This edits the seam of PR 2887.** `_grant_inputs` (`:4429`) compares the
+**This edits the seam of PR 2887.** `_grant_inputs` (`:4440`) compares the
 name of `read_run_binding()` with the name of the handle.
 A `tools` handle has the key (org, `user-tool`, thread), so that check
 refuses it. SBX-4b1 changes `_grant_inputs`: for a `tools` handle it compares
@@ -3159,15 +3159,15 @@ own grant.
 - Each round mints one capability: `phase="smoke"`, the read scopes of
   `tool.json`, no write scope and `ttl_s=180` (`sandbox_capabilities.mint`,
   `sandbox_capabilities.py:255`, and `PHASES`, `:81`).
-- `SandboxBroker.exec` (`:4654`) gains `env_file`. The broker writes the
+- `SandboxBroker.exec` (`:4665`) gains `env_file`. The broker writes the
   token to a file of mode 0600 in a folder of mode 0700
-  (`write_exec_env_file`, `:1572`). Only the name `METORITE_API_TOKEN`
+  (`write_exec_env_file`, `:1575`). Only the name `METORITE_API_TOKEN`
   passes (`EXEC_ENV_NAMES`).
 - The broker passes that file with `docker exec --env-file`, and deletes it
   when the command ends. This is the path of the grant token of PR 2887. No
   process list shows the token.
 - **No build process lives at the smoke command.** The grant of step 2
-  recreates the container through `_restart` (`:4063`). So each process of
+  recreates the container through `_restart` (`:4074`). So each process of
   the build ends before the token arrives. No build process can read
   `/proc/<pid>/environ` of the smoke command.
 - The round ends with `revoke_step(org=…, run_id=…, phase="smoke")`. This
@@ -3203,7 +3203,7 @@ refusal has one fixed code, and the model hears that code only.
 - `site/` must hold 300 MiB or less after the install, the layer cap of
   §19.5. Above it the round fails with `install_too_large`.
 - The broker's workspace quota (`sandbox_workspace_quota_mb`) bounds each
-  download on the disk. `measure_workspace` (`:3201`) gets a `tools` branch
+  download on the disk. `measure_workspace` (`:3204`) gets a `tools` branch
   for this: it measures `<tool-data>`, the one dir that the container
   mounts. Before the branch it measured the working dir only, and no quota
   bounded `<tool-data>`.
@@ -3304,8 +3304,8 @@ reserved at agent registration.
   regex alone does not stop them.
 - `register_agent` (`routes/agent.py:2250`, main) adds the set to its
   `reserved` set (`:2275`). A request for either name gets 409.
-- A test pins the set to `COMPUTE_AGENT` (`sandbox_broker.py:166`) and to
-  `USER_TOOL_AGENT` (`:147`).
+- A test pins the set to `COMPUTE_AGENT` (`sandbox_broker.py:169`) and to
+  `USER_TOOL_AGENT` (`:150`).
 - The reason: a real agent with either name shares the container key of a
   broker step (§6.2).
 
@@ -3567,7 +3567,7 @@ SBX-4b1:
 ```bash
 bash scripts/dev_db.sh
 eval "$(bash scripts/dev_db.sh --export)"
-timeout 900 uv run pytest tests/unit/test_user_tool_build.py tests/unit/test_sandbox_broker_tools.py tests/unit/test_sandbox_broker_seam.py tests/unit/test_sandbox_no_secrets.py tests/unit/test_sandbox_egress_profiles.py tests/unit/test_sandbox_capability.py tests/unit/test_sandbox_door_identity.py tests/unit/test_sandbox_door_log_lines.py tests/unit/test_tenant_request_binding.py tests/unit/test_user_tool_registry.py tests/unit/test_tenant_coverage.py tests/unit/test_spawn_hardening.py -q -rs
+timeout 900 uv run pytest tests/unit/test_user_tool_build.py tests/unit/test_sandbox_broker_tools.py tests/unit/test_sandbox_broker_seam.py tests/unit/test_sandbox_no_secrets.py tests/unit/test_sandbox_egress_profiles.py tests/unit/test_sandbox_capability.py tests/unit/test_sandbox_door_identity.py tests/unit/test_sandbox_door_log_lines.py tests/unit/test_tenant_request_binding.py tests/unit/test_user_tool_registry.py tests/unit/test_spawn_hardening.py -q -rs
 timeout 1800 uv run pytest tests/unit/test_user_tool_build.py tests/unit/test_sandbox_no_secrets.py -q -rs -m sandbox_docker
 uv run ruff check packages/acb_skills/acb_skills/user_tool_build.py packages/acb_skills/acb_skills/agent_paths.py packages/acb_auth apps/services/gateway/gateway/sandbox_door.py apps/services/gateway/gateway/studio apps/services/gateway/gateway/routes/agent.py apps/services/orchestrator/orchestrator/sandbox_broker.py
 uv run mypy packages/acb_skills/acb_skills/user_tool_build.py packages/acb_auth/acb_auth/sandbox_capabilities.py apps/services/orchestrator/orchestrator/sandbox_broker.py apps/services/gateway/gateway/studio/user_tool_runs.py
@@ -3586,7 +3586,9 @@ bash scripts/premerge.sh
 
 A run with any skipped test fails the slice. R8 needs the database. The
 `sandbox_docker` half runs on `.github/workflows/sandbox-docker.yml`, as §11
-says.
+says. The step engine adds no table, so `test_tenant_coverage.py` is not on
+its list. Its two checks of the live catalog fail on the open backlog of
+WS-29. Part (b) keeps the entry of `user_tool_runs`.
 
 #### Fences
 
