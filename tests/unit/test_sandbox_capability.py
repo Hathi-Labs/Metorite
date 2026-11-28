@@ -14,8 +14,8 @@ done-when 1, 2 (the R8 half), 3, 8 and 9.
   an app id and a version.
 * Done-when 9: the 601st call of one capability gets 429 with
   ``Retry-After``, and a Redis outage gets 503.
-* The source scan: no module outside ``tests/`` calls ``mint``. SBX-4 names
-  its one caller here.
+* The source scan: no module outside ``tests/`` calls ``mint``, except the
+  step engine of SBX-4b1, its one caller.
 
 **R8 (a real database, as a NOBYPASSRLS role, on a phase-4-promoted catalog
 of its own).** The real ``mint``, ``lookup``, ``revoke``, ``revoke_step``
@@ -28,6 +28,8 @@ and ``sweep``, and the real CRM and Projects routers behind the real door.
   ``revoke_step``, and after its row moves back by 15 minutes and 1 second.
 * Done-when 8: a direct INSERT of a smoke row with a write scope fails on
   the CHECK.
+* SBX-4b1 done-when 19 (``agent_sandbox.md`` §12.4): the step engine revokes
+  the capability of each smoke round, after a pass and after a failure.
 
 The gate is ``TENANT_LADDER_DATABASE_URL``. A skip is not a pass. Run::
 
@@ -287,9 +289,11 @@ def test_a_redis_client_that_cannot_be_built_is_503(monkeypatch, armed_tripwire)
 
 # ── R5e: only tests mint until SBX-4 ───────────────────────────────────────
 
-#: The modules outside ``tests/`` that may call ``mint``. SBX-4 adds the broker
-#: step, its ONE caller.
-_MINT_CALLERS: frozenset[str] = frozenset()
+#: The modules outside ``tests/`` that may call ``mint``. SBX-4b1 adds the
+#: step engine, its ONE caller (``agent_sandbox.md`` §12.4 decision 4).
+_MINT_CALLERS: frozenset[str] = frozenset({
+    "packages/acb_skills/acb_skills/user_tool_build.py",
+})
 
 
 def _calls_mint(tree: ast.AST) -> bool:
@@ -796,3 +800,66 @@ class TestDoneWhen8TheChecks:
         minted = await _mint(door.world, run_id="run-grant")
         found = await _scoped(door.world, lambda: sandbox_capabilities.lookup(minted.token))
         assert found is not None
+
+
+@_DB_GATE
+async def test_the_smoke_round_revokes_its_capability(door, monkeypatch, tmp_path):
+    """SBX-4b1 done-when 19 (§12.4 decisions 4 and 7), R8. The real ``mint``,
+    ``lookup`` and ``revoke_step`` of the step engine on a real database. The
+    token is live while the smoke command runs, and dead at the end of its
+    own round, before the next round mints: a pass, an exit 1 and a sandbox
+    fault. Mutation: skip ``revoke_step`` at the end of a round, so only the
+    end of the build revokes -> red."""
+    from acb_skills import user_tool_build as ute
+    from orchestrator import sandbox_broker as sb
+
+    from tests.unit._sandbox_broker_fakes import bound_run, configure_env
+    from tests.unit.test_user_tool_build import FakeBroker, package_files, write_package
+
+    env = configure_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(env["settings"], "maf_coding_scope", "tools:*")
+    monkeypatch.setattr(env["settings"], "sandbox_egress_enabled", True)
+    monkeypatch.setattr(env["settings"], "sandbox_egress_door_upstream", "10.0.0.5:8080")
+    world = door.world
+    tokens: list[str] = []
+    live: list[bool] = []
+    modes = iter(["pass", "exit", "fault"])
+
+    async def go() -> list[Any]:
+        with bound_run(world.org_a, member=M, thread=str(uuid.uuid4())):
+            broker = FakeBroker(sb.read_tool_binding().tool_data)
+            monkeypatch.setattr(ute, "_broker", lambda: broker)
+            mode = {"now": "pass"}
+
+            async def run(command: str, env_file: Any) -> Any:
+                if command != ute.SMOKE_COMMAND:
+                    return None
+                token = env_file["METORITE_API_TOKEN"]
+                tokens.append(token)
+                live.append(await sandbox_capabilities.lookup(token) is not None)
+                (broker.tool_data / "outputs" / "result.json").write_text(
+                    '{"pages": 2}', encoding="utf-8")
+                if mode["now"] == "exit":
+                    return sb.ExecResult(1, "", 0, False, 0.1)
+                if mode["now"] == "fault":
+                    raise sb.SandboxUnavailable("the container is gone")
+                return None
+
+            broker.on_exec = run
+            results = []
+            between: list[Any] = []
+            async with ute.start_build({"crm:read"}) as build:
+                write_package(broker.tool_data / "pkg", package_files(lock=""))
+                for name in modes:
+                    mode["now"] = name
+                    results.append(await build.run_smoke())
+                    # Before the next round mints: this round's token is dead.
+                    between.append(await sandbox_capabilities.lookup(tokens[-1]))
+            assert between == [None, None, None], (
+                "a smoke capability lived into the next round")
+            return [results, [await sandbox_capabilities.lookup(t) for t in tokens]]
+
+    results, after = await _scoped(world, go)
+    assert [r.outcome for r in results] == ["succeeded", "failed", "failed"]
+    assert len(tokens) == 3 and live == [True, True, True]
+    assert after == [None, None, None], "a smoke capability outlived its round"

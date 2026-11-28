@@ -44,6 +44,7 @@ export type RunErrorCode =
   | "too_many_runs"
   | "ai_unavailable"
   | "answered_once"
+  | "answered_by_you"
   | "unknown";
 
 export interface RunErrorWords {
@@ -194,6 +195,15 @@ export const RUN_ERROR_WORDS: Record<RunErrorCode, RunErrorWords> = {
   answered_once: {
     title: "Someone already answered this",
     body: "Your answer was not sent, because the question was already answered.",
+    retry: false,
+    tone: "notice",
+  },
+  // Task 4036: the run already took THIS member's answer, and the response
+  // to the first tap was lost. The words stay out of the composer, because a
+  // send of them would act twice. Nothing is lost, so the notice only informs.
+  answered_by_you: {
+    title: "You already answered this",
+    body: "Your answer was not sent again, because the assistant already has it.",
     retry: false,
     tone: "notice",
   },

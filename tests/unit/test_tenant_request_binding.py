@@ -268,14 +268,15 @@ _ALLOWED_CHAINS = frozenset({
 _SCOPE_KEYS = frozenset({"route", "app", "path", "query_string", "acb.agent_signed_body"})
 #: The four signed headers, the two that tell branch 0 to refuse a body on a
 #: GET, the nonce of a write (EA-6a, EA3-28), the signed MCP session key
-#: (SW-7, spec §12.5), and the signed approval of a door write with the ONE
-#: ``If-Match`` that the digest of its call reads (MCP-P1b-2, AD-6, AD-17).
+#: (SW-7, spec §12.5), the signed approval of a door write with the ONE
+#: ``If-Match`` that the digest of its call reads (MCP-P1b-2, AD-6, AD-17),
+#: and the signed batch key of a bulk call (MCP-G28a, D209).
 #: ``If-Match`` is not signed. The digest binds it: another value is another
 #: digest, so the spend refuses it.
 _HEADERS = frozenset({
     "x-agent-connection", "x-agent-timestamp", "x-agent-signature", "x-actor-via",
     "content-length", "transfer-encoding", "x-agent-nonce", "x-agent-session",
-    "x-agent-approval", "if-match",
+    "x-agent-approval", "if-match", "x-agent-batch",
 })
 #: SBX-2 (agent_sandbox.md §12.2): the sibling's own headers. The capability,
 #: and the names that it reads only to refuse a second credential. Only the
@@ -1237,6 +1238,28 @@ def test_the_runtime_identity_check_turns_red(monkeypatch):
 #: 3.12 ``29b8aaad…a9a2`` and 3.13 ``187571d8…21f7``. This pin needs
 #: the diff-reviewer review and the independent verification.
 #:
+#: MCP-G28a (2026-11-11, external_agent_access.md §9.2, D209, task 2541):
+#: step 2 reads the optional signed ``X-Agent-Batch`` once and in its shape,
+#: on a write only, and the canonical string ends with ``batch:<key>`` only
+#: when it is present (the pattern of SW-7). `_claim_call` passes the key to
+#: `_claim_write` for a write of ``MCP_WRITE_ROUTES``, never for a door write.
+#: `_claim_write` has two counters: the call counter (``agent_writes``) counts
+#: 1 for a write with no key and 1 for each 50 rows of one key, and the row
+#: counter (``agent_write_rows``) counts 1 for each write. The new helper
+#: `_count_write` holds the one count, and the digest covers it. The scan and
+#: the tripwire allow the one new header. The pins before it were 3.12
+#: ``f5c27b8e…cdf515c`` and 3.13 ``bbc92971…3815e8cb``. This pin needs the
+#: diff-reviewer review and the independent verification.
+#:
+#: MCP-G28a fix round 1 (2026-11-11, Opus review): a failure of the store
+#: between the ``INCR`` of the batch key and the charge of the call that the
+#: row was due now drops the key before the 503. The new helper
+#: `_drop_unpaid_batch` binds the ROW's organization again and deletes the
+#: key, best effort, and the digest covers it. Nothing new is read from the
+#: request: the scan and the tripwire are as in MCP-G28a. The pins of the
+#: first build were 3.12 ``170d9537…0b68b039`` and 3.13 ``ee79fd33…b9518580``.
+#: This pin needs the diff-reviewer review and the independent verification.
+#:
 #: MCP-P1b-2 (2026-11-11, external_agent_access.md §19.5 and AD-6, task 1722):
 #: step 2 reads the optional signed ``X-Agent-Approval`` once and in the shape
 #: of a lower-case request id, on a write only. The canonical string gains the
@@ -1317,8 +1340,20 @@ _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
     # 82bea7a4... (py3.12) of deps.py (branch 0) approved by this review"),
     # held at 44d12c5cb0. Verified (external_agent_access.md §10.1): the
     # independent Opus ws-verifier PASS of 44d12c5cb0. Task 3802, 2026-11-27.
-    (3, 12): "82bea7a4e5d25380a146ad4369b5d5aa13fcea990bf9bcb550909b12b4b467be",
-    (3, 13): "f781ee5f96b307cbee7fbd97f133bd5c46a2592be3a65e30edb91e7caca75904",
+    # MCP-G28a after the merge with main (2026-11-28, task 2541, D209): the
+    # batch key of MCP-G28a beside the approval of MCP-P1b-2, the signed body
+    # of CIV-14b and the sandbox sibling of SBX-2 and SBX-3a. Step 2 reads
+    # ``X-Agent-Batch`` after ``X-Agent-Approval``, and the canonical string
+    # orders the optional lines session, approval, batch. `_verify_signed_request`
+    # gives six values, and `_claim_call` takes the batch key keyword-only.
+    # The helpers `_count_write` and `_drop_unpaid_batch` join the digest. The
+    # pins of main before the merge were 3.12 ``82bea7a4…b4b467be`` and 3.13
+    # ``f781ee5f…caca75904``. The pins of the PR before the merge were 3.12
+    # ``1d1039e8…ccceacfdac`` and 3.13 ``6adc5684…24884e97d``. This test's own
+    # function gave the new pins. This pin needs the diff-reviewer review and
+    # the independent verification.
+    (3, 12): "dacf7efb175855183fd33ca7983181a336ed5f46e78d469ed89ce8a3d976135c",
+    (3, 13): "91fe1694ea459d9455f403720a81aa56de0f9d33a3cb6c12cd7af31df6da26f1",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see
@@ -1334,10 +1369,14 @@ _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
 #: SBX-2 adds the four helpers of the sandbox sibling: the refusal, the
 #: capability read, the gate of steps 5 to 8 and the call cap. None of them
 #: sees the request.
+#: MCP-G28a adds ``_count_write``, the one count of a counter of the write
+#: cap, and its fix round 1 adds ``_drop_unpaid_batch``, the best-effort
+#: delete of a batch key whose row did not pay its call.
 _BRANCH_ZERO_HELPERS = ("_read_connection", "_claim_write", "_claim_call", "_door_gate",
                         "_claim_door_read", "_audit_door", "_approval_of",
                         "_spend_approval", "_refuse_sandbox", "_read_capability",
-                        "_claim_sandbox_call", "_sandbox_gate", "_take_sandbox_ticket")
+                        "_claim_sandbox_call", "_sandbox_gate", "_take_sandbox_ticket",
+                        "_count_write", "_drop_unpaid_batch")
 
 
 def _branch_zero_digest() -> str:

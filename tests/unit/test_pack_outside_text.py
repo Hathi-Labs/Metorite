@@ -57,10 +57,11 @@ SENDS = ("send_email",)
 MARKS_SINCE_MAIN = ("manage_inbox", "send_draft", "schedule_send")
 
 
-def _outside_owner_tools() -> set[str]:
-    """Each tool of each pack whose owner reads stranger text."""
+def _outside_owner_tools() -> set[tuple[str, str]]:
+    """Each pair ``(owner, tool)`` of each pack whose owner reads stranger
+    text. Task 4053: the map keys on the pair."""
     return {
-        name
+        (str(sf.SKILL_FAMILIES[slug]["owner"]), name)
         for slug in sf.pack_slugs()
         if str(sf.SKILL_FAMILIES[slug].get("owner")) in eg.UNTRUSTED_INPUT_AGENTS
         for name in sf.SKILL_FAMILIES[slug]["tools"]
@@ -111,7 +112,7 @@ def test_each_tool_of_a_mail_pack_is_classified_once() -> None:
 def test_each_read_marks_and_each_send_does_not() -> None:
     """Mutation: classify a read as not marking, or a send as marking → red."""
     for name in READS:
-        assert tp.PACK_OUTSIDE_TEXT[name] is True, name
+        assert tp.PACK_OUTSIDE_TEXT[(EA, name)] is True, name
         assert tp.marks_chat(EA, name, {}) is True, name
     for name in SENDS:
         assert tp.marks_chat(EA, name, {}) is False, name
@@ -121,7 +122,7 @@ def test_a_tool_whose_answer_names_a_draft_or_a_trash_list_marks() -> None:
     """Main gave these tools an answer that can hold outside text, so each
     call marks. Mutation: classify any of them False again → red."""
     for name in MARKS_SINCE_MAIN:
-        assert tp.PACK_OUTSIDE_TEXT[name] is True, name
+        assert tp.PACK_OUTSIDE_TEXT[(EA, name)] is True, name
         assert tp.marks_chat(EA, name, {}) is True, name
 
 
@@ -131,7 +132,8 @@ def test_each_argument_of_a_rule_is_a_parameter_of_the_tool() -> None:
     the rule → red."""
     module = _module()
     built = {tool_name(fn): fn for fn in module._agent_tools()}
-    rules = {n: r for n, r in tp.PACK_OUTSIDE_TEXT.items() if isinstance(r, tuple)}
+    rules = {n: r for (o, n), r in tp.PACK_OUTSIDE_TEXT.items()
+             if o == EA and isinstance(r, tuple)}
     assert rules, "non-vacuity: send_email has a rule"
     for name, args in rules.items():
         params = inspect.signature(inspect.unwrap(built[name])).parameters
@@ -157,7 +159,8 @@ def test_an_unknown_tool_marks_and_another_owner_never_does() -> None:
 
 
 @pytest.mark.parametrize("name", sorted(
-    n for n, r in tp.PACK_OUTSIDE_TEXT.items() if r is False or isinstance(r, tuple)))
+    n for (o, n), r in tp.PACK_OUTSIDE_TEXT.items()
+    if o == EA and (r is False or isinstance(r, tuple))))
 async def test_a_call_that_reads_nothing_leaves_the_chat_clear(name: str) -> None:
     """Mutation: mark the session again before every email call → red."""
     with _clear_run():

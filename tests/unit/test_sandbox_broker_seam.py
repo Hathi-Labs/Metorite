@@ -309,3 +309,54 @@ async def test_the_real_startup_sweep_spawns_no_process_in_a_unit_test(
     monkeypatch.setattr(asyncio, "create_subprocess_exec", record)
     await sandbox_broker.SandboxBroker().startup()  # the lifespan's sweep
     assert spawned == [], "the startup sweep reached the docker daemon"
+
+
+# ── SBX-4b1 (§12.4 decision 1, done-when 26): one way in to ``tools`` ───────
+
+_ENGINE = "packages/acb_skills/acb_skills/user_tool_build.py"
+
+
+def _acquire_tool_callers(root: Path = REPO) -> list[str]:
+    """Each module under ``apps``, ``packages``, ``scripts``, ``evals`` or
+    ``deploy`` that reaches ``.acquire_tool``, other than the step engine."""
+    found: list[str] = []
+    for top in ("apps", "packages", "scripts", "evals", "deploy"):
+        base = root / top
+        if not base.is_dir():
+            continue
+        for path in base.rglob("*.py"):
+            if {"node_modules", ".venv", "__pycache__"} & set(path.parts):
+                continue
+            rel = _rel(path) if root == REPO else path.relative_to(root).as_posix()
+            text = path.read_text(encoding="utf-8-sig", errors="ignore")
+            if rel == _ENGINE or "acquire_tool" not in text:
+                continue
+            for node in ast.walk(ast.parse(text)):
+                if (isinstance(node, ast.Attribute) and node.attr == "acquire_tool") or (
+                    isinstance(node, ast.Name) and node.id == "acquire_tool"
+                ) or (
+                    isinstance(node, ast.ImportFrom)
+                    and any(a.name == "acquire_tool" for a in node.names)
+                ):
+                    found.append(rel)
+                    break
+    return sorted(found)
+
+
+async def test_only_the_step_engine_starts_a_tool_container(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Done-when 26 (SBX-F11). ``acquire()`` still refuses ``tools``, with no
+    process, and a source scan finds no caller of ``acquire_tool`` outside
+    the step engine. Mutation: call ``acquire_tool`` from another module, or
+    let ``acquire()`` start ``tools`` -> red."""
+    await test_the_tools_target_never_falls_back_to_the_host(monkeypatch, tmp_path)
+    assert _acquire_tool_callers() == []
+    engine = (REPO / _ENGINE).read_text(encoding="utf-8")
+    assert ".acquire_tool()" in engine, "the scan must see the one real caller"
+    fake = tmp_path / "scan" / "apps" / "x"
+    fake.mkdir(parents=True)
+    (fake / "a.py").write_text("async def go(b):\n    await b.acquire_tool()\n",
+                               encoding="utf-8")
+    (fake / "b.py").write_text("x = 'acquire_tool'\n", encoding="utf-8")
+    assert _acquire_tool_callers(tmp_path / "scan") == ["apps/x/a.py"]

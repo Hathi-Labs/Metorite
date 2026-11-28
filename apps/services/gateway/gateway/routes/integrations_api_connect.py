@@ -82,7 +82,6 @@ from gateway.connections.api.zoho_books import ZOHO_BOOKS
 from gateway.crm_sources.base import SourceCredential, SourceError, UntrustedHost
 from gateway.crm_sources.zoho import auth
 from gateway.db import tenant_session
-from gateway.routes.crm import connection as crm_connection
 from gateway.routes.email.transport.signing import (
     SigningUnavailable,
     sign_state,
@@ -125,6 +124,15 @@ _LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"
 
 #: The shape of a pick handle: the nonce of the state.
 _PICK_PATTERN = r"^[A-Za-z0-9_-]{16,64}$"
+
+
+def _crm_connection():
+    # Lazy on purpose (task 4112). A top-level import loads ``routes/crm``, which
+    # reaches ``routes/api_connections``, and that module imports this one.
+    # Fence: tests/unit/test_api_connect_import_order.py.
+    from gateway.routes.crm import connection
+
+    return connection
 
 
 async def require_api_connections(
@@ -247,7 +255,7 @@ async def _https(method: str, url: str, headers: dict[str, str]) -> outbound_gua
 
 async def _revoke(credential: SourceCredential | None, why: str) -> str | None:
     """Revoke at Zoho, best effort, with the CRM's one revoke of its client."""
-    return await crm_connection._best_effort_revoke(credential, f"api:{why}")
+    return await _crm_connection()._best_effort_revoke(credential, f"api:{why}")
 
 
 # ── Redis: the one-use state and the pending pick ───────────────────────────
@@ -443,7 +451,7 @@ async def start_zoho_books(user: UserContext = Depends(get_current_user)) -> Sta
     """The consent URL with a marked, signed state. The admin follows it."""
     org = _organization(user)
     member = _member(user)
-    crm_connection.zoho_oauth_config()  # 503 zoho_not_configured
+    _crm_connection().zoho_oauth_config()  # 503 zoho_not_configured
     try:
         state = sign_state(purpose=STATE_PURPOSE, org=org, member=member)
     except SigningUnavailable as exc:
@@ -460,7 +468,7 @@ async def start_zoho_books(user: UserContext = Depends(get_current_user)) -> Sta
         await _put(org, STATE_NAMESPACE, opened["nonce"], member)
     except Exception as exc:  # the class only
         raise _unavailable(exc) from None
-    url = crm_connection._source().consent_url(
+    url = _crm_connection()._source().consent_url(
         scopes=connect.ZOHO_BOOKS_SCOPES, state=connect.mark_state(state))
     _log.info("api.connect_started", template=TEMPLATE.id)
     return StartOut(url=url)
@@ -504,7 +512,7 @@ async def zoho_books_callback(
     params = {"code": code, "accounts-server": server,
               **({"location": location} if location else {})}
     try:
-        credential = await crm_connection._source().finish_consent(
+        credential = await _crm_connection()._source().finish_consent(
             params=params, scopes=connect.ZOHO_BOOKS_SCOPES)
     except UntrustedHost as exc:
         raise HTTPException(status_code=400, detail="untrusted_host") from exc

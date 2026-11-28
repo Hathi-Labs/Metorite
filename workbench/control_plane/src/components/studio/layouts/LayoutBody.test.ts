@@ -89,6 +89,9 @@ describe("the frame", () => {
     expect(frame).toContain("<ColumnsMenu");
     expect(frame).toContain("toggleHidden(s, k, tableColumns)");
   });
+  it("asks for the one-lane-at-a-time board on a phone only for the board preset", () => {
+    expect(frame).toContain('preset === "board" ? phoneSwitch(model.node)');
+  });
   it("wraps the main table of a table workspace in LayoutList, which draws StudioBlockState", () => {
     expect(frame).toContain('preset === "table_workspace" || preset === "board"');
     expect(frame).toContain('shape={preset === "board" ? "board" : "rows"}');
