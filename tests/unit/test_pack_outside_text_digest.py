@@ -37,6 +37,18 @@ What the walk does not follow, and why that is safe here:
   exception or a card answer (``detail``, ``choice``, ``subject``,
   ``body``). None chooses a function.
 
+The cross-module pins. Some imported helpers put the text of a stored draft
+into the answer of ``send_email``. :data:`CROSS_MODULE_PINS` names each one
+by its module FILE and its function. The fence digests each one with the
+same walk, inside ITS OWN module, with the same depth rule. An edit fails
+with the same words: classify the tool again.
+
+The known limits. The walk covers the helpers of the same module and the
+named cross-module pins. It does not cover the other imported seams, such as
+``refusals_as_text``, ``ask_tools`` and ``UntrustedFrame``. It does not cover
+the gateway routes either. A tool prints the JSON of a route, and the route
+can change what that JSON holds. A change there does not fail this fence.
+
 When this fence fails, read the answer of the tool again. Classify it in
 ``PACK_OUTSIDE_TEXT``. When it stays ``False`` or a tuple, put the new digest
 in :data:`DIGESTS` in the same commit. A tool that now marks (``True``) leaves
@@ -144,6 +156,74 @@ DIGESTS: dict[tuple[int, int], dict[tuple[str, str], str]] = {
     },
 }
 
+#: The imported helpers that put the text of a stored draft into the answer
+#: of ``send_email`` (task 4053, review follow-up). Each is a module FILE,
+#: relative to the repository, and a top-level function of that FILE.
+CROSS_MODULE_PINS: tuple[tuple[str, str], ...] = (
+    ("packages/acb_skills/acb_skills/card_revise.py", "target_state"),
+    ("packages/acb_skills/acb_skills/draft_choice.py", "describe"),
+    ("packages/acb_skills/acb_skills/draft_choice.py", "report"),
+)
+
+#: SHA-256 of each entry of :data:`CROSS_MODULE_PINS` and of the helpers of
+#: its own module that the walk reaches, keyed by the Python minor version.
+#: Computed by ``_source_digest.digest`` under CPython 3.12.16 and 3.13.18
+#: (2026-11-28). Update an entry ONLY in the commit that classifies
+#: ``send_email`` again.
+CROSS_DIGESTS: dict[tuple[int, int], dict[tuple[str, str], str]] = {
+    (3, 12): {
+        ("packages/acb_skills/acb_skills/card_revise.py", "target_state"):
+            "7f17dc7c59048580ab9e9b2c94fe8d0c61b2f39e409e8a3b1baf4f167ed8c21f",
+        ("packages/acb_skills/acb_skills/draft_choice.py", "describe"):
+            "2d346145908be74d8e76e594d7421e32426cfef562450c6551c4cc5fabb403df",
+        ("packages/acb_skills/acb_skills/draft_choice.py", "report"):
+            "931a3bc1bae5ab39b921e660aedf5957af3097b84e0c2e7323be47e0dac08e44",
+    },
+    (3, 13): {
+        ("packages/acb_skills/acb_skills/card_revise.py", "target_state"):
+            "ed9fe1601f232a3108f44f023c1d9e11dda69386fa81ad8a6cbe03646b31d3f9",
+        ("packages/acb_skills/acb_skills/draft_choice.py", "describe"):
+            "fd415235f9cd52605ca34891b3a05c25ae1826549c8819a97964a6e1e8fbe651",
+        ("packages/acb_skills/acb_skills/draft_choice.py", "report"):
+            "98f4092643352fb7d16f6d2722ce9d5b845c7d69f009c8ceebf2df3403a308d1",
+    },
+}
+
+
+def _cross_problems(entries: tuple[tuple[str, str], ...],
+                    pins: Mapping[tuple[str, str], str], root: Path) -> list[str]:
+    """Each way in which *pins* do not hold *entries*. *root* stands for the
+    repository, so a red proof can pass a copy."""
+    problems: list[str] = []
+    texts: dict[str, str] = {}
+    for rel, fn in entries:
+        if (rel, fn) not in pins:
+            problems.append(
+                f"{rel}:{fn} has no digest. Read the answer of send_email, classify "
+                "it in tool_packs.PACK_OUTSIDE_TEXT, and then add its digest to "
+                "CROSS_DIGESTS.")
+            continue
+        text = texts.setdefault(rel, sd.module_text(str(root / rel)))
+        try:
+            got = sd.digest(text, fn)
+        except KeyError:
+            problems.append(f"{rel}:{fn} is no top-level function of {rel}.")
+            continue
+        except ValueError as exc:
+            problems.append(f"{rel}:{fn}: {exc}. Raise WALK_DEPTH after a review.")
+            continue
+        if got != pins[(rel, fn)]:
+            problems.append(
+                f"{rel}:{fn} changed, or a helper that builds its answer changed. "
+                "Read the answer of send_email again and classify it in "
+                "tool_packs.PACK_OUTSIDE_TEXT. Then update its digest in "
+                f"CROSS_DIGESTS in the same commit: {got}")
+    for rel, fn in sorted(set(pins) - set(entries)):
+        problems.append(
+            f"{rel}:{fn} has a stale digest: CROSS_MODULE_PINS does not name it. "
+            "Remove it from CROSS_DIGESTS.")
+    return problems
+
 
 def _covered(rules: Mapping[tuple[str, str], object]) -> set[tuple[str, str]]:
     """Each pair whose entry is ``False`` or a tuple of argument names."""
@@ -192,12 +272,13 @@ def _repo_files() -> dict[str, str]:
     return {owner: str(REPO / rel) for owner, rel in OWNER_FILES.items()}
 
 
-def _pins() -> dict[tuple[str, str], str]:
+def _pins(table: Mapping[tuple[int, int], dict[tuple[str, str], str]] = DIGESTS,
+          ) -> dict[tuple[str, str], str]:
     version = sys.version_info[:2]
-    assert version in DIGESTS, (
+    assert version in table, (
         f"No digest is pinned for Python {version[0]}.{version[1]}. "
         "Add one after review.")
-    return DIGESTS[version]
+    return table[version]
 
 
 # ── 1. The fence on the tree ────────────────────────────────────────────────
@@ -209,6 +290,15 @@ def test_each_tool_that_does_not_mark_is_pinned() -> None:
     assert len(covered) >= 10, "non-vacuity: the email packs hold the covered tools"
     assert (EA, "send_email") in covered, "non-vacuity: the tuple entry is covered"
     problems = _problems(tp.PACK_OUTSIDE_TEXT, _pins(), _repo_files())
+    assert problems == [], "\n".join(problems)
+
+
+def test_each_cross_module_pin_holds() -> None:
+    """Mutation: edit ``draft_choice.describe``, ``draft_choice.report`` or
+    ``card_revise.target_state``, or a helper of its module → red."""
+    assert CROSS_MODULE_PINS, "non-vacuity"
+    assert set(CROSS_DIGESTS) == set(DIGESTS), "pin the same Python versions"
+    problems = _cross_problems(CROSS_MODULE_PINS, _pins(CROSS_DIGESTS), REPO)
     assert problems == [], "\n".join(problems)
 
 
@@ -256,13 +346,16 @@ def _problems_of(path: Path, rules: Mapping[tuple[str, str], object] | None = No
     return _problems(tp.PACK_OUTSIDE_TEXT if rules is None else rules, _pins(), {EA: str(path)})
 
 
-def test_the_copy_is_green_before_an_edit(tmp_path: Path) -> None:
-    """The control of each red proof below."""
-    assert _problems_of(_copy(tmp_path)) == []
+def _green_copy(tmp_path: Path) -> Path:
+    """A fresh copy, held green BEFORE a red proof edits it. So a copy that
+    is red already cannot make a red proof pass for the wrong reason."""
+    path = _copy(tmp_path)
+    assert _problems_of(path) == [], "the fresh copy must be green"
+    return path
 
 
 def test_an_edit_to_the_body_of_a_tool_goes_red(tmp_path: Path) -> None:
-    path = _copy(tmp_path)
+    path = _green_copy(tmp_path)
     _append_to_body(path, "create_label")
     problems = _problems_of(path)
     assert any(p.startswith(f"{EA}:create_label changed") for p in problems), problems
@@ -270,7 +363,7 @@ def test_an_edit_to_the_body_of_a_tool_goes_red(tmp_path: Path) -> None:
 
 def test_an_edit_to_a_helper_goes_red(tmp_path: Path) -> None:
     """An edit to a helper that a covered tool calls, and that is no tool."""
-    path = _copy(tmp_path)
+    path = _green_copy(tmp_path)
     text = path.read_text(encoding="utf-8-sig")
     defs = sd.top_level(text)
     helper = sorted(
@@ -284,7 +377,7 @@ def test_an_edit_to_a_helper_goes_red(tmp_path: Path) -> None:
 
 
 def test_a_new_tool_that_does_not_mark_and_has_no_digest_goes_red(tmp_path: Path) -> None:
-    path = _copy(tmp_path)
+    path = _green_copy(tmp_path)
     with path.open("a", encoding="utf-8") as fh:
         fh.write('\n\nasync def t4053_new_tool() -> str:\n    return "Done."\n')
     rules = {**tp.PACK_OUTSIDE_TEXT, (EA, "t4053_new_tool"): False}
@@ -293,7 +386,7 @@ def test_a_new_tool_that_does_not_mark_and_has_no_digest_goes_red(tmp_path: Path
 
 
 def test_a_stale_digest_of_a_removed_tool_goes_red(tmp_path: Path) -> None:
-    path = _copy(tmp_path)
+    path = _green_copy(tmp_path)
     rules = {k: v for k, v in tp.PACK_OUTSIDE_TEXT.items() if k != (EA, "create_label")}
     problems = _problems_of(path, rules)
     assert any(p.startswith(f"{EA}:create_label has a stale digest") for p in problems), problems
@@ -302,8 +395,38 @@ def test_a_stale_digest_of_a_removed_tool_goes_red(tmp_path: Path) -> None:
 def test_a_tool_that_now_marks_leaves_a_stale_digest(tmp_path: Path) -> None:
     """A tool classified True again keeps no pin. Mutation: cover True → red."""
     rules = {**tp.PACK_OUTSIDE_TEXT, (EA, "create_label"): True}
-    problems = _problems_of(_copy(tmp_path), rules)
+    problems = _problems_of(_green_copy(tmp_path), rules)
     assert any(p.startswith(f"{EA}:create_label has a stale digest") for p in problems), problems
+
+
+def _green_skills_copy(tmp_path: Path) -> Path:
+    """A copy of ``packages/acb_skills/acb_skills`` under a stand-in for the
+    repository, held green before an edit. Returns the stand-in root."""
+    src = REPO / "packages/acb_skills/acb_skills"
+    shutil.copytree(src, tmp_path / "packages/acb_skills/acb_skills",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    assert _cross_problems(CROSS_MODULE_PINS, _pins(CROSS_DIGESTS), tmp_path) == [], (
+        "the fresh copy must be green")
+    return tmp_path
+
+
+def test_an_edit_to_a_cross_module_pin_goes_red(tmp_path: Path) -> None:
+    root = _green_skills_copy(tmp_path)
+    rel = "packages/acb_skills/acb_skills/draft_choice.py"
+    _append_to_body(root / rel, "describe")
+    problems = _cross_problems(CROSS_MODULE_PINS, _pins(CROSS_DIGESTS), root)
+    assert any(p.startswith(f"{rel}:describe changed") for p in problems), problems
+
+
+def test_a_cross_module_pin_with_no_digest_and_a_stale_one_go_red(tmp_path: Path) -> None:
+    root = _green_skills_copy(tmp_path)
+    rel = "packages/acb_skills/acb_skills/draft_choice.py"
+    pins = {k: v for k, v in _pins(CROSS_DIGESTS).items() if k != (rel, "report")}
+    problems = _cross_problems(CROSS_MODULE_PINS, pins, root)
+    assert any(p.startswith(f"{rel}:report has no digest") for p in problems), problems
+    entries = tuple(e for e in CROSS_MODULE_PINS if e != (rel, "report"))
+    problems = _cross_problems(entries, _pins(CROSS_DIGESTS), root)
+    assert any(p.startswith(f"{rel}:report has a stale digest") for p in problems), problems
 
 
 # ── 3. The key holds the owner ──────────────────────────────────────────────

@@ -40,6 +40,8 @@ Task 2492 NARROWS the pack mark (2026-11-09, "Each call" in "As built, OA-7b"). 
 
 Task 4053 is BUILT (2026-11-27). The map keys on the pair `(owner, tool)`, so two owners never share an entry. `tests/unit/test_pack_outside_text_digest.py` pins the source of each tool that does not always mark, and of the helpers that build its answer. An edit fails that test until a person classifies the tool again.
 
+Task 4053 has known limits. The walk covers the helpers of the same module. It also covers the named cross-module pins: `draft_choice.describe`, `draft_choice.report` and `card_revise.target_state`. It does not cover other imported seams, such as `refusals_as_text`, `ask_tools` and `UntrustedFrame`. It does not cover the gateway routes whose JSON the tools print.
+
 OA-9c is BUILT, dark behind `SPAWN_SUBAGENTS_ORGS` (2026-10-29, "As built, OA-9c" in §4.5). A child can hold the read tools of a pack that the main assistant holds. No email tool says `read_only=True`, so an email pack gives a child no tool yet. The flag flip stays OWNER-GATE.
 
 OA-9f is BUILT, dark behind `SPAWN_SUBAGENTS_ORGS` (2026-10-30, "As built, OA-9f" in §4.5). It changes the rule of §6.3 from a count to a kind of job. A child reads long material or runs a chain of steps. The main assistant makes light reads itself, in parallel. The flag flip stays OWNER-GATE.
