@@ -31,6 +31,8 @@ hand-off to this agent.
 - `revoke_agent_connection` revokes one agent connection. It shows one card first.
 - `disconnect_integration` disconnects one connection, removes one plugin or disconnects GitHub. It shows one card first.
 - `set_mcp_server` turns always confirm on, turns the read-only key off, or sets the description of one MCP server. It shows one card first. It never turns always confirm off or the read-only key on: a person does that on the Integrations page.
+- `list_chats` reads the chat list of the member, or its topics. `edit_chat` renames, archives, restores or moves one chat, or makes a private topic. A card shows only in a chat that read outside mail.
+- `delete_chat` deletes one chat of the member for good. It always shows one card first. It never deletes the chat that it runs in.
 
 ## The rules
 

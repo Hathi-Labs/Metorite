@@ -6,11 +6,11 @@ Migration: the file that creates ``user_tool_runs`` (506 at build).
 the NOBYPASSRLS role.
 
 **One row for each step that ran code.** The step engine of SBX-4b1
-(``acb_skills/user_tool_build.py``, not built yet) calls :func:`record_run`
-once for each build and once for each smoke round. A refusal of
-``check_package`` writes a ``smoke`` row with the outcome ``refused`` and
-the fixed code in ``error_class``. SBX-4b writes no ``run`` row. Until the
-step engine lands, only tests call :func:`record_run`.
+(``acb_skills/user_tool_build.py``) calls :func:`record_run` once for each
+build and once for each smoke round, a failed or a cancelled round too. A
+refusal of ``check_package`` writes a ``smoke`` row with the outcome
+``refused`` and the fixed code in ``error_class``. SBX-4b writes no ``run``
+row. No production module calls the step engine until SBX-4b2.
 
 **The columns that SBX-4b fills.** ``api_reads``, ``wall_ms``, ``outcome``,
 ``exit_code`` and ``error_class``. The three write counts are 0, because

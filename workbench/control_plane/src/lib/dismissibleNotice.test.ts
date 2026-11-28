@@ -30,9 +30,11 @@ const CODES = Object.keys(RUN_ERROR_WORDS) as RunErrorCode[];
 // when this browser holds no slot for that account. With a slot, the chat
 // draws a card with a Switch button instead (`otherAccountNotice.test.ts`).
 // `answered_once` (HRD-16): someone answered the card first. Nothing is lost
-// and the member has nothing to do, so it only informs.
+// and the member has nothing to do, so it only informs. `answered_by_you`
+// (task 4036) is the same notice when the member's own answer was taken.
 const INFO_ONLY: RunErrorCode[] = [
   "run_restarted", "run_restarted_steered", "answer_in_other_account", "answered_once",
+  "answered_by_you",
 ];
 const DISMISS = 'aria-label="Dismiss"';
 
@@ -106,7 +108,7 @@ afterEach(() => {
 
 describe("which notices only inform", () => {
   // Mutation: drop `!words.retry` from isInfoOnlyNotice, and the list grows.
-  it("the two restart notices, the other-account notice and answered_once, and nothing else", () => {
+  it("the two restart notices, the other-account notice and the two answered notices, and nothing else", () => {
     expect(CODES.filter((c) => isInfoOnlyNotice(RUN_ERROR_WORDS[c])).sort()).toEqual([...INFO_ONLY].sort());
   });
 

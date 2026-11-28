@@ -30,6 +30,10 @@
  *   leaves and says that someone answered it. The caller sends nothing,
  *   never the answer as a message and never a new run (owner decision,
  *   2026-11-23). A plain 409 stays a `drop`.
+ * - Task 4036: the 409 `answered_once` says `by_you` (`answeredBy`). The
+ *   typed words go back to the composer only when ANOTHER member answered
+ *   (`answeredGivesBack`). A phone that lost the response to its own answer
+ *   keeps them out, because a send of them would act a second time.
  *
  * Fences: `src/lib/confirmationQueue.test.ts` ("the answer POST") and
  * `src/lib/respondInput.test.ts` (the other account).
@@ -75,6 +79,9 @@ export interface RespondResult {
   /** Why the answer did not land, in plain words, for the card to show
    *  beside its buttons (UXD-3). Absent on `ok` and on a resend. */
   reason?: string;
+  /** Who gave the answer that a run took, on `answered` (task 4036).
+   *  Absent when the gateway names nobody. */
+  answeredBy?: AnsweredBy;
 }
 
 export interface RespondInputBody {
@@ -149,6 +156,39 @@ export function answeredOnceOf(body: string): boolean {
 /** What the member reads when someone answered the card first (HRD-16). */
 export const ANSWERED_ONCE_TEXT = "Someone already answered this. Your answer was not sent.";
 
+/** What the member reads when a run already took their own answer (task 4036). */
+export const ANSWERED_BY_YOU_TEXT = "You already answered this. Your answer was not sent again.";
+
+/**
+ * Who gave the answer that a run took (task 4036): `you` is this member,
+ * `other` is another member, and null is not known (an old gateway, or a
+ * mark with no responder).
+ */
+export type AnsweredBy = "you" | "other" | null;
+
+/** Who answered, from a 409 `answered_once` body. Only a JSON boolean counts. */
+export function answeredByOf(body: string): AnsweredBy {
+  try {
+    const d = (JSON.parse(body) as { detail?: { error?: unknown; by_you?: unknown } })?.detail;
+    if (!d || typeof d !== "object" || d.error !== "answered_once") return null;
+    if (d.by_you === true) return "you";
+    if (d.by_you === false) return "other";
+  } catch {
+    /* not the gateway's JSON */
+  }
+  return null;
+}
+
+/**
+ * True when the typed words go back to the composer after `answered` (task
+ * 4036). Only another member's answer gives them back: the member's own
+ * words were never acted on. When this member answered, or nobody is known,
+ * the words stay out, because a send of them could act a second time.
+ */
+export function answeredGivesBack(by: AnsweredBy | undefined): boolean {
+  return by === "other";
+}
+
 /** The detail text of a gateway refusal, if it holds a plain one. */
 function refusalDetail(body: string): string | null {
   try {
@@ -170,7 +210,9 @@ function refusalDetail(body: string): string | null {
 export function respondFailureText(status: number | undefined, body = ""): string {
   if (status === undefined) return "Metorite could not be reached. Check the connection, then try again.";
   if (status >= 500) return "The server could not take the answer. Try again.";
-  if (status === 409 && answeredOnceOf(body)) return ANSWERED_ONCE_TEXT;
+  if (status === 409 && answeredOnceOf(body)) {
+    return answeredByOf(body) === "you" ? ANSWERED_BY_YOU_TEXT : ANSWERED_ONCE_TEXT;
+  }
   if (status === 409) return "Nothing waits on this answer now. The run ended, or someone answered it.";
   if (status === 403) return "You cannot answer this request. Ask its owner to answer it.";
   if (status === 401) return "Your session ended. Sign in again, then answer.";
@@ -284,6 +326,11 @@ export async function sendRespondInputResult(
   const outcome = respondFailure(res.status, text);
   if (outcome === "answered") {
     console.info("respond-input: someone already answered this card, nothing sent again");
+    const answeredBy = answeredByOf(text);
+    return {
+      outcome, resend: null, reason: respondFailureText(res.status, text),
+      ...(answeredBy ? { answeredBy } : {}),
+    };
   } else if (outcome === "drop") {
     const resend = res.status === 409 ? restartedCardMessage(text) : null;
     if (resend) return { outcome, resend, display: restartedCardDisplay(text) };
