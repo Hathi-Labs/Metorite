@@ -155,6 +155,14 @@ EXPORT = (
     "reads the tasks."
 )
 
+#: DOC-6: the Excel export of a task query. The platform tool, not a tool of
+#: this skill, calls it as the member.
+_SPREADSHEET = (
+    "The Excel file of a task query is for the platform tool make_spreadsheet "
+    "(chat_parity.md DOC-6), which calls it as the member. The tools of this "
+    "skill read the tasks through their own routes."
+)
+
 #: §19.3: a door read is a GET.
 PREVIEW_POST = (
     "A door read is a GET (§19.3), and this preview is a POST that writes "
@@ -500,6 +508,7 @@ PROJECTS_DOOR = App(
         Route("GET", "/projects/search", "find_tasks", "A", off_door=TYPED, sandbox=True),
         Route("GET", "/projects/search/refs", "", "X", reason=_REFS),
         Route("GET", "/projects/export/tasks.csv", "export_tasks", "A", off_door=EXPORT),
+        Route("GET", "/projects/export/workbook.xlsx", "", "X", reason=_SPREADSHEET),
         Route("GET", "/projects/delta/tasks", "", "X", reason=_DELTA),
         # ── imports.py (§19.16, act 3): class X by §19.11 ──
         Route("POST", "/projects/import/runs", "", "X", reason=_IMPORT),

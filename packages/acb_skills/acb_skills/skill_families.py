@@ -106,6 +106,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "list_integrations",
             "load_artifact_kit",
             "load_design_system",
+            "make_spreadsheet",
             "manage_todo_list",
             "package_artifacts",
             "read_attachment",

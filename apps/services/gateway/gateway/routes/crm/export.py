@@ -367,55 +367,66 @@ def _too_many(entity: Entity, total: int, *, at_least: bool = False) -> HTTPExce
     )
 
 
+async def read_filtered(
+    db: Any, entity: Entity, params: ExportParams, user: Any = None,
+) -> list[dict[str, Any]]:
+    """Every record that *params* picks, in the list's order, or the refusal of
+    rule 3. The one read of the CSV export and of the spreadsheet export
+    (``spreadsheet.py``, DOC-6), so both cover exactly the rows of the list.
+    """
+    # WS-53 CRM-C7: the ONE list builder (``records.list_query``) — the
+    # converted-lead rule, the related lists, ``me``, the CRM-Q8 filters,
+    # the WHERE clause and the ORDER BY, with each of their 422s. So the
+    # file is the list on screen. Its `limit` is the PAGE clamp and is
+    # never read here; see rule 2 in the module docstring.
+    query = await list_query(db, entity, params, user)
+    total = int((await db.execute(
+        text(f"SELECT count(*) FROM {entity.table}{query.where}"),
+        query.params,
+    )).scalar() or 0)
+    if total > MAX_EXPORT_ROWS:
+        # Cheap and early: refused before a single row is rendered, and the
+        # count is exact so the message can name it. It is not the only
+        # gate — see the render below.
+        raise _too_many(entity, total)
+
+    inner = (
+        f"SELECT * FROM {entity.table}{query.where} "
+        f"ORDER BY {query.order_by} LIMIT :cap"
+    )
+    rows = (await db.execute(
+        # The same `project_joined` wrapper `core.run_list` uses, so a deal
+        # carries its organization's name here exactly as it does on the
+        # board. Without it the Company column would be empty on every
+        # row, which reads as missing data rather than a missing join.
+        text(project_joined(entity, inner, qualify(query.order_by, "base"))),
+        # ⚠️ **cap + 1, and the check below is what makes it a refusal.**
+        # `_tenant_session()` opens one transaction but Postgres defaults to
+        # READ COMMITTED, so the count and this render take DIFFERENT
+        # snapshots: count answers 9,998 (no 422), the auto-lead path
+        # inserts five matching rows, and a `LIMIT :cap` of exactly
+        # MAX_EXPORT_ROWS then returns exactly MAX_EXPORT_ROWS — a partial
+        # file with a 200 and no warning, which is the one outcome rule 3
+        # forbids. Fetching one row past the cap makes "did this overflow"
+        # a property of the rendered set rather than of a count taken
+        # earlier, so the invariant no longer depends on the two agreeing.
+        # This is NOT the calendar's truncate-and-say-so probe: the extra
+        # row is never rendered, it is the evidence for a refusal.
+        {**query.params, "cap": MAX_EXPORT_ROWS + 1},
+    )).fetchall()
+    if len(rows) > MAX_EXPORT_ROWS:
+        raise _too_many(entity, len(rows), at_least=True)
+    exported = [row_to_dict(r, entity.model) for r in rows]
+    return exported
+
+
 async def _export(
     entity: Entity, params: ExportParams, user: Any = None,
 ) -> Response:
     """The caller's current filter, as a CSV file. One implementation, four
     entities — the shape ``records._list`` uses for the same reason."""
     async with _tenant_session() as db:
-        # WS-53 CRM-C7: the ONE list builder (``records.list_query``) — the
-        # converted-lead rule, the related lists, ``me``, the CRM-Q8 filters,
-        # the WHERE clause and the ORDER BY, with each of their 422s. So the
-        # file is the list on screen. Its `limit` is the PAGE clamp and is
-        # never read here; see rule 2 in the module docstring.
-        query = await list_query(db, entity, params, user)
-        total = int((await db.execute(
-            text(f"SELECT count(*) FROM {entity.table}{query.where}"),
-            query.params,
-        )).scalar() or 0)
-        if total > MAX_EXPORT_ROWS:
-            # Cheap and early: refused before a single row is rendered, and the
-            # count is exact so the message can name it. It is not the only
-            # gate — see the render below.
-            raise _too_many(entity, total)
-
-        inner = (
-            f"SELECT * FROM {entity.table}{query.where} "
-            f"ORDER BY {query.order_by} LIMIT :cap"
-        )
-        rows = (await db.execute(
-            # The same `project_joined` wrapper `core.run_list` uses, so a deal
-            # carries its organization's name here exactly as it does on the
-            # board. Without it the Company column would be empty on every
-            # row, which reads as missing data rather than a missing join.
-            text(project_joined(entity, inner, qualify(query.order_by, "base"))),
-            # ⚠️ **cap + 1, and the check below is what makes it a refusal.**
-            # `_tenant_session()` opens one transaction but Postgres defaults to
-            # READ COMMITTED, so the count and this render take DIFFERENT
-            # snapshots: count answers 9,998 (no 422), the auto-lead path
-            # inserts five matching rows, and a `LIMIT :cap` of exactly
-            # MAX_EXPORT_ROWS then returns exactly MAX_EXPORT_ROWS — a partial
-            # file with a 200 and no warning, which is the one outcome rule 3
-            # forbids. Fetching one row past the cap makes "did this overflow"
-            # a property of the rendered set rather than of a count taken
-            # earlier, so the invariant no longer depends on the two agreeing.
-            # This is NOT the calendar's truncate-and-say-so probe: the extra
-            # row is never rendered, it is the evidence for a refusal.
-            {**query.params, "cap": MAX_EXPORT_ROWS + 1},
-        )).fetchall()
-        if len(rows) > MAX_EXPORT_ROWS:
-            raise _too_many(entity, len(rows), at_least=True)
-        exported = [row_to_dict(r, entity.model) for r in rows]
+        exported = await read_filtered(db, entity, params, user)
         extra = await custom_columns(db, entity)
         # CRM-Q17a-1: None outside CRM_FILL_RANK_ORGS, so the file keeps each column.
         empty = set(await empty_columns(

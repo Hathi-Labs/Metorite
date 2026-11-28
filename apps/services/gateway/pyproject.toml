@@ -48,6 +48,9 @@ dependencies = [
     # dependency, so the App auth does not rest on another package's choice.
     "pyjwt[crypto]>=2.8",
     "pywebpush>=2.0",
+    # DOC-6: the one XLSX writer (gateway/xlsx_export.py). The pin of the
+    # sandbox image is 3.1.5, and the parity test holds the two cell rules equal.
+    "openpyxl>=3.1",
 ]
 
 [build-system]

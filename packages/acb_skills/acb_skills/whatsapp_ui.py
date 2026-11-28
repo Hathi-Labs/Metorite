@@ -82,6 +82,8 @@ WITHHELD_TOOLS: frozenset[str] = frozenset({
     # the web chat's PDF card. WhatsApp sends the same PDF as a file through
     # whatsapp_ui kind "document" (WAC-12), so the function stays.
     "make_document",
+    # DOC-6: the web chat's Excel card. WhatsApp sends no spreadsheet yet.
+    "make_spreadsheet",
     # SBX-19: its files come as web cards (write_artifact), and it runs only for
     # the web chat.
     "compute_run",
@@ -114,6 +116,7 @@ WHATSAPP_FORMS: dict[str, str] = {
     "call_agent_background": "none: one reply a message. A long job sends whatsapp_ui "
                              "kind working first",
     "make_document": "whatsapp_ui kind document, the same PDF (WAC-12)",
+    "make_spreadsheet": "none: no file card. A WhatsApp run holds no spreadsheet tool",
     "compute_run": "none: its files are web cards. A WhatsApp run holds no compute tool",
     "show_in_app": "none: WhatsApp has no page to open. The assistant says where the "
                    "record is in words, or sends whatsapp_ui kind link",

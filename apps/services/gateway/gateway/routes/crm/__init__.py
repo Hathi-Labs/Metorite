@@ -35,6 +35,12 @@ touches the live Zoho tenant not at all. Its ``export/`` segment comes FIRST for
 the shadowing reason above: ``/crm/leads/export.csv`` would sit under
 ``/crm/leads/{record_id}``.
 
+``spreadsheet.py`` is DOC-6 (``chat_parity.md`` §DOC) — ``GET
+/crm/export/workbook.xlsx``, the Excel file of one or more queries, in the
+columns, groups and totals that the caller asks. It reads through the export
+and module list reads, writes nothing, and the chat's ``make_spreadsheet``
+calls it as the member.
+
 ``fields.py`` is WS-53 CRM-Q4 — ``GET /crm/fields/{entity}``, the field
 definitions that the sync and the field studio write. Read only. Since CRM-C4a,
 ``?layout=1`` returns the sections, the system fields and the custom fields.
@@ -178,6 +184,7 @@ from gateway.routes.crm import records as _records  # noqa: F401
 from gateway.routes.crm import reports as _reports  # noqa: F401
 from gateway.routes.crm import rules as _rules  # noqa: F401
 from gateway.routes.crm import settings as _settings  # noqa: F401
+from gateway.routes.crm import spreadsheet as _spreadsheet  # noqa: F401
 from gateway.routes.crm import stage_metadata as _stage_metadata  # noqa: F401
 from gateway.routes.crm import suggestions as _suggestions  # noqa: F401
 from gateway.routes.crm import sync as _sync  # noqa: F401
