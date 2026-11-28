@@ -120,9 +120,9 @@ and the scale plan for all of them.
   A post to a team channel is CH-TEAM's (`whatsapp_assistant_channel.md`
   §19), and this spec adds nothing for it.
   **Amended 2026-11-28 (D235.2, task 4150).** A risk nudge may go to the
-  member that the router of `proactive_loop.md` LOOP-30 picks: the record
-  owner, then the lead, then an admin, each re-checked against what that
-  member may open. The router gives the recipient. Request input never names
+  member that the router of `proactive_loop.md` LOOP-30 picks. The order is
+  the record owner, then the lead, then an admin. Each step is re-checked
+  against what that member may open. The router gives the recipient. Request input never names
   one (R5). RE-11 builds it. A message to a customer or to any person outside
   the org stays an Action Broker act.
 - **No marketing template.** Every template is in the utility category.

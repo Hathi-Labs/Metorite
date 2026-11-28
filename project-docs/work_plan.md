@@ -6529,21 +6529,32 @@ Fence: the fences that `projects_ai_chat.md` §24.11 names for each slice, advis
 
 ### D235 — Company intelligence: member concerns, nudges routed by role, the blocks Memory and Roles and reporting lines, a connect-time map that a person certifies, and the rung order (DECIDED, 2026-11-28)
 
-The owner asked on 2026-11-28, in chat to metorite-78 (task 4150): graph and search every source, correlate and find causes and risks across silos, remember each member's preferences and worries, and later nudge the right person by role. Vijay Varada ticked all five options on task 4150 (answer `d8c22baa`). Owner spec: `specs/building_blocks.md` §10 (the cohesion map). Epic: task 4150. Design: CI-0, task 4163. Research: `research/company_intelligence_2026-11.md`.
+The owner asked for company intelligence on 2026-11-28, in chat to metorite-78 (task 4150). Metorite must graph and search every source, and find causes and risks across silos. It must remember what each member cares about, and nudge the right person by role.
+
+Vijay Varada ticked all five options on task 4150 (answer `d8c22baa`). Owner spec: `specs/building_blocks.md` §10 (the cohesion map). Epic: task 4150. Design: CI-0, task 4163. Research: `research/company_intelligence_2026-11.md`.
 
 ```text
 "I just want to ensure that across these AI systems, there is some sort of cohesion instead of overlap and competing features that might get in each other's way."
 ```
 
 1. **Member concerns.** The member profile may hold what a member worries about, or asks Metorite to watch, as the kind `concern`. Only that member sees it, and the member can edit or delete it. It is kept only after the member says yes. Managers never read it. It changes ranking and tone, never access. `personalization.md` §20 holds it.
-2. **Nudges routed by role.** A risk nudge goes to the record owner, then to the team lead after 2 days with no act, then to an admin. Each step is re-checked against what that person may open. This amends the non-goal of `proactive_reach.md` §2.2, "no message to anyone but the member", for a routed recipient only (RE-11). A message to a person outside the org stays an Action Broker act.
+2. **Nudges routed by role.** A risk nudge goes to the record owner first. After 2 days with no act it goes to the team lead, then to an admin. Each step is re-checked against what that person may open. This amends a non-goal of `proactive_reach.md` §2.2, for a routed recipient only (RE-11). The non-goal is "no message to anyone but the member". A message to a person outside the org stays an Action Broker act.
 3. **Two new blocks.** "Memory" (member and org) and "Roles and reporting lines" join `building_blocks.md` §2. The second is used only to route a nudge. It opens no read and adds no subject (D12).
 4. **A model proposes the map of an outside source, once, at connect time.** An admin certifies it. Retrieval stays free of models (D128). Metorite borrows the method of NVIDIA auto-ontology and does not install it. Model calls go through the Router.
-5. **The rung order:** 1 ask across apps (task 4164), 2 the same customer everywhere (4165), 4 memory (4167), 3 outside data understood (4166), 6 risks reach the right person (4169), 5 correlate and explain (4168).
+5. **The rung order** is 1, 2, 4, 3, 6, then 5.
+
+   | Rung | Task | The demo |
+   |---|---|---|
+   | 1 | 4164 | Ask across apps |
+   | 2 | 4165 | The same customer everywhere |
+   | 4 | 4167 | Memory |
+   | 3 | 4166 | Outside data understood |
+   | 6 | 4169 | Risks reach the right person |
+   | 5 | 4168 | Correlate and explain |
 
 The binding rules stay: D105, D128, D132, D12, no score for a person, and a finding's entity is never a person. This decision flips no flag and opens no owner gate.
 
-**Still open on task 4150 (asked 2026-11-28, 07:47 UTC):** D-A (small typed signals on the timeline, which bends D105), D-B (strict visibility of what exists) and D-C (writes driven by events). `knowledge_graph.md` §13.8 lists the rows that wait. Each such row says "pending owner", and no slice builds it before the answer. The answer gets its own D-number, in the first PR that acts on it.
+**Still open on task 4150 (asked 2026-11-28, 07:47 UTC):** D-A, D-B and D-C. D-A is small typed signals on the timeline, and it bends D105. D-B is strict visibility of what exists. D-C is writes driven by events. `knowledge_graph.md` §13.8 lists the rows that wait. Each such row says "pending owner", and no slice builds it before the answer. The answer gets its own D-number, in the first PR that acts on it.
 
 Fence: `tests/unit/test_cohesion_map.py` for the map. The fences of each row of `building_blocks.md` §10.3, advisory until their slices build them. `tests/unit/test_decision_ids.py` fails when two D235 entries merge. **Re-check this number at merge.**
 

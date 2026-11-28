@@ -132,9 +132,9 @@ CHECKs of `kb_links` (`source_kind` and `target_kind`).
 | `studio_record` | `studio_records.id` | A record of a Studio object |
 | `connection_record` | `<connection_id>:<record key>`, as text | A record of an outside API or database, such as a Zoho Books customer |
 
-Not now: `invoice` (the CRM invoices are P 2738, and their kind comes in a
-later expand), `ticket` (a ticket is a task type, so its kind is `task`), and
-chat.
+Not now: `invoice`, `ticket` and chat. The CRM invoices are P 2738, and
+their kind comes in a later expand. A ticket is a task type, so its kind is
+`task`.
 
 **The object types.** A closed list: `person`, `company`, `deal`,
 `invoice`, `thread`, `task`, `page`, `project`, `event` and `document`. A
@@ -623,8 +623,8 @@ The company memory layer is ONE layer in five parts. Each part has one home.
 
 1. A record changes in an app.
 2. An event goes to the job queue or the workflow engine. No new bus.
-3. The resolver finds or makes the entity: exact keys first, then the
-   probabilistic match, then a person confirms (KG-21 to KG-23).
+3. The resolver finds or makes the entity (KG-21 to KG-23). Exact keys
+   come first, then the probabilistic match. Then a person confirms.
 4. The edge writer adds the links, structure first: keys, address, domain,
    phone.
 5. The fact writer adds a timeline event (D-A).
