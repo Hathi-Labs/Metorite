@@ -1,7 +1,7 @@
 """The one store of the files that a record of a Studio app holds (WS-STU D13b).
 
 Spec: ``project-docs/specs/ai_studio.md`` §14 D13b. Migration: the file that
-adds ``studio_record_files`` (442 at build). The serve route is
+adds ``studio_record_files`` (442 at build, 518 at merge). The serve route is
 ``routes/studio/files.py``. ``tests/unit/test_studio_record_files_r8.py`` runs
 this SQL on a real Postgres.
 

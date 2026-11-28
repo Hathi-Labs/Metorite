@@ -3,7 +3,7 @@
 Spec: ``project-docs/specs/ai_studio.md`` §14 D13b. Code:
 ``gateway/routes/studio/files.py`` (the route), ``gateway/studio/files_store.py``
 (the one module that names the table), ``gateway/studio/reach.py`` (the shared
-resolver) and the migration that adds ``studio_record_files`` (442 at build),
+resolver) and the migration that adds ``studio_record_files`` (442 at build, 518 at merge),
 found by its CONTENT, never by number (R1). The R8 half is
 ``tests/unit/test_studio_record_files_r8.py``.
 

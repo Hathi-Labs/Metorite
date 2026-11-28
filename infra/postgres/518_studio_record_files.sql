@@ -1,5 +1,5 @@
 -- ============================================================================
--- 442_studio_record_files.sql — the file store of a record of a Studio app
+-- 518_studio_record_files.sql — the file store of a record of a Studio app
 -- (WS-STU STU-D13b, task 1421).
 --
 -- What: one new table. `studio_record_files` holds the bytes of one file that
@@ -34,7 +34,7 @@
 -- The CHECKs hold the same caps as the code: 10 MB (MAX_DOCUMENT_PDF_BYTES),
 -- a short list of types, and the key grammar of the manifest.
 --
--- The number is taken at build time (R1): 442 was booked for this task.
+-- The number is taken at build time (R1): 442 was booked at build; it is 518 at merge (migration-book.txt, 2026-11-27).
 -- Check it again at merge. Pinned by tests/unit/test_studio_record_files.py
 -- and tests/unit/test_studio_record_files_r8.py, which find this file by
 -- CONTENT, never by number (R1).

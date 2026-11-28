@@ -3,7 +3,7 @@
 Spec: ``project-docs/specs/ai_studio.md`` §14 D13b. Code:
 ``gateway/routes/studio/files.py``, ``gateway/studio/files_store.py``,
 ``gateway/studio/reach.py`` and the migration that adds ``studio_record_files``
-(442 at build). The hermetic twin is ``tests/unit/test_studio_record_files.py``.
+(442 at build, 518 at merge). The hermetic twin is ``tests/unit/test_studio_record_files.py``.
 
 The real package, install, record and serve handlers run on a phase-4 promoted
 scratch database, as the non-privileged app role, so FORCE RLS binds each
