@@ -518,6 +518,7 @@ reading.
 | SBX-4 | SBX-4a merged dark (PR 2862, `527025658`). SBX-4b1 parts (a) to (c) merged dark (PR 2896). The step engine of SBX-4b1 merged dark (PR 2961, `c3b6b6141`). SBX-4b2 (task 4049) built dark on its branch, not merged | `TOOLS_TARGET` and `acquire_tool` in `sandbox_broker.py`. `acb_skills/user_tool_build.py` |
 | SBX-5 | Not built | `git log --grep SBX-5` finds the spec commit only. Its input B7 is built |
 | SBX-6 | Not built | Its inputs are partly built, see PKG-11 and J2 below |
+| SBX-22 | Not built (task 4173, after SBX-5) | The cohesion rule 3 of 2026-11-28 (task 4163). No code yet |
 | SBX-7 | Not built | No `sandbox` row in `task_catalog` (`git grep` of the SQL) |
 | SBX-8 | Built, dark (PR 2625, 2026-11-19). The cost of gVisor is not measured | `RUNTIME_RUNSC` in `sandbox_broker.py` |
 | SBX-12 | Not built | Needs SBX-5 |
@@ -2004,6 +2005,7 @@ the A2 model.
 | **SBX-4a** (task 3803) | (D227) **The `tools` target, inert** (§0c item 4). `TOOLS_TARGET` and the broker agent name `user-tool` join `MAF_CODING_TARGETS`, so a `tools:` entry of `MAF_CODING_SCOPE` parses and every other target stays on. `acquire()` refuses the target, and `docker-remote` refuses it too, because `REMOTE_TARGETS` still holds `code_task` only. A `tools` agent is never covered, so the D85 seam keeps its host shell withheld. 🔨 **Built dark on PR 2862, not merged** (2026-11-26). **Done when:** SBX-F24 (part) in `tests/unit/test_sandbox_scope_all_orgs.py`, `tests/unit/test_sandbox_broker_tools.py`, and the SBX-F11 test `test_the_tools_target_never_falls_back_to_the_host` pass, and each fails before the change | None | AGENT-SAFE. Dark |
 | **SBX-4b** (tasks 3986 and 4049) | `build_tool`, the build session and the smoke test (§6.2, §6.3), on the Docker backend. (§12.1 decision 9) The table `user_tool_runs` (§7.3). The gap id in the answer of the no-match path. The reserved agent names `user-tool` and `compute`. **§12.4 holds the full slice.** Two PRs: SBX-4b1 (task 3986), the step engine with a fixture package, and SBX-4b2 (task 4049), the chat tool and the build session. SBX-4a merged (PR 2862, `527025658`). WS-43g2a (task 4070) is merged dark a95d58d09, PR 2924. PR 2887 merged (`d2bffe963`). HIGH. **Done when:** the list of §12.4. 🔨 **Parts (a), (b) and (c) BUILT dark** (2026-11-26, task 3986, branch `mt-d0a57ed5-sbx4b1-abc`): the door refusal counter and `door_counts`, `user_tool_runs` (migration 506) with its store, and the reserved names. Done-when 1 to 7 pass. Merged 2026-11-27 (`ae5b37cde`, PR 2896). ✅ **The step engine MERGED dark** (2026-11-28, task 3986, PR 2961, `c3b6b6141`): decisions 1 to 8, done-when 8 to 27, 8b, 14b and 18b. No production module calls it until SBX-4b2 | SBX-4a, SBX-1a (a gap id, SBX-F8), SBX-2, SBX-13 (D187), WS-43g1 (task 4009, PR 2887, merged `d2bffe963`) for the proxy and the door name, WS-43g2a (task 4070, merged dark a95d58d09, PR 2924) for the network of each run | AGENT-SAFE. Dark. No production container (task 3786) |
 | **SBX-5** (task 3804) | (D187) `run_tool`, persist on success as a Studio package, and reuse (§6.4 to §6.6). The `app_versions.files` columns, the CHECK and the trigger (§7.2). `publish_version` writes the files, and `rollback` copies them. (SBX-4b) SBX-5 is the single owner of the package rules of `ai_studio.md` §19.5 (age, advisory, licence and layer), and it closes the residual of §12.4 decision 9. (SBX-Q2, decided 2026-11-27, task 3986, answer `fd97a2bd`) The run step opens one host at a time, as the smoke round does: a reinstall runs with the package hosts only, and the run command runs with the door host only. (§12.5) `run_tool` mints the write scopes of `tool.json` and runs the held-card watcher of SBX-3b beside the run command. **Open decision of SBX-5:** one run command has 300 s (§5.6), the same as the default card wait of §12.5 decision 6. SBX-5 decides whether a run command gets more time. **Done when** (part): a tool whose lock breaks a §19.5 rule does not persist, and a test proves it | SBX-3, SBX-4, `ai_studio.md` B7 | AGENT-SAFE. Dark |
+| **SBX-22** (task 4173) | (cohesion rule 3, owner request 2026-11-28, task 4163) A need that the sandbox fills twice becomes a core-tool candidate. When two sandbox-built tools that SBX-5 persisted answer gaps of the same need, the gap rows get a core-tool candidate mark. The Tool gaps view of SBX-1b (`ToolGaps.tsx`, `GET /api/studio/tool-gaps`) shows the mark and the count. The signal goes to the core-tool path (for example `make_document` and `make_spreadsheet`, task 4144), and it never builds a core tool by itself. "The same need" is matched on the `need` of the gap row only, never on the words of the model. A sandbox tool never stores what a field means: that belongs to `connection_semantic_models` (WS-SEM, cohesion rule 1). The view stays read-only and tenant-scoped (R5). **Fence:** `tests/unit/test_tool_gap_detection.py::test_a_need_filled_twice_is_a_core_tool_candidate`: two persisted builds for one need set the mark, one build does not, and the builds of another org never count (R8). **Done when** that test passes with zero skips | SBX-5, SBX-1b | AGENT-SAFE. Dark |
 | **SBX-6** (task 3805) | (D187) (D227) The setting `user_tool_disabled_orgs`, which takes `*` (§0c, Gap A). The review controls through the package host: share, approve with `studio:publish`, pin, pause, archive and audit (§8) | SBX-5, `package_host.md` PKG-11, `ai_studio.md` J2 | AGENT-SAFE. Dark |
 | **SBX-7** (task 3806) | Metering (§10). (D227) A step is refused when the `sandbox` price row is missing (SBX-F16) | SBX-5, SBX-Q4 | AGENT-SAFE. Dark |
 | **SBX-8** (task 3807) | `sandbox_runtime=runsc` in the broker, and a measured cost of gVisor on a local stack. 🔨 **BUILT dark** (2026-11-19, branch `mt-97db21a4-sbx15-remote-runsc`): the setting `sandbox_runtime`, default `runc`. `runsc` adds `--runtime=runsc` to `docker run`, and an unknown value refuses each start. Fences: WS43-F2 and SBX-F21. **Not measured:** no local daemon has `runsc`, so the cost of gVisor waits for a box with it | the broker (D227), not SBX-4 | AGENT-SAFE. The install on a box is WS43-G5, **OWNER-GATE** |
@@ -3343,7 +3345,7 @@ reserved at agent registration.
 - **The cap of 110 tools (audit B2).** `build_tool` lives only in pack turns
   (`TOOL_SEARCH_ORGS`). It gets its own reserved room beside `_COMPUTE_ROOM`,
   and `_pack_base_count` leaves it out, as it leaves out `compute_run`
-  (`_tool_injection.py:4440`, `:4746`).
+  (`_BUILD_ROOM` at `_tool_injection.py:2090`, and `_pack_base_count` at `:4471`).
 - **The gap id.** The tool reads the row through `gateway/studio/tool_gaps.py`
   (main) under the bound tenant. It refuses a row whose outcome is not
   `no_match`, or whose `run_id` is not this run (SBX-F8).
@@ -3614,8 +3616,9 @@ SBX-4b2:
     older than 30 minutes, or with a build row. It refuses with no approved
     card. `tests/unit/test_tool_gap_detection.py::test_build_tool_refuses_each_bad_gap`
     (SBX-F8, build half).
-29. `build_tool` does not reach an agent with no `tool_scope`, a run whose
-    org the scope does not name, or an org off `SANDBOX_DOOR_ORGS`.
+29. `build_tool` does not reach a run with one of the switches of decision
+    12 off, a run whose org `tools:<org>` does not name, or an org off
+    `SANDBOX_DOOR_ORGS`. A `tool_scope` is never the gate (decision 12).
     `tests/unit/test_user_tool_injection.py::test_build_tool_reaches_only_the_gated_run`
     (SBX-F7, build half).
 30. In the same test, a delegated run, a WhatsApp turn (the WhatsApp pack
@@ -4721,3 +4724,7 @@ here, and each needs its own check before anyone acts on it.
   setting and checks the gap again. The session command holds no grant and
   no token. A new scan replaces the dark scan. `dev_up.sh` gains one opt-in
   switch for the demo. Done-when 36a to 36d are new.
+- 2026-11-28 — SBX-22 (task 4173) is a new row after SBX-5. A need that the
+  sandbox fills twice becomes a core-tool candidate (cohesion rule 3, task
+  4163). SBX-4b2: the anchors of decision 12 and the text of done-when
+  29 follow the verify.
