@@ -11280,6 +11280,31 @@ def _try_failover_note(task: str) -> Callable[[ResolvedTier, ResolvedTier, int |
     return _note
 
 
+_TRY_SHORT_NEEDLE = 8
+
+
+def _try_secret_forms(secret: str) -> list[str]:
+    """Each form of a secret that a vendor can plausibly echo (task 2428).
+
+    Plain, percent-encoded, form-encoded (space as ``+``), JSON-escaped, and
+    base64 (standard and URL-safe, padded and not) of the key alone, of
+    ``:key`` and of ``key:`` (Basic auth with an empty user or password).
+    A Basic pair with a named user is not covered: the user is unknown here.
+    """
+    forms = [
+        secret,
+        urllib.parse.quote(secret, safe=""),
+        urllib.parse.quote_plus(secret),
+        json.dumps(secret)[1:-1],
+    ]
+    for plain in (secret, ":" + secret, secret + ":"):
+        raw = plain.encode("utf-8")
+        for encode in (base64.b64encode, base64.urlsafe_b64encode):
+            padded = encode(raw).decode("ascii")
+            forms += [padded, padded.rstrip("=")]
+    return forms
+
+
 def _try_provider_text(
     failed: router_mod.UpstreamFailed,
     credentials: dict[str, router_mod.Credential | None],
@@ -11295,22 +11320,23 @@ def _try_provider_text(
     cause = failed.__cause__
     raw = str(cause) if cause is not None else ""
     # A vendor can echo the key, the base URL (a token can sit in its query),
-    # or the key URL-encoded or JSON-escaped. Remove each form.
+    # or the key in another form. Remove each form.
     needles: list[str] = []
     for cred in credentials.values():
         if cred is None:
             continue
         if cred.secret:
-            needles += [
-                cred.secret,
-                urllib.parse.quote(cred.secret, safe=""),
-                json.dumps(cred.secret)[1:-1],
-            ]
+            needles += _try_secret_forms(cred.secret)
         if cred.api_base:
             needles.append(cred.api_base)
     # Longest first, so a base URL that holds the key goes whole.
     for needle in sorted({n for n in needles if n}, key=len, reverse=True):
-        raw = raw.replace(needle, "[key]")
+        if len(needle) < _TRY_SHORT_NEEDLE:
+            # A short needle also sits inside ordinary words. Replace it only
+            # where it stands alone, so the vendor's message stays readable.
+            raw = re.sub(rf"(?<!\w){re.escape(needle)}(?!\w)", "[key]", raw)
+        else:
+            raw = raw.replace(needle, "[key]")
     raw = _KEY_SHAPE.sub("[key]", raw)
     return " ".join(raw.split())[:_TRY_ERROR_MAX]
 

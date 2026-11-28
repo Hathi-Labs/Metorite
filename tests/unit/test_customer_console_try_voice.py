@@ -178,6 +178,53 @@ class TestTheProviderTextHoldsNoKey:
         assert "ef1234" not in said
         assert "bad key" in said
 
+    def test_a_form_encoded_key_is_removed(self):
+        from customer_console import main
+
+        secret = "ab cd+ef/gh1234"
+        cred = router_mod.Credential(secret=secret, api_base=None, byok=False)
+        encoded = "ab+cd%2Bef%2Fgh1234"
+        said = main._try_provider_text(
+            self._failed(f"body key={encoded} gave 401"), {"elevenlabs": cred}
+        )
+        assert encoded not in said
+        assert "gh1234" not in said
+        assert "gave 401" in said
+
+    @pytest.mark.parametrize("variant", ["std", "std_nopad", "url", "url_nopad"])
+    @pytest.mark.parametrize("shape", ["{}", ":{}", "{}:"])
+    def test_a_base64_key_is_removed(self, variant, shape):
+        import base64
+
+        from customer_console import main
+
+        secret = "sk?>key~value1234"  # base64 of it has + and / in the std form
+        cred = router_mod.Credential(secret=secret, api_base=None, byok=False)
+        raw = shape.format(secret).encode()
+        enc = {
+            "std": base64.b64encode(raw),
+            "std_nopad": base64.b64encode(raw).rstrip(b"="),
+            "url": base64.urlsafe_b64encode(raw),
+            "url_nopad": base64.urlsafe_b64encode(raw).rstrip(b"="),
+        }[variant].decode()
+        said = main._try_provider_text(
+            self._failed(f"Authorization: Basic {enc} was refused"), {"elevenlabs": cred}
+        )
+        assert enc not in said
+        assert "was refused" in said
+
+    def test_a_short_secret_leaves_unrelated_words_intact(self):
+        from customer_console import main
+
+        cred = router_mod.Credential(secret="abcde", api_base=None, byok=False)
+        said = main._try_provider_text(
+            self._failed("bad key abcde, tabcdef and abcdefgh failed (abcde)"),
+            {"elevenlabs": cred},
+        )
+        assert "bad key [key]," in said
+        assert "(abcde)" not in said
+        assert "tabcdef and abcdefgh failed" in said
+
     def test_it_is_bounded(self):
         from customer_console import main
 
