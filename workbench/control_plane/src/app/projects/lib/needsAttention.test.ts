@@ -336,8 +336,9 @@ describe("the page wires the lens", () => {
     expect(src).toMatch(/onChanged=\{\(\) => setAttentionVersion\(/);
   });
 
-  it("opens the lens from the badge and the toggle, and a view pick closes it", () => {
-    expect(src).toContain("data-attention-badge");
+  it("opens the lens from the one toggle, and a view pick closes it", () => {
+    // HDR-1 (§9e.3 rule 7): the badge and the toggle are one control.
+    expect(src).not.toContain("data-attention-badge");
     expect(src).toContain("data-attention-toggle");
     // The desktop switch picks through `pickMode`, which leaves the lens.
     expect(src).toMatch(/const pickMode = \(next: ViewMode\) => \{\s*setAttentionFor\(null\);/);

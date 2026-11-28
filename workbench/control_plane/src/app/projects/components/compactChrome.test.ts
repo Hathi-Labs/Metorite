@@ -27,6 +27,7 @@ import { EMPTY_FILTERS, NO_LANES, type Filters } from "../lib/grouping";
 import { AgentWorkStrip } from "./AgentWorkStrip";
 import { CompactFilterBar, type CompactFilterBarProps } from "./CompactFilterBar";
 import { FilterSheetBody } from "./FilterSheet";
+import { ProjectHeaderTitle } from "./ProjectHeaderTitle";
 import { ViewSheetBody } from "./ViewSheet";
 
 const noop = () => {};
@@ -336,5 +337,71 @@ describe("EA-18b: the Questions pane takes none of the project chrome", () => {
   it("the phone's view sheet is unchanged by the new entry", () => {
     const sheet = renderToStaticMarkup(createElement(ViewSheetBody, { ...barProps() }));
     expect(sheet).not.toContain("Questions");
+  });
+});
+
+// HDR-1 (`one_projects_app.md` §9e.3) — the project header.
+describe("HDR-1: the header draws the title and the line on two lines", () => {
+  const page = readFileSync(join(__dirname, "..", "page.tsx"), "utf8");
+  const draw = (over: Record<string, unknown> = {}) =>
+    renderToStaticMarkup(
+      createElement(ProjectHeaderTitle, {
+        title: "Metorite Application",
+        parent: { name: "Metorite", onOpen: noop },
+        line: "Metorite is one platform with one task store.",
+        facts: "3 sub-projects",
+        description: "Metorite is one platform with one task store. More words.",
+        more: true,
+        ...over,
+      }),
+    );
+
+  it("the title has its own line, and the summary line is a second one", () => {
+    const html = draw();
+    const title = html.indexOf("data-header-title");
+    const line = html.indexOf("data-header-line");
+    expect(title).toBeGreaterThan(-1);
+    expect(line).toBeGreaterThan(title);
+    // The line is a sibling after the title row, never inside the heading.
+    expect(html.slice(title, line)).toContain("</h2>");
+    // Below 640 px the line hides.
+    expect(html).toMatch(/data-header-line=""[^>]*>/);
+    expect(html).toMatch(/class="[^"]*hidden[^"]*sm:flex[^"]*"[^>]*data-header-line/);
+  });
+
+  it("the parent and the arrow come before the title", () => {
+    const html = draw();
+    expect(html.indexOf("data-header-parent")).toBeLessThan(html.indexOf("data-header-title"));
+    expect(html).toContain("›");
+  });
+
+  it("More and the facts end the line, after a dot", () => {
+    const html = draw();
+    expect(html.indexOf("data-header-more")).toBeGreaterThan(html.indexOf("Metorite is one platform"));
+    expect(html).toContain("· ");
+    expect(html).toContain("3 sub-projects");
+    expect(html).not.toContain("Includes");
+  });
+
+  it("no description gives the title only, and no More", () => {
+    const html = draw({ line: null, facts: null, description: null, more: false });
+    expect(html).not.toContain("data-header-line");
+    expect(html).not.toContain("data-header-more");
+  });
+
+  it("the page shows ONE attention control, and no badge", () => {
+    expect(page).not.toContain("data-attention-badge");
+    expect(page.match(/data-attention-toggle=""/g)?.length).toBe(1);
+    const toggle = page.slice(page.indexOf('data-attention-toggle=""') - 600, page.indexOf('data-attention-toggle=""'));
+    // It hides at a count of 0, and stays while the lens is open.
+    expect(toggle).toContain("(attentionBadge || attentionLens)");
+  });
+
+  it("no Agents lens button shows while the Agents tab is offered", () => {
+    const at = page.indexOf('data-agents-toggle=""');
+    const guard = page.slice(at - 700, at);
+    expect(guard).toContain("!agentsOn &&");
+    // `agentsOn` is the same condition that offers the tab: the modes hide it only when it is false.
+    expect(page).toMatch(/agentsOn \? \[\] : DARK_GATED_MODES/);
   });
 });

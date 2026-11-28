@@ -76,6 +76,7 @@ import { useAgentLensesOn } from "@/lib/shell/shellPrefs";
 import { AgentsAtWorkView, useAgentMap, useAgentsAtWork } from "./components/AgentsAtWork";
 import { AgentsCanvas } from "./components/AgentsCanvas";
 import { LENS_LABEL as AGENTS_LENS_LABEL } from "./lib/agentsAtWork";
+import { projectSummary } from "./lib/projectSummary";
 import { NeedsAttentionList } from "./components/NeedsAttentionList";
 import { type AttentionPage, LENS_LABEL, badgeText } from "./lib/needsAttention";
 import { AskAgentDialog } from "./components/AskAgentDialog";
@@ -98,6 +99,7 @@ import { useAccess } from "@/components/AccessProvider";
 import { TagManager } from "./components/TagManager";
 import { BulkBar } from "./components/BulkBar";
 import { FilterChrome } from "./components/CompactFilterBar";
+import { ProjectHeaderTitle } from "./components/ProjectHeaderTitle";
 import { ViewTabs } from "./components/ViewTabs";
 import { BacklogCanvas } from "./components/BacklogCanvas";
 import { WorkStyleDialog } from "./components/WorkStyleDialog";
@@ -5039,19 +5041,26 @@ function ProjectsWorkspace() {
   // The views already include the subtree — this is the line that tells the
   // reader those numbers are not this project's alone, which is otherwise
   // an invisible difference between two identical-looking boards.
+  // HDR-1: the fact that ends the summary line. It reads "3 sub-projects".
   const aggregateNote =
     selectedLevel === "project" && (summary?.children?.length ?? 0) > 0
-      ? `Includes ${summary!.projects} subproject${
-          summary!.projects === 1 ? "" : "s"
-        }`
+      ? `${summary!.projects} sub-project${summary!.projects === 1 ? "" : "s"}`
       : null;
 
-  const subtitle = app
+  // HDR-1: an app and the private space give a fixed note. A project gives
+  // its description, which the header cuts to one plain line and offers in full.
+  const fixedNote = app
     ? PROJECT_APP_SECTIONS.flatMap((s) => s.items).find((i) => i.id === app)
         ?.note ?? null
     : selectedIsPersonalRoot
       ? PERSONAL_SPACE_NOTE
-      : [selected?.description, aggregateNote].filter(Boolean).join(" · ") || null;
+      : null;
+  const headerDescription = app || selectedIsPersonalRoot ? null : selected?.description ?? null;
+  const headerSummary = projectSummary(headerDescription);
+  // The place before the title: the space of a project, the project of a sub-project.
+  const headerPath = app || !selected ? [] : pathTo(visibleRoots, selected.id);
+  const headerParent =
+    headerPath.length > 1 ? (headerPath[headerPath.length - 2] as ProjectRow) : null;
 
   /**
    * WS-27am — which canvas is on screen, in the user's words. It labels the
@@ -5078,20 +5087,20 @@ function ProjectsWorkspace() {
   // sit at the right of the title line, and the tab row owns the line below.
   const headerTools = () => (
     <>
-        {selected ? (
+        {/* HDR-1 (§9e.3 rule 7) — ONE attention control, which reads
+            "36 need attention". It is pressed while the lens is open. It
+            hides when the count is 0, and stays while the lens is open, so
+            the way back never goes. */}
+        {selected && !noProjectChrome && (attentionBadge || attentionLens) ? (
           <Button
             className="shrink-0"
             variant="ghost"
             size="sm"
             icon="TriangleAlert"
             selected={attentionLens}
-            // OP-12: in a narrow row the word folds away, so the tabs
+            // OP-12: in a narrow row the words fold away, so the tabs
             // keep their room. The name and the tooltip stay.
-            aria-label={
-              compactChrome
-                ? `${LENS_LABEL}${attentionHere && attentionHere.total > 0 ? ` ${attentionHere.total}` : ""}`
-                : undefined
-            }
+            aria-label={attentionBadge ?? LENS_LABEL}
             data-attention-toggle=""
             title={
               attentionLens
@@ -5103,17 +5112,23 @@ function ProjectsWorkspace() {
               setAttentionFor(attentionLens ? null : selected.id);
             }}
           >
-            {compactChrome ? (
-              <span className="hidden @[56rem]:inline">{LENS_LABEL}</span>
+            {attentionHere && attentionHere.total > 0 ? (
+              <>
+                <span className="tabular-nums">{attentionHere.total}</span>
+                {/* The words after the count fold away in a narrow row. */}
+                <span className={compactChrome ? "ml-1 hidden @[56rem]:inline" : "ml-1"}>
+                  {attentionHere.total === 1 ? "needs attention" : "need attention"}
+                </span>
+              </>
             ) : (
               LENS_LABEL
             )}
-            {attentionHere && attentionHere.total > 0 ? (
-              <span className="ml-1 tabular-nums opacity-70">{attentionHere.total}</span>
-            ) : null}
           </Button>
         ) : null}
-        {selected && (agentsRead.kind === "ready" || agentsRead.kind === "error") ? (
+        {/* HDR-1 (HDR-Q1, owner 2026-11-28) — one name opens one place. While
+            the Agents tab shows (`agentsOn`), this lens button leaves the
+            header. Where the tab is not offered, the button stays. */}
+        {selected && !agentsOn && (agentsRead.kind === "ready" || agentsRead.kind === "error") ? (
           <Button
             className="shrink-0"
             variant="ghost"
@@ -6535,36 +6550,28 @@ function ProjectsWorkspace() {
                   : " items-baseline"
               }`}
             >
-              <h2
-                className="flex min-w-0 items-center gap-1.5 truncate text-sm font-medium text-foreground glass:text-subhead glass:font-semibold"
+              {/* HDR-1 — the title has its own line, and the plain summary line
+                  sits under it. The title never shares its width with the
+                  description. */}
+              <ProjectHeaderTitle
                 title={title}
-              >
-                <span className="min-w-0 truncate">{title}</span>
-                {selectedIsPersonalRoot ? (
-                  <Icon name="Lock" className="h-3 w-3 shrink-0 text-muted-foreground" role="img" aria-label={PERSONAL_SECTION_HINT} />
-                ) : null}
-              </h2>
-              {subtitle ? (
-                <p className="min-w-0 truncate text-xs text-muted-foreground">
-                  {subtitle}
-                </p>
-              ) : null}
-              {/* WS-55 SW-11a — the count of the Needs attention lens. It
-                  shows only while something waits, and a click opens the
-                  lens. */}
-              {!noProjectChrome && selected && attentionBadge && !attentionLens ? (
-                <Button
-                  className="shrink-0 self-center"
-                  variant="ghost"
-                  size="sm"
-                  icon="TriangleAlert"
-                  data-attention-badge=""
-                  title="Open the work that stopped and waits for a person"
-                  onClick={() => setAttentionFor(selected.id)}
-                >
-                  {attentionBadge}
-                </Button>
-              ) : null}
+                parent={
+                  headerParent
+                    ? {
+                        name: displayNodeName(headerParent),
+                        onOpen: () => {
+                          setApp(null);
+                          setSelected(headerParent);
+                        },
+                      }
+                    : null
+                }
+                lockHint={selectedIsPersonalRoot ? PERSONAL_SECTION_HINT : null}
+                line={fixedNote ?? headerSummary?.line ?? null}
+                facts={fixedNote ? null : aggregateNote}
+                description={headerDescription}
+                more={Boolean(headerSummary?.more)}
+              />
               {compactChrome && !isMyTasksApp(app) && !noProjectChrome ? (
                 <div className="ml-auto flex shrink-0 items-center gap-1">{headerTools()}</div>
               ) : null}
