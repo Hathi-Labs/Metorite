@@ -30,6 +30,8 @@
 
 **SW-114 (the edge tool `report_subagent`) is built and dark behind `AGENT_MAP_ORGS`, 2026-11-22 (task 3797), with no migration. The edge lists the tool for every org, and the tool answers not found where the flag is off. The hooks of the plugin are not built.**
 
+**Task 4206 planned the data side of AMR-6 and AMR-8 on 2026-11-28 (§3.12.11).** Jobs are child runs (SW-116), lines get kinds and teams get a topology record (SW-115, no longer later), and SW-114c reports sub-agents from every machine. Nothing of it is built.
+
 **ORCH-0 (task 4145) amended the map on 2026-11-28 (§3.12.10).** It names the four causes of "No orchestrator", the orchestrator rule, the dispatch record, the node lifetime and the topologies. The rows SW-107c, SW-108b, SW-108c, SW-114b and SW-115 are new (tasks 4151 to 4154, 4136), and SW-59 is amended (task 4135). Nothing of it is built.
 
 **SW-110 (task 3631): the half for child runs is built and dark behind `AGENT_MAP_ORGS`, 2026-11-23, with no migration. The machine heartbeat card is not built, because it waits on SW-77 (task 1923).**
@@ -975,11 +977,15 @@ The owner asked on 2026-11-26 that the view of §3.12.8 stays usable with hundre
 - The node needs the dispatcher run in `seen` (D12, §3.12.4 rule 1). A viewer who cannot see that run gets no node and no line. The lane then stays a root under its person.
 - The read takes one step, as `_MAP_LINES_SQL` does. It never walks the chain.
 
-**The topologies (amends §3.12.2).** Task 4138 writes the catalog in `orchestration_playbook.md` §6e, with when each one wins and what it costs. The default stays one agent first. This table says only how each topology shows on the map. A role is the chip of SW-59. A sub-agent is a child run of SW-39, written by the hooks of SW-114b. A kind of line beyond "dispatched by" is SW-115, which is later work.
+**The topologies (amends §3.12.2).** Task 4138 writes the catalog in `orchestration_playbook.md` §6e, with when each one wins and what it costs. The default stays one agent first. This table says only how each topology shows on the map.
+
+A role is the chip of SW-59. A sub-agent is a child run of SW-39, written by the hooks of SW-114b. A kind of line beyond "dispatched by" is SW-115.
+
+**Amended 2026-11-28.** SW-115 is no longer later work, and §3.12.11 gives the rule of each kind.
 
 | Topology | The sessions and the runs | The roles | Sub-agents | The lines today | The lines with SW-115 |
 |---|---|---|---|---|---|
-| **Pipeline** (build, then verify, then review) | One lane session | `builder` on the lane run | The verifier and the reviewer, under the lane run | None | `verifies` and `reviews`, from each child to the lane |
+| **Pipeline** (build, then verify, then review) | One lane session | `builder` on the lane run | The verifier and the reviewer, under the lane run | None | Each child reads `verifies` or `reviews` (a child is not a line, §3.12.11) |
 | **Router** | One router session, and one session for each target | `orchestrator` on the router | None | One line from the router to each target | `hands off to` |
 | **Fan-out** (parallel slices, then a join) | One orchestrator, and N lane sessions | `orchestrator`, then `builder` on each lane | The verifier of each lane | One line to each lane | `hands off to`, and one `merges` line from the merger |
 | **Orchestrator and workers** | One orchestrator, and lanes that it starts as it learns | `orchestrator`, then `builder`, `verifier`, `reviewer` or `merger` | Each lane's own | One line to each lane | The kind of each line follows the lane's role |
@@ -1002,6 +1008,48 @@ The owner asked on 2026-11-26 that the view of §3.12.8 stays usable with hundre
 - **A dispatch to a lane that has no name.** A row with no `agent_label` matches the first claim of the task by any session. A wrong match is possible when two sessions race for one task. The claim lock already lets only one of them win.
 - **The age limit of a dispatch row.** 24 hours follows `MAP_ENDED_WINDOW_S`. A longer hand-off needs a new row.
 - **An orchestrator that never holds a run.** It has no node, also with SW-108b, because a dispatch row names a run. The kit tells it to hold one.
+
+#### 3.12.11 Downstream activity and teams: the data side of AMR-6 and AMR-8 (task 4206, 2026-11-28)
+
+**The ask.** The owner wants to see the downstream work of each agent on the map (AMR-6, task 4205, 2026-11-28). That work is its sub-agents and its jobs. A sub-agent can be an adversarial reviewer. A job can be a GitHub Actions run, local CI, the merge queue or a release.
+
+The owner also wants to see each team as a group, labelled with its topology (AMR-8, task 4209). The lane lane-amr5 builds the UI of both, and this section is its data. It amends SW-115 and adds SW-116 and SW-114c. Where it differs from §3.12.10, this section wins.
+
+**One store: the child run.** A sub-agent is already a child run of SW-39, written by `report_subagent` (SW-114). An external job is a child run too. So AMR-6 needs no new table. A child run holds no task, no lease and no session key, and it shows only under its parent (§3.12.4 rule 1).
+
+| What | The row | Who writes it |
+|---|---|---|
+| A sub-agent | `kind = 'child'`, `job_kind` NULL, the label is the agent type | `report_subagent`, from the hooks of SW-114b and SW-114c |
+| An external job | `kind = 'child'`, `job_kind` set, the label is the job name, the link is `external_link` | `report_job` (SW-116), from the kit and lane hooks |
+| The wait of a run | `waiting_on` and `waiting_until` of the run (1045a) | `post_agent_activity` with `waiting`, as today |
+
+**The job (SW-116).**
+
+- **The kinds.** `github_action`, `ci_local`, `merge_queue`, `release` and `review`. A new nullable column `job_kind` holds the kind, with a CHECK of these five. A CHECK `job_kind IS NULL OR kind = 'child'` keeps it off a plain run. A sub-agent keeps NULL. The `kind` CHECK of migration 475 does not change.
+- **The states and their order.** A job reports `queued`, `running`, `passed` or `failed`, in that order. The row keeps the run statuses: `queued` is `created`, `running` is `in_progress`, `passed` is `completed`, and `failed` is `failed`. `passed` and `failed` are final, and they set `ended_at`.
+- **No step back.** A report moves the row only forward. A report of a lower state, or any report after the end, changes nothing and answers the row as it is.
+- **A parent that ends first.** `_end_children` gives each open child the terminal status of its parent, and that status does not say how a job ended. So `_end_children` gives an open job the status `abandoned` instead. The read shows `abandoned` as `unknown`. A sub-agent keeps the rule of SW-39.
+- **One row for each job.** The key is `job:<parent id>:<job id>`, in `idempotency_key`, as `child_key` does for a sub-agent. `job_id` matches `^[A-Za-z0-9._:-]+$` and holds at most 64 characters, as `CHILD_AGENT_ID_PATTERN` and `CHILD_AGENT_ID_MAX` do. A bad id gets 422 at the schema.
+- **The link.** `external_link`, which must be https (migration 267). The link may name another host, because a release or a box CI page is not on GitHub. The gateway refuses a link with a user name or a password, and it drops the query and the fragment. The UI opens a link with `rel="noopener noreferrer"`. The link is display data.
+- **Two caps.** A run holds at most 20 open sub-agents and 20 open jobs. `_OPEN_CHILDREN_SQL` and the sub-agent counts of the map (`_MAP_CHILD_COUNTS_SQL`) read only `job_kind IS NULL`. The job counts read only `job_kind IS NOT NULL`.
+- **The write cap.** Each report is one write of the connection's write cap (`AGENT_WRITE_CAP` in `AGENT_WRITE_WINDOW_S`). A lane reports a job at each change of state, never on each poll.
+- **It grants nothing.** A job is display data (R7). No authorization check, visibility seam, run slot or merge gate reads it. The merge gate reads GitHub, never a job row.
+
+**Who reports a job (SW-116 items 2 and 3).** The lane hooks call `report_job` at each step that they already run: `gh pr checks` or `gh run watch` (`github_action`), `scripts/ci_local.sh` (`ci_local`), `scripts/hand_over.sh` (`merge_queue`), and the release watcher (`release`). A sub-agent of type `diff-reviewer` reads as a sub-agent, not a job. A server reader of the GitHub checks of each open run's pull request is a later slice. It needs a GitHub credential on the server, so it is OWNER-GATE, and it has no row yet.
+
+**The production release on the map.** A release is not the work of one lane. The release watcher reports it under its own run, on the coordination task of the release. AMR-6 draws that run in the strip above the map. This section adds no org-wide store for it.
+
+**Teams and their topology (amends SW-115).**
+
+- **The record comes first.** `set_run_plan` takes an optional `topology` on the caller's own open run. `dispatch_task` (SW-108b) takes it too, on its `run_id`, which is the caller's own open run. The values are the eight of §3.12.10: `pipeline`, `router`, `fan_out`, `orchestrator_workers`, `creator_critic`, `hierarchical`, `swarm` and `debate`.
+- **The column.** A new nullable column `pm_agent_runs.topology` holds it, with a CHECK of the eight and a CHECK `topology IS NULL OR kind = 'run'`. A later call with a value replaces it. A call with no `topology` leaves it as it is.
+- **Inference is the fallback.** With no record, the map infers the topology from the roles of SW-59 and the lines below, and marks it "inferred".
+- **The kind of each line.** The map read gives each line a `kind`, from the role of the newest run of the node at the end of the line. `builder` gives `hands off to`, `verifier` gives `verifies`, `reviewer` gives `reviews` and `merger` gives `merges`. `orchestrator`, and a run with no role, keep `dispatched by`. Each pair of nodes keeps ONE line: the `DISTINCT` stays on `from` and `to`. A peer of a swarm sends the role `builder`, so its line reads `hands off to`.
+- **The kind of a child.** A child is not a line. Each child in `children` gets `kind` from its agent type. A type that holds `verif` reads `verifies`, and a type that holds `review` reads `reviews`. A job reads its `job_kind`.
+- **A team.** The team of a dispatcher is the dispatcher, the runs that it dispatched, and their children. The map read gives `team` on each session node. It is the node id of its dispatcher only when the read lists that node for the viewer. Otherwise it is the node's own id. So `team` never names a node that the viewer cannot see. The read takes one step, as the lines do.
+- **It grants nothing.** The topology and the line kind are display data (D140.2, §3.12.4 rule 2).
+
+**The order (metorite-78, 2026-11-28 11:26 UTC).** 4136 (SW-114b), then 4206 (SW-116), then 4135 (SW-59), then 4154 (SW-115), then 4138, with 4131 in its place. SW-114c (task 4212) makes the sub-agents show from a laptop too.
 
 ### 3.13 What other apps do: agent-autoloop (SW-0d, task 2506)
 
@@ -2490,13 +2538,29 @@ They keep their own gates.
 - **Fence.** Advisory (R7). The fence of `orchestration_playbook.md` §4 keeps HathiLabs rules out of the product text.
 - **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** SW-108.
 
-#### SW-115 · Kinds of lines (later)
+#### SW-115 · Kinds of lines, and the topology record
 
 - **Metorite task.** 4154.
-- **Scope.** The last column of the topology table of §3.12.10. A line on the map gets a kind: `dispatched by`, `hands off to`, `verifies`, `reviews` or `merges`. The kind comes from the roles of SW-59 and the child runs of SW-39. It adds no new input. The design is open.
-- **Done when.** A later plan of this row.
-- **Fence.** The plan names it.
-- **Risk.** STANDARD UI. **Gate.** Later. Do not start before SW-59 and SW-114b are live. **Depends on.** SW-59, SW-114b, SW-109.
+- **Scope.** **Amended 2026-11-28 (§3.12.11, AMR-8 task 4209 needs it). It is no longer later work.** Migration, expand only: `pm_agent_runs.topology TEXT NULL`, with a CHECK of the eight values of §3.12.11, added NOT VALID and then validated. A CHECK keeps `topology` on a plain run. `set_run_plan` and `dispatch_task` take an optional `topology` on the caller's own open run, and a call with no value keeps it. The plain map and the summary give `kind` on each line and on each child, by the rules of §3.12.11. They give `team` on each session node too. The read takes one step. Add no second route.
+- **Done when.** R8: a `set_run_plan` with `topology: pipeline` stores it, and a later call replaces it. A bad value gets 422. A topology on a run of another session gets the one not-found. A line to a run with the role `verifier` reads `verifies`. A line to a run with no role, or with `orchestrator`, reads `dispatched by`. A node with a builder run and a later verifier run gives one line, with the kind of the newest run. Each session node carries its `team`, and a node whose dispatcher the viewer cannot see carries its own id. Org B sees nothing of org A.
+- **Fence.** `tests/unit/test_agent_map_r8.py` (a new class `TestTheLineKinds`), `tests/unit/test_agent_label_fence.py` (extended to `topology`), `tests/unit/test_mcp_edge_coverage.py`.
+- **Risk.** HIGH (a migration, and a visibility read of the map). **Gate.** AGENT-SAFE, dark behind `AGENT_MAP_ORGS`. **Depends on.** SW-59 (the roles), SW-107. `dispatch_task` gets the input when SW-108b builds it.
+
+#### SW-116 · Agents report their external jobs
+
+- **Metorite task.** 4206.
+- **Scope.** §3.12.11, "The job". Migration, expand only: `pm_agent_runs.job_kind TEXT NULL`, with a CHECK of `github_action`, `ci_local`, `merge_queue`, `release` and `review`, added NOT VALID and then validated. A gateway route sits beside the children route of SW-114. An edge tool `report_job` takes `run_id`, `job_id`, `kind`, `name`, `state` and an optional `link`. It writes or moves one child run with the key `job:<parent id>:<job id>`, forward only. A CHECK keeps `job_kind` on a child. `_OPEN_CHILDREN_SQL` and `_MAP_CHILD_COUNTS_SQL` read only `job_kind IS NULL`, and the job counts read `job_kind IS NOT NULL`. The map read of SW-110 and the summary give `job_kind` and `link` on each child. `CHILD_COLUMNS` is the one column list. The lane hooks: `scripts/ci_local.sh`, `scripts/hand_over.sh` and a `gh pr checks` wrapper call it with the session's run, as the hook of SW-114b does. The kit text says the same.
+- **Done when.** R8: a `running` report writes one child with `job_kind` set and status `in_progress`. A second report with `passed` moves the same row to `completed` with `ended_at`. A report after the end changes nothing. A `queued` after `running` changes nothing too. A job open when its parent ends takes `abandoned` and reads `unknown`. A run of another connection gets 403. The 21st open job gets 429, and 20 open jobs do not block a sub-agent. A `job_id` over 64 characters or of another shape gets 422. A link that is not https, or that holds a user name, gets 422. The gateway drops a query. Org B sees nothing of org A. A lane that starts pr-check shows a running job under its run. The job then turns passed or failed, with its link.
+- **Fence.** `tests/unit/test_agent_child_runs_r8.py` (extended), `tests/unit/test_agent_map_r8.py`, `tests/unit/test_mcp_edge_coverage.py`, `tests/unit/test_agent_label_fence.py` (extended to `job_kind`), and a `node --test` or pytest file for each lane hook.
+- **Risk.** HIGH (a migration). **Gate.** AGENT-SAFE, dark behind `AGENT_MAP_ORGS`. The server reader of GitHub checks is OWNER-GATE and has no row yet. **Depends on.** SW-114, SW-114b.
+
+#### SW-114c · Sub-agents from every machine
+
+- **Metorite task.** 4212.
+- **Scope.** The hook of SW-114b needs a bearer, so an OAuth session skips it. `report_subagent` takes `run_id` as optional. With no `run_id`, the gateway takes the newest open run of the caller's MCP session (the SW-7 key of the signed `X-Agent-Session`). With no key or no open run, it answers the one not-found. It never guesses across the sessions of one connection. An `mcp_tool` hook entry on `SubagentStart` and `SubagentStop` calls it with `${agent_id}` and `${agent_type}`.
+- **Done when.** A laptop session with OAuth dispatches a verifier, and the verifier shows under its run on the map. R8: a call with no `run_id` and no session key gets the not-found, and two sessions of one connection each get their own run.
+- **Fence.** `tests/unit/test_agent_child_runs_r8.py` (extended), `tests/unit/test_mcp_edge_coverage.py`.
+- **Risk.** HIGH (the run seam). **Gate.** AGENT-SAFE. At dispatch, check on a real Claude Code that an `mcp_tool` hook calls through the session's own connection, and check the production value of `agent_mcp_sessions_enabled`. **Depends on.** SW-114b, SW-7.
 
 ---
 
@@ -2745,6 +2809,9 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 | SW-108b | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_run_dispatch_r8.py tests/unit/test_tenant_coverage.py tests/unit/test_mcp_edge_coverage.py tests/unit/test_agent_label_fence.py` |
 | SW-108c | None. The text is advisory (R7) |
 | SW-59 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_label_fence.py tests/unit/test_mcp_edge_coverage.py`, and the vitest of the chip |
+| SW-115 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_map_r8.py tests/unit/test_agent_label_fence.py tests/unit/test_mcp_edge_coverage.py` |
+| SW-116 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_child_runs_r8.py tests/unit/test_agent_map_r8.py tests/unit/test_mcp_edge_coverage.py tests/unit/test_agent_label_fence.py`, and the tests of the lane hooks |
+| SW-114c | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_child_runs_r8.py tests/unit/test_mcp_edge_coverage.py` |
 
 ---
 
@@ -2938,5 +3005,6 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 - **2026-11-26.** The lenses and the phone view of the Agents view, from the owner's mockup. It adds §3.12.8 and the rows AMR-1 to AMR-3.
 - **2026-11-27, one map.** The owner's ask of that day. It rewrites §3.12.8 and §3.12.9, and adds the row AMR-5.
 - **2026-11-26, at scale.** The owner's rules for a large fleet. It adds §3.12.9, the row AMR-4 and its verify row. The slice is built and dark behind `AGENT_LENSES_ORGS`.
+- **2026-11-28, afternoon.** The data side of AMR-6 and AMR-8, for task 4206. It adds §3.12.11, the rows SW-116 and SW-114c, and their verify rows. It amends SW-115, which is no longer later work. It adds no code.
 - **2026-11-28.** ORCH-0 for task 4145. It adds §3.12.10, the rows SW-107c, SW-108b, SW-108c, SW-114b and SW-115, Q23 and their verify rows. It amends §3.10.10, §3.12.3, SW-59, SW-62, SW-107, SW-108, SW-114 and Q20. It adds no code.
 - **2026-11-21.** The agent-autoloop research for task 2506 (SW-0d). It adds §3.13, a hop limit in SW-95, retry in SW-78 and the row SW-38. It adds no code.
