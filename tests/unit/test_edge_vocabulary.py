@@ -93,3 +93,9 @@ def test_each_end_of_each_relation_has_a_code() -> None:
     for rel in vocab.RELATIONS.values():
         for kind in (*rel.sources, *rel.targets):
             assert vocab.record_code(kind) is not None, (rel.name, kind)
+
+
+def test_every_live_code_has_a_lane() -> None:
+    # `find.lanes` puts each candidate in the lane of its code. A live code with
+    # no lane would raise KeyError there (verifier finding, CI-R1a).
+    assert set(find.LANES) == set(vocab.RECORD_EDGES) | set(vocab.MAIL_EDGES)
