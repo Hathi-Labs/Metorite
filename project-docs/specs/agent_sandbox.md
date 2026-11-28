@@ -3334,6 +3334,10 @@ reserved at agent registration.
   `tool_scope` does not get it either. An agent `tool_scope` is a list of
   tool names and names no org, so it is never the gate.
   `apps/agents/agent-orchestrator/config.json` does not change.
+- The WhatsApp pack turn of `_start_pack_turn` (`whatsapp=True`) does not
+  get the tool. A chat turn with no pack (an org off `TOOL_PACKS_ORGS` or
+  `TOOL_SEARCH_ORGS`) does not get it either. That turn cannot call
+  `find_tools`, so it writes no `no_match` row to build from.
 - **The cap of 110 tools (audit B2).** `build_tool` lives only in pack turns
   (`TOOL_SEARCH_ORGS`). It gets its own reserved room beside `_COMPUTE_ROOM`,
   and `_pack_base_count` leaves it out, as it leaves out `compute_run`
@@ -3413,9 +3417,17 @@ these on the dev stack. None of them is set on a production box.
   today: `flag_env` drops `MAF_CODING_SCOPE` and
   `SANDBOX_EGRESS_DOOR_UPSTREAM`, and `DEV_UP_ORGS_ON` covers only
   `SANDBOX_DOOR_ORGS` and `TOOL_SEARCH_ORGS`. SBX-4b2 adds one opt-in switch
-  to `scripts/dev_up.sh`, `DEV_UP_TOOL_BUILD=1`. It sets the six settings
-  above for the seeded tenant of the dev stack only. It never runs on a
-  production box, and no owner-gated flip is needed.
+  to `scripts/dev_up.sh`, `DEV_UP_TOOL_BUILD=1`. It sets the settings of the
+  five bullets above for the seeded demo org of the dev stack only. No
+  owner-gated flip is needed.
+- **The fence of the switch (audit B7).** Off by default, the switch sets
+  nothing. With `--data prod` there is no seeded org, so the switch refuses
+  to start, and `dev_up.sh` exits with an error. `dev_up.sh` runs under
+  `env -i` on the local machine only, and no box runs it.
+- **The proxy on the dev stack.** The broker starts the egress proxy of
+  WS-43g1 for each grant, as it does on a box. So the dev stack needs no
+  separate proxy start. `SANDBOX_EGRESS_DOOR_UPSTREAM` names the local
+  gateway at an address that the proxy network can reach.
 - **The demo.** On the dev stack the owner asks in chat for a tool that does
   not exist. The card shows the gap need, the read scopes and the PyPI line.
   The owner clicks Approve, and the chat shows the smoke pass, which reads
@@ -3590,8 +3602,9 @@ SBX-4b2:
     org the scope does not name, or an org off `SANDBOX_DOOR_ORGS`.
     `tests/unit/test_user_tool_injection.py::test_build_tool_reaches_only_the_gated_run`
     (SBX-F7, build half).
-30. In the same test, a delegated run, a WhatsApp turn and a run with no chat
-    do not get the tool.
+30. In the same test, a delegated run, a WhatsApp turn (the WhatsApp pack
+    turn of `_start_pack_turn` by name), a chat turn with no pack and a run
+    with no chat do not get the tool.
 31. The card shows the `need` of the gap row and the read scopes. The
     `brief` of the model is not on the card.
     `test_user_tool_build.py::test_the_card_shows_the_gap_need_and_the_scopes`.
@@ -3618,6 +3631,9 @@ SBX-4b2:
 36d. Only `build_tool` calls `start_build`, and only after an approval.
     `_tool_injection.py` imports only `build_tool` from `user_tool_build.py`.
     `test_user_tool_build.py::test_only_build_tool_starts_a_build_after_the_card`.
+36e. `DEV_UP_TOOL_BUILD` is off by default and sets nothing. On, it sets
+    the settings of decision 16 for the demo org only. It refuses
+    `--data prod`. `tests/unit/test_dev_up.py::test_the_tool_build_switch_is_opt_in`.
 36. A scripted `sandbox_docker` test runs the chat path end to end with a
     stub model. The model calls `build_tool`, writes the package and calls
     `smoke_test`. The tool reads two pages through the door and passes.
