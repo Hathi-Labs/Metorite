@@ -100,6 +100,10 @@ WHEN = {
     # Task 3963: the notes pack of the same owner.
     "notes": (
         "Load for your meetings, a meeting transcript or the Note Taker settings."),
+    # PAR-11 part a (task 4012): the dark chat-threads pack of the same owner.
+    "chat-threads": (
+        "Load to list, rename, archive, restore, delete or move a chat of your chat list, "
+        "or to make a topic."),
 }
 
 

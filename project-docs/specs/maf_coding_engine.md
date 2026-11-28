@@ -37,13 +37,13 @@ because Metorite will not use the Copilot SDK. Task 2464 is built
 script. The owner answered on task 4009 (answer `b5dbe733`, 2026-11-27):
 "Approve the merge. Build one network per run in WS-43g2." WS-43g2a (task 4070)
 merged dark (`a95d58d09`, PR 2924). WS-43g2b
-(task 4092) is spec only (§11, WS-43g2).
+(task 4092) is built dark on branch `mt-dba5cb25-ws43g2b` (§11, WS-43g2).
 
 **Amended 2026-11-27 (tasks 4070 and 4092).** The WS-43g2 spec. §7.3 gets
 the network of each run, the door wait and the channel of the live tool.
 §7.4, F9 of §10 and the WS-43g block of §11 follow. SBX-3a owns
 `sandbox_approval_timeout_seconds`, and SBX-3b owns the `timeout_s`
-parameter of `request_confirmation`. WS-43g2b uses both.
+parameter of `request_confirmation`. Both merged, and WS-43g2b uses both.
 
 **H-232 (WS-29, task 616) is built (2026-11-05).** The gate of the
 root agent also compares the member's org with the run's org (§15.4).
@@ -311,8 +311,8 @@ address, the Docker bridge addresses included.
 
 ### 4.7 Other facts
 
-- `request_confirmation` waits a fixed 3600 s (`ask_tools.py:3253`). It has no
-  timeout parameter.
+- `request_confirmation` waits 3600 s by default. SBX-3b added the `timeout_s`
+  parameter (`ask_tools.py:3033`, `card_wait_s` at `ask_tools.py:2800`).
 - A dynamic agent's clone carried the GitHub token in its remote URL
   until H-363 (2026-10-20). Now the URL holds no token.
   `acb_common/git_credentials.py` gives the credential to one gateway git
@@ -759,32 +759,51 @@ coding tasks need no network. WS43-E4 showed that the model then says the
 task failed, and does not fake a result.
 
 **The door is one tool, and a person opens it.** `request_network_access`
-(WS-43g) runs these steps:
+(WS-43g2b, task 4092) runs these steps:
 
-1. Read `sandbox_egress_enabled`. If it is off, answer "network access is off
-   on this platform" and stop.
-2. Call `decide()` with a network request that names each host, so the
-   permission log records it.
-3. Call `request_confirmation` with the reason, each host by name, and
-   `non_interactive_default="deny"`.
-4. On a refusal, or with no person to ask, answer "not approved" and stop.
-5. On approval, call `broker.grant_egress()`.
+1. Read `sandbox_egress_enabled` through `sandbox_broker.egress_enabled`. If
+   it is off, answer "network access is off on this platform" and stop.
+2. Do these checks before any card. Each failure gives a refusal text, and
+   no card shows.
+   - `_code_task_binding` reads the run binding. The run must be a
+     `code_task` run, and `MAF_CODING_SCOPE` must name `code_task` for the
+     org of the run.
+   - The run must have a member (`artifact_context()["member"]`). A run with
+     no member gets a refusal, because no one can approve.
+   - The tool calls `check_grant_hosts` ONCE. A host off the allowlist, a
+     door name with no upstream, or a list with no host gets a refusal. The
+     tool keeps the normalized tuple that the call gives.
+   - The tool calls `decide()` with the reason and each host of the tuple,
+     for the audit line, as `_audit_decision` does.
+3. Call `request_confirmation` with the reason and the tuple,
+   `non_interactive_default="deny"`, `fenced=True`,
+   `responder=<the member of the run>` and
+   `timeout_s=sandbox_approval_timeout_seconds`. The member comes from the
+   run binding and never from input (WS-63 PZ-32), as
+   `sandbox_held.py:174` does.
+4. On a decline, a timeout, an answer of another member, or no channel,
+   answer "not approved" and stop.
+5. On approval, get the handle with `broker.acquire()`. Call
+   `broker.grant_egress(handle, reason, hosts)` with the SAME tuple that the
+   card showed, then `broker.release(handle)`. A `SandboxError` gives a
+   refusal text, and the network stays off.
 
 A run with no chat, such as a workflow or a background job, can never open the
-network. `request_confirmation` (`ask_tools.py:2898`) fails closed there. Its
-no-channel path (`ask_tools.py:3381`) answers "not approved" when
-`non_interactive_default` is `"deny"`.
+network. `request_confirmation` (`ask_tools.py:3033`) fails closed there. A
+run with no person present (AUTO-7a) and a run inside `refuse_cards` get a
+denial before any card. Its no-channel path (`ask_tools.py:3532`) answers
+"not approved" when `non_interactive_default` is `"deny"`.
 
 **The channel of the live tool (WS-43g2b, task 4092).**
 
 - Only the `code_task` MAF session holds `request_network_access`
-  (`sandbox_tools.py:1063`, in `code_task_session_parts`).
+  (`sandbox_tools.py:1242`, in `code_task_session_parts`).
 - The claim: `code_task` runs inside the tool call of a chat turn, through
   `_maf_code_task` (`code_tools.py:407`). `code_session.py` runs the agent
   under `asyncio.wait_for` (lines 167 and 499). That makes a task, and a
   task copies the context variables of the turn. So the tool reads the
   emitter and the relay thread of the turn (`resolve_relay_thread_id()`,
-  `ask_tools.py:3354`), and the card reaches the member of that chat.
+  `executor.py:2880`), and the card reaches the member of that chat.
 - Done-when 14 proves this path. If the card does not reach the chat, the
   tool fails closed through the no-channel path. The slice then stops for a
   spec change, and it does not build a second channel.
@@ -797,21 +816,47 @@ no-channel path (`ask_tools.py:3381`) answers "not approved" when
 - A `no_egress` run never reaches the tool. `code_task` is an `open_world`
   tool (`tool_annotations.py:98`), so H-236 takes it from that run (§16.3).
 
-**The card timeout.** `request_confirmation` waits a fixed 3600 s today
-(`wait_user_future(_fut, 3600)`, `ask_tools.py:3253`).
+**The card timeout.** SBX-3b (task 4084, `agent_sandbox.md` §12.5 done-when
+22) merged. `request_confirmation` takes a `timeout_s` parameter, and it waits
+`wait_user_future(_fut, _wait_s)` (`ask_tools.py:3399`). The default stays
+3600 s (`card_wait_s`, `ask_tools.py:2800`).
 
-- SBX-3b (task 4084, `agent_sandbox.md` §12.5 done-when 22) adds a
-  `timeout_s` parameter. Its default stays 3600, and SBX-3b does not use
-  `asyncio.wait_for`. WS-43g2b uses it.
 - `request_network_access` passes `sandbox_approval_timeout_seconds`
   (default 300) as `timeout_s`. SBX-3a (task 3802, `agent_sandbox.md` §12.5
   decision 6) owns that setting.
+- The setting has three readers: `gateway.sandbox_batch.batch_wait_s`,
+  `sandbox_broker.door_read_timeout` and `request_network_access`. The
+  comment in `settings.py` names only the first.
 - After that time, the card counts as a refusal.
 
-**The card text (WS-43g2b).** `check_grant_hosts` runs before the card, so
-the card names only hosts of the allowlist. The card shows the reason and
-each host with `fenced=True`. A host off the list gets a refusal and no
-card.
+**The card text (WS-43g2b).** The hosts and the reason come from the model,
+so the card treats each one as untrusted text.
+
+- `check_grant_hosts` runs before the card, so the card names only hosts of
+  the allowlist. A tuple that `check_grant_hosts` refuses opens no card.
+- The card shows only the normalized tuple, and `grant_egress` gets the same
+  tuple.
+- The card shows each host whole, one line for each host, in the card
+  context. `request_confirmation` cuts the detail at 500 characters and the
+  context at 4,000. If the card text is longer than a limit, the tool refuses
+  before the card. So no card shows a part of the hosts that a grant opens
+  (review P2-1).
+- An allowlist entry with a leading dot, such as `.example.com`, matches each
+  name under it. The card line of that entry says so: «.example.com» and
+  every name under it.
+- The tool refuses before the card on the `docker-remote` backend, because
+  `grant_egress` refuses there.
+- One run has one open network card at a time. A second call of the tool
+  while a card of the same run is open gets a refusal. A second grant would
+  remove the network of the first (WS-43g2a). The first answer would then
+  say that hosts are open when they are not.
+- The `permission.decision` log line names each host of the tuple.
+- The tool fences the reason and each host with
+  `acb_common.tool_refusals.data`, and it passes `fenced=True`.
+- An answer counts only when it comes from the member of the run, on the card
+  of its own request id. The tool passes a fresh request id, so no late
+  approval of an older card opens a grant. An answer of another member is a
+  refusal, and it opens no grant.
 
 **The grant.**
 
@@ -1054,11 +1099,12 @@ T2.
   front matter, and scripts under `<name>/scripts/`. Spike T2a and T2b proved
   the format.
 
-**`request_network_access(reason, hosts)`.** §7.3. WS-43d ships a stub that
-answers "network access is off on this platform". WS-43g2b (task 4092)
-makes it live.
+**`request_network_access(reason, hosts)`.** §7.3. WS-43d shipped a stub that
+answered "network access is off on this platform". WS-43g2b (task 4092)
+makes it live, behind `sandbox_egress_enabled`. With the flag off, it still
+gives that answer.
 
-- Only the `code_task` MAF session holds it (`sandbox_tools.py:1063`).
+- Only the `code_task` MAF session holds it (`sandbox_tools.py:1242`).
 - The card reaches the member because `code_task` runs inside the tool call
   of the chat turn, through `_maf_code_task`. §7.3, "The channel of the live
   tool", gives the path.
@@ -2791,7 +2837,7 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
 
 **Gate.** AGENT-SAFE. It ships dark.
 
-### WS-43g — Egress: the proxy, the approved grant and the host firewall 🔲 · ✅ **WS-43g1 merged 2026-11-27, dark (`d2bffe963`, PR 2887, task 4009)** · 🔨 **WS-43g2a merged 2026-11-27, dark (`a95d58d09`, PR 2924, task 4070)** · 📝 WS-43g2b (task 4092) spec only
+### WS-43g — Egress: the proxy, the approved grant and the host firewall 🔲 · ✅ **WS-43g1 merged 2026-11-27, dark (`d2bffe963`, PR 2887, task 4009)** · 🔨 **WS-43g2a merged 2026-11-27, dark (`a95d58d09`, PR 2924, task 4070)** · 🔨 **WS-43g2b built 2026-11-27, dark (task 4092, branch `mt-dba5cb25-ws43g2b`), not merged**
 
 **Scope.**
 
@@ -2814,10 +2860,15 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
 4. A run with no chat channel is refused, and its container stays on
    `--network none`.
    `test_run_command_tool.py::test_the_live_tool_with_no_chat_answers_not_approved`.
-5. An approval moves the container to the network of its own grant, and pip
-   installs a package through the proxy. A refusal changes nothing.
-   `test_sandbox_network_grant.py::test_a_grant_recreates_the_container_on_its_own_run_network`
+5. An approval moves the container to the network of its own grant. A
+   refusal changes nothing.
+   `test_sandbox_network_grant.py::test_a_grant_recreates_the_container_on_its_own_run_network`,
+   `test_run_command_tool.py::test_an_approval_opens_the_grant_with_the_card_hosts`
    and `test_run_command_tool.py::test_a_refusal_changes_nothing`.
+   An answer of another member is a refusal, and it opens no grant:
+   `test_run_command_tool.py::test_an_answer_of_another_member_opens_no_grant`.
+   The pip half (pip installs a package through the proxy) moved to WS-43g3,
+   because it needs Docker with outbound network.
 6. The card names each host, and it times out after
    `sandbox_approval_timeout_seconds`.
    `test_run_command_tool.py::test_the_card_names_each_host`,
@@ -2826,6 +2877,9 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
 7. At the run's end, `revoke_egress()` leaves no grant, and the container is
    back on `--network none`.
    `test_sandbox_network_grant.py::test_the_runs_end_leaves_no_grant`.
+   - The card half: a grant that an approved card opened ends with the run.
+     `test_run_command_tool.py::test_a_grant_from_an_approved_card_ends_with_the_run`
+     proves it on the egress fake Docker of WS43-F9.
 8. With the firewall script applied in CI, a sandbox cannot connect to the
    bridge gateway address on port 8080.
 9. The proxy forwards only the exact name `metorite-api.sandbox`, to the
@@ -2882,7 +2936,7 @@ WS-43g to an agent-safe first slice. It ships dark.
   - Each flag flip and each act on a box.
 - Fences: WS43-F5 and WS43-F9 are new. WS43-F2 gains the egress flags.
 - Done-when 1, 2, 3 and 9 hold for WS-43g1. Done-when 7 holds for the grant
-  and the network. Its card half waits for WS-43g2.
+  and the network. WS-43g2b holds its card half.
 
 **The owner answer (closed 2026-11-27).** Task 4009, answer `b5dbe733`,
 2026-11-27: "Approve the merge. Build one network per run in WS-43g2." Review round
@@ -2900,8 +2954,10 @@ So the container of one member could reach the container of the other.
 **Status, 2026-11-27.** WS-43g1 merged, and it is dark (`d2bffe963`, PR 2887,
 task 4009). WS-43g2a merged dark (`a95d58d09`, PR 2924,
 task 4070). Its tests for done-when 10 to 13 and the network
-half of 5 pass. `sandbox_egress_enabled` stays off. WS-43g2b and WS-43g3 are
-not built.
+half of 5 pass. `sandbox_egress_enabled` stays off.
+
+WS-43g2b is built dark (task 4092, branch `mt-dba5cb25-ws43g2b`), and it is
+not merged. WS-43g3 is not built.
 
 **WS-43g2, the second slice (tasks 4070 and 4092).** HIGH. Two PRs. Each
 ships dark behind `sandbox_egress_enabled`. The rung is 6b of
@@ -2954,30 +3010,50 @@ timeout.** The broker and the proxy only. No card, and no change to a tool.
 - `test_a_fresh_proxy_joins_the_network_of_every_live_grant` (line 841)
   checks one join for each grant, with two grants of one org.
 
-**WS-43g2b (task 4092): the live tool and the card.**
+**WS-43g2b (task 4092): the live tool and the card.** 🔨 Built dark,
+2026-11-27, on branch `mt-dba5cb25-ws43g2b`. Not merged.
 
 - In:
   - The live `request_network_access` of §7.3, steps 1 to 5, in
-    `sandbox_tools.py` (line 470). It replaces the stub.
-  - The card names each host, and it passes
-    `timeout_s=sandbox_approval_timeout_seconds`.
+    `sandbox_tools.py` (line 534). It replaces the stub.
+  - The checks before the card (§7.3 step 2): `_code_task_binding`, the
+    member of the run, ONE call of `check_grant_hosts`, and `decide()`.
+  - The card names each host of the normalized tuple, fenced with
+    `tool_refusals.data`. It passes `fenced=True`, `responder=<the member
+    of the run>` and `timeout_s=sandbox_approval_timeout_seconds`.
+  - `broker.acquire()`, then `grant_egress()` with the same tuple, then
+    `broker.release()`.
   - The channel of §7.3: only the `code_task` session holds the tool.
 - Out:
   - The `timeout_s` parameter (SBX-3b) and the setting (SBX-3a).
   - The tool for app-builder.
   - Each flag flip.
+  - WS-43g3, and the pip test through the proxy in Docker.
 - Files (re-verify at dispatch):
   - `packages/acb_skills/acb_skills/sandbox_tools.py`:
-    `request_network_access` and `code_task_session_parts` (line 1034).
+    `request_network_access` (line 534) and `code_task_session_parts` (line
+    1211).
   - `apps/services/orchestrator/orchestrator/code_session.py` (line 237),
     if the session text changes.
   - Tests: `tests/unit/test_run_command_tool.py`,
     `tests/unit/test_maf_code_session.py` and
     `tests/unit/test_delegation_no_egress.py`.
-- Done when: 4, the pip half and the refusal of 5, 6, the card half of 7,
-  and 14.
-- Depends on: WS-43g2a, SBX-3a (task 3802) for the setting, and SBX-3b
-  (task 4084) for `timeout_s`.
+- Done when: 3 (the live tool with egress off), 4, the refusal of 5, 6, the
+  card half of 7 and 14. The answer of another member is a refusal (5).
+- The open-card marker of a run clears on each way out of the card, a raise
+  and a cancel too.
+  `test_run_command_tool.py::test_the_open_card_marker_clears_on_an_error_and_a_cancel`.
+- Depends on: WS-43g2a (merged), SBX-3a (task 3802, merged) for the setting,
+  and SBX-3b (task 4084, merged `be49e45e9`) for `timeout_s`.
+
+**WS-43g3: the firewall in CI, and the half that needs Docker with outbound
+network.** Not built.
+
+- The firewall script applied in CI (done-when 8).
+- The pip half of 5: pip installs a package through the proxy. It is a
+  `sandbox_docker` test with outbound network. SBX-4b1 proves pip through
+  the proxy against a stub index (`agent_sandbox.md` §12.4 done-when 9).
+  WS-43g3 keeps the path to the real PyPI.
 
 **Verification.**
 

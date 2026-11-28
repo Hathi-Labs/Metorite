@@ -15,6 +15,8 @@ SW-107 (472) then added a twentieth key, ``pm_agent_runs.dispatched_by_run_id``,
 and the file guards it too. SW-39 (475) added a twenty-first,
 ``pm_agent_runs.parent_run_id``: a child run names its parent run. A child has
 no task, so its probe row is ``kind = 'child'`` with no task and no app.
+WS-39 WM-5 (task 984) then added ``pm_tasks.goal_task_id``, and the file that
+adds the key attaches the same guard to it (``LATER_ATTACHMENTS``).
 
 **What this file proves, as a role that cannot bypass RLS, with two orgs.**
 
@@ -215,7 +217,16 @@ PROBES: dict[tuple[str, str], tuple[str, dict[str, Any]]] = {
     ("pm_tasks", "recurrence_id"): ("pm_recurrences", _task(9105, recurrence_id=_RC)),
     ("pm_tasks", "status_id"): ("pm_task_statuses", _task(9103)),
     ("pm_tasks", "type_id"): ("pm_task_types", _task(9104, type_id=_TY)),
+    # WS-39 WM-5 (task 984): the Goal of an epic. The guard checks only the
+    # tenant, so a plain task of the seed serves as the Goal here.
+    ("pm_tasks", "goal_task_id"): ("pm_tasks", _task(9106, goal_task_id=_T)),
 }
+
+#: The attachments that a later migration makes, each for a key that it adds.
+#: The 491 file holds one block for each other probe.
+LATER_ATTACHMENTS = frozenset({
+    ("pm_tasks", "goal_task_id"),   # WM-5, the file that adds the key
+})
 
 # A NULL key makes a valid row here. `status_id` is NOT NULL. A run or a run
 # activity with no task needs an `app` (342). A project policy needs its
@@ -233,6 +244,7 @@ NULLABLE = sorted([
     ("pm_agent_runs", "dispatched_by_run_id"),
     ("pm_notifications", "activity_id"),
     ("pm_projects", "archived_root_id"),
+    ("pm_tasks", "goal_task_id"),
     ("pm_tasks", "merged_into_task_id"),
     ("pm_tasks", "parent_task_id"),
     ("pm_tasks", "recurrence_id"),
@@ -364,9 +376,13 @@ class TestTheMigration:
 
     def test_each_statement_runs_in_its_own_transaction(self) -> None:
         """No deadlock at deploy: the file holds the lock of one table at a
-        time. 22 blocks: the function, then one block for each attachment."""
+        time. 22 blocks: the function, then one block for each attachment.
+        A later file attaches its own new key (``LATER_ATTACHMENTS``)."""
         blocks = _sql_blocks()
-        assert len(blocks) == 1 + len(PROBES), len(blocks)
+        assert LATER_ATTACHMENTS <= set(PROBES)
+        assert len(blocks) == 1 + len(PROBES) - len(LATER_ATTACHMENTS), len(blocks)
+        for table, column in LATER_ATTACHMENTS:
+            assert f"trg_{table}_same_org_{column}" not in _sql_blocks_text()
         assert "CREATE OR REPLACE FUNCTION pm_same_org_ref()" in blocks[0]
         for block in blocks:
             assert block.startswith("SET LOCAL lock_timeout = '5s';\n"), block
