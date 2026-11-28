@@ -166,6 +166,7 @@ import { PresenceRail } from "@/components/room/PresenceRail";
 import { useRoom } from "@/hooks/useRoom";
 import { peopleOf } from "@/lib/rooms";
 import { getMessages, saveMessages, fetchMessagesFromDb, cacheMessages, type PersistedMessage } from "@/lib/sessions";
+import { hydrateRows } from "@/lib/chatOrder";
 import { computeContextUsage, activeContextSlice, isCompactionCheckpoint } from "@/lib/tokenCount";
 import { serializeReasoning } from "@/lib/chatStream";
 import { useAgentEvents } from "@/lib/agentEvents";
@@ -854,17 +855,15 @@ export default function AgentChat({
       const cur = getSessionState(sessionId);
       const local = cur.messages;
       // The reply of a live run is the stream's own: the saved row lags it.
+      // The load may have read before the gateway saved the prompt of that
+      // run. The prompt then stays, before its reply (task 4146): dropping
+      // it let the poll append it after the reply. `lib/chatOrder.ts` is
+      // the one merge of server rows.
       const liveId = isLivePhase(cur.run.phase) ? cur.run.messageId : null;
-      const mine = liveId ? local.find((m) => m.id === liveId) : undefined;
-      const withLive = (rows: ChatMessage[]): ChatMessage[] => {
-        if (!mine) return rows;
-        return rows.some((m) => m.id === mine.id)
-          ? rows.map((m) => (m.id === mine.id ? mine : m))
-          : [...rows, mine];
-      };
+      const hydrated = () => hydrateRows(local, remote as ChatMessage[], liveId);
       // Quick check: more messages → definitely use DB.
       if (remote.length > local.length) {
-        setMessages(withLive(remote as ChatMessage[]));
+        setMessages(hydrated());
         return;
       }
       // Same count but maybe richer content?  Compare total content length,
@@ -884,7 +883,7 @@ export default function AgentChat({
         remoteToolCount > localToolCount ||
         remoteCustomCount > localCustomCount
       ) {
-        setMessages(withLive(remote as ChatMessage[]));
+        setMessages(hydrated());
       }
     }).catch(() => {}).finally(() => {
       if (!cancelled) setLoadingHistory(false);
