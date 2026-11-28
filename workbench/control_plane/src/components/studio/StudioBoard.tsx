@@ -13,20 +13,25 @@
  * A drop moves the card and runs the update action once (`boardMove.ts`).
  * A refusal puts the card back and shows the message in an alert line. The
  * keyboard moves a card with Space and the arrows, and a "Move to" menu does
- * the same for touch. At 390 px the lanes stack as a list.
+ * the same for touch. At 390 px the lanes stack as a list. A board with
+ * `phone: "switch"` shows one lane there, and the shown lane follows a
+ * keyboard move (`laneSwitch.ts`, STU-LY-4b).
  */
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { flushSync } from "react-dom";
 
 import { ValueElement } from "@/components/CardFieldValue";
 import { Board } from "@/components/board/Board";
 import { BoardColumn } from "@/components/board/BoardColumn";
 import { ContextMenu, type CtxItem } from "@/components/ContextMenu";
+import Tabs from "@/components/Tabs";
 import { TaskCardShell, TaskCardTitle } from "@/components/TaskCardShell";
 import Button from "@/components/ui/Button";
 import { statusAccent } from "@/lib/statusAccent";
 import { displayValue, labelOf } from "@/lib/studio/blocks";
 import { buildLanes, keyStep, optionOf, parseBoard, recordsOf, rowId, type BoardConfig, type Lane } from "@/lib/studio/boardModel";
 import { createMover, type MoverState } from "@/lib/studio/boardMove";
+import { createScrollGate, keyCancelsHold, laneAfterCancel, laneMark, laneTabs, shownLane } from "@/lib/studio/laneSwitch";
 import { moreLine, type Row, type StudioDataDoor } from "@/lib/studio/dataDoor";
 import type { FieldSpec } from "@/lib/studio/fieldCheck";
 
@@ -72,6 +77,18 @@ function BoardView({ config, rows: given, door }: { config: BoardConfig; rows: R
 
   const lanes = buildLanes(config, rows, { placed: st.placed, expanded });
   const laneIds = lanes.map((l) => l.id);
+  // On a phone a board of the `board` preset shows one lane at a time (STU-LY-4b). From a tablet up, every lane shows.
+  const switcher = config.phone === "switch";
+  const [wantedLane, setWantedLane] = useState<string | null>(null);
+  // A keyboard drop or a refusal asks for focus on a card. Its lane must show before the card can take it.
+  const focusRow = st.focusId === null ? undefined : rows.find((r) => rowId(r) === st.focusId);
+  const focusLane = focusRow
+    ? lanes.find((l) => l.value === optionOf(config, focusRow, st.placed))?.id
+    : undefined;
+  if (focusLane !== undefined && focusLane !== wantedLane) setWantedLane(focusLane);
+  const shown = shownLane(laneIds, wantedLane, hold);
+  const switcherRef = useRef<HTMLDivElement>(null);
+  const [gate] = useState(createScrollGate);
   const laneById = (id: string): Lane | undefined => lanes.find((l) => l.id === id);
   const movable = mover !== null;
 
@@ -79,9 +96,35 @@ function BoardView({ config, rows: given, door }: { config: BoardConfig; rows: R
   useLayoutEffect(() => {
     if (st.focusId === null) return;
     const card = document.querySelector<HTMLElement>(`[data-card-id="${CSS.escape(st.focusId)}"] [role=button]`);
-    card?.focus();
+    // A refusal can arrive while the keyboard holds another card. The hold keeps its focus.
+    if (!(switcher && mover?.getState().hold)) card?.focus();
     mover?.clearFocus();
-  }, [st.focusId, mover]);
+  }, [st.focusId, mover, switcher]);
+
+  // The tab bar scrolls sideways, so the selected tab can sit outside it. Only the bar scrolls, not the page.
+  useLayoutEffect(() => {
+    const bar = switcherRef.current?.querySelector<HTMLElement>("[role=tablist]");
+    const tab = bar?.querySelector<HTMLElement>('[aria-selected="true"]');
+    if (!bar || !tab || !gate.open()) return;
+    const outer = bar.getBoundingClientRect();
+    const inner = tab.getBoundingClientRect();
+    if (inner.left < outer.left) bar.scrollLeft -= outer.left - inner.left;
+    else if (inner.right > outer.right) bar.scrollLeft += inner.right - outer.right;
+  }, [shown, gate]);
+
+  // End the hold and show the lane `at`, or the lane of the held card (`laneSwitch.ts`).
+  const cancelHold = (at: string | null) => {
+    const held = mover?.getState().hold;
+    if (!held) return;
+    setWantedLane(laneAfterCancel(held, at));
+    mover?.setHold(null);
+    mover?.say("Move cancelled");
+  };
+  const laneAt = (el: Element) => el.closest("[data-lane-id]")?.getAttribute("data-lane-id") ?? null;
+  const heldCard = (board: Element) => {
+    const held = mover?.getState().hold;
+    return held ? board.querySelector(`[data-card-id="${CSS.escape(held.id)}"] [role=button]`) : null;
+  };
 
   const send = (id: string, to: string | undefined, keyboard = false) => {
     const target = to ? laneById(to) : undefined;
@@ -96,6 +139,9 @@ function BoardView({ config, rows: given, door }: { config: BoardConfig; rows: R
     if (!step.handled) return;
     e.preventDefault();
     mover?.setHold(step.hold);
+    // A drop or a cancel keeps the lane of the card on screen, so the card does not lose focus.
+    if (step.drop) setWantedLane(step.drop.to);
+    else if (step.cancelled) setWantedLane(lane.id);
     if (step.drop) {
       send(step.drop.id, step.drop.to, true);
     } else if (step.cancelled) mover?.say("Move cancelled");
@@ -121,103 +167,143 @@ function BoardView({ config, rows: given, door }: { config: BoardConfig; rows: R
       ) : null}
       {more ? <p role="status" className="text-xs text-muted-foreground">{`${more} The lane counts cover these records only.`}</p> : null}
       <p className="sr-only" aria-live="polite">{st.live}</p>
+      {switcher && shown !== null ? (
+        <div
+          ref={switcherRef} className="sm:hidden" data-lane-switcher=""
+          onPointerDownCapture={gate.press} onPointerCancel={gate.release} onClickCapture={gate.release}
+        >
+          <Tabs variant="underline" chrome="inline" activeTab={shown} onTabChange={setWantedLane} tabs={laneTabs(lanes)} />
+        </div>
+      ) : null}
       <Board
         aria-label="Board"
-        onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) mover?.blur(); }}
-        className="max-sm:flex-col max-sm:[&>*]:w-full">
-        {lanes.map((lane, i) => (
-          <BoardColumn
-            key={lane.id}
-            as="ul"
-            header={{
-              accent: statusAccent({ name: lane.value ?? undefined, index: lane.value === null ? 0 : i, total: lanes.length }),
-              title: lane.title,
-              count: lane.total,
-            }}
-            dropTarget={(dragId !== null && over === lane.id) || hold?.over === lane.id}
-            empty={lane.total === 0 ? "No cards" : undefined}
-            footer={lane.hidden > 0 ? (
-              <Button variant="text" size="sm" onClick={() => setExpanded(new Set(expanded).add(lane.id))}>
-                {`Show more (${lane.hidden})`}
-              </Button>
-            ) : undefined}
-            onDragOver={movable ? (e) => {
-              if (mover?.dragOver(lane.id)) e.preventDefault();
-            } : undefined}
-            onDragLeave={movable ? (e) => {
-              // A leave with no related target (the pointer left the window) keeps the ring until the drag ends.
-              const to = e.relatedTarget as Node | null;
-              mover?.dragLeave(!!to && !e.currentTarget.contains(to));
-            } : undefined}
-            onDrop={movable ? (e) => {
-              e.preventDefault();
-              const id = mover?.drop() ?? e.dataTransfer?.getData("text/plain") ?? null;
-              if (id) send(id, lane.id);
-            } : undefined}
-          >
-            {lane.rows.map((row, at) => {
-              const id = rowId(row);
-              const pending = id !== null && st.pending.has(id);
-              const held = id !== null && hold?.id === id;
-              const title = config.titleField ? displayValue(config.titleField, row[config.titleField.key]) : "";
-              const label = `${title || "Untitled"}, in ${lane.title}`;
-              return (
-                <li
-                  key={id ?? `row-${at}`}
-                  data-card-id={id ?? undefined}
-                  aria-busy={pending || undefined}
-                  onKeyDown={id !== null ? (e) => onKey(e, id, lane) : undefined}
-                  className="list-none"
-                >
-                  <TaskCardShell
-                    draggable={movable && id !== null && !pending}
-                    selected={held}
-                    atCursor={false}
-                    completed={pending}
-                    ariaLabel={held ? `${label}. Picked up. Use the arrow keys, then Space.` : label}
-                    onDragStart={(e) => {
-                      if (id === null) return;
-                      e.dataTransfer.setData("text/plain", id);
-                      e.dataTransfer.effectAllowed = "move";
-                      mover?.dragStart(id);
-                    }}
-                    onDragEnd={() => mover?.dragEnd()}
+        onBlur={(e) => {
+          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+          if (switcher) cancelHold(null);
+          else mover?.blur();
+        }}
+        // With the lane switcher, a hold lasts only while the held card has focus (STU-LY-4b).
+        onKeyDown={switcher ? (e) => {
+          gate.release();
+          // The card handles its own Escape first, so the store has no hold then. `flushSync` draws the lane
+          // of the card before the browser moves focus for Tab.
+          if (keyCancelsHold(e.key)) flushSync(() => cancelHold(null));
+        } : undefined}
+        onFocus={switcher ? (e) => {
+          if (e.target !== heldCard(e.currentTarget)) cancelHold(laneAt(e.target));
+        } : undefined}
+        onPointerDownCapture={switcher ? (e) => {
+          // Before the focus moves: the pressed lane stays, so the press keeps its target.
+          const el = e.target as Element;
+          if (el.closest("a[href],button,[role=button]") !== heldCard(e.currentTarget)) cancelHold(laneAt(el) ?? shown);
+        } : undefined}
+        className={`max-sm:flex-col max-sm:[&>*]:w-full${switcher ? " max-sm:[&>[data-lane-off]]:hidden max-sm:[&>[data-lane-held]]:sr-only" : ""}`}>
+        {lanes.map((lane, i) => {
+          const mark = switcher ? laneMark(lane.id, shown, hold) : "shown";
+          return (
+            <BoardColumn
+              key={lane.id}
+              as="ul"
+              data-lane-id={lane.id}
+              data-lane-off={mark === "off" ? "" : undefined}
+              data-lane-held={mark === "held" ? "" : undefined}
+              header={{
+                accent: statusAccent({ name: lane.value ?? undefined, index: lane.value === null ? 0 : i, total: lanes.length }),
+                title: lane.title,
+                count: lane.total,
+              }}
+              dropTarget={(dragId !== null && over === lane.id) || hold?.over === lane.id}
+              empty={lane.total === 0 ? "No cards" : undefined}
+              footer={lane.hidden > 0 ? (
+                <Button variant="text" size="sm" onClick={() => setExpanded(new Set(expanded).add(lane.id))}>
+                  {`Show more (${lane.hidden})`}
+                </Button>
+              ) : undefined}
+              onDragOver={movable ? (e) => {
+                if (mover?.dragOver(lane.id)) e.preventDefault();
+              } : undefined}
+              onDragLeave={movable ? (e) => {
+                // A leave with no related target (the pointer left the window) keeps the ring until the drag ends.
+                const to = e.relatedTarget as Node | null;
+                mover?.dragLeave(!!to && !e.currentTarget.contains(to));
+              } : undefined}
+              onDrop={movable ? (e) => {
+                e.preventDefault();
+                const id = mover?.drop() ?? e.dataTransfer?.getData("text/plain") ?? null;
+                if (id) send(id, lane.id);
+              } : undefined}
+            >
+              {lane.rows.map((row, at) => {
+                const id = rowId(row);
+                const pending = id !== null && st.pending.has(id);
+                const held = id !== null && hold?.id === id;
+                const title = config.titleField ? displayValue(config.titleField, row[config.titleField.key]) : "";
+                const label = `${title || "Untitled"}, in ${lane.title}`;
+                return (
+                  <li
+                    key={id ?? `row-${at}`}
+                    data-card-id={id ?? undefined}
+                    aria-busy={pending || undefined}
+                    onKeyDown={id !== null ? (e) => onKey(e, id, lane) : undefined}
+                    className="list-none"
                   >
-                    <div className="flex items-start gap-1">
-                      <TaskCardTitle>
-                        {id !== null && config.openBase ? (
-                          // A record link (STU-AF5). The app frame opens it in the record panel.
-                          <a href={`${config.openBase}${encodeURIComponent(id)}`} draggable={false}
-                            className="rounded-sm text-foreground outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring">
-                            {title || "Untitled"}
-                          </a>
-                        ) : (title || "Untitled")}
-                      </TaskCardTitle>
-                      {movable && id !== null && !pending ? (
-                        <span className="ml-auto shrink-0">
-                          <Button
-                            variant="ghost" size="icon-xs" icon="ArrowRightLeft" aria-label={`Move ${title || "card"} to another lane`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              const r = e.currentTarget.getBoundingClientRect();
-                              setMenu({ id, x: r.left, y: r.bottom + 4 });
-                            }}
-                          />
-                        </span>
-                      ) : null}
-                    </div>
-                    {config.cardFields.length > 0 ? (
-                      <div className="flex flex-col gap-1">
-                        {config.cardFields.map((f) => <CardValue key={f.key} field={f} value={row[f.key]} />)}
+                    <TaskCardShell
+                      draggable={movable && id !== null && !pending}
+                      selected={held}
+                      atCursor={false}
+                      completed={pending}
+                      ariaLabel={held ? `${label}. Picked up. Use the arrow keys, then Space.` : label}
+                      onDragStart={(e) => {
+                        if (id === null) return;
+                        e.dataTransfer.setData("text/plain", id);
+                        e.dataTransfer.effectAllowed = "move";
+                        mover?.dragStart(id);
+                      }}
+                      onDragEnd={() => mover?.dragEnd()}
+                    >
+                      <div className="flex items-start gap-1">
+                        <TaskCardTitle>
+                          {id !== null && config.openBase ? (
+                            // A record link (STU-AF5). The app frame opens it in the record panel.
+                            <a href={`${config.openBase}${encodeURIComponent(id)}`} draggable={false}
+                              className="rounded-sm text-foreground outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring">
+                              {title || "Untitled"}
+                            </a>
+                          ) : (title || "Untitled")}
+                        </TaskCardTitle>
+                        {movable && id !== null && !pending ? (
+                          <span className="ml-auto shrink-0">
+                            <Button
+                              variant="ghost" size="icon-xs" icon="ArrowRightLeft" aria-label={`Move ${title || "card"} to another lane`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const r = e.currentTarget.getBoundingClientRect();
+                                setMenu({ id, x: r.left, y: r.bottom + 4 });
+                              }}
+                            />
+                          </span>
+                        ) : null}
                       </div>
-                    ) : null}
-                  </TaskCardShell>
-                </li>
-              );
-            })}
-          </BoardColumn>
-        ))}
+                      {config.cardFields.length > 0 ? (
+                        <div className="flex flex-col gap-1">
+                          {config.cardFields.map((f) => <CardValue key={f.key} field={f} value={row[f.key]} />)}
+                        </div>
+                      ) : null}
+                    </TaskCardShell>
+                  </li>
+                );
+              })}
+            </BoardColumn>
+          );
+        })}
       </Board>
+      {switcher && hold ? (
+        // The held card is out of sight on a phone. This line says what the keys do. The live line speaks.
+        // It sits under the board: above it, its removal on a press would move the target before the click.
+        <p aria-hidden="true" className="sticky bottom-0 bg-background px-3 py-1 text-xs text-muted-foreground sm:hidden">
+          {`Card picked up. Space drops it in ${laneById(hold.over)?.title ?? ""}. Escape cancels.`}
+        </p>
+      ) : null}
       {menu ? <ContextMenu x={menu.x} y={menu.y} items={menuItems} autoFocus onClose={() => setMenu(null)} /> : null}
     </div>
   );
