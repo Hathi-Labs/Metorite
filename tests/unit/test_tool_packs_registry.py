@@ -602,14 +602,15 @@ def test_the_crm_pack_holds_ten_tools_of_the_crm_assistant() -> None:
     orchestrator does not hold it. Mutation: add a tool the owner lacks, or
     drop one of the 10 -> red."""
     scope = _crm_own_tool_scope()
-    # 38: 22 since CRM-M1, crm_update_record and crm_update_task of CRM-M2b,
+    # 44: 22 since CRM-M1, crm_update_record and crm_update_task of CRM-M2b,
     # crm_create_pipeline of CRM-M3a, the two set-up writes of CRM-M2e (task
     # 3951), the five tools of the suggestions and the AI analysis (P-3, task
-    # 3954), and the six tools of the Field map and its plan (CRM-M2f, CRM-M2i,
-    # task 3953). 22 + 2 + 1 + 2 + 5 + 6 = 38. The owner chooses the pack of a
-    # tool, so those thirteen are in no pack yet: with the 12 shared reads, 25
-    # tools are in no pack (12 + 2 + 5 + 6 = 25).
-    assert len(scope) == 38, "non-vacuity: the owner declares 38 tools"
+    # 3954), the six tools of the Field map and its plan (CRM-M2f, CRM-M2i,
+    # task 3953), and the six tools of the setup questions (CRM-M2h, task
+    # 3955). 22 + 2 + 1 + 2 + 5 + 6 + 6 = 44. The owner chooses the pack of a
+    # tool, so those nineteen are in no pack yet: with the 12 shared reads, 31
+    # tools are in no pack (12 + 2 + 5 + 6 + 6 = 31).
+    assert len(scope) == 44, "non-vacuity: the owner declares 44 tools"
     family = sf.SKILL_FAMILIES["crm-records"]
     assert tuple(family["tools"]) == CRM_TOOLS and family["owner"] == CRM
     assert set(family["tools"]) <= scope
@@ -617,7 +618,10 @@ def test_the_crm_pack_holds_ten_tools_of_the_crm_assistant() -> None:
     assert scope - set(family["tools"]) >= {
         "crm_field_map", "crm_edit_field_rule", "crm_list_mapping_plans",
         "crm_draft_mapping_plan", "crm_approve_mapping_plan", "crm_restore_mapping_plan"}
-    assert len(scope - set(family["tools"])) == 25
+    assert scope - set(family["tools"]) >= {
+        "crm_list_questions", "crm_my_question_picks", "crm_check_question_sum",
+        "crm_answer_setup_question", "crm_dismiss_question", "crm_accept_best_guesses"}
+    assert len(scope - set(family["tools"])) == 31
     assert "crm_change_history" in family["tools"]
     assert "crm_change_history" not in _orchestrator_scope()
 

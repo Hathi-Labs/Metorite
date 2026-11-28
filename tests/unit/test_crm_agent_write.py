@@ -57,6 +57,7 @@ from tests.unit._crm_agent_fakes import (
     approve,
     deny,
     fake_gateway,
+    is_read,
     load_agent_module,
     writes,
 )
@@ -216,6 +217,8 @@ def _by_prefix(call: dict) -> Any:
         return _pipelines(call)
     if call["path"].startswith(("/crm/field-rules", "/crm/mapping/plans")):
         return _field_map(call)
+    if call["path"].startswith("/crm/questions"):
+        return _questions(call)  # CRM-M2h (task 3955), defined below
     return _mapping(call)
 
 
@@ -230,7 +233,8 @@ def _responder(call: dict) -> Any:
         return _STATUSES
     if path == "/crm/lost-reasons" and method == "GET":
         return _REASONS
-    if path.startswith(("/crm/mapping/", "/crm/analysis/", "/crm/pipelines", "/crm/field-rules")):
+    if path.startswith(("/crm/mapping/", "/crm/analysis/", "/crm/pipelines", "/crm/field-rules",
+                        "/crm/questions")):
         return _by_prefix(call)
     if path == f"/crm/deals/{_DEAL_ID}":
         return {**_DEAL, **body}
@@ -357,6 +361,45 @@ _CALLS["crm_rerun_analysis"] = lambda: _M.crm_rerun_analysis()
 _CARD_MUST_NAME["crm_decide_suggestion"] = "Commercials"  # the module being used
 _CARD_MUST_NAME["crm_rerun_analysis"] = "AI analysis"     # the act itself
 
+# CRM-M2h (task 3955): the three card writes of the setup questions. Each reads
+# the open questions before its card.
+_QUESTION = {
+    "id": "purpose:Collection", "kind": "purpose", "module": "Collection",
+    "label": "Collection", "part": "purpose", "reason": "open", "records": 12,
+    "money": False, "why": "What is Collection?", "none": True, "other": True,
+    "dismissible": True,
+    "choices": [{"value": "payment_in", "label": "Payment received", "best": True}],
+    "options": [{"value": "invoice", "label": "Invoice"}],
+}
+
+
+def _questions(call: dict) -> Any:
+    """The routes of the setup questions (task 3955)."""
+    path, method = call["path"], call["method"]
+    if path == "/crm/questions" and method == "GET":
+        return {"open": 1, "more": 0, "plan": 7, "shown": [_QUESTION], "answered": []}
+    body = call["json"] or {}
+    if path == "/crm/questions/accept-best" and body.get("dry_run") is True:
+        # The route's own dry run: what the batch applies, and no write.
+        return {"dry_run": True, "version": None, "items": [
+            {"id": _QUESTION["id"], "label": "Collection", "part": "purpose",
+             "value": "payment_in", "value_label": "Payment received",
+             "line": "Collection is now a payment received module."}]}
+    if method == "POST":
+        return {"id": _QUESTION["id"], "kind": "purpose", "version": 8, "dry_run": False,
+                "items": []}
+    raise AssertionError(f"a tool reached an unexpected route: {method} {path}")
+
+
+_WRITE_TOOLS += ["crm_answer_setup_question", "crm_dismiss_question", "crm_accept_best_guesses"]
+_CALLS["crm_answer_setup_question"] = lambda: _M.crm_answer_setup_question(
+    "purpose:Collection", "Payment received")
+_CALLS["crm_dismiss_question"] = lambda: _M.crm_dismiss_question("purpose:Collection")
+_CALLS["crm_accept_best_guesses"] = lambda: _M.crm_accept_best_guesses()
+_CARD_MUST_NAME["crm_answer_setup_question"] = "«Collection»"  # the module of the question
+_CARD_MUST_NAME["crm_dismiss_question"] = "«Collection»"       # the module of the question
+_CARD_MUST_NAME["crm_accept_best_guesses"] = "«Collection»"    # the module of each guess
+
 
 def test_the_call_table_covers_every_write_tool() -> None:
     annotations = pytest.importorskip("acb_skills.tool_annotations")
@@ -420,8 +463,9 @@ async def test_everything_read_before_the_confirmation_is_a_read(
     import acb_skills.ask_tools as ask_tools
     monkeypatch.setattr(ask_tools, "request_confirmation", _snapshot)
     await _CALLS[tool]()
-    assert all(c["method"] == "GET" for c in before), (
-        f"{tool} issued {[(c['method'], c['path']) for c in before if c['method'] != 'GET']} "
+    # A read is a GET, or the one dry run of a batch (``is_read``, task 3955).
+    assert all(is_read(c) for c in before), (
+        f"{tool} issued {[(c['method'], c['path']) for c in before if not is_read(c)]} "
         "before anybody approved anything"
     )
 

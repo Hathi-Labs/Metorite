@@ -94,6 +94,9 @@ CRM_PRINTED: dict[str, tuple[str, list[str]]] = {
     "lead_id": ("(id=", ["_row_line"]),
     "activity_id": ("activity id", ["get_timeline"]),
     "pipeline_id": ("(id=", ["acb_skills.crm_tools:_pipeline_lines"]),
+    # CRM-M2h (task 3955): crm_list_questions prints each question id.
+    "question_id": ("• id {data(q.get('id'))}", ["_question_text"]),
+    "question_ids": ("• id {data(q.get('id'))}", ["_question_text"]),
 }
 
 

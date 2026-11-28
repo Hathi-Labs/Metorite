@@ -178,11 +178,11 @@ def test_build_agents_constructs_one_native_maf_agent() -> None:
     assert getattr(agent, "_permission_handler", None) is None
     tools = (agent.default_options or {}).get("tools")
     assert tools, "built with no tools"
-    # 24 own tools: 11 before, the two set-up writes of CRM-M2e (task 3951),
-    # the five of the suggestions and the AI analysis (P-3, task 3954), and the
-    # six of the Field map and its plan (CRM-M2f, CRM-M2i, task 3953).
-    # 11 + 2 + 5 + 6 = 24.
-    assert len(tools) == len(_M._TOOLS) == 24 + len(_T.CRM_TOOLS)
+    # 30 own tools: 11 before, the two set-up writes of CRM-M2e (task 3951),
+    # the five of the suggestions and the AI analysis (P-3, task 3954), the
+    # six of the Field map and its plan (CRM-M2f, CRM-M2i, task 3953), and the
+    # six of the setup questions (CRM-M2h, task 3955). 11 + 2 + 5 + 6 + 6 = 30.
+    assert len(tools) == len(_M._TOOLS) == 30 + len(_T.CRM_TOOLS)
 
 
 def test_the_advertised_description_does_not_still_say_read_only() -> None:
@@ -217,6 +217,9 @@ def test_register_agent_tools_maps_names() -> None:
         "crm_edit_status", "crm_edit_lost_reason",
         "crm_field_map", "crm_edit_field_rule", "crm_list_mapping_plans",
         "crm_draft_mapping_plan", "crm_approve_mapping_plan", "crm_restore_mapping_plan",
+        # CRM-M2h (task 3955): the setup questions.
+        "crm_list_questions", "crm_my_question_picks", "crm_check_question_sum",
+        "crm_answer_setup_question", "crm_dismiss_question", "crm_accept_best_guesses",
     } | set(_T.CRM_TOOL_NAMES)
     assert all(reg[n] is getattr(_T, n) for n in _T.CRM_TOOL_NAMES)
     assert reg["search_crm"] is _M.search_crm
@@ -281,9 +284,42 @@ def _map_routes(call: dict) -> Any:
     return {"version": 4, "state": "approved", "based_on": 2, "rules": []}
 
 
+#: CRM-M2h (task 3955): one open question of a key field, with a best guess.
+_QUESTION = {
+    "id": "key:Invoices:amount", "kind": "key_field", "module": "Invoices",
+    "label": "Invoices", "part": "amount", "reason": "open", "records": 40,
+    "money": True, "why": "Totals of Invoices need an amount.", "none": True,
+    "other": False, "dismissible": True,
+    "choices": [{"value": "Grand_Total", "label": "Grand Total", "best": True}],
+    "sums": [{"value": "Grand_Total", "label": "Grand Total"},
+             {"value": "Tax", "label": "Tax"}],
+}
+
+
+def _question_routes(call: dict) -> Any:
+    """The routes of the setup questions, well shaped (task 3955)."""
+    path = call["path"]
+    if path == "/crm/questions":
+        return {"open": 1, "more": 0, "plan": 2, "shown": [_QUESTION], "answered": []}
+    if path == "/crm/questions/mine":
+        return {"choices": []}
+    if path.endswith("/sum-check"):
+        return {"id": _QUESTION["id"], "module": "Invoices", "fields": ["Grand_Total", "Tax"],
+                "records": 40, "covered": 40, "overlap": 0, "capped": False,
+                "line": "All 40 records set a part.", "pairs": [], "warnings": []}
+    if (call["json"] or {}).get("dry_run") is True:
+        return {"dry_run": True, "version": None, "items": [
+            {"id": _QUESTION["id"], "label": "Invoices", "part": "amount",
+             "value": "Grand_Total", "value_label": "Grand Total", "line": "x"}]}
+    return {"id": _QUESTION["id"], "kind": "key_field", "version": 3, "dry_run": False,
+            "items": []}
+
+
 def _responder(call: dict) -> Any:
     """Minimal well-shaped payload per route, so formatting runs for real."""
     path = call["path"]
+    if path.startswith("/crm/questions"):
+        return _question_routes(call)
     # CRM-M2f and CRM-M2i (task 3953): the Field map and the plan.
     if path.startswith(("/crm/field-rules", "/crm/mapping/plans")):
         return _map_routes(call)
@@ -347,6 +383,15 @@ _INVOCATIONS: dict[str, Any] = {
          "target_column": "next_step"}]),
     "crm_approve_mapping_plan": lambda: _M.crm_approve_mapping_plan(3),
     "crm_restore_mapping_plan": lambda: _M.crm_restore_mapping_plan(1),
+    # CRM-M2h (task 3955): the setup questions.
+    "crm_list_questions": lambda: _M.crm_list_questions(),
+    "crm_my_question_picks": lambda: _M.crm_my_question_picks(),
+    "crm_check_question_sum": lambda: _M.crm_check_question_sum(
+        "key:Invoices:amount", ["Grand_Total", "Tax"]),
+    "crm_answer_setup_question": lambda: _M.crm_answer_setup_question(
+        "key:Invoices:amount", "Grand Total"),
+    "crm_dismiss_question": lambda: _M.crm_dismiss_question("key:Invoices:amount"),
+    "crm_accept_best_guesses": lambda: _M.crm_accept_best_guesses(),
     # CRM-C7: the shared read tools, one call each.
     "crm_list_records": lambda: _T.crm_list_records("deals", q="acme"),
     "crm_get_record": lambda: _T.crm_get_record("deals", _ID),
@@ -501,7 +546,10 @@ def test_every_tool_declares_its_risk_and_the_write_half_declares_it_destructive
                "crm_create_pipeline", "crm_update_record", "crm_update_task",
                "crm_edit_status", "crm_edit_lost_reason",
                "crm_edit_field_rule", "crm_draft_mapping_plan",
-               "crm_approve_mapping_plan", "crm_restore_mapping_plan"}
+               "crm_approve_mapping_plan", "crm_restore_mapping_plan",
+               # CRM-M2h (task 3955): the three card writes of the setup questions.
+               "crm_answer_setup_question", "crm_dismiss_question",
+               "crm_accept_best_guesses"}
     # P-3 (task 3954): the two card writes of the suggestions and the analysis.
     writers |= {"crm_decide_suggestion", "crm_rerun_analysis"}
     seen: set[str] = set()

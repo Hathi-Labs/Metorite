@@ -224,6 +224,22 @@ describe("the plan cards of the CRM Field mapping (task 3953)", () => {
   });
 });
 
+describe("the cards of the CRM setup questions (task 3955)", () => {
+  // Mutation caught: drop "best guess N" and the batch reads "Best guess 1", "Best guess 2".
+  it("draws a batch as one Best guesses row, and names what an answer changes", () => {
+    expect(cardKey("best guess 3")).toBe("best guess N");
+    expect(runKey("best guess 2")).toBe("best guess");
+    expect(fieldSpec("what changes").label).toBe("What changes");
+    const body = parseCardBody(
+      "This answer is for the whole organization.\n" +
+        "best guess 1: Totals of «Invoices» now use «Grand Total».\n" +
+        "best guess 2: «Payments» is now a module of the purpose «Payment received».",
+    );
+    expect(body.fields.map((f) => f.label)).toEqual(["Best guesses"]);
+    expect(body.fields.map((f) => f.values?.length)).toEqual([2]);
+  });
+});
+
 describe("the color kind (PJP-1)", () => {
   it("the one `color` key draws a swatch for status, tag and type cards alike", () => {
     expect(fieldSpec("color").kind).toBe("color");

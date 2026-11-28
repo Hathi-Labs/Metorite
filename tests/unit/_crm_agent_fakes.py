@@ -114,15 +114,33 @@ def fake_gateway(
     return calls
 
 
+#: The one POST that reads: the dry run of a batch of best guesses (task 3955).
+#: ``routes/crm/questions.accept_best`` with ``dry_run`` true takes no lock and
+#: writes nothing, and the card of ``crm_accept_best_guesses`` must show what
+#: the route applies. Only this exact path with ``dry_run`` ``True`` reads.
+DRY_RUN_PATH = "/crm/questions/accept-best"
+
+
+def is_read(call: dict) -> bool:
+    """True for a GET, and for the one dry run of :data:`DRY_RUN_PATH`."""
+    method = str(call.get("method", "")).upper()
+    if method == "GET":
+        return True
+    body = call.get("json")
+    return (method == "POST" and call.get("path") == DRY_RUN_PATH
+            and isinstance(body, dict) and body.get("dry_run") is True)
+
+
 def writes(calls: list[dict]) -> list[dict]:
-    """Every call that was not a GET — i.e. everything that changed the CRM.
+    """Every call that was not a read — i.e. everything that changed the CRM.
 
     The invariant the write tools are held to is *no mutation before consent*,
     not *no traffic before consent*: resolving a stage name and naming the deal
     on the confirmation card are reads, and a card that cannot say which deal
-    is moving where buys a signature for an act nobody was shown.
+    is moving where buys a signature for an act nobody was shown. A read is a
+    GET, or the one dry run of :func:`is_read`.
     """
-    return [c for c in calls if str(c.get("method", "")).upper() != "GET"]
+    return [c for c in calls if not is_read(c)]
 
 
 # ── The confirmation gate, stubbed both ways ────────────────────────────────

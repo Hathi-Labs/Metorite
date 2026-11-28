@@ -1426,7 +1426,9 @@ CARD_WRITE_KEY = "card_write"
 #: Its card carries the Zoho note. In Mirror mode the three record writes leave
 #: the run first (``_tool_injection.MIRROR_RECORD_WRITES``). The three class B
 #: writes of the Field map (task 3953): ``crm_edit_field_rule``,
-#: ``crm_draft_mapping_plan`` and ``crm_restore_mapping_plan``.
+#: ``crm_draft_mapping_plan`` and ``crm_restore_mapping_plan``. The answer and
+#: the dismissal of one setup question (task 3955): ``crm_answer_setup_question``
+#: and ``crm_dismiss_question``.
 #:
 #: **What is not here, on purpose** (:func:`is_held_off_write` holds them off).
 #: The class C Projects tools. Each is hard to undo or acts on many rows, so a
@@ -1437,7 +1439,10 @@ CARD_WRITE_KEY = "card_write"
 #: holds it behind its own flag. ``crm_approve_mapping_plan`` (class C, task
 #: 3953) approves the field map of the whole org, and no owner decision keeps
 #: it. So a held chat drops it, and the member approves the draft in the
-#: Field mapping section of the CRM settings. ``nudge_task`` tells another
+#: Field mapping section of the CRM settings. ``crm_accept_best_guesses``
+#: (task 3955) answers many setup questions in one act, and D169.3 keeps a bulk
+#: act off a held chat. So a held chat drops it, and the member answers each
+#: question on its own card. ``nudge_task`` tells another
 #: person. ``add_report_recipient``, ``remove_report_recipient`` and
 #: ``set_report_schedule`` change who gets mail later, so they are paths out.
 #: ``attach_to_task`` moves a file of the chat onto a shared task. A store write
@@ -1586,6 +1591,11 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "crm_edit_field_rule": _pin("action entity field target_column"),
     "crm_draft_mapping_plan": _pin("changes"),
     "crm_restore_mapping_plan": _pin("version"),
+    # CRM-M2h (task 3955): the answer and the dismissal of one setup question.
+    # Each card names the question and the answer. The batch of best guesses
+    # (crm_accept_best_guesses) is a bulk act, so it is not here (D169.3).
+    "crm_answer_setup_question": _pin("question_id choice fields"),
+    "crm_dismiss_question": _pin("question_id"),
 }
 
 #: The class C writes that a held chat keeps, each with its whole parameter

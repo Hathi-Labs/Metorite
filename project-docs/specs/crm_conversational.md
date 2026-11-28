@@ -6,6 +6,8 @@
 
 A chat that read outside mail does not keep the approve of a plan. The member then approves the plan in the Field mapping section of the CRM settings. The preview of a plan waits.
 
+**Task 3955 (2026-11-27, in review, no migration, no flag).** It built the open questions of CRM-M2h. The chat reads the questions, the member's own picks and the check of a sum. A CRM admin answers, dismisses or accepts a batch of best guesses on one card each. The card of a batch shows what the route applies, from its own dry run. A chat that read outside mail drops the batch. Three question rows wait for an owner decision on `DELETE` and `PUT`.
+
 Verified against code on 2026-11-02 at `main` `930839f2e`. The research notes are the comment "Research notes, 2026-11-02" on Metorite epic #477. They were made at `fc1b5edb6`.
 
 **CRM-SIG, customer signals (§14), is specified, and nothing is built (2026-11-09, epic task 2430).**
@@ -321,7 +323,7 @@ MCP-P2a (`external_agent_access.md` §19.13, task 866) later sets the door op of
 | CRM-M2e | Stages and lost reasons: add, rename, order, reset and delete. Add, change and reset are built (task 3951): `crm_edit_status` and `crm_edit_lost_reason`. The two deletes and the PUT of the order wait, because the CRM agent sends no `DELETE` and no `PUT` (`apps/AGENTS.md`). They need an owner decision |
 | CRM-M2f | Fields, sections, layout, field rules and the module catalogue. The field rules are built (task 3953): `crm_field_map` and `crm_edit_field_rule` |
 | CRM-M2g | Saved views, record names, labels, access and the settings |
-| CRM-M2h | Business rules and the open questions of the AI |
+| CRM-M2h | Business rules and the open questions of the AI. The questions are built (task 3955): `crm_list_questions`, `crm_my_question_picks`, `crm_check_question_sum`, `crm_answer_setup_question`, `crm_dismiss_question` and `crm_accept_best_guesses`. The Undo of a dismissal, the clear of a member's own pick and the PUT of the catalogue wait, because the CRM agent sends no `DELETE` and no `PUT`. The business rules wait |
 | CRM-M2i | Mapping plans, field suggestions and the conversion mapping. The suggestions and the preview are built (task 3954): `crm_mapping_suggestions`, `crm_preview_suggestion` and `crm_decide_suggestion`. The approve, dismiss and undo log no Change history row yet. task 3971 adds the rows. The mapping plans are built (task 3953): `crm_list_mapping_plans`, `crm_draft_mapping_plan`, `crm_approve_mapping_plan` and `crm_restore_mapping_plan`. A held chat drops the approve of a plan |
 | CRM-M2j | Rename a pipeline, add a stage and remove a stage. Set the win chance and the warning days of a stage in one pipeline (CRM-M3b) |
 | CRM-M2k | Connect, sync, import, cut over, reset and run the analysis again. The re-run is built (task 3954): `crm_rerun_analysis`. The re-run logs no Change history row yet. task 3971 adds the row |
