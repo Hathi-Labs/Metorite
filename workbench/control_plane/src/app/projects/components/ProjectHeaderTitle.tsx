@@ -106,7 +106,7 @@ export function ProjectHeaderTitle({
             <Button
               variant="text"
               size="none"
-              className="min-w-0 truncate text-left text-foreground"
+              className="min-w-0 truncate text-left text-foreground!"
               title={title}
               aria-haspopup="dialog"
               aria-expanded={open}
@@ -202,7 +202,7 @@ export function PhoneProjectTitle({ title, description = null }: { title: string
       <Button
         variant="text"
         size="none"
-        className="max-w-full truncate text-left text-sm font-medium text-foreground"
+        className="max-w-full truncate text-left text-sm font-medium text-foreground!"
         title={title}
         aria-haspopup="dialog"
         aria-expanded={open}

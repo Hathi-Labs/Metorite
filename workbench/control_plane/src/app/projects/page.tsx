@@ -5098,8 +5098,7 @@ function ProjectsWorkspace() {
             size="sm"
             icon="TriangleAlert"
             selected={attentionLens}
-            // OP-12: in a narrow row the words fold away, so the tabs
-            // keep their room. The name and the tooltip stay.
+            // The full phrase is the name of the button, as the words say it.
             aria-label={attentionBadge ?? LENS_LABEL}
             data-attention-toggle=""
             title={
@@ -5115,8 +5114,7 @@ function ProjectsWorkspace() {
             {attentionHere && attentionHere.total > 0 ? (
               <>
                 <span className="tabular-nums">{attentionHere.total}</span>
-                {/* The words after the count fold away in a narrow row. */}
-                <span className={compactChrome ? "ml-1 hidden @[56rem]:inline" : "ml-1"}>
+                <span className="ml-1">
                   {attentionHere.total === 1 ? "needs attention" : "need attention"}
                 </span>
               </>
