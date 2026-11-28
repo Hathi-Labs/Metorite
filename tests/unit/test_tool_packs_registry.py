@@ -108,6 +108,7 @@ def test_both_email_families_name_the_email_assistant_as_owner() -> None:
         "projects-reminders", "projects-reports", "projects-authority", "calendar-day",
         "mail-tasks", "projects-cycles", "studio", "studio-more", "studio-workflows", "studio-repair",
         "studio-apps", "studio-share", "org-admin", "people", "calendar-connections", "notes",
+        "chat-threads",
     )
     for slug in ("email", "email-setup"):
         assert sf.SKILL_FAMILIES[slug]["owner"] == EA
@@ -901,10 +902,12 @@ def test_studio_more_follows_the_core_and_studio_workflows_stays_dark() -> None:
     # the dark org-admin pack comes after them all. P-5b-1 (task 3114): the dark
     # people pack of the same owner comes next. P-1c (task 3923): the dark
     # calendar-connections pack of that owner comes after it. Task 3963: the dark
-    # notes pack of that owner comes last. PAR-9: the dark Custom Apps pack comes
+    # notes pack of that owner comes next. PAR-9: the dark Custom Apps pack comes
     # before the share pack.
-    assert list(tp.PACKS)[-10:-4] == list(STUDIO_PACKS)
-    assert list(tp.PACKS)[-4:] == ["org-admin", "people", "calendar-connections", "notes"]
+    # PAR-11 part a (task 4012): the dark chat-threads pack of org-admin is last.
+    assert list(tp.PACKS)[-11:-5] == list(STUDIO_PACKS)
+    assert list(tp.PACKS)[-5:] == ["org-admin", "people", "calendar-connections", "notes",
+                                   "chat-threads"]
     assert "studio-share" not in tp.FOLLOWS
     assert "studio-repair" not in tp.FOLLOWS
     assert "studio-apps" not in tp.FOLLOWS
@@ -1449,11 +1452,13 @@ def test_the_org_admin_family_equals_the_owners_own_tool_scope() -> None:
     # P-5b-1 (task 3114): the same owner holds the people pack too. P-1c (task
     # 3923): and the one act of the dark calendar-connections pack. Task 3963:
     # and the six reads of the notes pack.
+    # PAR-11 part a (task 4012): and the three tools of the dark chat-threads pack.
     assert set(cfg["own_tool_scope"]) == (set(ORG_ADMIN_TOOLS) | set(PEOPLE_TOOLS)
                                           | {"my_tasks_calendar_connection"}
-                                          | set(NOTES_TOOLS))
+                                          | set(NOTES_TOOLS)
+                                          | {"list_chats", "edit_chat", "delete_chat"})
     assert tp.owner_packs(ORG_ADMIN) == ("org-admin", "people", "calendar-connections",
-                                         "notes")
+                                         "notes", "chat-threads")
     for slug, fam in sf.SKILL_FAMILIES.items():
         if slug != "org-admin":
             assert not set(ORG_ADMIN_TOOLS) & set(fam["tools"]), slug
@@ -1509,8 +1514,9 @@ PEOPLE_READS = ("people_directory", "people_me", "people_work", "reach_preview")
 #: The five self writes of P-5b-2 (task 3943), in the order of the family.
 PEOPLE_WRITES = ("update_my_profile", "set_my_skills", "set_my_credentials",
                  "add_my_absence", "remove_my_absence")
-#: Each tool of the people pack, in the order of the family.
-PEOPLE_TOOLS = PEOPLE_READS + PEOPLE_WRITES
+#: Each tool of the people pack, in the order of the family. The last one is the
+#: work schedule of the company (P-5b-4, task 3945), a write of no person.
+PEOPLE_TOOLS = PEOPLE_READS + PEOPLE_WRITES + ("set_work_schedule",)
 
 #: The six reads of the notes pack (task 3963), in the order of the family.
 NOTES_TOOLS = (
@@ -1545,7 +1551,7 @@ def test_the_pack_loader_builds_the_people_tools_as_coroutines() -> None:
     for name in PEOPLE_READS:
         hints = get_annotations(name)
         assert hints and hints["read_only"] is True and hints["open_world"] is False, name
-    for name in PEOPLE_WRITES:
+    for name in (*PEOPLE_WRITES, "set_work_schedule"):
         hints = get_annotations(name)
         assert hints and hints["read_only"] is False and hints["open_world"] is False, name
 
@@ -1572,7 +1578,7 @@ def test_no_people_tool_takes_an_organization_a_caller_or_an_address() -> None:
                 "member", "member_email", "user", "user_email", "acting_user", "actor",
                 "email", "email_address", "owner_email", "as_user", "impersonate", "admin"}
     tools = tp.owner_tools("people", load_agent_module(ORG_ADMIN_DIR))
-    assert len(tools) == len(PEOPLE_TOOLS) == 9
+    assert len(tools) == len(PEOPLE_TOOLS) == 10
     for fn in tools:
         params = set(inspect.signature(inspect.unwrap(fn)).parameters)
         assert not params & identity, (fn.__name__, sorted(params & identity))

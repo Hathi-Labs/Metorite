@@ -1479,6 +1479,15 @@ class Settings(FlagRegistry):
     sandbox_max_total: int = 4
     compute_max_per_org: int = 1
     compute_max_total: int = 1
+    # SBX-4b1 (agent_sandbox.md §5.6 and §12.4 decisions 1 and 8). The caps of
+    # the `tools` target: one container for each org, and one on the box. A
+    # `tools` container also counts against the two caps above. At a cap the
+    # build gets "busy". The whole build of one user tool has
+    # `user_tool_step_seconds_build` seconds: the session, the installs and
+    # the smoke rounds. Fence: tests/unit/test_user_tool_build.py.
+    user_tool_max_per_org: int = 1
+    user_tool_max_total: int = 1
+    user_tool_step_seconds_build: int = 600
     # Disk checks of §7.1 rule 10. The floor is the free space of the file
     # system that holds state_root(). The owner sizes it at WS43-G3.
     sandbox_min_free_disk_mb: int = 5120
@@ -1960,7 +1969,16 @@ class Settings(FlagRegistry):
     # `acb-agent-edge` (`docs/flag_reload.md`). `acb_auth.agent_oauth.write_cap`
     # and `write_window_s` are the one readers. 🔴 A change on a box is gate
     # `enforcement-flip`.
+    # MCP-G28a (D209): the cap has two counters, per connection, both in the
+    # window of `agent_write_window_s`. `agent_write_cap` counts CALLS: one
+    # for each single write, and one for each call of `update_tasks` (one
+    # more for each further 50 rows of one call). `agent_write_row_cap`
+    # counts ROWS: one for each signed write. So a batch of 50 rows costs 1
+    # call and 50 rows, and a single write costs 1 call and 1 row. The row
+    # cap default is 5000. `acb_auth.agent_oauth.write_row_cap` is its one
+    # reader. The same restart and the same gate apply.
     agent_write_cap: int = 120
+    agent_write_row_cap: int = 5000
     agent_write_window_s: int = 600
     agent_access_token_ttl_s: int = 3600
     agent_refresh_token_ttl_s: int = 30 * 24 * 3600
