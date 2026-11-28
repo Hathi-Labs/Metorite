@@ -7,6 +7,7 @@ network: publish → ring history + live subscribers, with a bounded backlog.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 from gateway.routes.notes import live_transcript as lt
 
@@ -99,7 +100,17 @@ def test_browser_segments_feed_the_same_bus() -> None:
     binding from self-intros still applies."""
     from gateway.routes.notes import live_speakers as ls
 
+    async def owner(_meeting_id: str, _email: str | None) -> None:
+        return None  # task 3966: the owner check passes for the owner
+
     async def scenario() -> list[dict]:
+        lt.require_owned_meeting, saved = owner, lt.require_owned_meeting
+        try:
+            return await _scenario()
+        finally:
+            lt.require_owned_meeting = saved
+
+    async def _scenario() -> list[dict]:
         mid = "m-browser"
         lt._BUSES.pop(mid, None)
         ls.reset(mid)
@@ -111,7 +122,7 @@ def test_browser_segments_feed_the_same_bus() -> None:
             await lt.ingest_browser_segment(
                 mid,
                 lt.LiveSegment(text=text, speaker_label=label, start_s=0.0, end_s=1.0),
-                _user=None,
+                user=SimpleNamespace(email="owner@example.com"),
             )
         return list(lt._bus(mid).ring)
 

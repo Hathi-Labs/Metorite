@@ -103,7 +103,7 @@ import {
   type KeptDraft,
   type SentVersion,
 } from "@/lib/redraftCard";
-import { resendsAnswer, sendRespondInputResult } from "@/lib/respondInput";
+import { answeredGivesBack, resendsAnswer, sendRespondInputResult, type AnsweredBy } from "@/lib/respondInput";
 import { createRejectHold } from "@/lib/rejectHold";
 import {
   CONFIRMATION_UNDO,
@@ -1663,12 +1663,13 @@ export default function AgentChat({
   // took an answer for this card, from another device or a double tap. The
   // caller hears "answered" and sends NOTHING: no message, no run. A notice
   // says that someone answered it, unless the card's own line says so
-  // (`answeredLine`, the confirmation receipt).
+  // (`answeredLine`, the confirmation receipt). Task 4036: when the member's
+  // own answer was taken, the notice says so, and `settle` hears `answeredBy`.
   const postRespondInput = useCallback(
     (
       payload: { request_id: string; answer: string; was_freeform: boolean; declined?: boolean },
       restoreCard: (reason?: string) => void,
-      settle?: (outcome: "ok" | "drop" | "resent" | "answered", reason?: string) => void,
+      settle?: (outcome: "ok" | "drop" | "resent" | "answered", reason?: string, answeredBy?: AnsweredBy) => void,
       /** A held Reject sends for the session that held it (`lib/rejectHold.ts`). */
       sessionOverride?: string,
       /** The card draws its own "someone answered it" line, so no notice. */
@@ -1678,7 +1679,7 @@ export default function AgentChat({
       // The account this tab drew the card for. The route refuses the answer
       // when the browser is signed in to another account now (WS-51 S2).
       const drawnFor = boundIdentity();
-      void sendRespondInputResult({ ...payload, thread_id: forSession, as: drawnFor }).then(({ outcome, resend, display, otherAccount, reason, resumed }) => {
+      void sendRespondInputResult({ ...payload, thread_id: forSession, as: drawnFor }).then(({ outcome, resend, display, otherAccount, reason, resumed, answeredBy }) => {
         // RESUME-3a: the late Approve started a continuation run. The run
         // state of its thread hears it, and the run list is asked at once, so
         // the attach starts. No envelope goes and no notice draws.
@@ -1709,11 +1710,13 @@ export default function AgentChat({
             setMessages((prev) => [...prev.filter((m) => m.id !== `answered-once-${payload.request_id}`), {
               id: `answered-once-${payload.request_id}`,
               role: "system",
-              content: `__ERROR__${JSON.stringify({ code: "answered_once", ref: null, raw: "" })}`,
+              content: `__ERROR__${JSON.stringify(answeredBy === "you"
+                ? { code: "answered_by_you", ref: null, raw: "" }
+                : { code: "answered_once", ref: null, raw: "" })}`,
               timestamp: Date.now(),
             }]);
           }
-          settle?.("answered", reason);
+          settle?.("answered", reason, answeredBy);
           return;
         }
         if (resend) {
@@ -2558,14 +2561,15 @@ export default function AgentChat({
         // The answer goes out as a message, as the genUI path
         // does, so it is never lost (2026-10-09). The message
         // carries the answer, so the card leaves.
-        (outcome) => {
+        (outcome, _reason, answeredBy) => {
           if (outcome === "ok") return;
           setElicitation((prev) => (prev?.requestId === reqId ? null : prev));
           // A card redrawn from the log may be one the run already
           // took an answer for: a refusal then is no lost answer,
           // and a steer would send it twice (review of #1171, P1).
-          // HRD-16: "answered" sends nothing. The words go back to the box.
-          if (outcome === "answered") { giveBack?.(); return; }
+          // HRD-16: "answered" sends nothing. Task 4036: the words go back
+          // only when another member answered, so they never act twice.
+          if (outcome === "answered") { if (answeredGivesBack(answeredBy)) giveBack?.(); return; }
           if (!resendsAnswer(outcome)) return;
           if (!redrawnRef.current.all.has(reqId)) submitText(answer, heldBack(giveBack));
           else giveBack?.();
@@ -2585,11 +2589,12 @@ export default function AgentChat({
     postRespondInput(
       { request_id: card.requestId, answer, was_freeform: wasFreeform },
       () => { setUserInput(card); giveBack?.(); },
-      (outcome) => {
+      (outcome, _reason, answeredBy) => {
         if (outcome === "ok") return;
         setUserInput((prev) => (prev?.requestId === card.requestId ? null : prev));
-        // HRD-16: "answered" sends nothing. The words go back to the box.
-        if (outcome === "answered") { giveBack?.(); return; }
+        // HRD-16: "answered" sends nothing. Task 4036: the words go back
+        // only when another member answered, so they never act twice.
+        if (outcome === "answered") { if (answeredGivesBack(answeredBy)) giveBack?.(); return; }
         if (!resendsAnswer(outcome) || !answer) return;
         if (!redrawnRef.current.all.has(card.requestId)) submitText(answer, heldBack(giveBack));
         else giveBack?.();

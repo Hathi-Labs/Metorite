@@ -39,7 +39,13 @@ from collections.abc import AsyncIterator
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
-from gateway.routes.notes.core import _log, _tenant_session, router
+from gateway.routes.notes.core import (
+    _log,
+    _tenant_session,
+    load_owned_meeting,
+    require_owned_meeting,
+    router,
+)
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -198,7 +204,7 @@ async def ingest_live_segment(
 async def ingest_browser_segment(
     meeting_id: str,
     seg: LiveSegment,
-    _user: UserContext = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ) -> dict:
     """The in-browser recorder's finalized captions → the SAME bus as the bot.
 
@@ -206,19 +212,26 @@ async def ingest_browser_segment(
     from a headless bot or the user's own mic, agents and the console consume
     one seam. User-authenticated (the browser has a session, not the bot token);
     browser captions carry no voiceprint, so the registry passes their diarized
-    label through — live name binding from self-intros still applies."""
+    label through — live name binding from self-intros still applies.
+
+    Owner only (task 3966): a segment from another member would write into
+    the owner's live captions, roster, agenda coverage and copilot."""
+    await require_owned_meeting(meeting_id, user.email)
     return _resolve_and_publish(meeting_id, seg)
 
 
 @router.get("/meetings/{meeting_id}/live/roster")
 async def live_roster(
     meeting_id: str,
-    _user: UserContext = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ) -> dict:
     """Who's on the call so far — stable speaker ids with any live-bound names/
-    roles. The identity context the copilot console (and agent) read."""
+    roles. The identity context the copilot console (and agent) read.
+
+    Owner only, checked before the in-process registry is read (task 3966)."""
     from gateway.routes.notes.live_speakers import registry
 
+    await require_owned_meeting(meeting_id, user.email)
     return {"speakers": registry(meeting_id).roster()}
 
 
@@ -235,9 +248,13 @@ async def _sse(meeting_id: str) -> AsyncIterator[bytes]:
 @router.get("/meetings/{meeting_id}/live")
 async def live_stream(
     meeting_id: str,
-    _user: UserContext = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ) -> StreamingResponse:
-    """SSE of the meeting's live transcript (captions while a bot is in-call)."""
+    """SSE of the meeting's live transcript (captions while a bot is in-call).
+
+    Owner only, and checked BEFORE the response starts (task 3966): the bus
+    replays its ring of recent segments to each new subscriber."""
+    await require_owned_meeting(meeting_id, user.email)
     return StreamingResponse(
         _sse(meeting_id),
         media_type="text/event-stream",
@@ -259,7 +276,7 @@ class SayRequest(BaseModel):
 async def say_into_meeting(
     meeting_id: str,
     body: SayRequest,
-    _user: UserContext = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ) -> dict:
     """Have the notetaker speak a line into the live call — the seam for
     agent-driven interjections. Forwards to the bot worker's ``/say``; only the
@@ -267,7 +284,9 @@ async def say_into_meeting(
     text_ = (body.text or "").strip()
     if not text_:
         raise HTTPException(status_code=400, detail="empty text")
+    # Owner only (task 3966): the bot speaks into the owner's call.
     async with _tenant_session() as db:
+        await load_owned_meeting(db, meeting_id, user.email, columns="m.id")
         row = (
             await db.execute(
                 text(

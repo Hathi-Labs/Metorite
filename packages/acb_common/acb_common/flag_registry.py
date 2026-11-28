@@ -205,6 +205,18 @@ class FlagRegistry(BaseSettings):
     # tests/unit/test_api_templates.py.
     api_connections_orgs: str = ""
 
+    # ── The app lead acts on a teammate's run (WS-MCP SW-48) ────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default, and the rule of Release stays as it was. On, a lead of the
+    # project of a run's task, or of an ancestor project, may Release and
+    # Resume the run (agent_coordination.md §3.10.2, Q9). It never lets the
+    # lead answer a question. The one reader is
+    # `gateway.routes.projects.filters.app_lead_runs_allowed`. A SIGHUP reload
+    # applies a change. A flip is OWNER-GATE (`enforcement-flip`).
+    # Fence: tests/unit/test_agent_runs_r8.py.
+    app_lead_runs_orgs: str = ""
+
     # ── The app roots of the app-owner map (WS-MCP SW-44) ───────────────────
     #
     # `org_id=root_project_id` pairs with a comma between pairs. A root is the
@@ -1232,6 +1244,17 @@ class FlagRegistry(BaseSettings):
     # billed to the org (`work_plan.md` §6). Fence:
     # tests/unit/test_decide_seam.py.
     projects_decide_orgs: str = ""
+
+    # ── The Goals of Projects (WS-39 WM-5, task 984) ───────────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, a task write or a type write that sends a Goal field
+    # gets 422 `goals_off`, and `GET /projects/tasks/{id}` adds no roll-up to
+    # a Goal. The one reader is
+    # `gateway.routes.projects.core.goals_allowed`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). A flip is OWNER-GATE
+    # (`enforcement-flip`). Fence: tests/unit/test_goal_rollup_r8.py.
+    projects_goals_orgs: str = ""
 
     # ── The cycles of Projects (WS-39 SP-1, D195) ───────────────────────────
     #

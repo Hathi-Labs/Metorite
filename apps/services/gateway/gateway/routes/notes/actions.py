@@ -228,7 +228,7 @@ async def approve_all(
     created: list[str] = []
     for action in rows:
         ref, error = await notes_dispatch._dispatch(
-            action, meeting, user.email or "anonymous"
+            action, meeting, user.email or "anonymous", bound=True
         )
         if error is None and ref is not None:
             created.append(str(action.id))

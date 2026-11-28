@@ -1885,6 +1885,21 @@ def test_an_icon_on_another_block_is_refused_in_one_sentence():
     one(d, f"$.views[{len(d['views']) - 1}].icon", contains="stat view")
 
 
+def test_a_target_sits_on_a_stat_view_and_is_a_positive_number():
+    assert validate_manifest(_stat_doc(target=40)) == []
+    assert validate_manifest(_stat_doc(target=12.5)) == []
+    assert validate_manifest(_stat_doc(target=None)) == []
+    for bad in (0, -3, "40", True, 1e15):
+        errs = validate_manifest(_stat_doc(target=bad))
+        assert errs and errs[0].path.endswith(".target"), (bad, errs)
+
+
+def test_a_target_on_another_block_is_refused_in_one_sentence():
+    d = doc()
+    d["views"] = [*d["views"], {"id": "all_v", "block": "table", "source": {"object": "visit"}, "target": 10}]
+    one(d, f"$.views[{len(d['views']) - 1}].target", contains="stat view")
+
+
 def test_an_icon_outside_the_list_is_refused():
     errs = validate_manifest(_stat_doc(icon="NotAnIcon"))
     assert errs and errs[0].path.endswith(".icon") and "icon list" in errs[0].message

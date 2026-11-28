@@ -98,6 +98,9 @@ RUN_ERROR_CODES: tuple[str, ...] = (
     # another device or a double tap. `POST /agent/respond-input` refuses the
     # repeat with 409 `answered_once`, and the chat sends nothing again.
     "answered_once",
+    # Task 4036, the browser's own: the same 409 with `by_you` true. The run
+    # already took THIS member's answer, so the words stay out of the composer.
+    "answered_by_you",
 )
 
 #: The longest raw text a RUN_ERROR keeps. It is shown inside the fold only.

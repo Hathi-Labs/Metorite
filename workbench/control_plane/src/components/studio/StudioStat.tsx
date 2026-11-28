@@ -15,6 +15,7 @@
 import { useMemo } from "react";
 
 import Icon from "@/components/Icon";
+import ProgressBar from "@/components/ui/ProgressBar";
 import { TYPE } from "@/lib/typeScale";
 import { accentForHue } from "@/lib/statusAccent";
 import { parseAggregate, statFromAggregate } from "@/lib/studio/aggregateModel";
@@ -59,6 +60,9 @@ export function StudioStat({ data, rows }: { data: unknown; rows: Row[] }) {
   }
   // An icon of the icon list before the heading (STU-LOOK-2). A name outside the list draws nothing.
   const iconName = typeof d.icon === "string" && (NAV_ICONS as readonly string[]).includes(d.icon) ? d.icon : null;
+  // The share of a target (STU-LOOK-2b). A target of 0 or less, or a value that is not a number, draws no bar.
+  const target = typeof d.target === "number" && Number.isFinite(d.target) && d.target > 0 ? d.target : null;
+  const share = target !== null && tile.raw !== null ? (tile.raw / target) * 100 : null;
   const goodDown = d.good === "down";
   const t = tile.trend;
   const fine = t ? (t.delta > 0) !== goodDown : true;
@@ -99,6 +103,11 @@ export function StudioStat({ data, rows }: { data: unknown; rows: Row[] }) {
           </svg>
         )}
       </div>
+      {share !== null ? (
+        <div data-stat-progress="" className="mt-2">
+          <ProgressBar percent={share} label={`${heading || tile.label}: share of the target`} detail={`Target ${target}`} />
+        </div>
+      ) : null}
     </div>
   );
 }

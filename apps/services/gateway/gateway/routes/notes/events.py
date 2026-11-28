@@ -16,7 +16,12 @@ from collections.abc import AsyncIterator
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends
 from fastapi.responses import StreamingResponse
-from gateway.routes.notes.core import _log, _tenant_session, router
+from gateway.routes.notes.core import (
+    _log,
+    _tenant_session,
+    require_owned_meeting,
+    router,
+)
 from sqlalchemy import text
 
 _POLL_S = 1.5
@@ -105,8 +110,11 @@ async def _stream(meeting_id: str) -> AsyncIterator[bytes]:
 @router.get("/meetings/{meeting_id}/events")
 async def meeting_events(
     meeting_id: str,
-    _user: UserContext = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ) -> StreamingResponse:
+    """The progress stream of one meeting. Owner only, checked BEFORE the
+    response starts (task 3966)."""
+    await require_owned_meeting(meeting_id, user.email)
     return StreamingResponse(
         _stream(meeting_id),
         media_type="text/event-stream",

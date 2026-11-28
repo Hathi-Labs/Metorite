@@ -422,6 +422,8 @@ class ViewDef(_Strict):
     text: str | None = None
     #: STU-LOOK-2: an icon of the icon list before the title of a stat tile. `_check_view` allows it on a stat view only.
     icon: NavIconName | None = None
+    #: STU-LOOK-2b: a target for a stat tile. The tile draws the share of it as a bar. A stat view only.
+    target: float | None = Field(default=None, gt=0, le=1_000_000_000_000, strict=True)
 
 
 #: The caps of the page shape (STU-D11a). `pageModel.ts` holds the same numbers, and
@@ -939,6 +941,8 @@ def _check_view(
     p = f"$.views[{vi}]"
     if v.icon is not None and v.block != "stat":
         out.append(_err(f"{p}.icon", "An icon sits on a stat view. Remove it, or use a stat view."))
+    if v.target is not None and v.block != "stat":
+        out.append(_err(f"{p}.target", "A target sits on a stat view. Remove it, or use a stat view."))
     src_obj = v.source.object if v.source else None
     obj = v.object or src_obj
     if v.source and v.source.action and v.source.action not in action_ids:

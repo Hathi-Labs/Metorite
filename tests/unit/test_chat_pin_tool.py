@@ -554,4 +554,5 @@ def test_both_pin_actions_are_covered_by_the_tool() -> None:
     assert not r.reaches("pin_chat", "PATCH", "/chat/sessions/{}/pin")
     assert "packages/acb_skills/acb_skills/chat_pin_tools.py" in cp.TOOL_SOURCES
     assert "pin_chat" in r.registered_tools()
-    assert cp.DEBT_CEILING["chat"] == 28
+    # PAR-11 part a (task 4012) paid six chat list rows and exempted three (28 to 19).
+    assert cp.DEBT_CEILING["chat"] == 19

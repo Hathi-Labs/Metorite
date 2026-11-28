@@ -206,14 +206,24 @@ async def _issue_live_token() -> LiveToken:
     )
 
 
-async def live_wanted(meeting_id: str) -> tuple[bool, str]:
+_LIVE_COPILOT_SQL = (
+    "SELECT copilot_enabled FROM live_session "
+    "WHERE meeting_id = CAST(:m AS UUID) AND status = 'live' "
+    "ORDER BY started_at DESC LIMIT 1"
+)
+
+
+async def live_wanted(meeting_id: str, db=None) -> tuple[bool, str]:
     """Should this meeting be streaming right now, and why/why not.
 
     Streaming ASR is billed per minute for the whole meeting; the archival
     recording produces the same transcript afterwards at batch prices. So with
     nothing reading the stream in real time, it is pure spend. Never raises —
     if we can't tell, allow it, because breaking live captions is worse than an
-    unexpected bill on one meeting."""
+    unexpected bill on one meeting.
+
+    The member route passes its tenant-bound session ``db`` (task 3966). The
+    bot-token route passes none."""
     try:
         from gateway.routes.notes.core import _get_db
         from gateway.routes.notes.settings import (
@@ -222,21 +232,20 @@ async def live_wanted(meeting_id: str) -> tuple[bool, str]:
         )
         from sqlalchemy import text as _text
 
-        settings, _ = await load_for_meeting(meeting_id)
-        # H4/H6: service-identity route — `read_live_wanted` is called by the
-        # meeting-bot worker (MEETING_BOT_TOKEN, `system`-shaped identity, no
-        # ambient tenant); derive the tenant from the live_session/meeting row.
-        async with await _get_db() as db:
+        settings, _ = await load_for_meeting(meeting_id, db)
+        if db is not None:
             row = (
-                await db.execute(
-                    _text(
-                        "SELECT copilot_enabled FROM live_session "
-                        "WHERE meeting_id = CAST(:m AS UUID) AND status = 'live' "
-                        "ORDER BY started_at DESC LIMIT 1"
-                    ),
-                    {"m": meeting_id},
-                )
+                await db.execute(_text(_LIVE_COPILOT_SQL), {"m": meeting_id})
             ).fetchone()
+        else:
+            # H4/H6: service-identity route — `read_live_wanted` is called by
+            # the meeting-bot worker (MEETING_BOT_TOKEN, `system`-shaped
+            # identity, no ambient tenant); derive the tenant from the
+            # live_session/meeting row.
+            async with await _get_db() as unbound:
+                row = (
+                    await unbound.execute(_text(_LIVE_COPILOT_SQL), {"m": meeting_id})
+                ).fetchone()
         copilot_on = bool(row.copilot_enabled) if row is not None else False
         if wants_live_transcription(settings.live_transcription, copilot_on):
             return True, "wanted"
@@ -307,7 +316,7 @@ async def live_token(
             await load_owned_meeting(
                 db, meeting_id, user.email, columns="m.id"
             )
-        wanted, reason = await live_wanted(meeting_id)
+            wanted, reason = await live_wanted(meeting_id, db)
         if not wanted:
             raise HTTPException(status_code=409, detail=reason)
     return await _issue_live_token()

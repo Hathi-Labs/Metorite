@@ -19,6 +19,15 @@ the sidebar one admin right for the page: `admin:members:read`.
 **PAR-0 (task 3098, 2026-11-22): §6 holds the ladder of the epic, and §7 its
 decisions.** §6 sets the order of the work now.
 
+**P-4b (task 3961, the WhatsApp writes) is BUILT, 2026-11-26, in review, with
+no flag and no migration.** The WhatsApp agent gets seven tools, and each one
+writes on one card. They pay seven WhatsApp rows, so the WhatsApp ceiling goes
+from 13 to 6. §6.2 names the tools and the open row. Fence:
+`tests/unit/test_whatsapp_write_tools.py`.
+
+A WhatsApp read marks no chat (task 4010). So for injected WhatsApp text, the
+approval card is the only guard of these seven writes.
+
 **Task 3979 (2026-11-26): §6.6 specifies the documents rung.** The chat edits
 an uploaded `.xlsx` or `.docx`, converts it to PDF and attaches it to a draft.
 Spec only, and nothing is built. The owner put the converter on `aroh-sandbox-1`
@@ -135,6 +144,21 @@ as on main. The owner of the pack is `org-admin`, and the owner picked that
 option on 2026-11-26 (§7 item 11). §6.4 holds the P-1c block. Fences:
 `tests/unit/test_my_tasks_p1c_tools.py` and
 `tests/unit/test_calendar_connections_pack.py`.
+
+**P-5b-4 (task 3945) is BUILT, 2026-11-25, and it ships dark.** The tool
+`set_work_schedule` joins the pack `people`. It changes the work schedule of
+the company (`PUT /api/people/schedule`), which is the org policy and not the
+record of a person. The tool reads `GET /auth/me` first, so a member without
+`admin:members:manage` gets plain words and no card. It sends only the fields
+to change, onto the policy of now, because the route replaces the whole policy.
+It asks the route for a `dry_run`, and ONE card shows the impact that the server
+computed: the hours of the company week before and after, how many people
+move, and up to ten examples. The tool reads the schedule and the impact again
+after Approve, and it sends nothing when one of them moved. It refuses an
+unknown field, a value that the route would repair, and a text that the card
+cannot show. A change of a list names each entry that it removes or adds, and
+`changes={}` reads the schedule first. It paid one people row, so the
+people ceiling went from 7 to 6. Fence: `tests/unit/test_people_schedule_tool.py`.
 
 **PAR-2a (task 3102) is BUILT, 2026-11-23, and it ships dark.** The pack
 `org-admin` (`acb_skills/org_admin_tools.py`) holds four tools:
@@ -315,6 +339,46 @@ a `TOOL_PACKS` line. Fence: `tests/unit/test_custom_app_tools.py`.
 - **A file write and a value write show no card in a clear chat**, as the App
   Workshop does. The live version changes only at a publish, which always
   shows a card.
+- A box with `TOOL_PACKS=*` turns the pack on. So the owner's `TOOL_PACKS`
+  line is the switch.
+
+**PAR-11 part a (task 4012, rung 8) is BUILT, 2026-11-26, dark.** The chat
+reads and changes the member's own chat list. Three tools join the new pack
+`chat-threads` of the owner `org-admin` (`acb_skills/chat_thread_tools.py`).
+`list_chats` reads the chat list or the topics. `edit_chat` renames, archives,
+restores or moves a chat, or makes a private topic. `delete_chat` deletes one
+archived chat.
+
+Each tool sends the route of the chat list as the verified member of the run,
+through the one sender of `chat_pin_tools`. So each route keeps its gates. A
+delete ALWAYS shows one card. The other writes show one card only in a chat
+that must ask first. A write reads the chat before its card, reads it again
+after the approve, and sends nothing when the chat changed.
+
+The chat does only what the dock does. Only the owner of a chat renames,
+archives, restores or deletes it, because the dock shows those acts to the
+owner only. A delete needs an archived chat, as "Delete for good" of the dock
+does. Otherwise the member gets "Archive it first", with no card. The card of
+a shared chat says who else sees the change. The delete card gives no count
+of people, because the count of the list holds the owner and the groups.
+
+The chat ceiling goes from 28 to 19. Six rows are COVERED: the list, the
+rename and archive, the delete, the topic read, the topic create and the move.
+Three rows are EXEMPT of the kind `chat`, because no member click sends them.
+They are the pending asks, the follow-up chips and the model list of the
+picker. Fence: `tests/unit/test_chat_thread_tools.py`.
+
+**PAR-11 part a, the facts for the owner.**
+
+- **Decide: the vote row waits for a ruling on its kind.** The thumbs up or
+  down of an answer (`POST /api/feedback`) is a click of the member, so no kind
+  of §2 fits it. A turn of the chat cannot tell which saved answer the member
+  means. The cards of P-2c are a precedent for a `chat` row.
+- **The chat is narrower than the dock, on purpose.** A shared room and a
+  WhatsApp run get plain words and no request, because each person in a room
+  sees the answer. The chat does not delete the chat that it runs in. A
+  rename sends the title alone, and the model cannot send a preview or a
+  count.
 - A box with `TOOL_PACKS=*` turns the pack on. So the owner's `TOOL_PACKS`
   line is the switch.
 
@@ -504,9 +568,9 @@ Section 6 sets the order of the waves. Each wave moves its rows from
 `WAVES` lists the board tasks that build it, and a wave with no task fails.
 `P0_CEILING` keeps the debt of each app at P-0. A ceiling above its baseline
 names the task that pays it in its comment, as "Paid by task N", and N is a
-task of the wave of that app. Four ceilings are above P-0 now (calendar,
-chat, settings, studio), and each one names its
-task. The CRM wave P-3 had no task,
+task of the wave of that app. Three ceilings are above P-0 now (calendar,
+settings, studio), and each one names its
+task. PAR-11 part a (task 4012) took the chat below its baseline. The CRM wave P-3 had no task,
 so task 3678 is its task. Fence: `tests/unit/test_chat_parity.py`.
 
 P-6 (Workflows) paid its first parity rows through `ai_studio.md` rows E13a
@@ -573,8 +637,63 @@ WhatsApp agent pay the 12 WhatsApp GET rows of the debt (25 to 13). They are
 `list_whatsapp_categories`, `list_whatsapp_templates`,
 `list_whatsapp_saved_replies`, `whatsapp_rules_preview`, `list_whatsapp_calls`,
 `whatsapp_call_events`, `whatsapp_call_diagnostics`, `whatsapp_connection_info`
-and `whatsapp_link_status`. None sends a message. The WhatsApp write rows stay
-debt.
+and `whatsapp_link_status`. None sends a message. P-4b paid seven write rows after
+it.
+
+**P-4b (task 3961) is BUILT, 2026-11-26, with no flag.** Seven write tools of the
+WhatsApp agent pay seven rows (13 to 6). None sends a message, and no tool calls
+WhatsApp or a model.
+
+| Tool | Gateway route |
+|---|---|
+| `create_whatsapp_saved_reply` | `POST /whatsapp/saved-replies` |
+| `delete_whatsapp_saved_reply` | `DELETE /whatsapp/saved-replies/{}` |
+| `update_whatsapp_category` | `PATCH /whatsapp/categories/{}` |
+| `seed_whatsapp_categories` | `POST /whatsapp/accounts/{}/categories/bootstrap` |
+| `snooze_whatsapp_chat` | `POST /whatsapp/chats/{}/snooze` |
+| `unsnooze_whatsapp_chat` | `POST /whatsapp/chats/{}/unsnooze` |
+| `capture_whatsapp_task` | `POST /whatsapp/capture-task` |
+
+Each tool reads first and shows ONE card. It sends one write only after the
+member of the run approves it. A text that does not fit whole on one card gets a
+sentence and no card.
+
+The delete, the category change, the default categories and the task read their
+data again after Approve. The tool sends nothing when the data changed.
+
+**A WhatsApp read does not mark the chat.** So for text that a stranger puts in a
+WhatsApp message, the approval card is the only guard. Task 4010 is the
+follow-up.
+
+The hold of `egress.HELD_OFF_OWN_WRITES` drops the seven writes in two cases.
+One case is a chat that another read marked, such as an email read. The other
+case is a delegated no-egress run. A run under a covered run keeps the writes
+until a read marks the chat. In each case the reads and the drafts stay.
+
+The switch is `HELD_CARD_WRITES_ORGS`, as for each held chat. With the switch
+off, each write keeps its card. Fences:
+`tests/unit/test_whatsapp_write_tools.py` and
+`tests/unit/test_no_egress_tool_audit.py`.
+
+**P-4b, the facts for the owner.**
+
+- **The link code stays debt.** `POST /api/me/whatsapp-link/code` returns a
+  single-use code. The person who sends it from a phone links that phone to the
+  member (`whatsapp_assistant_channel.md` §5.2). So it is a credential, and no
+  tool sends it. No kind of §2 fits a route that makes a credential. Decide: a
+  ruling that `secret` covers it, or a HIGH slice.
+- **A category policy sends nothing today.** Only the rule preview reads the
+  three policies. The card says so, and says what `holding` permits later. A test
+  fails when a new reader appears.
+- **A task from a message** goes to the member's own inbox. The route sends the
+  event `pm.task.created`, so a workflow can start. The card says so.
+- **A snooze of a group chat** keeps its mention in Needs reply since task 4011
+  (merged 2026-11-27). So the card of a group chat carries no warning.
+- **The snooze card promises a wake only for a Cloud number.** The bridge push
+  routes bind no organization. So the step that sets the status of a chat cannot
+  write for them. This comes from the code, and no test ran it on a database.
+- **A full list of snoozed chats** (200) that does not hold the chat gives no
+  wake card. The tool says that it cannot confirm the snooze.
 
 **P-4d (task 3963) is BUILT in part, 2026-11-25.** Six notes read tools pay
 the 6 Notes GET rows that are owner-checked or per member (51 to 45). They are
@@ -599,6 +718,14 @@ bot and write rows. They are `/note`, `/actions`, `/agenda`, `/agenda/progress`,
 The thirteenth route is `/bot/identity`. Its status check starts a browser on
 the profile of the bot, and a bot join at the same time can fail.
 
+**Task 3966 is BUILT (2026-11-27).** Each meeting route of `/notes` now checks
+the owner with `core.load_owned_meeting`, the rule of the meetings list and
+detail. `/bots/active` and `/live/sessions` list only the meetings of the
+member. The 13 held-back read rows may now be built. Task 3966 did not change
+`/bot/identity`. Its check of the status still starts a browser on the
+profile of the bot.
+This change does not build a chat tool and does not change `DEBT`.
+
 **Later than this reading (2026-11-25).** The table does not change after its
 date. For the debt of today, read `DEBT_CEILING`.
 
@@ -607,11 +734,13 @@ took admin to 10. PAR-6a took integrations to 4, and P-2a took email to 5.
 PAR-3 took knowledge to 15, and PAR-3b took it to 4.
 
 P-5b-1 took people to 13 and memory to 4. P-5b-6 took people to 12, and P-5b-2
-took it to 7. Tasks 3951 and 3954 took crm to 60, and task 3960 took whatsapp
-to 13. P-1b took tasks to 1, and P-1c took calendar to 2. PAR-9 took apps to 2.
-Task 3963 took notes to 45. Task 3953 took crm from 60 to 52.
+took it to 7, and P-5b-4 took it to 6. Tasks 3951 and 3954 took crm to 60, and task 3953 took it from 60
+to 52. Task 3960 took whatsapp to 13, and task 3961 took it to 6.
 
-The total of `DEBT_CEILING` is 249. The "Today" column above does not show
+P-1b took tasks to 1, and P-1c took calendar to 2. PAR-9 took apps to 2. Task
+3963 took notes to 45. PAR-11 part a took chat to 19.
+
+The total of `DEBT_CEILING` is 232. The "Today" column above does not show
 all of these changes. The crm row is different: it shows the changes of tasks
 3951, 3954 and 3953.
 
@@ -791,7 +920,7 @@ at build. Each of these rungs ends in a demo task, and the table names it.
 | 4 | Email, then Calendar and Tasks | P-2, P-1 | 3111, then 3112, 3922 and 3923 | 3904 | 5 and 5 (email 14 before P-2a and P-2c. Calendar and Tasks 14 before P-1a, 11 before P-1b) | Production said "I can't" on 2026-11-09. Three most-used actions are here. |
 | 5 | The shell, then Workflows | P-7, P-6 | 3903 (cut from 3115) | 3905 | 7 (PAR-8b built) and 0 (PAR-8a built) | Four most-used actions are here. |
 | 6 | WhatsApp, then Notes | P-4 | 3113 | 3906 | 25 and 51 | Two most-used actions are here. |
-| 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 11 (24 before P-5b-1) and 52 (72 before tasks 3951, 3954 and 3953) | People and CRM each hold one of the most-used actions. |
+| 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 10 (24 before P-5b-1) and 52 (72 before tasks 3951, 3954 and 3953) | People and CRM each hold one of the most-used actions. |
 | 8 | Chat threads, Custom Apps, Agent Registry, AI Studio | P-7, P-6, P-9 | 3115 | 3908 | 79 | No evidence of demand yet. |
 
 - **Rung 4.** The three actions are mail search, a task from an email and the
@@ -973,6 +1102,10 @@ uv run ruff check tests/unit/test_my_tasks_p1c_tools.py tests/unit/test_calendar
 - **Rung 8, PAR-9 (task 3950).** It pays 26 Custom Apps rows with the dark
   pack `studio-apps`. Two rows wait for the owner's ruling on their kind. The
   demo needs the owner to add `studio-apps` to `TOOL_PACKS` (§7, item 1).
+- **Rung 8, PAR-11 part a (task 4012).** It pays six chat rows with the dark
+  pack `chat-threads`, and makes three rows chat exemptions. The vote row
+  waits for the owner's ruling on its kind. The demo needs the owner to add
+  `chat-threads` to `TOOL_PACKS` (§7, item 1).
 - **Rung 6.** The two actions are a WhatsApp message and the meeting notes.
   WhatsApp goes first, because Notes has no live page (`APP_PAGE`).
 - **Rung 7.** The two actions are a people lookup and the end of a CRM task.
@@ -995,7 +1128,7 @@ data. The gate column names what the owner does before the slice is live.
 | P-5b-1 (task 3114): four reads. The directory, my row, the work of a person, the Reach preview | 6 people rows: `GET /api/people`, `GET /api/people/me`, `GET /api/people/me/work`, `GET /api/people/{}/work`, `GET /api/me/reach/status`, `GET /api/me/reach/preview`. 1 memory row: `POST /api/chat/memories` becomes an EXEMPT row of the kind `chat` (OD5 A) | Dark. The owner adds `people` to `TOOL_PACKS` | BUILT, 2026-11-25 |
 | P-5b-2 (task 3943): self writes of my own row, on one card each. Never `email` (OD1 B) | 5 people rows: `PATCH /api/people/{}`, `PUT /api/people/{}/skills`, `PUT /api/people/{}/credentials`, `POST /api/people/{}/absences`, `DELETE /api/people/{}/absences/{}`. The avatar and resume rows are file uploads, and they stay debt | Dark. The owner approves the preview of the card, then adds `people` to `TOOL_PACKS` | BUILT dark (task 3943), 2026-11-25 |
 | P-5b-3 (task 3944): admin writes of a person, on one card each. It waits for OD1 C | `PATCH /api/tasks/people/{}`, `POST /api/tasks/people/{}/resume`, and the admin half of the five P-5b-2 rows. `ADMIN_HALF_OPEN` in `chat_parity.py` names those five rows for task 3944 | Waits for the owner (OD1 C, a later decision) | Waits |
-| P-5b-4 (task 3945): the work schedule of the company, on one card | `PUT /api/people/schedule` | The owner approves the preview of the card | To do |
+| P-5b-4 (task 3945): the work schedule of the company, on one card | `PUT /api/people/schedule` | The owner approves the preview of the card | BUILT, 2026-11-25. Dark in the `people` pack |
 | P-5b-5 (task 3946): send my brief now, on one card each time (OD7 A) | `POST /api/me/reach/brief` | The owner approves the preview of the card | To do |
 | P-5b-6 (task 3947): delete the dead client code that creates a person (OD3 A) | `POST /api/tasks/people` leaves the UI, so its row goes | none | Built, 2026-11-25. `createPerson` and the create branch of `savePerson` are gone, so the people ceiling is 12. The gateway route stays. |
 | Mem0: the four rows of the memory store (OD2 A) | `GET /api/memory/{}`, `GET /api/memory/{}/status`, `POST /api/memory/{}/search`, `DELETE /api/memory/{}/{}` | Stay debt until KG-11 | Debt |
@@ -1248,6 +1381,8 @@ he approves the merge.
     Custom Apps tools of PAR-9.
     Add `calendar-connections` before the demo of rung 4 (task 3904). It holds
     the act of P-1c.
+    Add `chat-threads` before the demo of rung 8 (task 3908). It holds the
+    three chat list tools of PAR-11 part a.
 2. **The previews.** Approve the preview of each new card: the invite, the
    Knowledge writes, and the Admin, Settings and Integrations writes. Approve
    too the stricter rule of PAR-4a: the chat gives no right that the caller

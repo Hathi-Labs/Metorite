@@ -51,6 +51,7 @@ import { buildPage, viewObjectName } from "@/lib/studio/pageModel";
 import { pluralOf } from "@/lib/studio/blockState";
 import { hideNode, parseHidden, showAll, toggleHidden } from "@/lib/studio/columnModel";
 import ColumnsMenu from "@/components/studio/layouts/ColumnsMenu";
+import { phoneSwitch } from "@/lib/studio/laneSwitch";
 import { type PreviewControls, boardGroupKeys, fieldSpecs, recordTitle } from "@/lib/studio/packagePreview";
 import { countSourceFor, pageObject, sourceWithMe } from "@/lib/studio/railCounts";
 import { hasRail, railFor, visibleRail } from "@/lib/studio/railModel";
@@ -228,12 +229,14 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
     if (!model) return null;
     switch (model.kind) {
       case "node": {
+        const preset = built.page.layout;
+        // A board of the `board` preset shows one lane at a time on a phone (STU-LY-4b).
         // The columns that a member hid in a table workspace (STU-LY-2b).
-        const spec = built.page.layout === "table_workspace" && id === built.page.regions.main?.[0]
-          ? hideNode(model.node, parseHidden(state.hide)) : model.node;
+        const spec = preset === "board" ? phoneSwitch(model.node)
+          : preset === "table_workspace" && id === built.page.regions.main?.[0]
+            ? hideNode(model.node, parseHidden(state.hide)) : model.node;
         const node = <GenerativeUINode spec={spec} />;
         const src = spec.props.source as { action: string; args?: Record<string, unknown> } | undefined;
-        const preset = built.page.layout;
         if ((preset === "table_workspace" || preset === "board") && src && id === built.page.regions.main?.[0]) {
           const object = detail.objects.find((o) => o.name === viewObjectName(view!, controls.actions));
           return (
