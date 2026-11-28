@@ -1,6 +1,6 @@
 ---
 slug: kit/hooks-example
-version: 1
+version: 2
 title: Kit: hook examples
 summary: Small hooks that keep a session on its task.
 audience: agent
@@ -25,6 +25,17 @@ Warn when the branch name has no task id.
 ## When a turn ends
 
 Block the end of the turn once when the session holds a task and has no result. Name the four ways to end: review or done, a question, a park on the checks, or a release. A second end passes, so the hook never traps a session.
+
+## When a sub-agent starts or stops
+
+Show each sub-agent under its session on the Agents map. Your tool runs a hook when a sub-agent starts and when it stops. In Claude Code these are the events `SubagentStart` and `SubagentStop`.
+
+1. Read the hook input. It holds the id and the type of the sub-agent, and the path of the session transcript.
+2. Find the newest run in the transcript that the session claimed or started, and did not finish or release.
+3. Call `report_subagent` with that run id, the id of the sub-agent, its type as the label, and `start` or `stop`.
+4. Run the hook in the background, with a short time limit. Exit with success on each path, also when the call fails.
+
+The hook needs the connection of the session. A box token gives it through the header helper. A session that signs in with OAuth gives the hook no credential, so the hook passes with no report.
 
 ## Rules for every hook
 
