@@ -105,3 +105,27 @@ describe("the speech verb follows the job and the model", () => {
     expect(NATIVE_TASK_OF.native_sarvam).toBe("transcribe");
   });
 });
+
+// VOX-6 (2026-11-08): AssemblyAI Sync speech to text. The same rule as Sarvam,
+// for an `assemblyai/` model.
+describe("the AssemblyAI speech verb", () => {
+  const model = "assemblyai/universal-3-5-pro/hi,en";
+
+  it("offers only native_assemblyai for an assemblyai model on transcribe", () => {
+    expect(verbsForTask("transcribe", model)).toEqual(["native_assemblyai"]);
+    expect(verbAfterTaskChange("atranscription", "transcribe", model)).toBe("native_assemblyai");
+  });
+
+  it("offers it beside the litellm verbs when no model is named", () => {
+    expect(verbsForTask("transcribe")).toContain("native_assemblyai");
+    expect(verbsForTask("decide")).not.toContain("native_assemblyai");
+    expect(verbsForTask("transcribe", "sarvam/saaras:v3")).not.toContain("native_assemblyai");
+    expect(verbFitsTask("native_assemblyai", "transcribe")).toBe(true);
+    expect(verbFitsTask("native_assemblyai", "chat")).toBe(false);
+  });
+
+  it("maps the verb to its vendor and its job", () => {
+    expect(NATIVE_PROVIDER.native_assemblyai).toBe("assemblyai");
+    expect(NATIVE_TASK_OF.native_assemblyai).toBe("transcribe");
+  });
+});

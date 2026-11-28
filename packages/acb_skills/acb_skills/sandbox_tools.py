@@ -11,6 +11,13 @@ agent that carries :class:`ProjectsSandboxProvider`. The agent object itself
 never changes (``_native_run_context.agent_with_providers``). With an empty
 scope it returns the agent unchanged, so nothing about any run changes.
 
+Two more holders read the scope target of their own. The ``code_task`` session
+(WS-43e) takes :func:`code_task_session_parts`. app-builder (WS-43h, §7.8)
+takes :func:`app_builder_session_parts` when ``MAF_CODING_SCOPE`` names
+``app_builder`` for the run's org. Its store and its ``run_command`` read the
+run binding on each call, and its ``run_command`` runs only in an app's own
+workspace under the Custom Apps root.
+
 **The boundaries are structural, and no permission mode moves them.**
 Production runs ``AGENT_PERMISSION_MODE=audit``, where ``decide()`` logs and
 approves everything. So ``decide()`` is called for the audit line only, and
@@ -58,8 +65,10 @@ the boundaries are these:
   with no cache, so a skill written in one turn lists on the next. A skill
   script runs in the sandbox, through its ``/workspace`` path.
 
-``request_network_access`` is a stub that answers "network access is off on
-this platform" (§7.3, WS-43g). The Projects track never attaches it.
+``request_network_access`` asks the member for network access on a card
+(§7.3, WS-43g2b). With ``sandbox_egress_enabled`` off it answers "network
+access is off on this platform". Only the ``code_task`` session holds it, and
+the Projects track never attaches it.
 
 Fences: ``tests/unit/test_run_command_tool.py`` (WS43-F6),
 ``tests/unit/test_projects_sandbox_tools.py`` (WS43-F21) and
@@ -69,7 +78,6 @@ from __future__ import annotations
 
 import copy
 import functools
-import inspect
 import json
 import os
 import shlex
@@ -81,6 +89,7 @@ from acb_common import get_logger
 from acb_common.paging import page_line, paged
 from agent_framework import (
     DEFAULT_FILE_ACCESS_INSTRUCTIONS,
+    AgentFileStore,
     ContextProvider,
     FileAccessProvider,
     FileSkillsSource,
@@ -90,23 +99,28 @@ from agent_framework import (
 )
 
 from acb_skills.addendum import render_run_sections
-from acb_skills.egress import _register_platform_callable, _register_platform_wrapper
+from acb_skills.egress import _register_platform_callable
 from acb_skills.tool_guard import RefuseTools, WithholdTools, tool_name
 from acb_skills.write_artifact import announce_artifact, artifact_context
 
 _log = get_logger("acb_skills.sandbox_tools")
 
 __all__ = [
+    "APP_BUILDER_TARGET",
     "CODE_TASK_SESSION_TOOLS",
     "HOST_NETWORK_TOOLS",
     "PROJECTS_AGENT",
     "WITHHELD_HOST_TOOLS",
     "LockedSkillsSource",
     "ProjectsSandboxProvider",
+    "RunAppFileStore",
     "SandboxScriptRunner",
+    "app_builder_run_command",
+    "app_builder_session_parts",
     "attach_for_run",
     "code_task_run_command",
     "code_task_session_parts",
+    "host_tool_guard",
     "request_network_access",
     "run_code_task_command",
     "run_command",
@@ -158,8 +172,13 @@ def _broker_module() -> Any:
     return sandbox_broker
 
 
-def _audit_decision(tool_name: str, command: str) -> tuple[bool, str]:
+def _audit_decision(
+    tool_name: str, command: str, arguments: dict[str, Any] | None = None,
+) -> tuple[bool, str]:
     """``decide()`` with the whole command, for the audit line (§7.4 step 2).
+
+    *arguments* replaces ``{"command": command}`` for a tool with other
+    arguments (``request_network_access``, §7.3 step 2).
 
     It refuses a denylisted command in ``enforce`` mode only. In ``audit``
     mode it approves everything, so no boundary of this module depends on it.
@@ -167,28 +186,23 @@ def _audit_decision(tool_name: str, command: str) -> tuple[bool, str]:
     try:
         from acb_skills.permission_policy import build_tool_call_context, decide
 
-        approved, code, _detail = decide(build_tool_call_context(tool_name, {"command": command}))
+        approved, code, _detail = decide(build_tool_call_context(
+            tool_name, arguments if arguments is not None else {"command": command},
+        ))
     except Exception:  # a policy bug must not open or brick the tool
         return True, "decide_error"
     mode = os.environ.get("AGENT_PERMISSION_MODE", "enforce").strip().lower()
     enforced = (not approved) and mode == "enforce"
+    #: The network tool names each host on the audit line (§7.3 step 2).
+    #: ``build_tool_call_context`` maps no field for it, so the line says it.
+    extra: dict[str, Any] = {}
+    if arguments is not None and "hosts" in arguments:
+        extra["hosts"] = list(arguments["hosts"])
     _log.info(
         "permission.decision", mode=mode, tool=tool_name, approved=not enforced,
-        would_deny=not approved, reason=code, surface="sandbox_tool",
+        would_deny=not approved, reason=code, surface="sandbox_tool", **extra,
     )
     return not enforced, code
-
-
-def _with_steer(text: str) -> Any:
-    """Drain a pending mid-run steer at this tool boundary, as the B6 gate does."""
-    try:
-        from orchestrator.steer import decorate_tool_result
-    except ImportError:
-        return text
-    try:
-        return decorate_tool_result(text)
-    except Exception:
-        return text
 
 
 def _format(label: str, result: Any, saved: list[str]) -> str:
@@ -261,19 +275,51 @@ async def _exec_and_sweep(
     except sb.SandboxError as exc:
         return f"{tool_name} failed: {exc} Nothing ran on the host."
     saved: list[str] = []
+    result: Any = None
+    failure: str | None = None
     try:
         try:
             result = await broker.exec(handle, command, timeout)
         except sb.SandboxError as exc:
-            return f"{tool_name} failed: {exc} Nothing ran on the host."
-        try:
-            async with broker.host_files(handle):
-                saved = await sweep(binding, since=started)
-        except sb.SandboxError:
-            saved = []
+            failure = f"{tool_name} failed: {exc} Nothing ran on the host."
     finally:
-        await broker.release(handle)
+        # The sweep runs also when the exec raised, or the run was stopped
+        # (WS-43h review round 2): a command may have written before it ended.
+        try:
+            saved = await _sweep_after(sb, broker, handle, binding, sweep, started)
+        finally:
+            await broker.release(handle)
+    if failure is not None:
+        return failure
     return _format(label, result, saved)
+
+
+#: The longest wait for the dir lock of the sweep after a stopped command.
+_SWEEP_LOCK_WAIT_S = 30.0
+
+
+async def _sweep_after(
+    sb: Any, broker: Any, handle: Any, binding: Any, sweep: Any, started: float,
+) -> list[str]:
+    """*sweep* under the dir lock, after a command, whatever its end.
+
+    ``broker.host_files()`` needs a live container. When it is gone (a failed
+    start, a stop), no process of it runs, and the dir lock alone holds off
+    every other container on the dir. The wait is bounded, so a stop never
+    hangs. Never raises a sandbox error.
+    """
+    import asyncio
+
+    try:
+        async with asyncio.timeout(_SWEEP_LOCK_WAIT_S):
+            try:
+                async with broker.host_files(handle):
+                    return list(await sweep(binding, since=started))
+            except sb.SandboxError:
+                async with broker.host_dir_of(binding.workspace):
+                    return list(await sweep(binding, since=started))
+    except (sb.SandboxError, TimeoutError):
+        return []
 
 
 # ── the code_task session (WS-43e, §7.6) ─────────────────────────────────────
@@ -428,24 +474,190 @@ async def run_command(command: str, timeout_s: int = _DEFAULT_TIMEOUT_SECONDS) -
         The exit code, the time, the output (cut to its first and last 6 KB
         when it is long), and the files the command saved.
     """
-    text = await _run_in_sandbox(
+    # Task 2494: a mid-run steer never joins a tool result. The model reads
+    # it as a user turn of its next call (``orchestrator.steer.SteerTurns``).
+    return await _run_in_sandbox(
         command, timeout_s, tool_name="run_command", label="run_command",
     )
-    return _with_steer(text)
+
+
+#: The name of the network tool in each answer and each log line.
+_NETWORK_TOOL = "request_network_access"
+#: The longest reason that the card shows. The model writes the reason.
+_REASON_MAX = 300
+#: The limits of the card text in ``request_confirmation``. It cuts a longer
+#: field, so the tool refuses a card that would not show each host whole.
+_CARD_TITLE_MAX, _CARD_DETAIL_MAX, _CARD_CONTEXT_MAX = 120, 500, 4000
+#: The runs with an open network card, by (org, agent, thread). One at a time
+#: (review P3-3): a second grant removes the network of the first.
+_OPEN_NETWORK_CARDS: set[tuple[str, str, str]] = set()
+#: The answer when no member approved (§7.3 step 4).
+NETWORK_NOT_APPROVED = (
+    "Network access was not approved ({why}). The sandbox has no network. "
+    "Do the task without the network, or say what it needs."
+)
+
+
+def _network_card(reason: str, hosts: tuple[str, ...]) -> tuple[str, str, str]:
+    """The title, the detail and the context of the network card (§7.3).
+
+    The model writes the reason and the hosts, so each one is fenced with
+    ``tool_refusals.data``, and the card passes ``fenced=True``. *hosts* is
+    the tuple that ``check_grant_hosts`` gave, and the grant gets the same one.
+    """
+    from acb_common.tool_refusals import data
+
+    def line(host: str) -> str:
+        # A leading dot is an allowlist entry for each name under it.
+        if host.startswith("."):
+            return f"- {data(host)} and every name under it"
+        return f"- {data(host)}"
+
+    title = "Let this coding task reach the network?"
+    detail = f"{len(hosts)} host(s). The card lists each one."
+    context = (
+        f"Reason: {data(reason[:_REASON_MAX])}\n"
+        "Hosts:\n" + "\n".join(line(h) for h in hosts) + "\n"
+        "The sandbox of this coding task can then reach only these hosts, "
+        "through the platform proxy, until the run ends or the grant time ends, "
+        "whichever comes first. Nothing else changes."
+    )
+    return title, detail, context
+
+
+def _card_fits(title: str, detail: str, context: str) -> bool:
+    """True when ``request_confirmation`` shows each field whole (review P2-1)."""
+    return (len(title.strip()) <= _CARD_TITLE_MAX and len(detail.strip()) <= _CARD_DETAIL_MAX
+            and len(context.strip()) <= _CARD_CONTEXT_MAX)
 
 
 async def request_network_access(reason: str, hosts: list[str]) -> str:
-    """Ask for network access for the sandbox. It is off on this platform.
+    """Ask the member for network access for this sandbox, to named hosts.
+
+    A member of the chat must approve it on a card. Ask only when the task
+    cannot be done without the network, for example to ``pip install`` a
+    package. Name each host exactly, for example ``["pypi.org",
+    "files.pythonhosted.org"]``. Only hosts of the platform allowlist can open.
 
     Args:
-        reason: Why the sandbox needs the network.
+        reason: Why the sandbox needs the network. The member reads it.
         hosts: The exact hosts it needs.
 
     Returns:
-        Always that network access is off on this platform (WS-43g builds it).
+        Whether the network is open, and to which hosts.
     """
-    del reason, hosts
-    return NETWORK_OFF
+    # §7.3 steps 1 to 5 (WS-43g2b). Step 1: off is off, and nothing else runs.
+    try:
+        sb = _broker_module()
+    except ImportError:
+        return NETWORK_OFF
+    from acb_common import get_settings
+
+    settings = get_settings()
+    if not sb.egress_enabled(settings):
+        return NETWORK_OFF
+    # Step 2: the checks before any card. The org and the member come from
+    # the run binding, never from input (R5, WS-63 PZ-32).
+    ctx = artifact_context()
+    if not ctx.get("workspace_root") or not ctx.get("session_id"):
+        return f"{_NETWORK_TOOL} refused: no run is bound. The network stays off."
+    binding, refusal = _code_task_binding(sb, _NETWORK_TOOL)
+    if refusal is not None:
+        return refusal
+    member = str(ctx.get("member") or "").strip().lower()
+    if not member:
+        return (
+            f"{_NETWORK_TOOL} refused: no member is bound to this run, so no one "
+            "can approve. The network stays off."
+        )
+    try:
+        remote = sb.sandbox_backend(settings) == sb.BACKEND_REMOTE
+    except sb.SandboxError as exc:
+        return f"{_NETWORK_TOOL} refused: {exc} No card was shown. The network stays off."
+    if remote:
+        # grant_egress refuses there, so no member is asked for nothing (P3-1).
+        return (
+            f"{_NETWORK_TOOL} refused: the docker-remote sandbox has no network "
+            "access yet. No card was shown. The network stays off."
+        )
+    try:
+        names = sb.check_grant_hosts(hosts, settings)
+    except sb.SandboxRefused as exc:
+        return f"{_NETWORK_TOOL} refused: {exc} No card was shown. The network stays off."
+    why = " ".join(str(reason or "").split())
+    allowed, code = _audit_decision(
+        # `why` is one line of text, not a list of rows (test_read_tool_paging).
+        _NETWORK_TOOL, "", {"reason": str(why)[:_REASON_MAX], "hosts": list(names)},
+    )
+    if not allowed:
+        return f"[blocked by permission policy: {code}]"
+    # Step 3: the card. A fresh request id: no late approval of an older card
+    # opens a grant, and only the member of the run can answer it.
+    title, detail, context = _network_card(why, names)
+    if not _card_fits(title, detail, context):
+        return (
+            f"{_NETWORK_TOOL} refused: the card cannot show each host whole. Ask "
+            "for fewer hosts. No card was shown. The network stays off."
+        )
+    run_key = (binding.org, binding.agent, binding.thread)
+    if run_key in _OPEN_NETWORK_CARDS:
+        return (
+            f"{_NETWORK_TOOL} refused: a network card of this run is still open. "
+            "Wait for its answer. No card was shown."
+        )
+    _OPEN_NETWORK_CARDS.add(run_key)
+    try:
+        return await _ask_and_grant(
+            sb, settings, binding, member, why, names, (title, detail, context),
+        )
+    finally:
+        _OPEN_NETWORK_CARDS.discard(run_key)
+
+
+async def _ask_and_grant(
+    sb: Any, settings: Any, binding: Any, member: str, why: str,
+    names: tuple[str, ...], card: tuple[str, str, str],
+) -> str:
+    """§7.3 steps 3 to 5: the card, then the grant of the SAME tuple."""
+    import uuid
+
+    from acb_skills.ask_tools import last_card_outcome, request_confirmation
+
+    title, detail, context = card
+    approved = await request_confirmation(
+        title, detail, context,
+        non_interactive_default="deny",
+        fenced=True,
+        request_id=uuid.uuid4().hex,
+        responder=member,
+        timeout_s=settings.sandbox_approval_timeout_seconds,
+    )
+    # Step 4: a decline, a timeout, another member or no channel.
+    if approved is not True:
+        outcome = last_card_outcome() or "no card"
+        _log.info(
+            "sandbox_tools.network_not_approved", org=binding.org, agent=binding.agent,
+            hosts=list(names), outcome=outcome,
+        )
+        return NETWORK_NOT_APPROVED.format(why=outcome)
+    # Step 5: the grant, on the bound run's own container, with the SAME tuple.
+    broker = sb.get_broker()
+    try:
+        handle = await broker.acquire()
+    except sb.SandboxError as exc:
+        return f"{_NETWORK_TOOL} failed: {exc} The network stays off."
+    try:
+        # `why` is one line of text, not a list of rows (test_read_tool_paging).
+        grant = await broker.grant_egress(handle, str(why)[:_REASON_MAX], names)
+    except sb.SandboxError as exc:
+        return f"{_NETWORK_TOOL} failed: {exc} The network stays off."
+    finally:
+        await broker.release(handle)
+    return (
+        "Network access is open to: " + ", ".join(grant.hosts) + ". Each request "
+        "goes through the platform proxy. The access ends when this run ends, "
+        "or after the grant time, whichever comes first."
+    )
 
 
 # H-236: the sandbox tools are the platform's own, trusted by identity.
@@ -506,7 +718,6 @@ class SandboxScriptRunner:
         elif isinstance(args, (list, tuple)):
             argv = [str(a) for a in args]
         command = " ".join(shlex.quote(p) for p in ["python3", path, *argv])
-        # The steer drain runs at the tool, which _steered() wraps.
         return await self._run(
             command, _DEFAULT_TIMEOUT_SECONDS,
             tool_name="run_skill_script", label=f"skill script {script.name}",
@@ -691,31 +902,6 @@ class RefuseHostTools(RefuseTools):
 
 
 _one_tool_name = tool_name
-
-
-def _steered(item: Any) -> Any:
-    """A copy of a provider tool whose result drains a pending steer (review P2).
-
-    The B6 gate does this for an agent's own tools (``_gate_own_maf_tools``).
-    The file tools and the skill tools join the run through a context
-    provider, so the gate never sees them. The copy keeps the tool's name,
-    description and schema, and the original object is never changed.
-    """
-    func = getattr(item, "func", None)
-    if not callable(func) or getattr(func, "__cc_steered__", False):
-        return item
-
-    @functools.wraps(func)
-    async def call(*args: Any, **kwargs: Any) -> Any:
-        result = func(*args, **kwargs)
-        if inspect.isawaitable(result):
-            result = await result
-        return _with_steer(result)
-
-    call.__cc_steered__ = True  # type: ignore[attr-defined]
-    clone = copy.copy(item)
-    clone.func = _register_platform_wrapper(func, call)
-    return clone
 
 
 # ── Paged reads of the sandbox files (agent reads page, part 2) ─────────────
@@ -917,7 +1103,7 @@ async def _add_tools(
     store = TenantFileStore(
         workspace=binding.workspace, outputs_rel=binding.outputs_rel,
         run_data=binding.run_data, guard=guard, member=member,
-        inputs_rel=binding.inputs_rel,
+        inputs_rel=binding.inputs_rel, instance=binding.instance,
     )
     files = FileAccessProvider(
         store,
@@ -941,11 +1127,10 @@ async def _add_tools(
     # Agent reads page, part 2: a window on each file read, a page on each list.
     context.tools[before:] = page_file_tools(context.tools[before:])
     # H-236: the provider tools ARE the platform's, so record each one by
-    # identity under its tool name before the steer wrap copies it.
+    # identity under its tool name. Task 2494: no tool result carries a steer,
+    # so these tools need no steer wrap. The model reads a steer as a user turn.
     for added in context.tools[before:]:
         _register_platform_callable(getattr(added, "func", None), _one_tool_name(added))
-    # The steer drain at every tool these two providers added (review P2).
-    context.tools[before:] = [_steered(t) for t in context.tools[before:]]
     context.extend_tools(SOURCE_ID, [tool(run_command, approval_mode="never_require")])
     context.extend_middleware(SOURCE_ID, [WithholdHostTools(), RefuseHostTools()])
     # WS-43u (§16.3): the rules for code, keyed on `run_command`. They come
@@ -1033,8 +1218,10 @@ def code_task_session_parts(binding: Any) -> tuple[Any, Any, list[Any]]:
     dir that the container mounts. The skills live under
     ``agent-data/skills/``, list with no cache, and run their scripts in the
     container (:func:`run_code_task_command`). The tools are the session's
-    ``run_command`` and the ``request_network_access`` stub, with no approval
-    prompt, because no person sits in a one-shot session.
+    ``run_command`` and ``request_network_access``. Neither takes MAF's own
+    approval prompt. ``request_network_access`` asks the member of the chat
+    on its own card (§7.3), because ``code_task`` runs inside the tool call
+    of the chat turn. With no chat, the card fails closed.
     """
     from acb_skills.tenant_file_store import WorkspaceFileStore
 
@@ -1042,7 +1229,9 @@ def code_task_session_parts(binding: Any) -> tuple[Any, Any, list[Any]]:
     broker = sb.get_broker()
     member = str(artifact_context().get("member") or "")
     guard = _WorkspaceGuard(broker, binding.workspace)
-    store = WorkspaceFileStore(workspace=binding.workspace, guard=guard, member=member)
+    store = WorkspaceFileStore(
+        workspace=binding.workspace, guard=guard, member=member, instance=binding.instance,
+    )
     skills = SkillsProvider(
         LockedSkillsSource(binding.workspace, guard, member, run=run_code_task_command),
         source_id=f"{SOURCE_ID}-code-task-skills",
@@ -1055,3 +1244,209 @@ def code_task_session_parts(binding: Any) -> tuple[Any, Any, list[Any]]:
         tool(request_network_access, approval_mode="never_require"),
     ]
     return store, skills, tools
+
+
+# ── app-builder on the MAF harness (WS-43h, §7.8) ────────────────────────────
+#
+# The app-builder factory builds its harness agent BEFORE the executor binds
+# the run, so these parts hold no binding. Each call reads the run binding
+# itself (R5): the org, the agent, the thread and the dir. A call refuses
+# when the run is not app-builder, or when ``MAF_CODING_SCOPE`` does not name
+# ``app_builder`` for the run's own org. Nothing here runs on the host.
+
+#: The scope target of app-builder (§7.1, §7.8).
+APP_BUILDER_TARGET = "app_builder"
+
+#: The answer when a tool would work in a dir that is not an app's own.
+APP_ONLY_ANSWER = (
+    "{tool} refused: the App Workshop builder works only in an app's own "
+    "workspace. Open the app in the App Workshop, then ask again. Nothing ran."
+)
+
+
+def _app_builder_binding(sb: Any, tool_name: str) -> tuple[Any, str | None]:
+    """The bound run, when the ``app_builder`` target covers it. Else a refusal.
+
+    The org comes from the run binding, never from input (R5). The scope is
+    read on each call, so a flip off ends the agent's tools at once.
+    """
+    try:
+        binding = sb.read_run_binding()
+    except sb.SandboxError as exc:
+        return None, f"{tool_name} refused: {exc} Nothing ran."
+    if binding.target != APP_BUILDER_TARGET or not sb.maf_coding_scope_allows(
+        APP_BUILDER_TARGET, binding.org,
+    ):
+        return None, (
+            f"{tool_name} refused: MAF_CODING_SCOPE does not name app_builder for "
+            "this organization. Nothing ran."
+        )
+    return binding, None
+
+
+async def _sweep_app_links(binding: Any, *, since: float) -> list[str]:
+    """Remove each link, and each nested ``.git``, that a command made (WS-43h).
+
+    The caller holds the dir lock, so no process of the container runs. A
+    host reader that follows links (the host T2 build) then never meets one
+    (review P0). A nested repo has its own config, and host git would run
+    inside it (review round 2, P0). The top ``.git`` has a read-only cover.
+    The app's files stay on disk only, as the Copilot CLI left them, so
+    nothing is mirrored and no card is shown.
+    """
+    import asyncio
+
+    from acb_skills import safe_open
+
+    del since
+
+    def _remove_both(workspace: Any) -> tuple[list[str], list[str]]:
+        # ONE thread call for both removals (task 2465). A thread cannot be
+        # cancelled. When the 30 s timeout of `_sweep_after` cancels the await,
+        # this function still ends, so a nested `.git` is never left behind
+        # because the link sweep was slow. Two `to_thread` calls would let the
+        # cancel land between them, and the second would never start.
+        return (
+            safe_open.remove_links(workspace),
+            safe_open.remove_nested_git(workspace),
+        )
+
+    links, repos = await asyncio.to_thread(_remove_both, binding.workspace)
+    if links or repos:
+        _log.warning(
+            "sandbox_tools.app_dir_swept", links=len(links), nested_git=len(repos),
+            first=(links or repos)[0],
+        )
+    return []
+
+
+async def app_builder_run_command(
+    command: str, timeout_s: int = _DEFAULT_TIMEOUT_SECONDS,
+) -> str:
+    """Run a shell command in this app's sandbox and return its output.
+
+    The sandbox is a Linux container with Node.js 22, Python 3.12 and bash.
+    It has NO network and NO credentials. It sees the app's workspace at
+    ``/workspace``, read-write, and the command starts there. The build
+    scripts are at ``/opt/app-builder/build/``, and the T2 vendor cache is at
+    ``/opt/t2-vendor``.
+
+    Args:
+        command: The bash command, for example
+            ``"node /opt/app-builder/build/build_t2.mjs ."``.
+        timeout_s: Seconds before the command is killed. The most is 300.
+
+    Returns:
+        The exit code, the time, and the output (cut to its first and last
+        6 KB when it is long).
+    """
+    tool_name = "run_command"
+    ctx = artifact_context()
+    if not ctx.get("workspace_root") or not ctx.get("session_id"):
+        return f"{tool_name} failed: no run is bound, so nothing ran."
+    if not isinstance(command, str) or not command.strip():
+        return f"{tool_name} failed: the command is empty."
+    try:
+        sb = _broker_module()
+    except ImportError:
+        return f"{tool_name} is unavailable: the sandbox broker is not installed. Nothing ran."
+    binding, refusal = _app_builder_binding(sb, tool_name)
+    if refusal is not None:
+        return refusal
+    if binding.instance:
+        # A store key means the tenant dir ``o:<org>``, not an app's own dir.
+        # It holds the files of every thread and member, and the container
+        # mounts its dir whole and read-write (the rule of WS-43e for code_task).
+        return APP_ONLY_ANSWER.format(tool=tool_name)
+    return await _exec_and_sweep(
+        sb, binding, command, timeout_s, tool_name=tool_name, label=tool_name,
+        sweep=_sweep_app_links,
+    )
+
+
+# H-236: the platform's own tool, trusted by identity. It has no network.
+_register_platform_callable(app_builder_run_command, "run_command")
+
+
+class RunAppFileStore(AgentFileStore):
+    """The file store of app-builder's harness agent (WS-43h, §7.8).
+
+    MAF's ``FileAccessProvider`` holds ONE store for the life of the agent,
+    and the factory builds the agent before the run is bound. So this store
+    holds no dir. Each call reads the run binding (R5) and works on an
+    :class:`~acb_skills.tenant_file_store.AppWorkspaceFileStore` over the
+    run's own dir, under the broker's dir lock. A call outside an
+    ``app_builder`` run raises ``ValueError``, which the file tool shows to
+    the model as its answer.
+
+    A run with a store key works in the tenant dir ``o:<org>``, which holds
+    the uploads of every thread and member (H-227). The flat map of an app
+    dir would read them all, so the file tools refuse there, as
+    ``run_command`` does (WS-43h review P2).
+    """
+
+    def _inner(self) -> Any:
+        from acb_skills.tenant_file_store import AppWorkspaceFileStore
+
+        sb = _broker_module()
+        binding, refusal = _app_builder_binding(sb, "file_access")
+        if refusal is not None:
+            raise ValueError(refusal)
+        if binding.instance:
+            raise ValueError(APP_ONLY_ANSWER.format(tool="file_access"))
+        member = str(artifact_context().get("member") or "")
+        guard = _WorkspaceGuard(sb.get_broker(), binding.workspace)
+        return AppWorkspaceFileStore(workspace=binding.workspace, guard=guard, member=member)
+
+    async def write(self, path: str, content: str, *, overwrite: bool = True) -> None:
+        await self._inner().write(path, content, overwrite=overwrite)
+
+    async def read(self, path: str) -> str | None:
+        return await self._inner().read(path)
+
+    async def delete(self, path: str) -> bool:
+        return await self._inner().delete(path)
+
+    async def list_children(self, directory: str = "") -> list[Any]:
+        return await self._inner().list_children(directory)
+
+    async def file_exists(self, path: str) -> bool:
+        return await self._inner().file_exists(path)
+
+    async def create_directory(self, path: str) -> None:
+        await self._inner().create_directory(path)
+
+    async def search(
+        self,
+        directory: str,
+        regex_pattern: str,
+        glob_pattern: str | None = None,
+        *,
+        recursive: bool = False,
+    ) -> list[Any]:
+        return await self._inner().search(
+            directory, regex_pattern, glob_pattern, recursive=recursive,
+        )
+
+
+def host_tool_guard() -> list[Any]:
+    """The pair that takes :data:`WITHHELD_HOST_TOOLS` out of a sandboxed run.
+
+    The same pair as a covered ``projects`` run (§16.3): the host floor tools
+    that open the working dir with plain path calls, and the host web tools.
+    A container writes app-builder's dir, so a link there could steer a host
+    file call (§7.5 rule B).
+    """
+    return [WithholdHostTools(), RefuseHostTools()]
+
+
+def app_builder_session_parts() -> tuple[Any, list[Any]]:
+    """``(file store, tools)`` of app-builder's harness agent (WS-43h, §7.8).
+
+    The store is :class:`RunAppFileStore`. The one tool is ``run_command``
+    (:func:`app_builder_run_command`), with no approval prompt: the store and
+    the broker are the boundary, and the container has no network.
+    """
+    return RunAppFileStore(), [
+        tool(app_builder_run_command, name="run_command", approval_mode="never_require"),
+    ]

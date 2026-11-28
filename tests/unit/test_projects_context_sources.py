@@ -167,7 +167,10 @@ async def test_capture_intake_sends_neither_when_not_given(monkeypatch) -> None:
 def test_g10_and_g11_are_closed_and_a_node_takes_no_source() -> None:
     assert "G10" not in m.FIELD_GAPS and "G11" not in m.FIELD_GAPS
     # G24, the reminder fields of WS-66 RM-1, closed in RM-3: its rows are SENDS.
-    assert {g for names in m.FIELD_PLANNED.values() for g in names.values()} == {"G23", "G25"}
+    # G26, the fields of the cycle routes of WS-39 SP-1, stays planned until SP-5 (task 964).
+    # G27, the Goal fields of WS-39 WM-5 (task 984), stays planned until its follow-up.
+    assert {g for names in m.FIELD_PLANNED.values() for g in names.values()} == {
+        "G23", "G25", "G26", "G27"}
     assert "G24" not in m.FIELD_GAPS
     assert m.SENDS[("POST", "/projects/tasks")]["source"] == (
         "create_task.source", "create_tasks.tasks.source",

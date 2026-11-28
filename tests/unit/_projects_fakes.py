@@ -557,7 +557,9 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
     # `is_epic` mirrors migration 168:230 (`NOT NULL DEFAULT false`). Absent
     # here, a seeded type reached `TypeModel.is_epic: bool` as None and 422'd.
     "pm_task_types": {"is_default": False, "is_system": False, "icon": None,
-                      "color": None, "is_epic": False},
+                      "color": None, "is_epic": False,
+                      # WM-5: migration 516, `NOT NULL DEFAULT false`.
+                      "is_goal": False},
     "pm_task_counters": {"last_value": 0},
     # WS-27bj — the two vocabularies no fake-backed suite reached until the
     # effective-vocabulary union gave them behaviour worth exercising here.
@@ -569,6 +571,8 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
     },
     "pm_tasks": {
         "source": "manual", "parent_task_id": None, "type_id": None,
+        # WM-5: migration 516, a nullable link with no default.
+        "goal_task_id": None,
         "description": None, "importance": None, "estimate_mins": None,
         "start_date": None, "due_at": None, "completed_at": None,
         "tags": [], "archived_at": None, "clickup_id": None,
@@ -819,6 +823,12 @@ class FakeProjectsDB:
         self.calls.append((statement, args))
         # A lock returns nothing that a route reads, and one process holds it.
         if "pg_advisory_xact_lock" in statement:
+            return _Result([])
+        # WS-39 SP-1: the cycle rows that a move can break
+        # (`cycles.detach_moved_tasks`). A JOIN over three tables, and the
+        # node form adds two walks. The fake holds no cycle, so no row. The
+        # real queries run in `test_sprint_store_r8.py` (R8).
+        if "AS cycle_node" in statement:
             return _Result([])
         # WS-27aa's tenant source for the scheduled lifecycle sweep:
         # `workflows.owner_email` → `app_user.organization_id`

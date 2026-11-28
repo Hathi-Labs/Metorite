@@ -101,6 +101,15 @@ def _native_vendors() -> set[str]:
     return vendors
 
 
+#: Native vendors whose slug litellm ALSO lists as a provider id, because
+#: litellm cannot call the Sync API for speech. VOX-6 (2026-11-08): the routes
+#: ``assemblyai/best`` and ``openrouter/assemblyai/universal-3-5-pro`` answer
+#: "Unmapped provider passed in", and the generic OpenAI route answers 404.
+#: The slug rule holds for them. They skip only the "litellm must not know it"
+#: half of the exemption check.
+_NATIVE_AND_LITELLM_KNOWS = frozenset({"assemblyai"})
+
+
 def test_every_offered_vendor_is_a_litellm_provider() -> None:
     """🔴 The one rule. A slug litellm does not know can never be called.
 
@@ -130,6 +139,8 @@ def test_each_native_vendor_is_offered_and_is_not_a_litellm_id() -> None:
     found = set(_slugs())
     for slug in _native_vendors():
         assert slug in found, f"{slug!r} is native but has no guide card"
+        if slug in _NATIVE_AND_LITELLM_KNOWS:
+            continue
         assert slug not in known, f"litellm now knows {slug!r}; drop the exemption"
 
 

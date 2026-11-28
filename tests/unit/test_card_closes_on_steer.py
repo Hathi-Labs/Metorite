@@ -1,13 +1,13 @@
 """A card closes when the member writes in the chat while it waits.
 
 The owner's case of 2026-10-20: a reply card showed one text, and the member
-asked in the chat for a change. The words waited behind the card, because a
-steer rides the NEXT tool result (``orchestrator.steer.decorate_tool_result``)
-and the card blocks the tool. So the card kept the old text.
+asked in the chat for a change. The words waited behind the card, because the
+card blocks the tool and the run. So the card kept the old text.
 
 ``request_confirmation(close_on_steer=True)`` watches the steer buffer of the
 run's thread. A NEW note closes the card with ``REVISED``, which is falsy, and
-the member's words then reach the model on the tool's result.
+the member's words then reach the model as a USER turn of its next call
+(``orchestrator.steer.SteerTurns``, task 2494), never on the tool's result.
 
 Each rule names the mutation that turns it red (R7):
 
@@ -60,7 +60,7 @@ def test_a_new_steer_closes_the_card():
     assert result is at.REVISED and not result
     assert closed["name"] == "confirmation_resolved"
     assert closed["value"] == {"request_id": card["value"]["request_id"], "answer": "REVISED"}
-    # The note stays for the tool result, which carries it to the model.
+    # The note stays for the next model call, which reads it as a user turn.
     assert steer.drain_guidance(THREAD) == ["[steer from jane] make it shorter"]
 
 

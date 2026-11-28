@@ -25,10 +25,24 @@ gives the answer, and no later check runs:
    ``agent_signing.signing_key()`` is None.
 3. Method: anything but ``POST`` is 405.
 4. ``Origin``: when present, it must equal the origin of the issuer, or 403.
-5. Body: over 1 MiB is 413 before any parse. Not JSON is 400 ``-32700``. A
-   batch, or a body that is not a JSON-RPC message, is 400 ``-32600``.
+5. Body: over 1 MiB is 413. Not JSON is 400 ``-32700``. A batch, or a body
+   that is not a JSON-RPC message, is 400 ``-32600``.
 6. Token: §7.1 steps 1 and 2 (:mod:`agent_edge.bearer`). 401, or 503 with
    ``Retry-After: 2`` for a database outage (EA3-10).
+
+**A large body (CIV-14b, spec §9.6 "The body size").** Only one
+``tools/call`` of ``upload_task_image`` may pass 1 MiB, up to
+:data:`MAX_UPLOAD_BODY_BYTES`. Such a body must declare its
+``Content-Length``, and the checks after 4 then change order: the declared
+length (413 over 6 MiB), the token (check 6, from the headers only), the
+flag ``mcp_image_upload_orgs`` of the organization of the token (413, as
+before CIV-14b), a slot
+(:data:`LARGE_BODIES_AT_ONCE`, and :data:`LARGE_BODIES_PER_CONNECTION`, 503
+after that), the read within :data:`LARGE_BODY_READ_TIMEOUT_S` (408), the
+shape bytes (:func:`_shape_allows_upload`, 413), and the parse. The parsed
+body must be one call of the upload tool, or 413. So a client with no token
+takes no slot, and the edge reads no byte of its body. The token check runs
+once: :func:`_serve_body` takes the caller that it found.
 7. Version: after ``initialize``, ``MCP-Protocol-Version`` must be absent
    (served as ``2025-03-26``) or one of :data:`SUPPORTED_VERSIONS`, or 400.
 7b. Session (SW-7): after ``initialize``, an ``Mcp-Session-Id`` must be
@@ -42,6 +56,11 @@ gives the answer, and no later check runs:
    (MCP-P1a, spec §19.4, ``tools.scope_of``). An app that no manifest holds
    gets a tool error, and no 403.
 
+**The read-only door (SW-34b).** ``POST /mcp/readonly`` runs the same checks
+in the same order. Right after check 6 it narrows the caller's scopes to the
+read scopes (``bearer.read_only``). Check 8 and each method then read the
+narrowed scopes, so a write tool gets the 403 of check 8 there.
+
 **The error body (EA3-13).** Each 4xx and each 503 carries a JSON-RPC error
 with ``id: null``. The code is ``-32700`` for a body that is not JSON,
 ``-32603`` for a 503, and ``-32600`` for every other case.
@@ -52,8 +71,10 @@ posts, gets 202 with no body.
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -61,6 +82,7 @@ from acb_auth import agent_oauth, agent_signing
 from acb_common import get_logger
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
+from starlette.requests import ClientDisconnect
 
 from agent_edge import bearer, prompts, resources, tools
 
@@ -81,6 +103,38 @@ LATEST_VERSION = "2025-11-25"
 #: This is the cap of ``/mcp`` only. ``token`` and ``revoke`` use
 #: ``agent_oauth_max_body_bytes``.
 MAX_BODY_BYTES = 1024 * 1024
+
+#: CIV-14b (spec §12.9). The cap of the body of ONE call of
+#: :data:`UPLOAD_TOOL`: the base64 of a 3.75 MiB image is 5 MiB, and the rest
+#: holds its line breaks and the envelope. A body over :data:`MAX_BODY_BYTES`
+#: must declare its ``Content-Length``, and it must be such a call, or it
+#: gets 413. The ``max_size`` of ``mcp.metorite.com`` in the Caddyfile equals
+#: this cap.
+MAX_UPLOAD_BODY_BYTES = 6 * 1024 * 1024
+
+#: CIV-14b. The most bodies over :data:`MAX_BODY_BYTES` that the edge holds at
+#: once, and the most for ONE connection. A large body takes its slot only
+#: after the token check, so a client with no token takes none. One more
+#: answers 503 with :data:`LARGE_BODY_RETRY_AFTER_S`, and the edge reads no
+#: byte of it. Two connections are needed to hold every slot.
+LARGE_BODIES_AT_ONCE = 4
+LARGE_BODIES_PER_CONNECTION = 2
+LARGE_BODY_RETRY_AFTER_S = 5
+
+#: CIV-14b. The time that the edge waits for the whole of a large body. A
+#: body that is not in before then answers 408, and its slot goes back.
+LARGE_BODY_READ_TIMEOUT_S = 30.0
+
+#: CIV-14b. The most ``{`` and ``[`` bytes, and the most ``,`` bytes, in a
+#: large body. The edge counts them before the parse. An upload call is one
+#: object with one long base64 string, so it holds about 4 of the first and
+#: 9 of the second. A body of many small values fails the count, so the
+#: parse never builds millions of objects (:func:`_shape_allows_upload`).
+LARGE_BODY_MAX_BRACKETS = 16
+LARGE_BODY_MAX_COMMAS = 32
+
+#: CIV-14b. The one tool whose call may have a body over :data:`MAX_BODY_BYTES`.
+UPLOAD_TOOL = "upload_task_image"
 
 #: The header of the MCP session (SW-7, spec §12.5).
 SESSION_HEADER = "Mcp-Session-Id"
@@ -132,12 +186,11 @@ _INSTRUCTIONS = (
 #: ``create_task``, so it shows only where the protocol shows: on a write
 #: connection. Fence: ``test_mcp_edge_prompts.py`` ``TestAskedWork``.
 _ASKED_WORK = (
-    " A person may ask you in chat for work that changes code, data or a"
-    " server. That work needs a task too. Before the first edit, find it with"
-    " search_tasks, or make it with create_task. Then claim it and follow"
-    " steps 4 to 6. A session that only reads or answers needs no task."
-    " Before you release a task, comment what is done, what is left and the"
-    " next step."
+    " Work that a person asks for in chat needs a task too. Before the first"
+    " edit, find it with search_tasks, or make it with create_task. Then claim"
+    " it and follow steps 4 to 6. A session that only reads or answers needs"
+    " no task. Before you release a task, comment what is done, what is left"
+    " and the next step."
 )
 
 #: The routine of §12 (EA-6e, EA3-39). It shows on the same test as the
@@ -153,10 +206,8 @@ _ROUTINE_INSTRUCTIONS = (
     " says review. Move the task to done only after the merge, and not when"
     " GitHub already did. See prompt work_on_task."
     # MCP-G1. The tools of the project tree and of a move between projects.
-    " To make or change a space, project or subproject, call create_project or"
-    " update_project. To move tasks to another project, call"
-    " preview_move_tasks, show the person what the move drops, and then call"
-    " move_tasks with its preview_id."
+    " For a project, call create_project or update_project. To move tasks,"
+    " call preview_move_tasks, show the person what it drops, then move_tasks."
 )
 
 #: The protocol of EA-15c (§12.4): one order of steps for each session. The
@@ -171,13 +222,21 @@ _PROTOCOL_RUNS_ON = (
     " (reason run_queued or run_answered), read it with get_agent_run. Then"
     " call claim_task with the task_id and the version of the row."
     " 3. A 409 task_held means that another session holds the task. Do not try"
-    " it again. Take the next row. A run of another connection, such as one"
-    " on another machine, is never yours, and my_work does not list it."
+    " it again. Take the next row. A run of another connection is never"
+    " yours, and my_work does not list it."
     "{terminals}"
     " Take only a row that my_work lists.{answer}"
     " 4. Call get_task_context, then call start_agent_run when the claim"
     " opened no run."
-    " 5. Post a thought with post_agent_activity at least once a minute."
+    # Task 1045a: the waiting line. The text sits at the cut of 4096 (task
+    # 1803), so step 3 gave up the words ", such as one on another machine,"
+    # to make room. The work_on_task steps (`prompts.py`) and the tool
+    # post_agent_activity hold the full rule, with its 2 minutes. Owner,
+    # 2026-11-07: "only" and the list keep a run whose own sub-agents work
+    # out of `waiting`. The step keeps the length it had, because with the
+    # sessions flag off step 6 already ends near the cut.
+    " 5. Post a post_agent_activity thought each minute."
+    " Set waiting only for CI, people or another agent."
     " 6. End with exactly one disposition: the task moves to review or done,"
     " or a question waits on a named member (ask_on_task), or release_task"
     " gives the task back. A comment is evidence, never a disposition."
@@ -274,11 +333,22 @@ def instructions(scopes: Iterable[str] = ()) -> str:
     protocol = _PROTOCOL_RUNS_ON.replace("{terminals}", _terminals()).replace(
         "{answer}", prompts.answer_pointer()) if runs \
         else _PROTOCOL_RUNS_OFF
-    text += protocol + _ASKED_WORK + _ROUTINE_INSTRUCTIONS + prompts.PR_RULE
+    # MCP-G16 (task 1803). Claude Code cuts the instructions at 4096
+    # characters. The safety rules of a run (the held task, the heartbeat,
+    # release_task, record_outside_decision, the stop) come BEFORE the routine
+    # and the PR rule, so the cut falls on the routine. Fence:
+    # ``test_mcp_edge_prompts.py`` ``TestTheSafetyRulesBeforeTheCut``.
+    text += protocol + _ASKED_WORK
     if runs:
         text += _RUN_INSTRUCTIONS
         if agent_oauth.answer_change_enabled():
             text += prompts.ANSWER_RULE
+        # Task 3648: the stages come BEFORE the routine, so Claude Code's cut
+        # at 4096 characters leaves them. The routine may be cut.
+        text += prompts.LANE_RULE
+    text += _ROUTINE_INSTRUCTIONS + prompts.PR_RULE
+    if not runs:
+        text += prompts.LANE_RULE_NO_RUNS
     return text + _IMAGE_INSTRUCTIONS
 
 #: The methods the route accepts, so that check 3 answers and not the router.
@@ -288,6 +358,20 @@ ROUTE_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 def path() -> str:
     """The path of the resource, ``/mcp`` by default."""
     return urlsplit(agent_oauth.resource()).path or "/mcp"
+
+
+#: SW-34b. The last segment of the read-only door, below :func:`path`.
+READONLY_SEGMENT = "readonly"
+
+
+def readonly_path() -> str:
+    """The read-only door, ``/mcp/readonly`` by default (SW-34b).
+
+    The same token works here and on :func:`path`, because the audience is
+    the resource of :func:`path`. The path is the mode: each call here runs
+    with its scopes narrowed to the read scopes (``bearer.read_only``).
+    """
+    return f"{path().rstrip('/')}/{READONLY_SEGMENT}"
 
 
 def resource_metadata_url() -> str:
@@ -348,16 +432,99 @@ class _TooLarge(Exception):
     pass
 
 
-async def _read_capped(request: Request) -> bytes:
+class _TooMany(Exception):
+    """CIV-14b. Every slot of a large body is taken: of the edge, or of the
+    connection."""
+
+
+class _TooSlow(Exception):
+    """CIV-14b. A large body did not come in :data:`LARGE_BODY_READ_TIMEOUT_S`."""
+
+
+#: The count of the large bodies that the edge holds now, and the count of
+#: each connection. The edge runs one event loop, and no ``await`` sits
+#: between a check and its change, so a plain count needs no lock.
+_LARGE_BODIES = [0]
+_LARGE_BY_CONNECTION: dict[str, int] = {}
+
+
+def _declared_length(request: Request) -> int | None:
+    """The ``Content-Length`` of the request, or ``None`` for none or a bad one."""
     declared = request.headers.get("content-length")
-    if declared is not None and declared.strip().isdigit() and int(declared) > MAX_BODY_BYTES:
-        raise _TooLarge()
+    if declared is None or not declared.strip().isdigit():
+        return None
+    return int(declared)
+
+
+async def _read_capped(request: Request) -> bytes:
+    """A body of :data:`MAX_BODY_BYTES` at most: check 5 before CIV-14b.
+
+    A declared ``Content-Length`` over the cap never comes here. A body with
+    no declared length that grows past the cap is :class:`_TooLarge`, so a
+    large body must declare its length."""
     body = bytearray()
     async for chunk in request.stream():
         body += chunk
         if len(body) > MAX_BODY_BYTES:
             raise _TooLarge()
     return bytes(body)
+
+
+@contextlib.contextmanager
+def _large_slot(connection_id: str) -> Iterator[None]:
+    """One slot of a large body for *connection_id*, or :class:`_TooMany`.
+
+    The slot goes back when the block ends, on every path: an answer, an
+    error, a timeout and a client that went away."""
+    if (_LARGE_BODIES[0] >= LARGE_BODIES_AT_ONCE
+            or _LARGE_BY_CONNECTION.get(connection_id, 0) >= LARGE_BODIES_PER_CONNECTION):
+        raise _TooMany()
+    _LARGE_BODIES[0] += 1
+    _LARGE_BY_CONNECTION[connection_id] = _LARGE_BY_CONNECTION.get(connection_id, 0) + 1
+    try:
+        yield
+    finally:
+        _LARGE_BODIES[0] -= 1
+        left = _LARGE_BY_CONNECTION.get(connection_id, 1) - 1
+        if left > 0:
+            _LARGE_BY_CONNECTION[connection_id] = left
+        else:
+            _LARGE_BY_CONNECTION.pop(connection_id, None)
+
+
+async def _read_large(request: Request, declared: int) -> bytes:
+    """A large body of at most *declared* bytes (CIV-14b), within
+    :data:`LARGE_BODY_READ_TIMEOUT_S`, or :class:`_TooSlow`. The caller holds
+    a slot. A body longer than its ``Content-Length`` is :class:`_TooLarge`."""
+    body = bytearray()
+    try:
+        async with asyncio.timeout(LARGE_BODY_READ_TIMEOUT_S):
+            async for chunk in request.stream():
+                body += chunk
+                if len(body) > declared:
+                    raise _TooLarge()
+    except TimeoutError:
+        raise _TooSlow() from None
+    return bytes(body)
+
+
+def _shape_allows_upload(raw: bytes) -> bool:
+    """True when a large body can be one upload call (CIV-14b).
+
+    A byte count, before the parse: the ``{`` and ``[`` bytes, and the ``,``
+    bytes. Base64, the file name and the key hold none of them, so an
+    upload passes with room to spare. A body of many small values, such as
+    ``[{},{},…]``, fails, and the edge never parses it."""
+    brackets = raw.count(b"{") + raw.count(b"[")
+    return brackets <= LARGE_BODY_MAX_BRACKETS and raw.count(b",") <= LARGE_BODY_MAX_COMMAS
+
+
+def _is_upload_call(message: Any) -> bool:
+    """True for one ``tools/call`` of :data:`UPLOAD_TOOL` (CIV-14b)."""
+    if not isinstance(message, dict) or message.get("method") != "tools/call":
+        return False
+    params = message.get("params")
+    return isinstance(params, dict) and params.get("name") == UPLOAD_TOOL
 
 
 def _is_id(value: Any) -> bool:
@@ -436,6 +603,24 @@ def _session_of(request: Request, caller: bearer.Caller,
 
 async def endpoint(request: Request) -> Response:
     """``/mcp``. Checks 2 to 8 of §9.6, in order, then the method."""
+    return await _serve(request, read_only=False)
+
+
+async def readonly_endpoint(request: Request) -> Response:
+    """``/mcp/readonly`` (SW-34b). The same checks, in the same order, with
+    the caller's scopes narrowed to the read scopes right after check 6.
+
+    So ``tools/list`` shows only reads, and check 8 answers 403
+    ``insufficient_scope`` for each write tool. The prompt, the resources
+    and the instructions read the same narrowed scopes. The path can only
+    narrow a token, never widen it. Fence:
+    ``tests/unit/test_mcp_edge_readonly.py``.
+    """
+    return await _serve(request, read_only=True)
+
+
+async def _serve(request: Request, *, read_only: bool) -> Response:
+    """Checks 2 to 8 of §9.6, in order, then the method."""
     key = agent_signing.signing_key()
     if key is None:
         return http_error(503, INTERNAL_ERROR, "The server is not ready.",
@@ -448,21 +633,63 @@ async def endpoint(request: Request) -> Response:
     if origins and (len(origins) > 1 or origins[0] != _issuer_origin()):
         return http_error(403, INVALID_REQUEST, "The origin is not allowed.")
 
+    declared = _declared_length(request)
+    if declared is not None and declared > MAX_BODY_BYTES:
+        return await _serve_large(request, key, declared, read_only=read_only)
     try:
         raw = await _read_capped(request)
     except _TooLarge:
         return http_error(413, INVALID_REQUEST, "The body is too large.")
-    try:
-        message = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError, RecursionError):
-        # RecursionError: a body of deeply nested arrays passes the size cap
-        # and overflows the parser. It is a body that is not JSON we can read,
-        # so it is the same 400, never a 500 (fix round 1).
-        return http_error(400, PARSE_ERROR, "Parse error")
-    kind = _kind(message)
-    if kind is None:
-        return http_error(400, INVALID_REQUEST, "Invalid request")
+    return await _serve_body(request, raw, key, read_only=read_only)
 
+
+def _too_large() -> Response:
+    return http_error(413, INVALID_REQUEST, "The body is too large.")
+
+
+async def _serve_large(request: Request, key: str, declared: int, *,
+                       read_only: bool) -> Response:
+    """A body that declares more than :data:`MAX_BODY_BYTES` (CIV-14b).
+
+    The declared length, then the token from the headers only, then the
+    flag of the organization, then a slot, then the read under its deadline,
+    then the shape bytes, then the parse. A client with no token takes no
+    slot, and the edge reads no byte of its body. The slot goes back on every
+    path."""
+    if declared > MAX_UPLOAD_BODY_BYTES:
+        return _too_large()
+    caller, refused = await _caller_of(request)
+    if refused is not None:
+        return refused
+    if not agent_oauth.image_upload_allowed(caller.lookup.organization_id):
+        # Fix round 2: an organization off the flag cannot upload. Its large
+        # body gets the 413 of the cap before CIV-14b, with no slot and no
+        # read, so it cannot fill the slots of an organization on the flag.
+        return _too_large()
+    try:
+        with _large_slot(str(caller.lookup.connection_id)):
+            raw = await _read_large(request, declared)
+            if not _shape_allows_upload(raw):
+                return _too_large()
+            return await _serve_body(request, raw, key, read_only=read_only, caller=caller)
+    except _TooLarge:
+        return _too_large()
+    except _TooMany:
+        return http_error(503, INTERNAL_ERROR, "Metorite is busy. Try again.",
+                          {"Retry-After": str(LARGE_BODY_RETRY_AFTER_S)})
+    except _TooSlow:
+        _log.info("agent_edge.large_body_timeout", connection_id=caller.lookup.connection_id)
+        return http_error(408, INVALID_REQUEST, "The body did not arrive in time.")
+    except ClientDisconnect:
+        # The client went away: no one reads this answer. The slot went back.
+        return Response(status_code=400)
+
+
+async def _caller_of(request: Request) -> tuple[bearer.Caller | None, Response | None]:
+    """Check 6, the token: ``(caller, None)``, or ``(None, refusal)``.
+
+    THE one token check of a request. It reads the headers only, so a large
+    body runs it before the read (CIV-14b)."""
     authorizations = request.headers.getlist("authorization")
     try:
         if len(authorizations) > 1:
@@ -474,9 +701,44 @@ async def endpoint(request: Request) -> Response:
             request.client.host if request.client else None)
     except bearer.BearerRefused as refused:
         if refused.status == 503:
-            return http_error(503, INTERNAL_ERROR, "Metorite is busy. Try again.",
-                              {"Retry-After": str(bearer.OUTAGE_RETRY_AFTER_S)})
-        return challenge_401(sent=refused.sent)
+            return None, http_error(503, INTERNAL_ERROR, "Metorite is busy. Try again.",
+                                    {"Retry-After": str(bearer.OUTAGE_RETRY_AFTER_S)})
+        return None, challenge_401(sent=refused.sent)
+    return caller, None
+
+
+async def _serve_body(request: Request, raw: bytes, key: str, *,
+                      read_only: bool, caller: bearer.Caller | None = None) -> Response:
+    """Checks 5 (after the read) to 8 of §9.6, in order, then the method.
+
+    *caller* is the token check of a large body, which ran before the read
+    (CIV-14b). A body of :data:`MAX_BODY_BYTES` at most has none, and check
+    6 runs here, after the parse, as before."""
+    large = len(raw) > MAX_BODY_BYTES
+    try:
+        message = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        # RecursionError: a body of deeply nested arrays passes the size cap
+        # and overflows the parser. It is a body that is not JSON we can read,
+        # so it is the same 400, never a 500 (fix round 1).
+        if large:
+            return _too_large()
+        return http_error(400, PARSE_ERROR, "Parse error")
+    if large and not _is_upload_call(message):
+        # CIV-14b: only the upload of one image may pass the cap of a call.
+        return _too_large()
+    kind = _kind(message)
+    if kind is None:
+        return http_error(400, INVALID_REQUEST, "Invalid request")
+
+    if caller is None:
+        caller, refused = await _caller_of(request)
+        if refused is not None:
+            return refused
+    if read_only:
+        # SW-34b: the one narrowing of the read-only door. Every later check
+        # reads `caller.scopes`, so no second scope rule exists.
+        caller = bearer.read_only(caller)
 
     method = message.get("method") if kind != "response" else None
     # 7. The version, and 7b. the session (SW-7).
@@ -494,7 +756,7 @@ async def endpoint(request: Request) -> Response:
         # MCP-P1a: a door tool's scope is the one of the app it names.
         required = (tools.scope_of(tool, params.get("arguments"))
                     if tool is not None else None)
-        if (tool is not None and tools.offered(tool)
+        if (tool is not None and tools.offered(tool, caller.lookup.organization_id)
                 and not bearer.covers(caller.scopes, required)):
             _log.info("agent_edge.insufficient_scope", tool=tool.name,
                       connection_id=caller.lookup.connection_id)
@@ -559,17 +821,18 @@ async def _dispatch(request_id: Any, method: str, params: dict[str, Any],
                                                       session=session))
         return _result(request_id, {"tools": listed})
     if method == "prompts/list":
-        return _result(request_id, {"prompts": prompts.listed(caller.scopes)})
+        return _result(request_id, {"prompts": prompts.listed(caller.scopes, caller.lookup.organization_id)})
     if method.startswith("resources/"):
         return await _resources_method(
             request_id, method, params, caller,
             tools.Context(caller=caller, key=key, session=session))
     if method == "prompts/get":
         try:
-            result = prompts.get(caller.scopes, params)
+            result = prompts.get(caller.scopes, params, caller.lookup.organization_id)
         except prompts.PromptRefused as refused:
             return _rpc_error(request_id, INVALID_PARAMS, refused.message)
-        _log.info("agent_edge.prompt_get", prompt=prompts.PROMPT_NAME,
+        _log.info("agent_edge.prompt_get",
+                  prompt=prompts.logged_name(params),
                   connection_id=caller.lookup.connection_id)
         return _result(request_id, result)
     if tool is None:
@@ -597,16 +860,27 @@ async def _dispatch(request_id: Any, method: str, params: dict[str, Any],
 
 __all__ = [
     "CAPABILITIES",
+    "LARGE_BODIES_AT_ONCE",
+    "LARGE_BODIES_PER_CONNECTION",
+    "LARGE_BODY_MAX_BRACKETS",
+    "LARGE_BODY_MAX_COMMAS",
+    "LARGE_BODY_READ_TIMEOUT_S",
+    "LARGE_BODY_RETRY_AFTER_S",
     "LATEST_VERSION",
     "LEGACY_VERSION",
     "MAX_BODY_BYTES",
+    "MAX_UPLOAD_BODY_BYTES",
     "NO_KEY_RETRY_AFTER_S",
+    "READONLY_SEGMENT",
     "ROUTE_METHODS",
     "SESSION_HEADER",
     "SUPPORTED_VERSIONS",
+    "UPLOAD_TOOL",
     "challenge_401",
     "challenge_403",
     "endpoint",
     "path",
+    "readonly_endpoint",
+    "readonly_path",
     "resource_metadata_url",
 ]

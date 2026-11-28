@@ -1198,8 +1198,12 @@ async def test_a_crm_pack_run_with_no_user_refuses() -> None:
         assert not _get_memory_user_id(), "non-vacuity: this run binds no user"
         build = await _build("crm-records", _crm_module())
         search = _named(build, "search_crm")
+        # HRD-3: the guard of the pack tool is the outer layer. It answers the
+        # refusal as text. The layer under it (``__wrapped__``) still raises.
         with pytest.raises(RuntimeError, match="No acting user"):
-            await search("Acme")
+            await search.__wrapped__("Acme")
+        text = await search("Acme")
+        assert text.startswith("The tool failed (RuntimeError)."), text
 
 
 # ── OA-9c: packs in a spawn child (§6.7, the child case of §5) ───────────────
@@ -1232,14 +1236,25 @@ CHILD_TOOLS: dict[str, frozenset[str]] = {
         "rebalance", "recurrence", "task_dataset", "team_capacity",
         "waiting_agent_requests"}),
     "projects-reports": frozenset({"report_list", "report_recipients", "report_render"}),
-    "projects-structure": frozenset({"project_access", "project_views", "watchers"}),
+    "projects-structure": frozenset({"list_templates", "project_access", "project_views",
+                                     "watchers"}),
     "projects-bulk": frozenset({"my_led_projects"}),
     "projects-reminders": frozenset({
         "intake_queue", "list_reminders", "my_areas", "my_contexts", "my_decisions",
         "notifications"}),
-    "projects-authority": frozenset({"project_authorities"}),
+    "projects-authority": frozenset({"agent_questions", "list_project_updates", "project_authorities"}),
+    "projects-cycles": frozenset({"cycle_detail", "list_cycles"}),  # WS-39 SP-5a
     # STU-G1: STUDIO_ORGS holds no org here, so the pack builds no tool.
     "studio": frozenset(),
+    # PAR-2a: the read of the members. The three writes each need a card.
+    # PAR-4a (task 3107): four more reads. Its nine writes each need a card.
+    # PAR-4c (task 3935): the removal and the purge are writes, so neither is here.
+    # PAR-4d (task 3936): the read of the seats. Its write needs a card.
+    # PAR-6a: the two Integrations reads join. The two probes and the proposal
+    # leave the org, so a held build drops them, and the three writes need a card.
+    "org-admin": frozenset({"list_members", "list_org_groups", "list_roles_and_rights",
+                            "read_member_access", "preview_member_removal",
+                            "read_seats", "read_integrations", "read_agent_access"}),
 }
 
 #: The calls that put an event on the run's stream: a card, a page move, a
@@ -1416,7 +1431,8 @@ async def test_the_tools_that_each_real_pack_gives_a_child(monkeypatch, slug: st
 
     _owners(monkeypatch, **{EA: _module(), CRM: _crm_module(),
                             PROJECTS: load_agent_module(PROJECTS_DIR),
-                            "studio-builder": load_agent_module("apps/agents/agent-studio-builder")})
+                            "studio-builder": load_agent_module("apps/agents/agent-studio-builder"),
+                            "org-admin": load_agent_module("apps/agents/agent-org-admin")})
     with _run():
         why, job = await _child(slug, held=True)
     want = CHILD_TOOLS[slug]
@@ -1428,7 +1444,9 @@ async def test_the_tools_that_each_real_pack_gives_a_child(monkeypatch, slug: st
 
 def _pack_owners() -> dict[str, Any]:
     return {EA: _module(), CRM: _crm_module(), PROJECTS: load_agent_module(PROJECTS_DIR),
-            "studio-builder": load_agent_module("apps/agents/agent-studio-builder")}
+            "studio-builder": load_agent_module("apps/agents/agent-studio-builder"),
+            # PAR-2a: the owner of the org-admin pack.
+            "org-admin": load_agent_module("apps/agents/agent-org-admin")}
 
 
 def test_each_pack_tool_that_draws_is_a_display_tool() -> None:

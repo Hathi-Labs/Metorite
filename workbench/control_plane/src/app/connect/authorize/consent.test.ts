@@ -40,10 +40,15 @@ import {
   initialChoice,
   isCheckView,
   isContinueView,
+  isReadOnly,
+  isReadScope,
+  offersReadOnly,
   organizationName,
+  readOnlyChoice,
   parseAuthorizeRequest,
   toggleScope,
   refusalFor,
+  SCOPE_COPY,
   scopeRows,
   type CheckView,
 } from "./consent";
@@ -94,6 +99,50 @@ describe("parseAuthorizeRequest", () => {
   });
 });
 
+describe("the Read only choice (SW-34b)", () => {
+  const WIDE: CheckView = {
+    ...VIEW,
+    scopes: ["projects:read", "projects:write", "context:read", "knowledge:read", "knowledge:write", OFFLINE_ACCESS],
+  };
+
+  it("a read scope ends in :read, and a write scope is never one", () => {
+    expect(["projects:read", "context:read", "knowledge:read"].every(isReadScope)).toBe(true);
+    expect(["projects:write", "knowledge:write", OFFLINE_ACCESS].some(isReadScope)).toBe(false);
+  });
+
+  it("keeps each requested read scope and drops each write scope", () => {
+    expect([...readOnlyChoice(WIDE)]).toEqual(["projects:read", "context:read", "knowledge:read"]);
+    expect(grantedScopes(WIDE, readOnlyChoice(WIDE))).toEqual([
+      "projects:read", "context:read", "knowledge:read", OFFLINE_ACCESS,
+    ]);
+  });
+
+  it("never grants a read scope the agent did not ask for", () => {
+    const writeOnly: CheckView = { ...VIEW, scopes: ["projects:write"] };
+    expect(readOnlyChoice(writeOnly).size).toBe(0);
+    expect(offersReadOnly(writeOnly)).toBe(false);
+  });
+
+  it("shows only when it can change the choice", () => {
+    expect(offersReadOnly(VIEW)).toBe(true);
+    expect(offersReadOnly({ ...VIEW, scopes: ["projects:read", OFFLINE_ACCESS] })).toBe(false);
+  });
+
+  it("reads as pressed only for a choice of read scopes", () => {
+    expect(isReadOnly(readOnlyChoice(WIDE))).toBe(true);
+    expect(isReadOnly(initialChoice(WIDE))).toBe(false);
+    expect(isReadOnly(new Set())).toBe(false);
+  });
+
+  it("the approval body carries the read scopes only", () => {
+    const body = approveBody(REQUEST, VIEW, {
+      scopes: readOnlyChoice(VIEW), pins: [], leftOut: [], includePersonal: true,
+    });
+    expect(body.scopes).toEqual(["projects:read", OFFLINE_ACCESS]);
+    expect(canApprove(VIEW, readOnlyChoice(VIEW))).toBe(true);
+  });
+});
+
 describe("the scopes", () => {
   it("offline_access is fixed, and the others have a box", () => {
     expect(scopeRows(VIEW.scopes).map((r) => [r.scope, r.fixed])).toEqual([
@@ -121,6 +170,10 @@ describe("the scopes", () => {
   it("approve needs one resource scope, and offline_access alone is not one", () => {
     expect(canApprove(VIEW, new Set(["projects:read"]))).toBe(true);
     expect(canApprove(VIEW, new Set())).toBe(false);
+  });
+
+  it("context:read says what get_company_context returns, and no more (EA-5)", () => {
+    expect(SCOPE_COPY["context:read"].detail).toBe("The organization name and its slug.");
   });
 });
 

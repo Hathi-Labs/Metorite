@@ -71,17 +71,34 @@ LOST_REASONS: tuple[tuple[str, int], ...] = (
 #: The name of the pipeline that a Native org starts with.
 DEFAULT_PIPELINE_NAME = "Sales pipeline"
 
+#: CRM-M4a: a deal pipeline. The text of ``core.DEAL_PIPELINE_SQL``, kept here
+#: because this module is a leaf. ``test_crm_lead_pipelines.py`` holds the two
+#: equal.
+DEAL_PIPELINE = "kind = 'deal'"
+
 _PIPELINE_SQL = (
     "INSERT INTO crm_pipelines "
     "(organization_id, name, position, is_default) "
     "VALUES (CAST(:organization_id AS uuid), :name, 0, true) RETURNING id"
 )
 
+#: CRM-M3b (migration 513): each membership copies the win chance and the
+#: warning days of its stage row. The text of ``core.copied_values_sql()``,
+#: kept here because this module is a leaf. ``test_crm_pipelines_native.py``
+#: holds the two equal. A value that breaks a CHECK of migration 513, or the
+#: clamp of D-CRM-10 for the type of the stage, stays NULL (repair 1).
+COPIED_VALUES = (
+    "CASE WHEN s.probability BETWEEN 0 AND 100 AND (CASE s.type "
+    "WHEN 'lost' THEN s.probability = 0 WHEN 'won' THEN s.probability = 100 "
+    "ELSE true END) THEN s.probability END, "
+    "CASE WHEN s.max_dwell_days >= 1 THEN s.max_dwell_days END"
+)
+
 _PIPELINE_STAGES_SQL = (
     "INSERT INTO crm_pipeline_stages "
-    "(organization_id, pipeline_id, status_id, position) "
+    "(organization_id, pipeline_id, status_id, position, probability, max_dwell_days) "
     "SELECT CAST(:organization_id AS uuid), CAST(:pipeline_id AS uuid), s.id, "
-    "s.position FROM crm_deal_statuses s "
+    f"s.position, {COPIED_VALUES} FROM crm_deal_statuses s "
     "WHERE s.organization_id = CAST(:organization_id AS uuid)"
 )
 
@@ -113,11 +130,12 @@ async def _insert(db: Any, sql: str, params: dict[str, Any]) -> int:
     return len((await db.execute(text(sql), params)).fetchall())
 
 
-async def _has_rows(db: Any, table: str, org: str) -> bool:
-    """True when *org* already has a row in *table*."""
+async def _has_rows(db: Any, table: str, org: str, where: str = "") -> bool:
+    """True when *org* already has a row in *table* (and *where*, when given)."""
     row = (await db.execute(text(
-        f"SELECT 1 FROM {table} "  # table is one of three constants
-        "WHERE organization_id = CAST(:organization_id AS uuid) LIMIT 1"
+        f"SELECT 1 FROM {table} "  # table and where are constants of this module
+        "WHERE organization_id = CAST(:organization_id AS uuid)"
+        + (f" AND {where}" if where else "") + " LIMIT 1"
     ), {"organization_id": org})).fetchone()
     return row is not None
 
@@ -149,7 +167,8 @@ async def seed_native_pipeline(db: Any, organization_id: str) -> dict[str, int]:
                 "probability": probability,
             })
     if (
-        not await _has_rows(db, "crm_pipelines", org)
+        # CRM-M4a: a lead pipeline is not the deal pipeline of the org.
+        not await _has_rows(db, "crm_pipelines", org, DEAL_PIPELINE)
         and await _has_rows(db, "crm_deal_statuses", org)
     ):
         created = (await db.execute(

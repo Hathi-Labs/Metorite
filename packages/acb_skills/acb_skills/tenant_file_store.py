@@ -37,7 +37,12 @@ Tool path              Host path                                    Kept
 * **A skill folder belongs to the member who made it**
   (``agent_paths.claim_skill``). The store refuses to read, list, write or
   delete a skill folder that another member made, so no member's skill text
-  or code reaches another member's run.
+  or code reaches another member's run. In a shared dir of the broker's
+  binding, a tenant dir (``o:<org>``) or a team dir (``t:<team>``), it
+  also refuses to read or list a skill folder with files and no marker
+  (``SKILL_UNCLAIMED``, H-245 step 1), because no member may take it.
+  A personal dir keeps no marker on the skills that the Files routes save,
+  so there the rule does not bind (H-245 review, P1).
 * **Every open goes through** :mod:`acb_skills.safe_open`, so a link at any
   depth fails the call, also one that appears during it.
 * **Every call holds the dir lock** (``guard.hold()``, the broker's
@@ -80,6 +85,7 @@ __all__ = [
     "KEPT_HEADS",
     "OUTPUTS",
     "RUN_DATA",
+    "AppWorkspaceFileStore",
     "HostFileGuard",
     "TenantFileStore",
     "WorkspaceFileStore",
@@ -158,9 +164,20 @@ class TenantFileStore(FileSystemAgentFileStore):
         guard: HostFileGuard,
         member: str = "",
         inputs_rel: str | None = None,
+        instance: str,
     ) -> None:
+        from acb_skills.agent_paths import is_shared_instance
+
         super().__init__(workspace)
         self._workspace = Path(workspace)
+        #: The run's store key, from the broker's binding (``RunBinding.instance``),
+        #: never from the dir's ``.cc-instance`` marker. The orphan rule of
+        #: :meth:`_skill_refusal` and the store ask of the claim bind every
+        #: shared dir: a tenant dir (``o:<org>``) and a team dir (``t:<team>``).
+        #: Only a personal dir (``u:``) is exempt. It has no default, so no
+        #: caller can switch the rule off by leaving it out.
+        self._instance = str(instance)
+        self._shared_dir = is_shared_instance(self._instance)
         self._outputs_rel = outputs_rel.strip("/")
         self._run_data = Path(run_data)
         self._guard = guard
@@ -218,25 +235,57 @@ class TenantFileStore(FileSystemAgentFileStore):
             raise safe_open.UnsafePath("That folder belongs to another chat.")
         return rest[1:]
 
-    def _foreign_skill(self, place: _Place) -> bool:
-        """True when *place* lies in a skill folder that is not this member's.
+    def _skill_refusal(self, place: _Place) -> str | None:
+        """Why *place* lies in a skill folder that this run may not touch, or ``None``.
 
-        Another member's folder, and one whose marker cannot be read, empty or
-        unknown (``agent_paths.skill_owner`` fails closed).
+        * Another member's folder, and one whose marker cannot be read, empty
+          or unknown (``agent_paths.skill_owner`` fails closed).
+        * In a shared dir (a tenant or a team dir), a folder with no marker
+          that holds files (H-245 step 1, task 618 F1). It is the rule of
+          ``agent_paths.claim_skill``. A rehydrate that fails part way can
+          bring back a member's files with no marker, and no member may take
+          them. A missing or empty folder stays free, so a run still makes a
+          new skill.
+
+        A personal dir (H-245 review, P1): the Files routes save a skill
+        there with no marker (``workspace._skill_top``), so the orphan rule
+        would hide the member's own skills. Its member reads that folder, and
+        a write claims it (``claim_skill`` writes the marker). The FOREIGN
+        rule still binds, because :meth:`_claim` writes a marker in every dir.
         """
-        from acb_skills.agent_paths import SKILL_FOREIGN, skill_owner, skill_top_rel
+        from acb_skills.agent_paths import (
+            SKILL_FOREIGN,
+            SKILL_UNCLAIMED,
+            skill_folder_orphaned,
+            skill_owner,
+            skill_top_rel,
+        )
 
         if place.store_rel is None or place.root != self._workspace:
-            return False
+            return None
         # A path inside a skill folder, or the skill folder itself.
         top = skill_top_rel(place.store_rel) or skill_top_rel(f"{place.store_rel}/x")
         if top is None:
-            return False
-        return skill_owner(self._workspace, top, self._member) == SKILL_FOREIGN
+            return None
+        owner = skill_owner(self._workspace, top, self._member)
+        if owner == SKILL_FOREIGN:
+            return "That skill belongs to another member."
+        if (
+            self._shared_dir
+            and owner == SKILL_UNCLAIMED
+            and skill_folder_orphaned(self._workspace, top)
+        ):
+            return "That skill folder has no author, so no member may read it."
+        return None
+
+    def _foreign_skill(self, place: _Place) -> bool:
+        """True when *place* lies in a skill folder that this run may not touch."""
+        return self._skill_refusal(place) is not None
 
     def _refuse_foreign_skill(self, place: _Place) -> None:
-        if self._foreign_skill(place):
-            raise ValueError("That skill belongs to another member.")
+        reason = self._skill_refusal(place)
+        if reason:
+            raise ValueError(reason)
 
     async def _claim(self, place: _Place, *, create: bool = True) -> None:
         """Check the write rules, and record this member on a new skill folder.
@@ -260,10 +309,12 @@ class TenantFileStore(FileSystemAgentFileStore):
         try:
             claimed = await asyncio.to_thread(
                 claim_skill, self._workspace, place.store_rel, self._member,
+                instance=self._instance,
             )
-        except SkillOwnedElsewhere:
-            # Another member claimed the folder after the check (a race).
-            raise ValueError("Refused: that skill belongs to another member.") from None
+        except SkillOwnedElsewhere as exc:
+            # Another member's folder (a race), a name in use, or a store that
+            # cannot say. Each reason has its own text (H-245 review, P2).
+            raise ValueError(f"Refused: {exc.member_text}") from None
         if claimed is not None:
             from acb_skills.write_artifact import mirror_to_blob_store
 
@@ -466,11 +517,13 @@ class WorkspaceFileStore(TenantFileStore):
       session names its files in its report.
     """
 
-    def __init__(self, *, workspace: Path, guard: HostFileGuard, member: str = "") -> None:
+    def __init__(
+        self, *, workspace: Path, guard: HostFileGuard, member: str = "", instance: str,
+    ) -> None:
         # The parent's thread folders are never used: :meth:`_place` maps flat.
         super().__init__(
             workspace=workspace, outputs_rel=OUTPUTS, run_data=Path(workspace),
-            guard=guard, member=member, inputs_rel=INPUTS,
+            guard=guard, member=member, inputs_rel=INPUTS, instance=instance,
         )
 
     def _place(self, path: str) -> _Place:
@@ -521,4 +574,53 @@ class WorkspaceFileStore(TenantFileStore):
                 name, FileStoreEntry.DIRECTORY if kind == "dir" else FileStoreEntry.FILE,
             )
             for name, kind in entries
+        ]
+
+
+class AppWorkspaceFileStore(TenantFileStore):
+    """The store of app-builder's file tools on the MAF engine (WS-43h, §7.8).
+
+    The working dir IS the app (``app.json``, ``index.html``, ``src/``,
+    ``dist/``, ``inputs/``), so the map is FLAT over the whole dir. The
+    ``app_builder`` container mounts the same dir at ``/workspace``, so a file
+    tool and a command always see the same file. Every other rule of
+    :class:`TenantFileStore` holds: the safe opener, the dir lock, the quota
+    and ``decide()`` with the real host path.
+
+    * Any part that starts with a dot is refused: ``.git`` (the App Workshop
+      checkpoints), ``.cc-instance`` and every other hidden name. A link at
+      any depth fails the call (the safe opener).
+    * Nothing goes to the blob store, and no card is shown. The Copilot CLI
+      wrote the disk only, and the App Workshop keeps an app through its own
+      checkpoints. So a write here never adds an ``instance=''`` row (§21.15).
+    * There are no skill folders and no thread folders.
+    """
+
+    def __init__(self, *, workspace: Path, guard: HostFileGuard, member: str = "") -> None:
+        # An app dir has no store key (``read_run_binding`` with no instance),
+        # and this map has no skill folders.
+        super().__init__(
+            workspace=workspace, outputs_rel=OUTPUTS, run_data=Path(workspace),
+            guard=guard, member=member, inputs_rel=INPUTS, instance="",
+        )
+
+    def _place(self, path: str) -> _Place:
+        parts = safe_open.split_rel(path)
+        if any(part.startswith(".") for part in parts):
+            raise safe_open.UnsafePath("A name that starts with a dot is not an app file.")
+        # store_rel None: no blob-store mirror, no skill rule, no card.
+        return _Place(self._workspace, "/".join(parts), None)
+
+    async def _prepare(self, place: _Place) -> None:
+        del place  # no thread folder and no run data to make
+
+    async def list_children(self, directory: str = "") -> list[FileStoreEntry]:
+        place = self._place(directory)
+        async with self._guard.hold():
+            listed = await asyncio.to_thread(safe_open.list_dir, place.root, place.rel)
+        return [
+            FileStoreEntry(
+                name, FileStoreEntry.DIRECTORY if kind == "dir" else FileStoreEntry.FILE,
+            )
+            for name, kind in (listed or []) if not name.startswith(".")
         ]

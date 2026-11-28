@@ -772,14 +772,45 @@ class TestStreaming:
         before = TestMetering._count(db, slug)
         router_mod.set_provider_call(_streaming_provider(fail_before_first=True))
 
-        with client.stream("POST", "/v1/chat/completions", headers=key, json={
-                "model": "tier-balanced", "stream": True,
-                "messages": [{"role": "user", "content": "x"}]}) as r:
-            body = b"".join(r.iter_bytes())
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": "tier-balanced", "stream": True,
+            "messages": [{"role": "user", "content": "x"}]})
 
         assert TestMetering._count(db, slug) == before
-        # The stream still closes cleanly, or the client waits for a timeout.
-        assert body == b"data: [DONE]\n\n"
+        # AO-3 (2026-11-17): a status, not a 200 with a lone `[DONE]`. The
+        # old sentinel read as an empty answer, and the member saw an empty
+        # reply. The body names our class and no vendor text.
+        assert r.status_code == 503, r.text
+        assert not r.headers["content-type"].startswith("text/event-stream")
+        assert r.json() == {"detail": {"reason": "unavailable"}}
+        # The wall was the vendor's, so the meter records no refusal (§8.1).
+        assert TestMetering._refusals(db, slug) == []
+
+    def test_a_vendor_refusal_of_the_stream_names_no_vendor_text(
+            self, client, org_key):
+        """AO-3. A vendor's own words can quote the request, so the 503
+        carries our reason only. Mutation: answer ``detail=str(failed)``, and
+        the secret word reaches the body.
+
+        The refusal is a 402, the empty-account shape. AO-1 lifts a billing
+        400 to 402 only for a vendor's own sentence, so a 400 here would be a
+        terminal refusal (the AO-3 fix round), not an outage."""
+        _, key = org_key
+
+        class _Billing(Exception):
+            status_code = 402
+
+        async def _stub(**kwargs):
+            raise _Billing("SECRETWORD9 Your credit balance is too low")
+
+        router_mod.set_provider_call(_stub)
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": "tier-balanced", "stream": True,
+            "messages": [{"role": "user", "content": "x"}]})
+
+        assert r.status_code == 503, r.text
+        assert r.json() == {"detail": {"reason": "unavailable"}}
+        assert "SECRETWORD9" not in r.text
 
     def test_an_empty_stream_writes_no_usage_row(self, client, org_key, db):
         # A provider that opens the stream and sends nothing has delivered
@@ -962,16 +993,41 @@ class TestAStreamFailsOverBeforeItsFirstFrame:
         router_mod.set_provider_call(
             self._provider(seen, primary_fails=_BadRequest("malformed")))
 
-        with client.stream("POST", "/v1/chat/completions", headers=key, json={
-                "model": tier, "stream": True,
-                "messages": [{"role": "user", "content": "x"}]}) as r:
-            body = b"".join(r.iter_bytes())
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "stream": True,
+            "messages": [{"role": "user", "content": "x"}]})
 
         assert seen == [self.PRIMARY]
-        # Clause 5: a walk that ends with nothing still closes cleanly, and
-        # writes no row. `_REFUSAL_REASONS` stays closed — this wall was the
-        # vendor's, not the customer's.
-        assert body == b"data: [DONE]\n\n"
+        # AO-3 fix round: a terminal status means the request itself is
+        # wrong, so it stays a 400 (`model_refused` in the chat), never the
+        # 503 of an outage. No row is written: `_REFUSAL_REASONS` stays closed.
+        assert r.status_code == 400, r.text
+        assert "malformed" not in r.text
+        assert TestMetering._count(db, slug) == before
+
+    def test_a_stream_whose_only_step_answers_413_is_a_refusal_not_a_503(
+            self, client, org_key, db, bound_tier):
+        """Mutation: return `_stream_unavailable()` for every failure, and
+        this gets a 503 and fails."""
+        slug, key = org_key
+        before = TestMetering._count(db, slug)
+        tier = bound_tier([self.PRIMARY], reads_images=None)
+        seen: list[str] = []
+
+        class _TooLarge(Exception):
+            status_code = 413
+
+        router_mod.set_provider_call(
+            self._provider(seen, primary_fails=_TooLarge("too big")))
+
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "stream": True,
+            "messages": [{"role": "user", "content": "x"}]})
+
+        assert seen == [self.PRIMARY]
+        assert r.status_code == 413, r.text
+        assert r.status_code != 503
+        assert "too big" not in r.text
         assert TestMetering._count(db, slug) == before
 
     # ── the other side of the boundary ──
@@ -1598,6 +1654,208 @@ class TestThePerRunCircuitBreaker:
 
         assert _complete(
             client, key, headers={"X-CC-Run": "run-hot"}).status_code == 200
+
+
+# ── AUTO-8b-2b: `X-CC-Run-Ceiling` can only LOWER the breaker ───────────────
+
+
+#: The malformed values of the spec row, each a 400 and never the default.
+_BAD_CEILINGS = ("abc", "-1", "NaN", "Infinity", "1e3", "5.00001", "")
+
+
+def _second_org(client, db) -> tuple[str, dict, str]:
+    """Org B on the same box: its slug, its key headers and its id."""
+    slug = f"router-b-{uuid.uuid4().hex[:8]}"
+    client.post("/orgs/provision", headers=OP, json={
+        "slug": slug, "name": "B", "owner_email": f"o@{slug}.com",
+        "deployment_label": DEFAULT_DEPLOYMENT_LABEL})
+    token = client.post("/keys", headers=OP, json={"org_slug": slug}).json()["token"]
+    with db.begin() as c:
+        org = str(c.execute(text("SELECT id FROM organization WHERE slug = :s"),
+                            {"s": slug}).scalar_one())
+    return slug, {"Authorization": f"Bearer {token}"}, org
+
+
+def _deployment_key(db) -> str:
+    """A real `serve` deployment key on the shared box (H-152)."""
+    from tests.unit.test_router_deployment_arm import _mint_deployment_key
+
+    return _mint_deployment_key(db, capabilities=["serve"])
+
+
+class TestTheTurnCeilingHeader:
+    """``proactive_agent.md`` §4.4, the §9 row AUTO-8b-2b (task 3081). R8.
+
+    Org A's run R stands at 7 credits. The header can only LOWER the fixed
+    500. A value that does not parse is a 400 and never the default. The
+    sum keys on the org of the CREDENTIAL, so org B with the same run id sees
+    none of A's spend.
+
+    Decision (documented in ``auth._run_ceiling_of``): a ceiling with no
+    ``X-CC-Run`` is a 400 too, because it has no run to bind.
+
+    Mutations (R7), each run by hand on 2026-11-13:
+
+    * ``credits.run_ceiling_for`` returns the header in place of the min:
+      ``test_a_header_of_900_passes_and_the_ceiling_stays_500`` goes red.
+    * ``auth._run_ceiling_of`` falls back to ``None`` (500) on a bad value:
+      ``test_a_malformed_header_is_400_and_never_the_default`` goes red.
+    """
+
+    RUN = "run-turn"
+
+    def _at_seven(self, client, slug, org_id):
+        _grant(client, slug, "10000")          # the BALANCE is not the issue
+        _charge(client, org_id, "7", run_id=self.RUN)
+
+    def test_a_header_of_5_on_a_run_at_7_is_403_naming_5(
+            self, client, org_key, org_id, calls, gate_on):
+        slug, key = org_key
+        self._at_seven(client, slug, org_id)
+        before = len(calls)
+
+        r = _complete(client, key, headers={
+            "X-CC-Run": self.RUN, "X-CC-Run-Ceiling": "5"})
+
+        assert r.status_code == 403, r.text
+        detail = r.json()["detail"]
+        assert detail["reason"] == "run_ceiling_exceeded"
+        assert detail["run_id"] == self.RUN
+        assert detail["ceiling_credits"] == "5"
+        assert Decimal(detail["spent_credits"]) == Decimal("7")
+        # A pre-flight: the provider never ran.
+        assert len(calls) == before
+
+    def test_the_403_writes_its_one_refusal_row(
+            self, client, org_key, org_id, db, gate_on):
+        slug, key = org_key
+        self._at_seven(client, slug, org_id)
+
+        _complete(client, key, headers={
+            "X-CC-Run": self.RUN, "X-CC-Run-Ceiling": "5"})
+
+        row = _refusal_row(db, org_id)
+        assert row is not None
+        assert row["refusal_reason"] == "run_ceiling_exceeded"
+        assert row["run_id"] == self.RUN
+
+    def test_a_header_of_900_passes_and_the_ceiling_stays_500(
+            self, client, org_key, org_id, gate_on):
+        slug, key = org_key
+        self._at_seven(client, slug, org_id)
+
+        assert _complete(client, key, headers={
+            "X-CC-Run": self.RUN, "X-CC-Run-Ceiling": "900"}).status_code == 200
+
+        # At 500 the breaker trips, and the header of 900 does not move it.
+        _charge(client, org_id, "493", run_id=self.RUN)
+        r = _complete(client, key, headers={
+            "X-CC-Run": self.RUN, "X-CC-Run-Ceiling": "900"})
+        assert r.status_code == 403, r.text
+        assert r.json()["detail"]["ceiling_credits"] == "500"
+
+    def test_no_header_behaves_as_before(
+            self, client, org_key, org_id, gate_on):
+        slug, key = org_key
+        self._at_seven(client, slug, org_id)
+
+        assert _complete(
+            client, key, headers={"X-CC-Run": self.RUN}).status_code == 200
+
+    def test_org_B_with_the_same_run_id_sees_none_of_A_s_spend(
+            self, client, org_key, org_id, db, gate_on):
+        slug, key = org_key
+        self._at_seven(client, slug, org_id)
+        b_slug, b_key, b_org = _second_org(client, db)
+        _grant(client, b_slug, "10000")
+
+        # A is refused at 5.
+        assert _complete(client, key, headers={
+            "X-CC-Run": self.RUN, "X-CC-Run-Ceiling": "5"}).status_code == 403
+        # B, same run id, no header: not affected.
+        assert _complete(
+            client, b_key, headers={"X-CC-Run": self.RUN}).status_code == 200
+        # B, same run id, a ceiling of 5: B's run R stands at 0, so B passes.
+        # A sum that read A's 7 credits would refuse it.
+        assert _complete(client, b_key, headers={
+            "X-CC-Run": self.RUN, "X-CC-Run-Ceiling": "5"}).status_code == 200
+        assert _refusal_row(db, b_org) is None
+
+    @pytest.mark.parametrize("raw", _BAD_CEILINGS)
+    def test_a_malformed_header_is_400_and_never_the_default(
+            self, client, org_key, org_id, db, calls, gate_on, raw):
+        slug, key = org_key
+        self._at_seven(client, slug, org_id)
+        before = len(calls)
+
+        r = _complete(client, key, headers={
+            "X-CC-Run": self.RUN, "X-CC-Run-Ceiling": raw})
+
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"]["reason"] == "run_ceiling_invalid"
+        assert len(calls) == before
+        # The auth arm refused, so the meter holds no row for it.
+        assert _refusal_row(db, org_id) is None
+
+    def test_a_ceiling_with_no_run_is_400(
+            self, client, org_key, org_id, calls, gate_on):
+        slug, key = org_key
+        self._at_seven(client, slug, org_id)
+        before = len(calls)
+
+        r = _complete(client, key, headers={"X-CC-Run-Ceiling": "5"})
+
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"]["reason"] == "run_ceiling_invalid"
+        assert "X-CC-Run" in r.json()["detail"]["message"]
+        assert len(calls) == before
+
+    def test_the_ceiling_is_inert_with_the_gate_off(
+            self, client, org_key, org_id):
+        slug, key = org_key
+        self._at_seven(client, slug, org_id)
+
+        assert _complete(client, key, headers={
+            "X-CC-Run": self.RUN, "X-CC-Run-Ceiling": "5"}).status_code == 200
+
+    def test_a_malformed_header_is_400_with_the_gate_off_too(
+            self, client, org_key):
+        _, key = org_key
+        r = _complete(client, key, headers={
+            "X-CC-Run": self.RUN, "X-CC-Run-Ceiling": "abc"})
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"]["reason"] == "run_ceiling_invalid"
+
+    def test_a_body_cannot_carry_the_ceiling_or_an_org(self, client, org_key):
+        # The ceiling travels as a header only, and the body names no org.
+        # `CompletionRequest` forbids an extra field.
+        _, key = org_key
+        for extra in ({"run_ceiling": "5"}, {"org_slug": "other"},
+                      {"organization_id": str(uuid.uuid4())}):
+            r = _complete(client, key, headers={"X-CC-Run": self.RUN}, **extra)
+            assert r.status_code == 422, (extra, r.text)
+
+    def test_the_deployment_arm_lowers_the_ceiling_too(
+            self, client, org_key, org_id, db, gate_on):
+        slug, _ = org_key
+        self._at_seven(client, slug, org_id)
+        token = _deployment_key(db)
+        base = {"Authorization": f"Bearer {token}", "X-CC-Member": f"o@{slug}.com",
+                "X-CC-Member-Proven": "1", "X-CC-Run": self.RUN}
+
+        r = client.post("/v1/chat/completions", headers={
+            **base, "X-CC-Run-Ceiling": "5"}, json={
+                "model": "tier-balanced",
+                "messages": [{"role": "user", "content": "hi"}]})
+        assert r.status_code == 403, r.text
+        assert r.json()["detail"]["ceiling_credits"] == "5"
+
+        r = client.post("/v1/chat/completions", headers={
+            **base, "X-CC-Run-Ceiling": "abc"}, json={
+                "model": "tier-balanced",
+                "messages": [{"role": "user", "content": "hi"}]})
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"]["reason"] == "run_ceiling_invalid"
 
 
 # ── A5 slice 5: the meter records the WALL (§8.1, migration 020) ────────────
@@ -3042,3 +3300,142 @@ class TestTheAgentFrameworkShape:
                 "AND u.refusal_reason IS NULL "
                 "ORDER BY u.created_at DESC LIMIT 1"), {"s": slug}).first()
         assert tuple(row) == (0, 0, "usage_unreadable")
+
+
+# ── Sampling values per step (task 2450) ────────────────────────────────────
+
+
+class TestSamplingPerStep:
+    """A Claude 5.5 step refuses `temperature`. A Gemini step behind it keeps
+    it. The door builds each step's body on its own."""
+
+    CLAUDE = "anthropic/claude-haiku-5-5"
+    GEMINI = "gemini/gemini-3.1-flash-lite"
+
+    @pytest.fixture
+    def creds(self, db):
+        made: list[str] = []
+        with db.begin() as c:
+            for vendor in ("anthropic", "gemini"):
+                row = c.execute(
+                    text("INSERT INTO provider_credential (provider, secret_enc, "
+                         "label) VALUES (:p, :s, 'platform') "
+                         "ON CONFLICT DO NOTHING RETURNING id"),
+                    {"p": vendor, "s": router_mod.encrypt_secret("sk-x")},
+                ).scalar()
+                if row is not None:
+                    made.append(str(row))
+        yield
+        with db.begin() as c:
+            for cid in made:
+                c.execute(text("DELETE FROM provider_credential WHERE id = :i"),
+                          {"i": cid})
+
+    def test_each_step_builds_its_own_body(
+            self, client, org_key, bound_tier, creds):
+        _, key = org_key
+        tier = bound_tier([self.CLAUDE, self.GEMINI], reads_images=None)
+        seen: list[dict] = []
+
+        class _Overloaded(Exception):
+            status_code = 529
+
+        async def _provider(**kwargs):
+            seen.append(kwargs)
+            if kwargs["model"] == self.CLAUDE:
+                raise _Overloaded("busy")
+            return dict(PROVIDER_RESPONSE)
+
+        router_mod.set_provider_call(_provider)
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "temperature": 0.2,
+            "messages": [{"role": "user", "content": "x"}]})
+        assert r.status_code == 200, r.text
+        assert [k["model"] for k in seen] == [self.CLAUDE, self.GEMINI]
+        assert "temperature" not in seen[0]
+        assert seen[1]["temperature"] == 0.2
+
+
+class TestPromptCachePerStep:
+    """Task 2875. An Anthropic step carries the cache marks and a DeepSeek step behind it does not.
+
+    The gateway cannot name the model of a routed call, so the Router marks each step itself
+    (`customer_console.prompt_cache`, behind CUSTOMER_CONSOLE_PROMPT_CACHE). With the flag off the
+    request goes out as it came."""
+
+    CLAUDE = "anthropic/claude-haiku-5-5"
+    DEEPSEEK = "deepseek/deepseek-chat"
+    BREAK = "<!-- CACHE BREAK -->"
+    TOOL = {"type": "function", "function": {"name": "find_priority", "parameters": {"type": "object"}}}
+
+    @pytest.fixture
+    def creds(self, db):
+        made: list[str] = []
+        with db.begin() as c:
+            for vendor in ("anthropic", "deepseek"):
+                row = c.execute(
+                    text("INSERT INTO provider_credential (provider, secret_enc, "
+                         "label) VALUES (:p, :s, 'platform') "
+                         "ON CONFLICT DO NOTHING RETURNING id"),
+                    {"p": vendor, "s": router_mod.encrypt_secret("sk-x")},
+                ).scalar()
+                if row is not None:
+                    made.append(str(row))
+        yield
+        with db.begin() as c:
+            for cid in made:
+                c.execute(text("DELETE FROM provider_credential WHERE id = :i"),
+                          {"i": cid})
+
+    def _walk(self, client, key, tier, creds_unused=None):
+        seen: list[dict] = []
+
+        class _Overloaded(Exception):
+            status_code = 529
+
+        async def _provider(**kwargs):
+            seen.append(kwargs)
+            if kwargs["model"] == self.CLAUDE:
+                raise _Overloaded("busy")
+            return dict(PROVIDER_RESPONSE)
+
+        router_mod.set_provider_call(_provider)
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "tools": [self.TOOL],
+            "messages": [
+                {"role": "system", "content": f"STABLE persona\n\n{self.BREAK}\n\nMEMORY of the member"},
+                {"role": "user", "content": "x"},
+            ]})
+        assert r.status_code == 200, r.text
+        assert [k["model"] for k in seen] == [self.CLAUDE, self.DEEPSEEK]
+        return seen
+
+    def test_each_step_is_marked_for_its_own_vendor(
+            self, client, org_key, bound_tier, creds, monkeypatch):
+        monkeypatch.setenv("CUSTOMER_CONSOLE_PROMPT_CACHE", "1")
+        _, key = org_key
+        tier = bound_tier([self.CLAUDE, self.DEEPSEEK], reads_images=None)
+        claude, deepseek = self._walk(client, key, tier)
+        system = claude["messages"][0]["content"]
+        assert system[0] == {"type": "text", "text": "STABLE persona",
+                             "cache_control": {"type": "ephemeral"}}
+        assert system[1] == {"type": "text", "text": "MEMORY of the member"}
+        assert claude["tools"][-1]["function"]["cache_control"] == {"type": "ephemeral"}
+        assert self.BREAK not in str(claude)
+        # The step behind it is a plain string with no sentinel and no mark.
+        text_of_deepseek = deepseek["messages"][0]["content"]
+        assert isinstance(text_of_deepseek, str)
+        assert self.BREAK not in text_of_deepseek and "MEMORY of the member" in text_of_deepseek
+        assert "cache_control" not in str(deepseek)
+
+    def test_with_the_flag_off_the_request_goes_out_as_it_came(
+            self, client, org_key, bound_tier, creds, monkeypatch):
+        monkeypatch.delenv("CUSTOMER_CONSOLE_PROMPT_CACHE", raising=False)
+        _, key = org_key
+        tier = bound_tier([self.CLAUDE, self.DEEPSEEK], reads_images=None)
+        claude, deepseek = self._walk(client, key, tier)
+        for sent in (claude, deepseek):
+            assert isinstance(sent["messages"][0]["content"], str)
+            assert self.BREAK in sent["messages"][0]["content"]
+            assert "cache_control" not in str(sent)
+

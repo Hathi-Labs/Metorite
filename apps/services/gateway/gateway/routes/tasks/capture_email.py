@@ -43,6 +43,7 @@ from gateway.routes.tasks.core import (
     router,
 )
 from gateway.routes.tasks.item_source import item_source
+from gateway.routes.tasks.settings import _BOUND_ORG
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -115,6 +116,9 @@ class CapturePreviewResponse(BaseModel):
     # Echoed so /enhance and /create don't re-resolve the email.
     from_name: str = ""
     subject: str = ""
+    # The address of the sender. ``from_name`` is text that the sender sets, so
+    # the chat card shows the two (task 3973).
+    from_email: str = ""
 
 
 class CaptureEnhanceResponse(BaseModel):
@@ -348,12 +352,30 @@ def _resolve_assignee(name: str, people: list[dict]) -> dict[str, Any] | None:
     if not who:
         return None
     toks = who.split()
+    prefix = None
     for p in people:
         ptoks = (p.get("name") or "").strip().lower().split()
-        if ptoks and (ptoks == toks or ptoks[:len(toks)] == toks):
-            return {"name": p["name"], "email": p.get("email"),
-                    "provider_user_id": p.get("provider_user_id")}
-    return None
+        if ptoks == toks:  # a full-name match wins over an earlier prefix match
+            prefix = p
+            break
+        if prefix is None and ptoks and ptoks[:len(toks)] == toks:
+            prefix = p
+    if prefix is None:
+        return None
+    return {"name": prefix["name"], "email": prefix.get("email"),
+            "provider_user_id": prefix.get("provider_user_id")}
+
+
+async def _draft_capture(**kw: Any) -> dict[str, Any] | None:
+    """``_llm_capture`` with DEC-2b's ``projects.delegate_pick`` beside it.
+    ``off`` calls ``_llm_capture`` as before. The draft stays an LLM call."""
+    from gateway.routes.tasks import projects_decide
+
+    return await projects_decide.delegate_pick(
+        subject=kw["subject"], from_name=kw["from_name"], from_email=kw["from_email"],
+        owner_addrs=kw["owner_addrs"], body=kw["body"], thread=kw["thread"],
+        people=kw["people"], resolve=_resolve_assignee,
+        old=lambda: _llm_capture(**kw))
 
 
 async def _find_pm_account_for_person(
@@ -363,12 +385,17 @@ async def _find_pm_account_for_person(
     so a DELEGATED capture can be STAGED there — a teammate can't see a private
     LOCAL task. Matches by provider_user_id first, then email, then name.
     Returns (account_id, normalized-member) or None when no account has them.
+
+    ⚠️ Only the accounts of the BOUND org (H-312b, migration 515). Under the
+    owner role RLS does not apply, so the member filter alone could stage a
+    task on an account of the member's other org.
     """
     pid = str(person.get("provider_user_id") or "").strip()
     pemail = str(person.get("email") or "").strip().lower()
     pname = str(person.get("name") or "").strip().lower()
     rows = (await db.execute(text(
-        "SELECT id, schema_cache FROM task_accounts WHERE user_id = :uid"),
+        "SELECT id, schema_cache FROM task_accounts "
+        f"WHERE user_id = :uid AND organization_id = {_BOUND_ORG}"),
         {"uid": uid})).fetchall()
     for r in rows:
         cache = _parse_jsonb(r.schema_cache) or {}
@@ -654,7 +681,7 @@ async def capture_from_email(
         people = await fetch_people_for_clarify(db)
         models = await task_models(db, uid)
 
-        draft = await _llm_capture(
+        draft = await _draft_capture(
             subject=email.subject or "", from_name=from_name,
             from_email=from_email_, to_line=_fmt_addrs(to_list),
             cc_line=_fmt_addrs(cc_list), owner_addrs=owner_addrs,
@@ -796,7 +823,8 @@ async def preview_capture_from_email(
 
         return CapturePreviewResponse(
             already_captured=already, draft=draft, similar=similar,
-            from_name=from_name, subject=email.subject or "")
+            from_name=from_name, subject=email.subject or "",
+            from_email=str(from_addr.get("email") or ""))
 
 
 @router.post("/capture/from-email/enhance",
@@ -828,7 +856,7 @@ async def enhance_capture_from_email(
         people = await fetch_people_for_clarify(db)
         models = await task_models(db, uid)
 
-        drafted = await _llm_capture(
+        drafted = await _draft_capture(
             subject=email.subject or "", from_name=from_name,
             from_email=from_email_, to_line=_fmt_addrs(to_list),
             cc_line=_fmt_addrs(cc_list), owner_addrs=owner_addrs,
@@ -1223,11 +1251,19 @@ async def detect_commitment_from_reply(
         people = await fetch_people_for_clarify(db)
         models = await task_models(db, uid)
 
-        detected = await _llm_detect_commitment(
+        async def _old() -> dict[str, Any] | None:
+            # The contexts are read here, so a decide "no" in `on` skips the read.
+            return await _llm_detect_commitment(
+                subject=req.subject, owner_name=owner_name,
+                owner_addrs=owner_addrs, body=req.body, thread=thread,
+                people=people, model=models["email_capture"],
+                contexts=await _user_contexts(db, uid))
+
+        # DEC-2a: `projects.commitment`. `off` calls `_llm_detect_commitment` as before.
+        from gateway.routes.tasks import projects_decide
+        detected = await projects_decide.commitment(
             subject=req.subject, owner_name=owner_name, owner_addrs=owner_addrs,
-            body=req.body, thread=thread, people=people,
-            model=models["email_capture"],
-            contexts=await _user_contexts(db, uid))
+            body=req.body, thread=thread, old=_old)
         if not detected or not detected.get("is_commitment"):
             return DetectCommitmentResponse(is_commitment=False, used_llm=bool(detected))
 

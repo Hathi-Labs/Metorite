@@ -8,9 +8,12 @@ import ssl
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 
 from acb_auth import UserContext, get_current_user
+from acb_common import member_actions
 from fastapi import BackgroundTasks, Depends, HTTPException
+from gateway.routes.email import act_features
 from gateway.routes.email.core import (
     _tenant_session,
     provider_session,
@@ -53,9 +56,12 @@ class ArtifactAttachment(BaseModel):
 
     Lets the email-assistant attach files it produced, and lets the compose UI
     attach the files the member uploaded. Resolved server-side. H-201 part 2:
-    only the sender's own ``personal`` workspace is a source
+    the sender's own ``personal`` workspace is a source
     (``workspace._member_agent_workspace``). A shared agent's clone holds the
-    run output of every tenant, so it is never a source."""
+    run output of every tenant, so it is never a source. Task 3598: a file of
+    a chat folder of a shared agent never goes by this model. It goes only as
+    an ``artifact:<agent>:<path>`` Metorite file, which pins a digest
+    (``metorite_files``). The model carries no tenant field."""
     path: str  # workspace-relative path (e.g. "outputs/quote.pdf")
     name: str | None = None  # display filename (defaults to the file's name)
     agent: str | None = None  # source agent workspace (defaults to email-assistant)
@@ -67,6 +73,10 @@ class SendEmailRequest(BaseModel):
     subject: str
     body_text: str
     body_html: str | None = None
+    # Task 3605: True when ``body_text`` is Markdown, as the email assistant
+    # writes it. The send then makes the text part and the HTML part with
+    # ``markdown_mail.mail_bodies``. A request with ``body_html`` too gets 422.
+    body_markdown: bool = False
     cc: list[str] | None = None
     bcc: list[str] | None = None
     reply_to_message_id: str | None = None
@@ -76,6 +86,12 @@ class SendEmailRequest(BaseModel):
     # H-392: Metorite files that the member can see, each with the digest
     # that its card showed (``metorite_files.resolve_metorite_files``).
     metorite_files: list[MetoriteFileRef] | None = None
+    # HRD-10d-3 (task 3824): the local id of the newest message of the thread
+    # that the card of this reply saw (``thread_head``). Only a chat tool
+    # with ``CHAT_CARD_PRECONDITION_ORGS`` on names it. With it, a newer
+    # message in the thread is a 409 before any provider call
+    # (:func:`refuse_changed_thread`). With no value the send is as before.
+    expect_thread: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class MetoriteFileRef(BaseModel):
@@ -89,59 +105,176 @@ class MetoriteFileRef(BaseModel):
 SendEmailRequest.model_rebuild()
 
 
-def load_artifact_attachments(
-    refs: "list[ArtifactAttachment] | None",
-    user_email: str | None = None,
-) -> list[dict]:
-    """Resolve workspace-artifact references to ``[{filename, content,
-    mime_type}]`` for a provider. Reads each ref from the sending member's OWN
-    workspace of its source agent (default ``email-assistant``).
-
-    H-201 part 2 (``projects_ai_chat.md`` §21.14). The source is only
-    ``workspace._member_agent_workspace``, so a shared agent's clone is never
-    read. The path goes through ``_safe_resolve``, and ``_is_blocked_path``
-    refuses ``.env``, ``.git/`` and every other secret name.
-
-    H-201 part 3 (§21.15, the P1 of the part 2 review): a ref that is refused
-    FAILS the send with 422, and a warning names it. The old rule skipped it,
-    so the mail went out without the file the member asked for, and nobody
-    was told. This fails closed."""
-    if not refs:
-        return []
-    import mimetypes
-
+def _artifact_refused(agent: str, rel: str) -> HTTPException:
+    """The 422 of a workspace file that a send does not take, after a warning."""
     from acb_common import get_logger
+
+    get_logger("gateway.email.send").warning(
+        "email.artifact_ref_refused", agent=agent[:80], path=rel[:200])
+    return HTTPException(
+        status_code=422,
+        detail=(
+            f"The attachment '{rel[:200]}' is not a file in your own "
+            "workspace, so nothing was sent."
+        ),
+    )
+
+
+def _resolve_artifact(
+    ref: ArtifactAttachment, user_email: str | None, *,
+    organization_id: str | None, chat_files: bool,
+) -> tuple[Path, tuple[Path, str] | None]:
+    """The path of one ref, and ``(tenant dir, path)`` when the file is in a
+    chat folder. The body of :func:`resolve_artifact_path`."""
     from gateway.routes.workspace import (
+        _chat_thread_file,
         _is_blocked_path,
         _member_agent_workspace,
         _safe_resolve,
     )
 
-    log = get_logger("gateway.email.send")
+    agent = (ref.agent or "email-assistant").strip() or "email-assistant"
+    rel = (ref.path or "").strip()
+    ws = _member_agent_workspace(agent, user_email) if rel else None
+    full = None
+    if ws is not None and not _is_blocked_path(rel):
+        try:
+            full = _safe_resolve(ws, rel)
+        except HTTPException:
+            full = None
+    if full is not None and full.is_file():
+        return full, None
+    # Task 3598: the member's own workspace has no such file. With
+    # *chat_files* on, a chat folder of the shared agent that the ref names is
+    # the next source, and only for a chat that the member may write to.
+    chat = (_chat_thread_file(ref.agent, rel, user_email, organization_id)
+            if chat_files and rel else None)
+    if chat is None:
+        raise _artifact_refused(agent, rel)
+    return chat[0] / chat[1], chat
+
+
+def _read_chat_file(ref: ArtifactAttachment, chat: tuple[Path, str]) -> bytes:
+    """The bytes of a chat file, opened with ``acb_skills.safe_open``.
+
+    A container can write a chat folder, so a link at any depth, or a file
+    that went away after the check, fails the send with the 422 of
+    :func:`_artifact_refused`. A file over the cap of a held send
+    (``held_card.MAX_FILES_BYTES``) answers 422. The read takes at most one
+    byte over the cap, so a file that grows after the size check is refused
+    too, and memory never holds more than the cap and one byte."""
+    import os
+
+    from acb_skills import safe_open
+    from gateway.routes.email.automation.held_card import MAX_FILES_BYTES
+
+    agent = (ref.agent or "email-assistant").strip() or "email-assistant"
+    rel = (ref.path or "").strip()
+    too_large = HTTPException(status_code=422, detail=(
+        f"The attachment '{rel[:200]}' is larger than "
+        f"{MAX_FILES_BYTES // (1024 * 1024)} MB, so nothing was sent."))
+    try:
+        fh = safe_open.open_read(*chat)
+        if fh is None:
+            raise _artifact_refused(agent, rel)
+        with fh:
+            if os.fstat(fh.fileno()).st_size > MAX_FILES_BYTES:
+                raise too_large
+            got = fh.read(MAX_FILES_BYTES + 1)
+    except (safe_open.UnsafePath, OSError):
+        raise _artifact_refused(agent, rel) from None
+    if len(got) > MAX_FILES_BYTES:
+        raise too_large
+    return got
+
+
+def resolve_artifact_path(
+    ref: ArtifactAttachment, user_email: str | None, *,
+    organization_id: str | None = None, chat_files: bool = False,
+) -> Path:
+    """THE resolver of one workspace file of a send: its path, or a 422.
+
+    The file must be in the sending member's OWN workspace of its source
+    agent (default ``email-assistant``). H-201 part 2
+    (``projects_ai_chat.md`` §21.14): that source is only
+    ``workspace._member_agent_workspace``, so a shared agent's clone is never
+    read. The path goes through ``_safe_resolve``, and ``_is_blocked_path``
+    refuses ``.env``, ``.git/`` and every other secret name.
+
+    Task 3598: with *chat_files* on, a file of a chat folder of a shared
+    agent's tenant dir is the next source (``workspace._chat_thread_file``).
+    The member must be able to write to that chat. *organization_id* is the
+    sender's tenant, from the server-side identity, never from the request.
+    ``None`` refuses each chat file. A failed room lookup answers 503, and
+    the check reads the database, so an async caller runs this in a thread.
+
+    Only ``metorite_files._artifact`` turns *chat_files* on, for an
+    ``artifact:<agent>:<path>`` ref of a chat that is not held. Only that
+    ref pins a digest of the bytes that the card showed (H-392). A room
+    member or a container of the chat can change a chat file after the card.
+    So the bare path and the ``<agent>:<path>`` form keep *chat_files* off,
+    and each refuses a chat file, as before task 3598.
+
+    H-201 part 3 (§21.15, the P1 of the part 2 review): a refused ref FAILS
+    the send with 422, and a warning names it. The old rule skipped it, so
+    the mail went out without the file that the member asked for.
+
+    Task 2491: :func:`load_artifact_attachments` (the send) and
+    :func:`refused_artifacts` (the check before a card) both call this rule,
+    so the check and the send keep one rule. Fences:
+    ``tests/unit/test_email_files_before_card.py``,
+    ``tests/unit/test_email_attach_shared_agent.py``."""
+    return _resolve_artifact(
+        ref, user_email, organization_id=organization_id, chat_files=chat_files)[0]
+
+
+def refused_artifacts(
+    refs: list[ArtifactAttachment], user_email: str | None,
+) -> list[str]:
+    """The path of each ref that a send refuses, as the ref gives it.
+
+    Task 2491. A check before a card: it runs :func:`resolve_artifact_path`,
+    the rule of the send, on each ref. It reads no bytes and sends nothing.
+    A card that names a file that the send refuses costs the member an
+    approval for a mail that cannot go. A chat file is refused here (task
+    3598): it goes only as an ``artifact:`` ref, which pins a digest."""
+    refused: list[str] = []
+    for ref in refs:
+        try:
+            resolve_artifact_path(ref, user_email)
+        except HTTPException as exc:
+            if exc.status_code != 422:
+                raise
+            refused.append(ref.path)
+    return refused
+
+
+def load_artifact_attachments(
+    refs: "list[ArtifactAttachment] | None",
+    user_email: str | None = None, *,
+    organization_id: str | None = None, chat_files: bool = False,
+) -> list[dict]:
+    """Resolve workspace-artifact references to ``[{filename, content,
+    mime_type}]`` for a provider. Each ref resolves through
+    :func:`resolve_artifact_path`, and a refused ref fails the whole send
+    with 422 (H-201 part 3). This fails closed.
+
+    Task 3598: *chat_files* is on only for an ``artifact:`` ref
+    (``metorite_files._artifact``). A chat file is read with
+    :func:`_read_chat_file`."""
+    if not refs:
+        return []
+    import mimetypes
+
     out: list[dict] = []
     for ref in refs:
-        agent = (ref.agent or "email-assistant").strip() or "email-assistant"
-        rel = (ref.path or "").strip()
-        ws = _member_agent_workspace(agent, user_email) if rel else None
-        full = None
-        if ws is not None and not _is_blocked_path(rel):
-            try:
-                full = _safe_resolve(ws, rel)
-            except HTTPException:
-                full = None
-        if full is None or not full.is_file():
-            log.warning("email.artifact_ref_refused", agent=agent[:80], path=rel[:200])
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"The attachment '{rel[:200]}' is not a file in your own "
-                    "workspace, so nothing was sent."
-                ),
-            )
+        full, chat = _resolve_artifact(
+            ref, user_email, organization_id=organization_id, chat_files=chat_files)
+        content = full.read_bytes() if chat is None else _read_chat_file(ref, chat)
         mime, _ = mimetypes.guess_type(full.name)
         out.append({
             "filename": ref.name or full.name,
-            "content": full.read_bytes(),
+            "content": content,
             "mime_type": mime or "application/octet-stream",
         })
     return out
@@ -162,9 +295,17 @@ async def send_email(
     the provider id here, so a chat reply threads (MB-5).
     """
     owner = user.email or "anonymous"
+    # Task 3605: a Markdown body becomes the two parts here, before any read.
+    body_text, body_html = _bodies_of(req)
     async with _tenant_session() as db:
         reply_pmid, reply_thread_id = await _reply_target(
             db, req.account_id, req.reply_to_message_id, owner)
+        if req.expect_thread is not None and req.reply_to_message_id:
+            # HRD-10d-3: the thread is read again from the stored rows, and
+            # never from the request, before the provider session.
+            await refuse_changed_thread(
+                db, owner, req.account_id, reply_thread_id, reply_pmid,
+                req.expect_thread)
         # Ownership check + auth + rotated-cred persist all live in the session
         # helper (401 on auth failure, 404 on a foreign account).
         async with provider_session(
@@ -211,14 +352,21 @@ async def send_email(
             # Append the account's HTML signature once, here at the single send
             # choke point (with a plain-text fallback), so every reply / new
             # message carries it. The drafter no longer bakes it into the body.
-            from gateway.routes.email.signature import build_signed_bodies
-            sig_row = (await db.execute(text(
-                "SELECT signature FROM email_assistant_settings "
-                "WHERE account_id = :aid"
-            ), {"aid": req.account_id})).fetchone()
+            # WS-17 SG-2 (D-EM-66): the resolver gives it, with the kind of
+            # this mail. A body that holds the form a draft path wrote keeps
+            # that form, so the mail carries one signature.
+            from gateway.routes.email.signature import (
+                build_signed_bodies,
+                resolve_signature_for_send,
+            )
+            signature = await resolve_signature_for_send(
+                db, req.account_id, "reply" if req.reply_to_message_id else "new",
+                body_text)
+            # Task 3605: a Markdown body holds no quoted thread, so the
+            # signature goes at the end of both parts.
             send_text, send_html = build_signed_bodies(
-                (sig_row.signature if sig_row else "") or "",
-                req.body_text, req.body_html)
+                signature, body_text, body_html,
+                quoted_thread=not req.body_markdown)
 
             # ``_reply_target`` resolved the conversation id of the message
             # being replied to, so the provider threads the reply. Gmail needs
@@ -247,7 +395,7 @@ async def send_email(
         # Commit the rotated-cred persist the session wrote on clean exit.
 
         # If this was a reply, learn from how the user edited the AI's draft.
-        if req.reply_to_message_id and req.body_text and reply_thread_id:
+        if req.reply_to_message_id and body_text and reply_thread_id:
             try:
                 from gateway.routes.email.automation import (
                     _cleanup_thread_drafts,
@@ -261,13 +409,13 @@ async def send_email(
                     _cleanup_thread_drafts, req.account_id, reply_thread_id)
                 background.add_task(
                     _learn_from_sent, req.account_id, reply_thread_id,
-                    req.body_text)
+                    body_text)
                 # Move the thread out of "Reply" → Awaiting Reply /
                 # Done. Pass the just-sent reply so the AI judges the
                 # thread WITH it (the send isn't mirrored locally yet).
                 background.add_task(
                     _mark_thread_replied, req.account_id, reply_thread_id,
-                    req.body_text, req.subject)
+                    body_text, req.subject)
             except Exception:
                 pass
 
@@ -275,6 +423,19 @@ async def send_email(
         # the SMTP path can tell. A caller reports a person as sent only when
         # the server did not refuse that person.
         refused = sorted(getattr(sess.provider, "last_refused", None) or ())
+        # WS-PZ MM-1: one row in the act record, with the recipients and no text.
+        # A refused recipient is no target. Dark behind MEMBER_ACTIONS_ORGS,
+        # and it never fails the send.
+        await member_actions.record_act(
+            db, org=member_actions.org_of(user), member=user.email or "",
+            app="email", act="reply" if req.reply_to_message_id else "send",
+            via="app", item_kind="email", item_id=str(msg_id or "sent"),
+            mailbox_id=req.account_id,
+            features={"is_reply": bool(req.reply_to_message_id),
+                      "new_thread": not req.reply_to_message_id,
+                      **act_features.of_address(req.to[0] if req.to else None)},
+            targets=member_actions.sent_to(
+                [*req.to, *(req.cc or []), *(req.bcc or [])], refused))
         return {"id": msg_id, "ok": True, **({"refused": refused} if refused else {})}
 
 
@@ -283,6 +444,38 @@ REPLY_NOT_IN_MAILBOX = (
     "The mail this reply answers is not in the sending mailbox. "
     "Reply from the mailbox that received it."
 )
+
+
+#: The 422 of a send that names a Markdown body and an HTML body (task 3605).
+MARKDOWN_AND_HTML = "Send a Markdown body or an HTML body, not both."
+
+
+def _bodies_of(req: SendEmailRequest) -> tuple[str, str | None]:
+    """The text part and the HTML part of a send, before the signature.
+
+    Task 3605: with ``body_markdown`` the one converter
+    (``markdown_mail.mail_bodies``) makes both parts from ``body_text``. A
+    body with no real structure keeps its text and gets no HTML, so it sends
+    as before. ``build_signed_bodies`` then adds the signature once to each
+    part. Without the flag, the request's own parts go as they are.
+
+    A fault of the converter, an import fault too, sends the text alone, as
+    before task 3605. A card act has spent its answer and its record when it
+    calls this, so a 500 here would lose the member's mail."""
+    if not req.body_markdown:
+        return req.body_text, req.body_html
+    if req.body_html is not None:
+        raise HTTPException(status_code=422, detail=MARKDOWN_AND_HTML)
+    try:
+        from gateway.routes.email.markdown_mail import mail_bodies
+
+        return mail_bodies(req.body_text)
+    except Exception as exc:  # the mail goes as text, never a 500
+        from acb_common import get_logger
+
+        get_logger("gateway.email.send").warning(
+            "email.markdown_failed", error=type(exc).__name__)
+        return req.body_text, None
 
 
 def _as_uuid(value: str) -> str | None:
@@ -347,6 +540,87 @@ async def _reply_target(
     if row is None:
         raise HTTPException(status_code=404, detail=REPLY_NOT_IN_MAILBOX)
     return row.provider_message_id, row.thread_id
+
+
+# ── HRD-10d-3: a newer message in the thread of a reply (task 3824) ─────────
+#
+# ``chat_failure_modes.md`` §6 row HRD-10d-3. A reply card shows the thread as
+# it was. Another message can come into the thread while the card waits: the
+# other person answered, or the member replied from another device. The send
+# then refuses, because the reply can be out of date.
+
+#: The newest message of one thread of one mailbox that is not a draft. The
+#: owner predicate is the one mailbox seam, and FORCE RLS keeps another
+#: organization out. A draft never counts, so the card's own draft and a
+#: draft that the member saves do not move it. The order is total, so the
+#: card and the send pick the same row from the same rows.
+THREAD_HEAD_SQL = (
+    "SELECT em.id::text AS id, em.provider_message_id, em.received_at, em.from_address"
+    " FROM email_messages em JOIN email_accounts ea ON ea.id = em.account_id"
+    " WHERE em.account_id = CAST(:aid AS uuid) AND em.thread_id = :tid"
+    " AND LOWER(COALESCE(em.folder, '')) NOT IN ('drafts', 'draft')"
+    " AND {owner}"
+    " ORDER BY em.received_at DESC NULLS LAST, em.id DESC LIMIT 1")
+
+#: The words of the 409 of a reply whose thread has a newer message.
+THREAD_CHANGED_WORDS = (
+    "A newer message came into this conversation after the card showed, so "
+    "nothing was sent.")
+
+
+async def thread_head(db, owner: str, account_id: str, thread_id: str | None):
+    """The row of :data:`THREAD_HEAD_SQL`, or None. THE one read of the head
+    of a thread: the card takes its marker from it, and the send compares
+    against it. A mail with no thread has no head."""
+    if not thread_id or _as_uuid(account_id) is None:
+        return None
+    sql = THREAD_HEAD_SQL.format(owner=mailbox_predicate("ea", uid="uid", level="read"))
+    return (await db.execute(text(sql), {
+        "aid": _as_uuid(account_id), "tid": thread_id, "uid": owner})).fetchone()
+
+
+def _sender_of(row) -> str:
+    """The address of the From of a stored row, or ""."""
+    import json
+
+    frm = getattr(row, "from_address", None)
+    if isinstance(frm, str):
+        try:
+            frm = json.loads(frm or "{}")
+        except ValueError:
+            frm = {}
+    return str((frm or {}).get("email") or "") if isinstance(frm, dict) else ""
+
+
+async def refuse_changed_thread(
+    db, owner: str, account_id: str, thread_id: str | None,
+    answered_pmid: str | None, expect: str,
+) -> None:
+    """Answer 409 ``thread_changed`` when the thread of a reply has a message
+    that is newer than *expect*, the head that its card saw.
+
+    The head is read again from the stored rows (:func:`thread_head`). It
+    passes when it is *expect*, when it is the mail that the reply answers,
+    and when the thread has no head. Any other head is a message that came
+    after the card, so nothing is sent. *expect* is only compared, and no
+    row is read by it, so a marker of another thread or another mailbox is
+    refused too. ``detail.newer`` names the From and the time of that
+    message, and the tool fences each value."""
+    from acb_skills.reply_card import THREAD_CHANGED
+
+    head = await thread_head(db, owner, account_id, thread_id)
+    if head is None or head.id == _as_uuid(expect) or (
+            answered_pmid and head.provider_message_id == answered_pmid):
+        return
+    when = head.received_at.isoformat() if getattr(
+        head.received_at, "isoformat", None) else str(head.received_at or "")
+    from acb_common import get_logger
+
+    get_logger("gateway.email.send").warning(
+        "email.send_refused", reason=THREAD_CHANGED)
+    raise HTTPException(status_code=409, detail={
+        "reason": THREAD_CHANGED, "message": THREAD_CHANGED_WORDS,
+        "newer": {"from": _sender_of(head), "received_at": when}})
 
 
 class ImportArtifactRequest(BaseModel):

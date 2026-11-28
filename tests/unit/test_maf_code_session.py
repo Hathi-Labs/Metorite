@@ -90,6 +90,7 @@ def _run(org: str, short_tmp: Path, body: Any) -> Any:  # noqa: F811
             store = TenantFileStore(
                 workspace=ws, outputs_rel=f"outputs/{thread_slug(thread)}",
                 run_data=run_data, guard=_Guard(), member="member@example.com",
+                instance=tenant_instance(org),
             )
             out = await body(store, ws, run_data, thread_slug(thread))
             rest = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
@@ -472,6 +473,56 @@ def test_the_sandbox_network_stays_off(
     env = " ".join(flag_values(runs[0], "--env")).upper()
     assert "PROXY" not in env and "KEY" not in env and "TOKEN" not in env
     assert any(NETWORK_OFF in r for r in gateway.tool_results(1))
+
+
+def test_code_task_in_a_chat_turn_raises_the_network_card(
+    maf: Sandbox, gateway: FakeGateway, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
+) -> None:
+    """Done-when 14 of WS-43g (§7.3, "The channel of the live tool"): a
+    ``code_task`` in a chat turn raises the network card through the emitter
+    of that turn, and the member of the run answers it.
+
+    The fake emitter is the turn's ``_active_run_queue``. The session runs
+    under ``asyncio.wait_for``, a task that copies the context of the turn.
+    The member declines, so the container stays on ``--network none``."""
+    from orchestrator import executor
+
+    monkeypatch.setattr(maf.env["settings"], "sandbox_egress_enabled", True)
+    monkeypatch.setenv("AGENT_PERMISSION_MODE", "audit")
+    gateway.say(
+        [("request_network_access", {"reason": "pip install x", "hosts": ["pypi.org"]})],
+        "REPORT",
+    )
+    cards: list[dict[str, Any]] = []
+
+    async def turn() -> str:
+        queue: asyncio.Queue = asyncio.Queue()
+        executor._active_run_queue.set(queue)
+        call = asyncio.ensure_future(_code_tools().code_task("install x and use it"))
+        while not call.done():
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=0.05)
+            except TimeoutError:
+                continue
+            if event.get("name") != "confirmation_requested":
+                continue
+            cards.append(event["value"])
+            rid = event["value"]["request_id"]
+            assert executor.resolve_user_input(
+                rid, "REJECT", was_freeform=False,
+                thread_id=executor._pending_user_input.owner_of(rid), responder=MEMBER,
+            )
+        return await call
+
+    with bound_run(ORG_A, agent=AGENT, thread=new_thread(), member=MEMBER,
+                   instance=PERSONAL):
+        out = asyncio.run(turn())
+    assert out.startswith("REPORT"), out
+    (card,) = cards
+    assert "\n- «pypi.org»\n" in card["context"] and card["fenced"] is True
+    assert any("not approved (declined)" in r for r in gateway.tool_results(1))
+    assert all(flag_values(r, "--network") == ["none"] for r in maf.docker.runs())
+    assert not any(c[0] == "network" for c in maf.docker.calls)
 
 
 def test_two_orgs_get_two_containers_on_their_own_dirs(

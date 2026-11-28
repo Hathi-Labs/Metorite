@@ -123,8 +123,10 @@ from gateway.routes.crm.connection import (
 )
 from gateway.routes.crm.core import (
     ADMIN_ORDER_TAIL,
+    DEAL_PIPELINE_SQL,
     _tenant_session,
     count_records,
+    fitted_value_sql,
     from_jsonb,
     router,
 )
@@ -230,7 +232,9 @@ _OWNER_TOTAL_SQL = (
 _PIPELINES_SQL = (
     "SELECT count(*) FILTER (WHERE ext_source = 'zoho') AS from_zoho, "
     "count(*) FILTER (WHERE ext_source IS DISTINCT FROM 'zoho') AS native "
-    "FROM crm_pipelines WHERE organization_id = CAST(:org AS uuid)"
+    "FROM crm_pipelines WHERE organization_id = CAST(:org AS uuid) "
+    # CRM-M4a: the switch counts the deal pipelines only.
+    f"AND {DEAL_PIPELINE_SQL}"
 )
 _STAGES_SQL = (
     "SELECT count(*) AS n FROM crm_pipeline_stages "
@@ -302,7 +306,7 @@ _DEAL_RANK_CTE = (
     "flags AS (SELECT EXISTS (SELECT 1 FROM crm_deal_statuses o "
     "WHERE o.organization_id = CAST(:o AS uuid) AND o.ui_position IS NOT NULL) "
     "AS admin_order, (SELECT p.id FROM crm_pipelines p "
-    "WHERE p.organization_id = CAST(:o AS uuid) "
+    "WHERE p.organization_id = CAST(:o AS uuid) AND p.kind = 'deal' "
     "ORDER BY p.is_default DESC, p.position, p.created_at, p.id LIMIT 1) AS pid), "
     "ranked AS (SELECT s.id, row_number() OVER (ORDER BY "
     "(s.hidden OR s.source_gone_at IS NOT NULL), "
@@ -1217,8 +1221,24 @@ async def fold_cutover_overlay(db: Any, org: str) -> dict[str, int]:
     ⚠️ A raw write to two guarded tables, on purpose: it runs inside phase 2,
     after the mode check under ``FOR UPDATE``. Only this module names it
     (``test_crm_upsert_from_source_fence.py``).
+
+    CRM-M3b (D166): a deal stage's ``ui_probability`` goes into each of its
+    pipeline memberships too, BEFORE the stage fold clears it. Each reader
+    takes the membership value first (migration 513), so the board reads the
+    same win chance before and after the switch. A value that breaks the
+    clamp of D-CRM-10 for the type of the stage goes in as NULL, and NULL
+    reads the stage row, which the fold sets to the same value
+    (``core.fitted_value_sql``, CRM-M3b repair 1).
     """
     folded: dict[str, int] = {}
+    members = await db.execute(text(
+        "UPDATE crm_pipeline_stages ps SET probability = "
+        f"{fitted_value_sql('probability', 's.ui_probability')} "
+        "FROM crm_deal_statuses s WHERE s.id = ps.status_id "
+        "AND s.ui_probability IS NOT NULL AND s.organization_id = CAST(:o AS uuid) "
+        "AND ps.organization_id = CAST(:o AS uuid)"
+    ), {"o": org})
+    folded["crm_pipeline_stages"] = int(getattr(members, "rowcount", 0) or 0)
     for table, ranked in (
         ("crm_deal_statuses", _DEAL_RANK_CTE), ("crm_lead_statuses", _LEAD_RANK_CTE),
     ):

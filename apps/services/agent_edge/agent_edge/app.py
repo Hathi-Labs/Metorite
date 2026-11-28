@@ -10,6 +10,7 @@ Routes, all under the issuer ``https://mcp.metorite.com``:
   (``/.well-known/oauth-protected-resource/mcp``), which RFC 9728 §3.1 names.
 * ``POST /oauth/token`` and ``POST /oauth/revoke`` — :mod:`agent_edge.token_endpoint`.
 * ``POST /mcp`` — the MCP endpoint (EA-3b-1), :mod:`agent_edge.mcp`.
+* ``POST /mcp/readonly`` — the same endpoint with the read scopes only (SW-34b).
 
 ⚠️ **The flag.** While ``agent_access_enabled`` is false, EVERY request
 answers 404 and does nothing else: every path, every method, ``OPTIONS`` and
@@ -27,10 +28,13 @@ block. Run it locally with ``uvicorn agent_edge.app:app``.
 """
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
 from acb_auth import agent_oauth
+from acb_auth.secret_check import check_startup_secrets
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -78,6 +82,17 @@ def _resource_metadata_paths() -> list[str]:
     return [base, f"{base}{path}"] if path else [base]
 
 
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Check the secrets of the edge at start (task 574, WS-2d, BO-8).
+
+    Shadow (the default) logs each empty or public secret by name. Enforce
+    refuses the start. Fence: tests/unit/test_secret_startup_check.py.
+    """
+    check_startup_secrets("agent_edge")
+    yield
+
+
 def create_app() -> FastAPI:
     """Build the edge app. The routes read Settings on each request."""
     app = FastAPI(
@@ -85,6 +100,7 @@ def create_app() -> FastAPI:
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+        lifespan=_lifespan,
     )
     app.add_middleware(EdgeGate)
 
@@ -110,6 +126,10 @@ def create_app() -> FastAPI:
     # of spec §9.6 in their order (the key before the method) and the router
     # never answers a 405 first.
     app.add_api_route(mcp.path(), mcp.endpoint, methods=mcp.ROUTE_METHODS)
+    # SW-34b: the read-only door. The same token, with its scopes narrowed to
+    # the read scopes. Fence: tests/unit/test_mcp_edge_readonly.py.
+    app.add_api_route(mcp.readonly_path(), mcp.readonly_endpoint,
+                      methods=mcp.ROUTE_METHODS)
     return app
 
 

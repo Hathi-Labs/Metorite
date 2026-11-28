@@ -79,6 +79,7 @@ class _Harness:
         body_html: str | None = "<html><body><p>The <b>BQ</b> quote.</p></body></html>",
         body_text: str = "The BQ quote.", signature: str = "",
         native: bool = False, send_error: BaseException | None = None,
+        refused: tuple[str, ...] = (),
     ) -> None:
         self.files = files if files is not None else {PDF: b"%PDF-1.7 quote", SHEET: b"PK sheet"}
         self.sizes = sizes or {}
@@ -149,6 +150,7 @@ class _Harness:
 
         class _SendProvider:
             forwards_natively = native
+            last_refused = frozenset(refused)
 
             async def send_message(self, **kw: Any) -> str:
                 if send_error is not None:
@@ -227,6 +229,34 @@ class TestTheForwardRoute:
         await _forward(note="See below.")
         text = h.sent[0]["body_text"]
         assert text.index("See below.") < text.index("Fracktal Works") < text.index("Forwarded message")
+
+    async def test_the_act_record_reads_the_sender_of_the_jsonb_dict(self, monkeypatch) -> None:
+        """WS-PZ MM-1 review P1: ``from_address`` is JSONB, a dict, so the
+        domain came out None. The row also holds no address that the SMTP
+        server refused. Mutation: pass ``row.from_address`` straight to
+        ``domain_of``, or pass ``req.to`` with no refused filter -> red."""
+        from acb_common import member_actions as ma
+
+        _Harness(monkeypatch, refused=("kim@fracktal.test",))
+        seen: list[dict[str, Any]] = []
+
+        async def spy(_db: Any, **kw: Any) -> bool:
+            seen.append(kw)
+            return True
+
+        monkeypatch.setattr(ma, "record_act", spy)
+        await _forward(to=["geo@fracktal.test", "Kim@Fracktal.test"], include_attachments=False)
+        [kw] = seen
+        row = ma.build_row(**{k: v for k, v in kw.items() if k != "org"})
+        assert json.loads(row["features"]) == {"sender_domain": "contoso.test"}
+        assert row["act"] == "forward" and row["targets"] == ["geo@fracktal.test"]
+
+    def test_the_sender_reads_from_each_stored_shape(self) -> None:
+        assert fwd._sender_address({"name": "Ravi", "email": "ravi@contoso.test"}) ==             "ravi@contoso.test"
+        assert fwd._sender_address('{"email": "ravi@contoso.test"}') == "ravi@contoso.test"
+        assert fwd._sender_address("ravi@contoso.test") == "ravi@contoso.test"
+        assert fwd._sender_address({"name": "Ravi"}) is None
+        assert fwd._sender_address(None) is None
 
     async def test_a_mail_of_another_member_is_404_before_any_fetch(self, monkeypatch) -> None:
         h = _Harness(monkeypatch)
@@ -509,6 +539,10 @@ def chat(monkeypatch):
 
     async def fake_post(path, body):
         rec.posts.append((path, body))
+        if path == "/email/metorite-files/resolve":
+            # Task 2491: the check of each workspace file before the card.
+            # Each file of these tests resolves.
+            return {"files": [], "refused": []}
         return {"id": "sent-1", "ok": True, "subject": "Fwd: BQ quote",
                 "attachments": ["quote.pdf", "rates.xlsx"]}
 

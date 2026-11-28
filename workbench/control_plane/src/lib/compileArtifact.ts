@@ -25,12 +25,35 @@
  * client — a file-read primitive. The onResolve hook below therefore rejects
  * every specifier that is not an allowlisted runtime module, so no path ever
  * reaches the filesystem resolver. Bundling never executes the code, but it
- * does read it, and that is enough to matter.
+ * does read it, and that is enough to matter. An import attribute
+ * (`with { type: "text" }`) changes how esbuild loads an allowed file, so the
+ * allowlist refuses every attribute too (task 2432, F3).
+ *
+ * ── Why the limits are load-bearing (task 2432, F1) ────────────────────────
+ * Any signed-in member can send source here, and the box serves every tenant.
+ * Measured on 2026-11-09 (STU-L0): one 256 KiB source drove the esbuild
+ * process to 966 MB, and the minifier's time grows faster than its input
+ * (nested ternaries: 16 KB in 1 s, 64 KB in 13 s, 256 KiB past 150 s). Some
+ * shapes grow fast with no minifier too (nested arrows). So:
+ *   • no minifier — the frame inlines the bundle, so bytes cost little;
+ *   • a source cap of 64 KiB (fix round: one build still spiked to 0.9 GB);
+ *   • ONE build at a time in this process, a queue bounded by count AND by
+ *     wait, and a refusal past it;
+ *   • ONE running or queued build for each member. About 130 KB of nested
+ *     arrows reached the kill, so a member with a second build in the queue
+ *     held the slot for 20 s while every other tenant got "busy";
+ *   • a timeout that KILLS the esbuild process (`stop()`). `cancel()` on a
+ *     context is not enough: measured, it let a 3 s build run to its end;
+ *   • a cap on the output, which a deep JSX tree inflates nine times over.
+ * One build at a time is what makes `stop()` precise: the only build that the
+ * kill ends is the one that ran out of time. The route adds a cap on the body,
+ * a rate limit for each member, and a heavy charge for a killed build
+ * (`app/api/artifacts/compile/route.ts`).
  */
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-import { build, type Plugin } from "esbuild";
+import { build, stop, type BuildOptions, type BuildResult, type Plugin } from "esbuild";
 
 /** The bare specifier artifacts import the design kit from. */
 const UI_PACKAGE = "@cc/ui";
@@ -84,8 +107,37 @@ const RUNTIME_ALIAS: Record<string, string> = {
   "react/jsx-dev-runtime": "preact/jsx-runtime",
 };
 
-/** Refuse absurd inputs before handing them to the bundler. */
-const MAX_SOURCE_BYTES = 256 * 1024;
+/** The limits of one compile. Tests narrow them, the route takes the defaults. */
+export interface CompileLimits {
+  /** Refuse absurd inputs before handing them to the bundler. */
+  maxSourceBytes: number;
+  /** The largest bundle we hand back to the frame. */
+  maxOutputBytes: number;
+  /** A build that runs longer is stopped, and its esbuild process is killed. */
+  timeoutMs: number;
+  /** Builds that may wait for the one build slot of this process. */
+  maxQueued: number;
+  /**
+   * The longest a build waits for the slot before it is refused as busy.
+   * Longer than `timeoutMs`, so one build that runs into the kill never
+   * turns the builds behind it away on its own.
+   */
+  maxWaitMs: number;
+}
+
+export const COMPILE_LIMITS: Readonly<CompileLimits> = Object.freeze({
+  maxSourceBytes: 64 * 1024,
+  maxOutputBytes: 1024 * 1024,
+  timeoutMs: 10_000,
+  maxQueued: 8,
+  maxWaitMs: 25_000,
+});
+
+/** Who asked for a compile. One running or queued build for each owner. */
+export interface CompileCaller {
+  /** The member's email. Absent for a caller with no member (tests, e2e). */
+  owner?: string;
+}
 
 export interface CompileOk {
   ok: true;
@@ -94,10 +146,25 @@ export interface CompileOk {
   bytes: number;
 }
 
+/**
+ * Why a compile failed. The route maps `busy` and `member_busy` to 429. Every
+ * other reason is a fault of the source, so the route answers it as data
+ * (200, `ok: false`).
+ */
+export type CompileFailure =
+  | "source"
+  | "too_large"
+  | "output_too_large"
+  | "timeout"
+  | "busy"
+  | "member_busy"
+  | "setup";
+
 export interface CompileErr {
   ok: false;
   /** Agent-readable diagnostics, newline separated. */
   error: string;
+  reason: CompileFailure;
 }
 
 export type CompileResult = CompileOk | CompileErr;
@@ -124,6 +191,17 @@ function allowlistPlugin(): Plugin {
         // Not the agent's code (our entry, or a runtime file resolving its own
         // internals) — esbuild handles it.
         if (args.namespace !== "artifact") return null;
+        // `with { type: "text" }` loads an allowed file as text, so an
+        // attribute widens what the allowlist admits. No artifact needs one.
+        if (args.with && Object.keys(args.with).length > 0) {
+          return {
+            errors: [{
+              text:
+                `Cannot import ${JSON.stringify(args.path)} with an import attribute ` +
+                `(\`with { … }\`). Remove the \`with { … }\` part of the import.`,
+            }],
+          };
+        }
         if (ALLOWED_IMPORTS.has(args.path)) return null;
         // Kept to one line on purpose. A file with many bad imports repeats
         // this per import, so the long "why" belongs in the docs, not stapled
@@ -179,20 +257,142 @@ function formatErrors(err: unknown): string {
   return lines.join("\n");
 }
 
+// ── One build at a time ──────────────────────────────────────────────────────
+
+/** The answer of {@link BuildSlot.acquire}. */
+export type SlotAnswer = "granted" | "busy" | "member_busy";
+
+/**
+ * The one build slot of this process, with a short FIFO queue.
+ *
+ * One slot, not two: a build that runs out of time is ended with `stop()`,
+ * which kills the whole esbuild service process. With one slot, that process
+ * holds no other build, so the kill ends only the build that timed out.
+ *
+ * One running or queued build for each owner (fix round, review P1). With a
+ * plain FIFO, one member with a slow build in the slot and a second one in
+ * the queue held the slot for two full timeouts, and every other tenant got
+ * "busy" meanwhile. Now a member's second build is refused at once, as
+ * `member_busy`, and only that member sees it.
+ *
+ * The queue is bounded by count and by wait. `maxWaitMs` is longer than the
+ * build timeout, so a build that runs into the kill never turns the builds
+ * behind it away on its own.
+ */
+export class BuildSlot {
+  private busy = false;
+  private readonly waiting: Array<(granted: boolean) => void> = [];
+  private readonly owners = new Set<string>();
+
+  /** Builds that wait for the slot now. */
+  get queued(): number {
+    return this.waiting.length;
+  }
+
+  /** Whether `owner` has a running or queued build. */
+  holds(owner: string): boolean {
+    return this.owners.has(owner);
+  }
+
+  /**
+   * `granted` when the caller holds the slot. `member_busy` when `owner`
+   * already has a running or queued build. `busy` when the queue is full, or
+   * the wait ran out. A granted caller must call {@link release} once.
+   *
+   * Synchronous up to the returned promise: a second call in the same tick
+   * already sees this one.
+   */
+  acquire(owner: string | undefined, maxQueued: number, maxWaitMs: number): Promise<SlotAnswer> {
+    if (owner !== undefined && this.owners.has(owner)) return Promise.resolve("member_busy");
+    if (!this.busy) {
+      this.busy = true;
+      if (owner !== undefined) this.owners.add(owner);
+      return Promise.resolve("granted");
+    }
+    if (this.waiting.length >= maxQueued) return Promise.resolve("busy");
+    if (owner !== undefined) this.owners.add(owner);
+    return new Promise<SlotAnswer>((resolve) => {
+      const grant = () => {
+        clearTimeout(timer);
+        resolve("granted");
+      };
+      const timer = setTimeout(() => {
+        const at = this.waiting.indexOf(grant);
+        if (at >= 0) this.waiting.splice(at, 1);
+        if (owner !== undefined) this.owners.delete(owner);
+        resolve("busy");
+      }, maxWaitMs);
+      this.waiting.push(grant);
+    });
+  }
+
+  /** End `owner`'s build: hand the slot to the next waiter, or free it. */
+  release(owner: string | undefined): void {
+    if (owner !== undefined) this.owners.delete(owner);
+    const next = this.waiting.shift();
+    if (next) next(true);
+    else this.busy = false;
+  }
+}
+
+const buildSlot = new BuildSlot();
+
+const TIMED_OUT = Symbol("timed out");
+
+/**
+ * Run one esbuild build, and KILL it when it runs out of time.
+ *
+ * `stop()` kills the esbuild service process, so the work really ends. The
+ * next build starts a fresh process. The promise of the killed build never
+ * settles, or rejects later, so it gets a no-op catch and nobody waits on it.
+ */
+async function buildWithin(
+  options: BuildOptions & { write: false },
+  timeoutMs: number,
+): Promise<BuildResult<BuildOptions & { write: false }> | typeof TIMED_OUT> {
+  const work = build(options);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<typeof TIMED_OUT>((resolve) => {
+    timer = setTimeout(() => resolve(TIMED_OUT), timeoutMs);
+  });
+  try {
+    const first = await Promise.race([work, deadline]);
+    if (first === TIMED_OUT) {
+      work.catch(() => undefined);
+      await stop();
+    }
+    return first;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * Compile an agent-authored React component to a self-contained IIFE.
  *
  * `code` must default-export a component. The returned JS mounts it into
- * `#root` and expects nothing else from the page.
+ * `#root` and expects nothing else from the page. `overrides` narrows the
+ * limits, for tests only. The route passes none. `caller.owner` is the
+ * member: one running or queued build for each member.
  */
-export async function compileArtifact(code: string): Promise<CompileResult> {
+export async function compileArtifact(
+  code: string,
+  overrides: Partial<CompileLimits> = {},
+  caller: CompileCaller = {},
+): Promise<CompileResult> {
+  const limits: CompileLimits = { ...COMPILE_LIMITS, ...overrides };
   if (!code || !code.trim()) {
-    return { ok: false, error: "No source code was provided." };
-  }
-  if (Buffer.byteLength(code, "utf8") > MAX_SOURCE_BYTES) {
     return {
       ok: false,
-      error: `Source is larger than ${MAX_SOURCE_BYTES / 1024} KB. Split the artifact up or trim it.`,
+      reason: "source",
+      error: "No source code arrived. Send the component's source and try again.",
+    };
+  }
+  if (Buffer.byteLength(code, "utf8") > limits.maxSourceBytes) {
+    return {
+      ok: false,
+      reason: "too_large",
+      error: `Source is larger than ${limits.maxSourceBytes / 1024} KB. Split the artifact up or trim it.`,
     };
   }
   if (code.includes(UI_PACKAGE) && !existsSync(UI_SOURCE)) {
@@ -200,6 +400,7 @@ export async function compileArtifact(code: string): Promise<CompileResult> {
     // letting it surface as a confusing "cannot import" further down.
     return {
       ok: false,
+      reason: "setup",
       error:
         `The ${UI_PACKAGE} design kit is not available on this server ` +
         `(expected ${UI_SOURCE}). This is a deployment issue — the artifact ` +
@@ -207,6 +408,39 @@ export async function compileArtifact(code: string): Promise<CompileResult> {
     };
   }
 
+  // The first await. Everything above ran in the caller's tick, so a second
+  // call made in the same tick already sees this one holding the slot.
+  const owner = caller.owner?.trim().toLowerCase() || undefined;
+  const answer = await buildSlot.acquire(owner, limits.maxQueued, limits.maxWaitMs);
+  if (answer === "member_busy") return { ok: false, reason: "member_busy", error: MEMBER_BUSY };
+  if (answer === "busy") return { ok: false, reason: "busy", error: BUSY };
+  try {
+    return await compileInSlot(code, limits);
+  } finally {
+    buildSlot.release(owner);
+  }
+}
+
+/** The refusal of a full queue. The route answers it with 429. */
+export const BUSY =
+  "Metorite is building other artifacts right now. Wait a few seconds and try again.";
+
+/** The refusal of a member's second build. The route answers it with 429. */
+export const MEMBER_BUSY =
+  "One of your artifacts is still building. Wait for it to finish, then try again.";
+
+function timedOut(limits: CompileLimits): CompileErr {
+  return {
+    ok: false,
+    reason: "timeout",
+    error:
+      `Building the artifact took longer than ${limits.timeoutMs / 1000} seconds, so ` +
+      `Metorite stopped it. Simplify the component, for example with fewer deeply ` +
+      `nested expressions, and send it again.`,
+  };
+}
+
+async function compileInSlot(code: string, limits: CompileLimits): Promise<CompileResult> {
   // The agent supplies a component module; we own the mount so the agent never
   // has to know about the root element or which renderer is underneath.
   const entry = [
@@ -217,52 +451,77 @@ export async function compileArtifact(code: string): Promise<CompileResult> {
     "render(h(Artifact, {}), el);",
   ].join("\n");
 
-  try {
-    const result = await build({
-      stdin: {
-        contents: entry,
-        resolveDir: process.cwd(),
-        sourcefile: "artifact-entry.jsx",
-        loader: "jsx",
-      },
-      bundle: true,
-      minify: true,
-      format: "iife",
-      target: ["es2020"],
-      jsx: "automatic",
-      jsxImportSource: "preact",
-      // Rewrites the agent's `from "react"` to the runtime we actually ship,
-      // and points @cc/ui at our design-kit source. Runs after plugins decline,
-      // so the allowlist above still gets first say.
-      alias: { ...RUNTIME_ALIAS, [UI_PACKAGE]: UI_SOURCE },
-      write: false,
-      logLevel: "silent",
-      // Keep the bundle honest: no process.env leakage into artifact code.
-      define: { "process.env.NODE_ENV": '"production"' },
-      plugins: [
-        {
-          name: "artifact-virtual-entry",
-          setup(pluginBuild) {
-            // The agent's own module, supplied in memory — never read from disk.
-            pluginBuild.onResolve({ filter: /^artifact:component$/ }, () => ({
-              path: "artifact:component",
-              namespace: "artifact",
-            }));
-            pluginBuild.onLoad({ filter: /.*/, namespace: "artifact" }, () => ({
-              contents: code,
-              loader: "tsx",
-              resolveDir: process.cwd(),
-            }));
-          },
+  const options: BuildOptions & { write: false } = {
+    stdin: {
+      contents: entry,
+      resolveDir: process.cwd(),
+      sourcefile: "artifact-entry.jsx",
+      loader: "jsx",
+    },
+    bundle: true,
+    // No minifier (task 2432). Its time grows faster than the source, and a
+    // build of 64 KB took 13 s with it. The frame inlines the bundle, so the
+    // extra bytes cost little.
+    minify: false,
+    format: "iife",
+    target: ["es2020"],
+    jsx: "automatic",
+    jsxImportSource: "preact",
+    // Rewrites the agent's `from "react"` to the runtime we actually ship,
+    // and points @cc/ui at our design-kit source. Runs after plugins decline,
+    // so the allowlist above still gets first say.
+    alias: { ...RUNTIME_ALIAS, [UI_PACKAGE]: UI_SOURCE },
+    write: false,
+    logLevel: "silent",
+    legalComments: "none",
+    // Keep the bundle honest: no process.env leakage into artifact code.
+    define: { "process.env.NODE_ENV": '"production"' },
+    plugins: [
+      {
+        name: "artifact-virtual-entry",
+        setup(pluginBuild) {
+          // The agent's own module, supplied in memory — never read from disk.
+          pluginBuild.onResolve({ filter: /^artifact:component$/ }, () => ({
+            path: "artifact:component",
+            namespace: "artifact",
+          }));
+          pluginBuild.onLoad({ filter: /.*/, namespace: "artifact" }, () => ({
+            contents: code,
+            loader: "tsx",
+            resolveDir: process.cwd(),
+          }));
         },
-        allowlistPlugin(),
-      ],
-    });
+      },
+      allowlistPlugin(),
+    ],
+  };
 
+  try {
+    const result = await buildWithin(options, limits.timeoutMs);
+    if (result === TIMED_OUT) return timedOut(limits);
     const out = result.outputFiles?.[0]?.text ?? "";
-    if (!out) return { ok: false, error: "The bundler produced no output." };
-    return { ok: true, js: out, bytes: Buffer.byteLength(out, "utf8") };
+    if (!out) {
+      return {
+        ok: false,
+        reason: "source",
+        error:
+          "The bundler produced no output. Check that the source default-exports a " +
+          "component, and send it again.",
+      };
+    }
+    const bytes = Buffer.byteLength(out, "utf8");
+    if (bytes > limits.maxOutputBytes) {
+      return {
+        ok: false,
+        reason: "output_too_large",
+        error:
+          `The built artifact is ${Math.ceil(bytes / 1024)} KB, which is more than the ` +
+          `${limits.maxOutputBytes / 1024} KB limit. Make the component smaller, for ` +
+          `example with a loop over data instead of repeated markup.`,
+      };
+    }
+    return { ok: true, js: out, bytes };
   } catch (err) {
-    return { ok: false, error: formatErrors(err) };
+    return { ok: false, reason: "source", error: formatErrors(err) };
   }
 }

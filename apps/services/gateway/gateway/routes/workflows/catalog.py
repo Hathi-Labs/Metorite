@@ -73,13 +73,25 @@ NODE_TYPE_META = [
         ),
     },
     {
+        # STU-E4 built the node, and WFC-4a-1 offers it. The words are plain,
+        # because the palette search and the Copilot shortlist show them.
+        "type": "human_step",
+        "category": "logic",
+        "label": "Human step",
+        "description": (
+            "Give one member a task, and pause the run until the task is done. "
+            "The person, the title and the description are fixed words: the "
+            "step cannot read data from earlier steps."
+        ),
+    },
+    {
         "type": "pm_task",
         "category": "action",
         "label": "Update task (Projects)",
         "description": (
-            "Set fields on a task in the Projects app — title, description, "
-            "importance, dates, or its status by lane name. An internal write: "
-            "no approval node required."
+            "Set fields on a task in the Projects app: title, description, "
+            "importance, dates, or its status by lane name. This step cannot "
+            "run yet: a run does not check which tasks a member can see."
         ),
     },
     {
@@ -90,8 +102,8 @@ NODE_TYPE_META = [
             "Archive long-closed tasks and close stale ones, per each root "
             "project's lifecycle policy (archive/close months and timezone "
             "live on the project — projects with no policy are untouched). "
-            "Config-free; pair it with a schedule trigger. An internal "
-            "write: no approval node required."
+            "This step cannot run yet: a run does not check which tasks a "
+            "member can see."
         ),
     },
     {
@@ -102,11 +114,21 @@ NODE_TYPE_META = [
     },
 ]
 
-#: The `pm.*` topics a workflow can bind an event trigger to (WS-27f).
+#: The node types that the palette search and the Copilot shortlist do NOT
+#: offer (WFC-4a-1, ``ai_studio.md`` §14). The data stays: each type stays in
+#: ``NODE_TYPE_META`` and in ``graph.NODE_TYPES``, so a stored graph still draws,
+#: validates and publishes as before. ``pm_task`` and ``pm_lifecycle`` cannot
+#: run (``service._MEMBER_BLIND_WRITE_TYPES``: every run door refuses them).
+#: ``studio_write`` has no form yet (WFC-4a-2). The Copilot prompt forbids the
+#: two task types by name. Fence: ``tests/unit/test_workflows_node_offer.py``.
+UNOFFERED_NODE_TYPES = frozenset({"pm_task", "pm_lifecycle", "studio_write"})
+
+#: The topics a workflow can bind an event trigger to: the `pm.*` events
+#: (WS-27f) and the core app events (STU-E12a, `people.person.updated`).
 #: Served rather than typed from memory — an editor offering a topic the app
 #: does not emit is a trigger that silently never fires (D7, the same rule the
 #: agent and integration lists already follow).
-PM_EVENT_TOPICS = [
+EVENT_TOPICS = [
     {"source": "projects", "event_type": "pm.task.created", "label": "Task created"},
     {"source": "projects", "event_type": "pm.task.updated", "label": "Task updated"},
     {
@@ -126,7 +148,11 @@ PM_EVENT_TOPICS = [
     {"source": "projects", "event_type": "pm.project.updated", "label": "Project updated"},
     {"source": "projects", "event_type": "pm.project.moved", "label": "Project moved"},
     {"source": "projects", "event_type": "pm.project.deleted", "label": "Project deleted"},
+    {"source": "people", "event_type": "people.person.updated", "label": "Person updated"},
 ]
+
+#: The old name of the one list, kept for a reader that still imports it.
+PM_EVENT_TOPICS = EVENT_TOPICS
 
 CONDITION_OPS = [
     "equals",
@@ -264,7 +290,7 @@ async def get_catalog(
     return {
         "node_types": NODE_TYPE_META,
         "condition_ops": CONDITION_OPS,
-        "event_topics": PM_EVENT_TOPICS,
+        "event_topics": EVENT_TOPICS,
         "agents": _agent_entries(),
         "integrations": _integration_entries(),
         "tools": [_tool_entry(s) for s in list_tools()],

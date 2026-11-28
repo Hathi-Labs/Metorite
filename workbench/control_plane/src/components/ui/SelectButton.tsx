@@ -134,6 +134,36 @@ export function selectPanelReducer(
   }
 }
 
+/**
+ * Escape on an OPEN list closes the list, and nothing else (task 2299).
+ *
+ * The task panel closes on Escape (`panelEscape`), and the Projects page
+ * closes it from a `window` listener. One Escape on an open Status list
+ * closed the list AND the panel. Now the open control takes the key first.
+ *
+ * ⚠️ **What `stopPropagation` reaches.** Next hydrates the whole `document`,
+ * so React runs a key from the main tree at `document`, and a key from a
+ * portal (a dialog, the filter box) at the portal node. The native stop then
+ * keeps the key from each node after that one: `window`, so the page and
+ * `CardPanel`, and from a portal also Base UI's dialog listener on
+ * `document`. React's own stop keeps it from the panel's `onKeyDown`.
+ * `preventDefault` marks the key as used, which `cardEscape` and
+ * `TaskFocusModal` read.
+ *
+ * True when it took the key. A closed list returns false, so the next Escape
+ * reaches the panel. Fences: `SelectButton.test.ts` and
+ * `e2e/projects-select-escape.spec.ts`.
+ */
+export function claimEscape(
+  event: Pick<KeyboardEvent, "key" | "preventDefault" | "stopPropagation">,
+  open: boolean
+): boolean {
+  if (!open || event.key !== "Escape") return false;
+  event.preventDefault();
+  event.stopPropagation();
+  return true;
+}
+
 /** One heading and its options, in the caller's order. */
 export interface OptionGroup {
   /** `undefined` for options with no heading. */
@@ -392,8 +422,12 @@ export function SelectButton({
     // ⚠️ Escape closes, and focus returns to the trigger. Without the return
     // the next Tab starts from the top of the document, which on this row
     // means walking the whole filter bar again.
+    // The root's `onKeyDown` takes a key from inside the control. This takes
+    // a key from elsewhere: Safari does not focus a clicked button, so the
+    // focus can stay on the board row. The stop keeps the page from closing
+    // the panel too (`claimEscape`).
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (claimEscape(event, true)) {
         dispatch({ type: "close" });
         root.current?.querySelector("button")?.focus();
       }
@@ -416,7 +450,19 @@ export function SelectButton({
   );
 
   return (
-    <div ref={root} className={`relative ${widthClass}`}>
+    <div
+      ref={root}
+      className={`relative ${widthClass}`}
+      // Task 2299: one Escape closes the open list only, never the panel or
+      // the dialog around it. A key in the portalled list bubbles here too,
+      // through the React tree. See `claimEscape`.
+      onKeyDown={(event) => {
+        if (claimEscape(event, open)) {
+          dispatch({ type: "close" });
+          root.current?.querySelector("button")?.focus();
+        }
+      }}
+    >
       <button
         ref={setTrigger}
         id={id}

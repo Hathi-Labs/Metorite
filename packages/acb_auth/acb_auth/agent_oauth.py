@@ -26,7 +26,9 @@ Four doors check it (spec §10.6): the consent routes, the store's token
 issue, the edge bearer check and the connection read of branch 0.
 :func:`change_access_allowed` is the one reader of
 ``agent_change_access_orgs``, the dark switch of Change access (EA-17c-1,
-spec §10.8).
+spec §10.8). :func:`image_upload_allowed` is the one reader of
+``mcp_image_upload_orgs``, the dark switch of the images of an agent
+(CIV-14b, spec §12.9).
 
 **First-party clients (D-EA-11, spec §10.7).** :func:`is_first_party` is
 the one reader of ``agent_first_party_client_ids``, and
@@ -47,6 +49,11 @@ EA-19b adds the box stamp ``mcp:box:<slug>-<8 hex>`` (spec §10.9), and
 is the one cover rule. :func:`door_apps` is the one reader of
 ``agent_door_apps``. :func:`door_route` gives the door op of a pair from the
 manifests, and no hand list holds a door pair (AD-3).
+
+**What a token may do (EA-17c-3, spec §10.8).** :func:`effective_scopes` is
+the ONE rule: the token scope intersected with the connection scopes.
+:func:`granted_scope` names it for a token answer, and :func:`mint_scope`
+gives the scope that ``approve`` mints.
 
 Fences: ``tests/unit/test_agent_oauth_server.py``,
 ``tests/unit/test_mcp_edge_signing.py`` and
@@ -103,7 +110,7 @@ def covered_by(scope: str) -> str | None:
 
 def covered_scopes(scopes: Iterable[str]) -> set[str]:
     """The resource scopes that *scopes* hold, with each read scope that a
-    write scope among them covers. ``bearer.effective_scopes`` calls it on
+    write scope among them covers. :func:`effective_scopes` calls it on
     each side of the intersection."""
     held = {s for s in scopes if s in RESOURCE_SCOPES}
     held |= {c for s in held if (c := covered_by(s)) in RESOURCE_SCOPES}
@@ -118,6 +125,23 @@ def scope_holds(scopes: Iterable[str], required: str) -> bool:
     the member granted the scopes."""
     held = set(scopes)
     return required in held or any(covered_by(s) == required for s in held)
+
+
+#: SW-34b (``agent_coordination.md``). The read scopes of the resource:
+#: ``projects:read``, ``context:read`` and each ``<app>:read``. A scope that
+#: covers another scope (a write scope) is never one.
+READ_SCOPES: tuple[str, ...] = tuple(
+    s for s in RESOURCE_SCOPES if covered_by(s) is None and s.endswith(":read"))
+
+
+def read_only(scopes: Iterable[str]) -> frozenset[str]:
+    """The read scopes among *scopes* (SW-34b). The ONE narrowing rule of the
+    read-only door ``/mcp/readonly``. Call it on scopes that the cover rule
+    already expanded, so ``projects:write`` has given ``projects:read``. It
+    only removes a scope, so it can never widen a token.
+
+    Fence: ``tests/unit/test_mcp_edge_readonly.py``."""
+    return frozenset(s for s in scopes if s in READ_SCOPES)
 
 
 #: The longest ``scope`` string the server reads.
@@ -155,6 +179,84 @@ def scope_string(scopes: Iterable[str]) -> str:
     return " ".join(s for s in SUPPORTED_SCOPES if s in wanted)
 
 
+# ── What a token may do (EA-17c-3, D-EA-13 rule 2, spec §7.1 step 4) ────────
+#
+# ⚠️ A token minted at ``approve`` carries every resource scope that the agent
+# ASKED for, and the connection row holds what the member GRANTED. So the
+# token scope alone can be wider than the grant. Every reader of
+# ``agent_token.scope`` takes it through :func:`effective_scopes` or
+# :func:`granted_scope`, which intersect it with the connection scopes. A
+# reader that took the token scope alone would give an agent a scope that the
+# member cleared. Fence: ``tests/unit/test_agent_change_access.py``
+# (``TestTheMintAtTheRequestedScopes``).
+
+
+def _token_scopes(token_scope: str | None) -> set[str]:
+    """The supported scopes that *token_scope* names. A malformed one names
+    none, so it fails closed."""
+    try:
+        return set(parse_scope(token_scope))
+    except ValueError:
+        return set()
+
+
+def effective_scopes(
+    token_scope: str | None, connection_scopes: Iterable[str]
+) -> frozenset[str]:
+    """The resource scopes that a token may use NOW. The ONE rule.
+
+    The token scope intersected with the scopes of the connection row, each
+    side with the cover rule (:func:`covered_scopes`), so a
+    ``projects:write`` token on a ``projects:read`` connection may read. A
+    malformed token scope gives no scope. ``offline_access`` is never in the
+    answer. The edge bearer check calls it on each call, and
+    :func:`granted_scope` and ``agent_tokens.ceiling_of`` build on it.
+    """
+    return frozenset(
+        covered_scopes(_token_scopes(token_scope)) & covered_scopes(connection_scopes))
+
+
+def granted_scope(token_scope: str | None, connection_scopes: Iterable[str]) -> str:
+    """The scope string that a token may use now, as an issue names it.
+
+    RFC 6749 §5.1: the token answer names the scope of the token. The
+    answer holds each scope of the connection that is effective, then each
+    effective scope of the token that those do not cover, and
+    ``offline_access`` only when the token AND the connection hold it. So
+    the cover of the answer equals :func:`effective_scopes`, and the answer
+    never names a scope that the member cleared. A token whose scope equals
+    the connection scopes gives that scope string.
+
+    The token endpoint names this string in its answer and in the scope check
+    of a refresh. The store gives a refresh token only when it holds
+    ``offline_access``.
+    """
+    live = effective_scopes(token_scope, connection_scopes)
+    token = _token_scopes(token_scope)
+    connection = set(connection_scopes)
+    named = {s for s in connection if s in live}
+    named |= {s for s in token if s in live and not scope_holds(named, s)}
+    if OFFLINE_ACCESS in token and OFFLINE_ACCESS in connection:
+        named.add(OFFLINE_ACCESS)
+    return scope_string(named)
+
+
+def mint_scope(requested: Iterable[str], granted: Iterable[str]) -> str:
+    """The scope of the code that ``approve`` mints (EA-17c-3).
+
+    Every resource scope that the agent asked for, so the connection scopes
+    alone narrow the token. Then a scope that the member cleared at the
+    connect can turn on with Change access and no reconnect (D-EA-13 rule
+    2). ``offline_access`` is the member's choice: it is in the answer only
+    when *granted* holds it, so a cleared ``offline_access`` never gives a
+    refresh token. A scope outside *requested* is never in the answer.
+    """
+    kept = {s for s in requested if s in RESOURCE_SCOPES}
+    if OFFLINE_ACCESS in set(granted):
+        kept.add(OFFLINE_ACCESS)
+    return scope_string(kept)
+
+
 # ── The flag and the fixed addresses (spec §5.5) ────────────────────────────
 
 
@@ -186,6 +288,20 @@ def runs_enabled() -> bool:
     return bool(get_settings().agent_runs_enabled)
 
 
+#: Task 1045a (``agent_coordination.md`` §3.2). What a ``waiting`` line of an
+#: agent run may wait on. ONE copy for both units: the gateway checks the
+#: input against it, and the edge offers it as the enum of the tool. The CHECK
+#: ``pm_agent_runs_waiting_on`` of the migration lists the same five. It lives
+#: here because the edge's ``tools.py`` may not hold the word as a literal
+#: (rule 15 of the edge's AGENTS.md).
+#: The wait is on work that is not the agent's own (owner, 2026-11-07). While
+#: the agent's own sub-agents work, the run is working, so no value names
+#: them. ``agent`` is another (external) agent.
+RUN_WAITING_ON: tuple[str, ...] = ("ci", "review", "deploy", "member", "agent")
+#: The longest wait, in minutes (D140.8). A shorter lease lowers it.
+RUN_WAITING_MAX_MIN = 120
+
+
 def answer_change_enabled() -> bool:
     """True when ``agent_answer_change_enabled`` is on (SW-43).
 
@@ -193,6 +309,18 @@ def answer_change_enabled() -> bool:
     answer answers 404 and the runs wire has no ``answer`` field.
     """
     return bool(get_settings().agent_answer_change_enabled)
+
+
+def task_checks_enabled() -> bool:
+    """True when ``agent_task_checks_enabled`` is on (SW-23).
+
+    The ONE reader of the flag, for both units. While it is false, the
+    gateway answers 404 on the report route of a Check, refuses a task write
+    that sends ``check_text``, and puts no ``check`` key on a task row. The
+    edge leaves ``report_check`` and the ``check`` input out of
+    ``tools/list``. So both units need the same value.
+    """
+    return bool(get_settings().agent_task_checks_enabled)
 
 
 @functools.lru_cache(maxsize=16)
@@ -328,6 +456,57 @@ def protocol_allowed(organization_id: object) -> bool:
     return ALL_ORGS in orgs or org in orgs
 
 
+def plan_order_allowed(organization_id: object) -> bool:
+    """True when ``my_work_plan_order_orgs`` allows *organization_id* (SW-68a).
+
+    The ONE reader of the flag. Off by default. The edge and the gateway route
+    both ask it, and the organization comes from the token row or the session,
+    never from request input. It reads the settings at each call.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return False
+    orgs = _parse_orgs(str(get_settings().my_work_plan_order_orgs or ""))
+    return ALL_ORGS in orgs or org in orgs
+
+
+#: SW-45. The modes of ``AGENT_CLAIM_SCOPE_MODES``, from the weakest.
+CLAIM_SCOPE_MODES: tuple[str, ...] = ("off", "warn", "refuse")
+
+
+def _parse_claim_scope(raw: str) -> dict[str, str]:
+    """The ``org=mode`` pairs of *raw*. A pair with an organization that is
+    not ``*`` and not a canonical UUID, or with an unknown mode, is dropped.
+    The last pair of one organization wins."""
+    found: dict[str, str] = {}
+    for part in raw.split(","):
+        key, sep, value = part.partition("=")
+        entry, mode = key.strip().lower(), value.strip().lower()
+        if not sep or mode not in CLAIM_SCOPE_MODES:
+            continue
+        org = ALL_ORGS if entry == ALL_ORGS else _canonical_org(entry)
+        if org is not None:
+            found[org] = mode
+    return found
+
+
+def claim_scope_mode(organization_id: object) -> str:
+    """The claim scope of *organization_id*: ``off``, ``warn`` or ``refuse``.
+
+    SW-45 (``agent_coordination.md`` §3.10.1). The ONE reader of
+    ``agent_claim_scope_modes``. An exact id wins over ``*``. An organization
+    that the value does not name reads as ``off``, and so does a value that is
+    not an id. It reads the settings at each call, so a SIGHUP reload of the
+    gateway applies a change. The caller passes the organization of the
+    session, never request input.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return "off"
+    modes = _parse_claim_scope(str(get_settings().agent_claim_scope_modes or ""))
+    return modes.get(org) or modes.get(ALL_ORGS) or "off"
+
+
 def org_allowed(organization_id: object) -> bool:
     """True when ``agent_access_orgs`` allows *organization_id*.
 
@@ -374,6 +553,108 @@ def change_access_allowed(organization_id: object) -> bool:
     if org is None:
         return False
     orgs = _parse_orgs(str(get_settings().agent_change_access_orgs or ""))
+    return ALL_ORGS in orgs or org in orgs
+
+
+def image_upload_allowed(organization_id: object) -> bool:
+    """True when ``mcp_image_upload_orgs`` allows *organization_id*.
+
+    CIV-14b (spec §12.9). The ONE reader of the flag. It keeps the images of
+    an outside agent dark: for a signed agent of an organization that it
+    refuses, the upload route answers 404 with :data:`IMAGE_UPLOAD_OFF`, and
+    ``attachment_ids`` of an activity answers 422 with the same code. A person
+    in the app is never refused by it. The list has the shape of
+    ``agent_access_orgs`` and the same parser, and the default is empty.
+
+    Two units read it. The gateway asks it at each call, so a flag reload
+    applies a change there. The agent edge asks it too (CIV-14b fix rounds 1
+    and 2): it hides the upload tool and the image inputs, checks a question
+    before its run starts, and refuses a large body of an organization off
+    the flag. The edge reads its settings at start. So a flip sets the same
+    value in the env file of the gateway and of the edge, reloads the gateway
+    and restarts the agent edge (``docs/flag_reload.md``). The caller passes
+    the organization of the session or of the token row, never request input.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return False
+    orgs = _parse_orgs(str(get_settings().mcp_image_upload_orgs or ""))
+    return ALL_ORGS in orgs or org in orgs
+
+
+def sequence_marks_allowed(organization_id: object) -> bool:
+    """True when ``sequence_marks_orgs`` allows *organization_id* (SW-27c1).
+
+    The ONE reader of the flag. It keeps ``mark_number`` dark: the edge hides
+    the tool for an organization that it refuses, and the mark route answers
+    404 with :data:`SEQUENCE_MARKS_OFF` for a signed agent of that
+    organization. The shape and the parser are those of
+    ``mcp_image_upload_orgs``, and the default is empty. The caller passes the
+    organization of the session or of the token row, never request input.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return False
+    orgs = _parse_orgs(str(get_settings().sequence_marks_orgs or ""))
+    return ALL_ORGS in orgs or org in orgs
+
+
+#: SW-27c1. The ``detail`` of the 404 of the mark route while
+#: :func:`sequence_marks_allowed` is false. The edge maps it to a fixed text.
+SEQUENCE_MARKS_OFF = "sequence_marks_off"
+
+#: SW-27c1. The fixed ``detail`` of each refusal of the sequence routes that
+#: the edge maps to its own text. ONE copy: the gateway sends it, and the edge
+#: matches it, so a 403 or 409 of another cause keeps its own text.
+SEQUENCE_NOT_YOUR_RUN = "This number is not a number of your run."
+SEQUENCE_RUN_NOT_YOURS = "The run is not your own run on this task."
+SEQUENCE_MARK_FINAL = "The number is already used or released. It cannot change."
+
+
+#: CIV-14b. The code of the refusal while :func:`image_upload_allowed` is
+#: false: the ``detail`` of the 404 of the upload, and the ``error`` of the
+#: 422 of ``attachment_ids``. The edge maps it to a fixed tool text. ONE
+#: copy: the edge may not import the gateway.
+IMAGE_UPLOAD_OFF = "image_upload_off"
+
+#: CIV-14b. The most images on one question or one activity
+#: (``attachment_ids``). The gateway body model and the edge schema read it.
+ACTIVITY_IMAGES_MAX = 4
+
+#: CIV-14b fix round 1. The activity types that take ``attachment_ids``. The
+#: card draws the images of a question (``elicitation``) and of the line of
+#: the newest ``thought`` or ``action``. A ``response`` or an ``error``
+#: becomes a comment, which draws no image, and a ``prompt`` is a person's.
+#: The gateway refuses every other type with 422, and the edge refuses it
+#: before it sends the call.
+IMAGE_ACTIVITY_TYPES: tuple[str, ...] = ("thought", "action", "elicitation")
+
+#: CIV-14b. The largest image that a signed agent uploads: 3.75 MiB, the cap
+#: of the read of IMG-3 too. The edge refuses a larger file before it sends
+#: one byte, and the upload route refuses it for a signed agent.
+AGENT_IMAGE_MAX_BYTES = 3_932_160
+
+#: CIV-14b fix round 1. The ``detail`` of the 413 of a signed agent upload
+#: over :data:`AGENT_IMAGE_MAX_BYTES`: of the upload route, and of the body
+#: wrapper of branch 0. The edge maps it to its own text, which is not the
+#: text of the budget of 10 MB for each task.
+AGENT_IMAGE_TOO_LARGE = "agent_image_too_large"
+
+
+def playbook_allowed(organization_id: object) -> bool:
+    """True when ``playbook_orgs`` allows *organization_id*.
+
+    PB-2 (D186, ``orchestration_playbook.md`` §7). The ONE reader of the flag.
+    It keeps the playbook prompts dark: an organization that it refuses sees
+    only the prompts it saw before. The list has the shape of
+    ``agent_access_orgs`` and the same parser, and the default is empty. It
+    reads the settings at each call. The caller passes the organization of the
+    token row, never request input.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return False
+    orgs = _parse_orgs(str(get_settings().playbook_orgs or ""))
     return ALL_ORGS in orgs or org in orgs
 
 
@@ -767,6 +1048,14 @@ def first_party_redirect_allowed(client_id: str, redirect_uri: str) -> bool:
 #: ``deps.get_current_user`` checks the stamp too. ONE copy.
 ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 
+#: MCP-P1b-2 (spec §19.5, path 2). The ask of ``app_write``: it opens one
+#: request that waits for the member, and runs nothing.
+REQUEST_ASK_ROUTE: tuple[str, str] = ("POST", "/agent-access/apps/{app}/requests")
+
+#: MCP-P1b-2. The wait of ``app_write``: one request of the agent's own
+#: connection, held for up to ``wait_s`` seconds (EA12-4).
+REQUEST_READ_ROUTE: tuple[str, str] = ("GET", "/agent-access/requests/{request_id}")
+
 #: The write pairs of the MCP edge (EA-6a, EA3-29). A subset of
 #: :data:`MCP_ROUTES`, and no pair here is a GET. Branch 0 admits a method
 #: other than GET only for one of these pairs, and only with the writes flag,
@@ -787,7 +1076,7 @@ ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 #: switch is on, and it checks the version and the exact title. ⚠️ The plain
 #: ``DELETE /projects/tasks/{task_id}`` stays OUT of both sets.
 #: WS-55 MCP-G2 adds two pairs. The ``PUT`` of the assignees is the route of
-#: ``set_assignees``, the one ``PUT`` of the set. The task move is the route
+#: ``set_assignees``, the first ``PUT`` of the set. The task move is the route
 #: of the ``parent_task_id`` of ``update_task``, and the route refuses a
 #: signed move to another project.
 #: WS-55 MCP-G1 adds four pairs. The node POST and PATCH are the routes of
@@ -803,7 +1092,47 @@ ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 #: SW-16a adds the link pair: the POST and the DELETE of a task link, the
 #: routes of ``add_task_link`` and ``remove_task_link``. The route checks that
 #: the member sees BOTH tasks. SW-16b owns the write fence for these routes.
+#: SP-8a adds the ``PUT`` of the epic contract, the route of the
+#: ``epic_contract`` block of ``update_task``. It replaces the whole contract,
+#: and the route refuses a task that is not an epic.
+#: WS-55 MCP-G9 adds the PATCH and the DELETE of one comment, the routes of
+#: ``update_comment`` and ``delete_comment``. For a signed agent the route
+#: changes only a comment that the member wrote AND whose ``meta.via`` is the
+#: stamp of this client, on a task in the reach of the connection. Any other
+#: comment gets 403 or 404 (``activities._load_agent_comment``).
+#: ⚠️ WS-39 TPL-1a keeps the template save and the apply OFF this set. Both
+#: are class C in the chat manifest, and rule 2 refuses a class C pair. An MCP
+#: write of a template comes later, with a preview and a confirm step, as
+#: ``move_tasks`` has (EA3-53).
+#: Fence: ``tests/unit/test_mcp_edge_coverage.py`` (rules 1 and 2) and
+#: ``tests/unit/test_mcp_edge_comment_edit_r8.py``.
+#: WS-39 LP-1a adds the POST of a project update, the route of
+#: ``post_project_update``. The route needs the right of a task write on the
+#: project, so a pinned connection posts only inside its pin.
 #: Fence: ``tests/unit/test_mcp_edge_coverage.py`` (rules 1 and 2).
+#: WS-MCP SW-23 adds the report of a Check, the route of ``report_check``.
+#: It records one run. A pass moves the task to done only under the rule of
+#: a status move (the caller sees the task, the version holds, and no live
+#: run of another session holds it). ``open`` and ``cannot_run`` never move
+#: the task. It answers 404 while ``agent_task_checks_enabled`` is off. HIGH
+#: tier from the start (identity of who may close a task).
+#: Fence: ``tests/unit/test_task_check_r8.py`` and the coverage fence.
+#: MCP-P1b-2 (spec §19.5) adds the ask of ``app_write``,
+#: :data:`REQUEST_ASK_ROUTE`. It opens a request and runs nothing.
+#: WS-MCP SW-114 adds the POST of the children of a run, the route of
+#: ``report_subagent``. It writes or ends one child run under an open run of
+#: the caller's member and connection, at most 20 open children for each run.
+#: The GET of the children stays OFF both sets. Fence:
+#: ``tests/unit/test_agent_child_runs_r8.py`` and the coverage fence.
+#: CIV-14b (spec §12.9) adds the upload of a file to a task, the route of
+#: ``upload_task_image``. For a signed agent the route takes only a png,
+#: jpeg, gif or webp image of at most :data:`AGENT_IMAGE_MAX_BYTES`, and only
+#: for an organization of :func:`image_upload_allowed`. The route keeps its
+#: own visibility check, advisory lock and budget of 10 MB for each task. The
+#: author takes the image off again in the Files tab of the task, through
+#: ``DELETE /projects/tasks/{task_id}/attachments/{attachment_id}``. That
+#: DELETE stays OFF both sets. Fences: ``test_mcp_upload_image_tenant_r8.py``
+#: and the coverage fence.
 MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/projects/nodes"),
     ("PATCH", "/projects/nodes/{project_id}"),
@@ -816,8 +1145,15 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # SW-16a: `add_task_link` and `remove_task_link`.
     ("POST", "/projects/tasks/{task_id}/links"),
     ("DELETE", "/projects/tasks/{task_id}/links/{link_id}"),
+    # SP-8a: the `epic_contract` block of `update_task`. It replaces the
+    # whole contract of an epic. The gateway refuses a task that is not an
+    # epic (422), and a pinned connection reaches only the epics of its pin.
+    ("PUT", "/projects/tasks/{task_id}/epic-contract"),
     ("POST", "/projects/tasks"),
     ("POST", "/projects/tasks/{task_id}/comments"),
+    # MCP-G9: `update_comment` and `delete_comment`, own client only.
+    ("PATCH", "/projects/comments/{activity_id}"),
+    ("DELETE", "/projects/comments/{activity_id}"),
     ("POST", "/projects/tasks/{task_id}/claim"),
     ("POST", "/projects/tasks/{task_id}/agent-runs"),
     ("POST", "/projects/agent-runs/{run_id}/activities"),
@@ -826,8 +1162,38 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/projects/agent-runs/{run_id}/release"),
     # MCP-G15: the decision a member made outside Metorite.
     ("POST", "/projects/agent-runs/{run_id}/outside-decision"),
+    # WS-MCP SW-114: `report_subagent`. A start or a stop of one sub-agent
+    # under an open run of the same member and connection. Class X in the
+    # chat manifest: only a signed agent sends it, and a person gets 422.
+    ("POST", "/projects/agent-runs/{run_id}/children"),
+    # WS-MCP SW-32: `set_run_plan`. It replaces the plan of the agent's own
+    # run, and it writes one `action` activity as a heartbeat.
+    ("PUT", "/projects/agent-runs/{run_id}/plan"),
     ("POST", "/projects/tasks/{task_id}/archive-request"),
     ("POST", "/projects/tasks/{task_id}/agent-delete"),
+    # WS-39 LP-1a: `post_project_update`. The route needs the right of a task
+    # write on the project, and it answers 404 while PROJECTS_UPDATES_ORGS
+    # does not hold the org.
+    ("POST", "/projects/nodes/{project_id}/updates"),
+    # WS-MCP SW-23: `report_check`. A pass closes the task only when the
+    # caller may move it. It answers 404 while the Check flag is off.
+    ("POST", "/projects/tasks/{task_id}/check-result"),
+    # WS-MCP SW-27b: `reserve_number`. One atomic statement gives the next
+    # number of a project sequence (SW-27a). The route reads the agent's
+    # reach through `resolve_visibility`, so a pinned connection reserves only
+    # in its pins. Each call burns a number, so the write cap counts it.
+    ("POST", "/projects/nodes/{project_id}/sequences/{name}/reserve"),
+    # WS-MCP SW-27c1: `mark_number`. The agent marks a number of its OWN run
+    # `used` or `released` (`checks.own_run`). Dark behind
+    # `sequence_marks_orgs` (`sequence_marks_allowed`).
+    ("POST", "/projects/reservations/{reservation_id}/mark"),
+    # MCP-P1b-2 (spec §19.5, AD-4): the ask of `app_write`. It opens one
+    # request for the member and runs nothing. Branch 0 takes any `<app>:write`
+    # here (`request_write_scope`), and the route checks the app of its path.
+    REQUEST_ASK_ROUTE,
+    # CIV-14b: `upload_task_image`. One image, multipart. The route checks
+    # the first bytes against the type and refuses an SVG for every caller.
+    ("POST", "/projects/tasks/{task_id}/attachments"),
 })
 
 #: The ONE allowlist of the MCP edge (EA3-6). Each pair is a method and the
@@ -851,6 +1217,17 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/projects/tasks"),
     # MCP-G19a: the counts of `board_stats`, over the same scope as the list.
     ("GET", "/projects/tasks/stats"),
+    # SW-68a: the plan order of `my_work`. The answer holds ids, counts and
+    # `labels`: the number and title of the VISIBLE blockers, for the chat. The
+    # edge ignores `labels`, and a hidden blocker is never named.
+    ("GET", "/projects/plan/order"),
+    # SW-45: the free tasks of the member's own apps, for `my_work`. A read. It
+    # answers no rows while `AGENT_CLAIM_SCOPE_MODES` is off for the org.
+    ("GET", "/projects/my/own-app-free"),
+    # LBB-2 (engineering_practice.md §7b.2): the open PRs to land of the
+    # caller, for the `land_your_pr` rows of `my_work`. A read. It answers no
+    # rows while both claim gate flags are off for the org.
+    ("GET", "/projects/agent-work/landing"),
     # MCP-G21: the members that `set_assignees` would accept, for `list_members`.
     ("GET", "/projects/assignable-members"),
     # SP-12: the order of work under one goal, epic or project, for `get_plan`.
@@ -882,6 +1259,21 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # for `list_apps` and `describe_app`. They hold no data of an app.
     ("GET", "/agent-access/apps"),
     ("GET", "/agent-access/apps/{app}"),
+    # MCP-P1b-2 (spec §19.5, "The new pairs"): the wait of `app_write`. The
+    # route gives an agent only a request of its own connection (AD-16). The
+    # list `GET /agent-access/requests` and the decision stay OFF the edge.
+    REQUEST_READ_ROUTE,
+    # WS-39 LP-1a: `list_project_updates`, newest first. It answers 404 while
+    # PROJECTS_UPDATES_ORGS does not hold the org.
+    ("GET", "/projects/nodes/{project_id}/updates"),
+    # WS-39 TPL-1a: `list_templates`. It answers 404 while
+    # `PROJECTS_TEMPLATES_ORGS` does not hold the org.
+    ("GET", "/projects/templates"),
+    # WS-MCP SW-113 (agent_coordination.md §3.12.7 rule 12): `get_agent_map`.
+    # The edge sends `shape=map` only. The route answers 404 while
+    # `AGENTS_VIEW_ORGS` or `AGENT_MAP_ORGS` does not hold the org, and for a
+    # project that the member cannot see.
+    ("GET", "/projects/agents/overview"),
     *MCP_WRITE_ROUTES,
 })
 
@@ -892,26 +1284,59 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
 #: first. The edge sends a stand-in name for a stored name of another shape.
 ATTACHMENT_FILENAME_PATTERN = r"(?!.*\.\.)[A-Za-z0-9_-][A-Za-z0-9._ -]{0,119}"
 
+#: SW-27b. The name of a project sequence in the reserve path. The same rule
+#: as the CHECK of migration 477 and ``NAME_RE`` of the route: a lowercase
+#: letter, then up to 39 lowercase letters, digits, ``_`` or ``-``.
+SEQUENCE_NAME_PATTERN = r"[a-z][a-z0-9_-]{0,39}"
+
 #: The path parameters of a pair of :data:`MCP_ROUTES` that are not ids, each
 #: with its pattern (MCP-P1a). The edge client refuses every other value.
 MCP_PATH_SHAPES: Mapping[tuple[str, str], Mapping[str, str]] = MappingProxyType({
     ("GET", "/agent-access/apps/{app}"): MappingProxyType(
         {"app": app_manifests.APP_ID_PATTERN}),
+    REQUEST_ASK_ROUTE: MappingProxyType({"app": app_manifests.APP_ID_PATTERN}),
     ("GET", "/projects/attachments/{attachment_id}/{filename}"): MappingProxyType(
         {"filename": ATTACHMENT_FILENAME_PATTERN}),
+    ("POST", "/projects/nodes/{project_id}/sequences/{name}/reserve"): MappingProxyType(
+        {"name": SEQUENCE_NAME_PATTERN}),
 })
 
 # ── The app door (MCP-P1a, spec §19.3 to §19.7) ─────────────────────────────
+
+#: WS-39 LP-1a. The ``detail`` of the 404 of the two update routes while
+#: ``PROJECTS_UPDATES_ORGS`` does not hold the org. The gateway sends it and
+#: the edge maps it to a tool text that says the feature is off. ONE copy:
+#: the gateway may not be imported by the edge.
+PROJECT_UPDATES_OFF = "Project updates are off for this organization."
 
 #: The ``detail`` of the 403 of a door call for an app that the door flag
 #: does not name (§19.6). The edge maps it to a fixed tool error.
 APP_OFF_CODE = "app_off"
 
 #: AD-18. The ``detail`` of the 403 of a door write of class B or C that is
-#: not a proposal and carries no spent approval. Before MCP-P1b no approval
-#: can exist, so branch 0 refuses each such call. Never a 401, so the client
-#: keeps its token.
+#: not a proposal and carries no approval that branch 0 can spend: no
+#: ``X-Agent-Approval``, a request that the member has not decided, or a
+#: request that this member and connection do not hold. Never a 401, so the
+#: client keeps its token.
 APPROVAL_REQUIRED_CODE = "approval_required"
+
+#: MCP-P1b-2 (AD-6, §19.12). The ``detail`` of the 409 of a spend whose call
+#: is not the approved call: another body, path, query or ``If-Match``. The
+#: request stays approved, so the right call can still spend it.
+APPROVAL_MISMATCH_CODE = "approval_mismatch"
+
+#: MCP-P1b-2 (AD-6). The ``detail`` of the 409 of a spend of a request that
+#: is spent, declined or expired. Nothing changes. The agent asks again.
+APPROVAL_USED_CODE = "approval_used"
+
+#: MCP-P1b-2 (§19.4). The code of a door write that waits for the member
+#: while the approval path is off for the organization: the runs flag of
+#: §12.1 is off, or ``APP_REQUESTS_ORGS`` does not hold the organization.
+REQUESTS_OFF_CODE = "requests_off"
+
+#: AD-19. The code of an op that can cause mail to leave Metorite. It waits
+#: for ``AGENT_DOOR_SENDS`` of MCP-P2b, so it fails closed until then.
+SENDS_OFF_CODE = "sends_off"
 
 #: AD-13. A connection makes at most :data:`DOOR_READ_CAP` door reads in
 #: :data:`DOOR_READ_WINDOW_S` seconds. Branch 0 counts in the tenant Redis
@@ -927,19 +1352,38 @@ DOOR_WRITES_OFF_CODE = "writes_off"
 
 def door_available(door: app_manifests.DoorOp) -> tuple[bool, str | None]:
     """``(available, code)`` of a door op, by the rules that the edge and the
-    gateway share (MCP-P1a). The ONE copy: ``describe_app`` on both sides
-    reads it.
+    gateway share (MCP-P1a, MCP-P1b-2). The ONE copy: ``describe_app`` on
+    both sides and the ask of the gateway read it.
 
-    * AD-18: a write of class B or C that is not a proposal waits for the
-      approval path of MCP-P1b, :data:`APPROVAL_REQUIRED_CODE`.
-    * A proposal needs the writes flag, :data:`DOOR_WRITES_OFF_CODE`.
+    * A proposal or a write needs the writes flag, :data:`DOOR_WRITES_OFF_CODE`.
+    * A write that waits for the member (``asks`` is ``each_call``) needs the
+      approval path. An op that can send mail is off until MCP-P2b
+      (:data:`SENDS_OFF_CODE`, AD-19). The runs flag of §12.1 must be on
+      (:data:`REQUESTS_OFF_CODE`). The gateway also reads
+      ``APP_REQUESTS_ORGS`` for the organization, with the same code.
     * A read is available.
     """
-    if door.asks != "never":
-        return False, APPROVAL_REQUIRED_CODE
     if door.kind != "read" and not writes_enabled():
         return False, DOOR_WRITES_OFF_CODE
+    if door.asks != "never":
+        if door.route.sends:
+            return False, SENDS_OFF_CODE
+        if not runs_enabled():
+            return False, REQUESTS_OFF_CODE
     return True, None
+
+
+def request_write_scope(scopes: Iterable[str]) -> str | None:
+    """The write scope that branch 0 checks for the ask of ``app_write``
+    (:data:`REQUEST_ASK_ROUTE`, AD-4): the first ``<app>:write`` of a door
+    app that the door flag serves and that *scopes* hold, or ``None``. The
+    route then checks the app of its path."""
+    held = frozenset(scopes)
+    for app in app_manifests.APPS:
+        if (app.write_scope in app.scopes and app.write_scope in held
+                and door_serves(app.id)):
+            return app.write_scope
+    return None
 
 
 def door_route(pair: tuple[str, str | None]) -> app_manifests.DoorOp | None:
@@ -961,13 +1405,98 @@ def path_shapes(method: str, template: str) -> Mapping[str, str]:
         return dict(door.route.path_shapes)
     return MCP_PATH_SHAPES.get((method, template), {})
 
-#: The cap of EA3-30: a connection makes at most :data:`WRITE_CAP` writes in
-#: :data:`WRITE_WINDOW_S` seconds, counted from its first write of the window.
-#: Branch 0 counts in the tenant Redis wrapper, under the namespace
-#: :data:`WRITE_CAP_NAMESPACE`, and the 121st write gets 429.
+#: The cap of EA3-30, MCP-G20 and MCP-G28a (D209). Branch 0 counts in the
+#: tenant Redis wrapper, and a write past a counter gets 429. The constants
+#: here are the DEFAULTS. The settings ``AGENT_WRITE_CAP``,
+#: ``AGENT_WRITE_ROW_CAP`` and ``AGENT_WRITE_WINDOW_S`` set the live values,
+#: and the readers below are the one source of them.
+#:
+#: The cap has two counters, per connection, both with the window of
+#: :func:`write_window_s`, counted from the first count of each counter.
+#: The CALL counter (:func:`write_cap`, under :data:`WRITE_CAP_NAMESPACE`)
+#: counts one for a signed write with no batch key. The writes that carry
+#: one batch key count one call for each :data:`WRITE_ROWS_PER_CALL` rows,
+#: and not one call each. The ROW counter (:func:`write_row_cap`, under
+#: :data:`WRITE_ROW_CAP_NAMESPACE`) counts one for each signed write. So a
+#: batch of 50 rows costs 1 call and 50 rows, and a single write costs 1
+#: call and 1 row.
 WRITE_CAP = 120
 WRITE_WINDOW_S = 600
 WRITE_CAP_NAMESPACE = "agent_writes"
+#: MCP-G28a. The default of ``AGENT_WRITE_ROW_CAP``.
+WRITE_ROW_CAP = 5000
+WRITE_ROW_CAP_NAMESPACE = "agent_write_rows"
+#: MCP-G28a. The rows of one batch key, under this namespace and the
+#: connection. Each :data:`WRITE_ROWS_PER_CALL` rows of one key cost one
+#: more call, so a key that the edge used again never escapes the call
+#: counter.
+WRITE_BATCH_NAMESPACE = "agent_write_batch"
+#: MCP-G28a. The most rows of one write call. The edge refuses a larger
+#: ``update_tasks`` call before any request (``tools.MAX_BULK_UPDATES`` is
+#: this value), and branch 0 counts one more call for each further
+#: :data:`WRITE_ROWS_PER_CALL` rows of one batch key.
+WRITE_ROWS_PER_CALL = 50
+#: The details of the two 429 answers of the cap. The edge reads the detail
+#: to name the counter that refused, and never sends the detail.
+WRITE_CAP_DETAIL = "Too many write calls from this connection. Wait a few minutes."
+WRITE_ROW_CAP_DETAIL = "Too many changed rows from this connection. Wait a few minutes."
+
+
+def _positive(value: object, default: int) -> int:
+    """*value* as a whole number of 1 or more, else *default* (MCP-G20)."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return default
+    return value
+
+
+def write_cap() -> int:
+    """The write calls that one connection makes in one window (MCP-G20,
+    MCP-G28a).
+
+    ``agent_write_cap``, or :data:`WRITE_CAP` for a value below 1. Branch 0
+    reads it at each write, and the edge names it in each write tool. A
+    bulk call counts as one call for each :data:`WRITE_ROWS_PER_CALL` rows.
+    """
+    return _positive(get_settings().agent_write_cap, WRITE_CAP)
+
+
+def write_row_cap() -> int:
+    """The rows that one connection changes in one window (MCP-G28a, D209).
+
+    ``agent_write_row_cap``, or :data:`WRITE_ROW_CAP` for a value below 1.
+    Each signed write is one row. Branch 0 reads it at each write, and the
+    edge names it in each write tool.
+    """
+    return _positive(get_settings().agent_write_row_cap, WRITE_ROW_CAP)
+
+
+def write_window_s() -> int:
+    """The seconds of one window of the cap (MCP-G20).
+
+    ``agent_write_window_s``, or :data:`WRITE_WINDOW_S` for a value below 1.
+    """
+    return _positive(get_settings().agent_write_window_s, WRITE_WINDOW_S)
+
+
+#: MCP-G17f (spec §5.5, task 4032). The longest grace window of a refresh
+#: token, in seconds. A longer window lets a stolen refresh token live too
+#: long after its own client spent it. The recorded collisions were 2 s
+#: apart, so 60 s covers them with room to spare.
+REFRESH_REUSE_GRACE_MAX_S = 60
+
+
+def refresh_reuse_grace_s() -> int:
+    """The grace window of a spent refresh token, in seconds (MCP-G17f).
+
+    The ONE reader of ``agent_refresh_reuse_grace_s``. A value that is not a
+    whole number, or is below 1, gives 0, and 0 turns the window off. A value
+    above :data:`REFRESH_REUSE_GRACE_MAX_S` gives that cap. The token store
+    reads it at each rotation (``agent_tokens`` rule 5).
+    """
+    value = get_settings().agent_refresh_reuse_grace_s
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return 0
+    return min(value, REFRESH_REUSE_GRACE_MAX_S)
 
 
 #: EA-13a (spec §12.2 item 1, EA3-47). The longest ``<slug>`` of a client
@@ -1172,9 +1701,14 @@ def authorization_redirect(redirect_uri: str, params: Mapping[str, str | None]) 
 
 
 __all__ = [
+    "ACTIVITY_IMAGES_MAX",
     "ACTOR_VIA_PATTERN",
+    "AGENT_IMAGE_MAX_BYTES",
+    "AGENT_IMAGE_TOO_LARGE",
     "ALL_ORGS",
+    "APPROVAL_MISMATCH_CODE",
     "APPROVAL_REQUIRED_CODE",
+    "APPROVAL_USED_CODE",
     "APP_OFF_CODE",
     "APP_SCOPES",
     "ATTACHMENT_FILENAME_PATTERN",
@@ -1190,6 +1724,8 @@ __all__ = [
     "DOOR_READ_WINDOW_S",
     "DOOR_WRITES_OFF_CODE",
     "FIXED_RESOURCE_SCOPES",
+    "IMAGE_ACTIVITY_TYPES",
+    "IMAGE_UPLOAD_OFF",
     "MAX_SCOPE_CHARS",
     "MAX_URL_CHARS",
     "MCP_PATH_SHAPES",
@@ -1198,12 +1734,28 @@ __all__ = [
     "OFFLINE_ACCESS",
     "PROJECTS_READ",
     "PROJECTS_WRITE",
+    "PROJECT_UPDATES_OFF",
+    "READ_SCOPES",
+    "REQUESTS_OFF_CODE",
+    "REQUEST_ASK_ROUTE",
+    "REQUEST_READ_ROUTE",
     "RESOURCE_SCOPES",
     "S256",
+    "SENDS_OFF_CODE",
+    "SEQUENCE_MARKS_OFF",
+    "SEQUENCE_MARK_FINAL",
+    "SEQUENCE_NOT_YOUR_RUN",
+    "SEQUENCE_RUN_NOT_YOURS",
     "SUPPORTED_SCOPES",
     "WRITES_DISABLED_CODE",
+    "WRITE_BATCH_NAMESPACE",
     "WRITE_CAP",
+    "WRITE_CAP_DETAIL",
     "WRITE_CAP_NAMESPACE",
+    "WRITE_ROWS_PER_CALL",
+    "WRITE_ROW_CAP",
+    "WRITE_ROW_CAP_DETAIL",
+    "WRITE_ROW_CAP_NAMESPACE",
     "WRITE_WINDOW_S",
     "actor_via_for",
     "advertised_resource_scopes",
@@ -1224,21 +1776,28 @@ __all__ = [
     "door_available",
     "door_route",
     "door_serves",
+    "effective_scopes",
     "enabled",
+    "granted_scope",
+    "image_upload_allowed",
     "is_allowed_redirect_uri",
     "is_cimd_client_id",
     "is_valid_challenge",
     "is_valid_verifier",
     "issuer",
     "mcp_sessions_enabled",
+    "mint_scope",
     "org_allowed",
     "parse_scope",
     "path_shapes",
     "pkce_matches",
+    "playbook_allowed",
     "protocol_allowed",
+    "read_only",
     "redirect_display",
     "redirect_host",
     "redirect_uri_matches",
+    "request_write_scope",
     "resource",
     "resources_allowed",
     "revocation_endpoint",
@@ -1246,6 +1805,11 @@ __all__ = [
     "s256",
     "scope_holds",
     "scope_string",
+    "sequence_marks_allowed",
+    "task_checks_enabled",
     "token_endpoint",
+    "write_cap",
+    "write_row_cap",
+    "write_window_s",
     "writes_enabled",
 ]

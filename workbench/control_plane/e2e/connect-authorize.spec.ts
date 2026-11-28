@@ -358,11 +358,10 @@ test.describe("the consent page of an outside agent", () => {
     expect(body.left_out_projects).toEqual(["p-t"]);
   });
 
-  test("the footer says Remove, until Change access exists (EA-17c)", async ({ page }) => {
+  test("the footer says Change or remove (EA-17c-2)", async ({ page }) => {
     await stub(page);
     await page.goto(PAGE);
-    await expect(page.getByText("Remove this access any time in")).toBeVisible();
-    await expect(page.getByText("Change or remove")).toHaveCount(0);
+    await expect(page.getByText("Change or remove this access any time in")).toBeVisible();
   });
 
   test("unticking personal access sends it as false", async ({ page }) => {

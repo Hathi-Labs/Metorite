@@ -16,6 +16,7 @@ Spec: ``project-docs/specs/project_management_app.md`` §3.11-§3.12, §6.1 ·
     PATCH /projects/tasks/{task_id}/personal     → set MY overlay on a task
     GET   /projects/my/contexts                  → the contexts I actually use
     GET   /projects/my/today                     → my date and my zone (WS-46 P7)
+    GET   /projects/my/today?with_tasks=true     → …and my Today set (WS-MDC CC-2)
 
 **There is no sync here, and that is the whole point.** A task assigned to a
 member is not copied into their inbox — it *is* the row in their inbox. So
@@ -41,7 +42,9 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from acb_auth import UserContext, get_current_user
+from acb_common.db import current_tenant
 from fastapi import Depends, HTTPException
+from gateway.routes.projects import today_rule
 from gateway.routes.projects.cascade import complete_subtree, emit_all
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
@@ -53,7 +56,8 @@ from gateway.routes.projects.core import (
     _placeholder,
     _tenant_session,
     actor,
-    assert_not_archived,
+    assert_project_open_for_writes,
+    assert_task_project_open,
     clean_payload,
     coerce_write_values,
     diff_changes,
@@ -79,6 +83,7 @@ from gateway.routes.projects.core import (
     status_owner_id,
     task_visibility_clause,
     touch_task,
+    transient_as_409,
     update_row,
 )
 from gateway.routes.projects.due_day import (
@@ -188,6 +193,13 @@ class PersonalIn(BaseModel):
     #: WhatsApp) is the owner-gated one, and is still unbuilt. Accepted on a
     #: PATCH as well, so a client can clear it.
     last_nudged_at: str | None = None
+
+    # ── Today's focus (migration 507, WS-MDC CC-2) ──────────────────────────
+    #: My mark "today's focus": my today as ``YYYY-MM-DD``, or null to clear.
+    #: Any other date is a 422. A mark past my cap is a 409
+    #: ``focus_cap_reached`` (:func:`mark_focus`, ``today_rule``). Only the
+    #: single PATCH takes a mark. The bulk route refuses one.
+    focus_on: str | None = None
 
 
 class CaptureIn(BaseModel):
@@ -384,6 +396,13 @@ async def reopen_if_closed(
     The lane is the first ``todo`` lane of the task's OWN status set. A set
     with no ``todo`` lane falls back to the first lane by position, and when
     that lane closes too the task stays where it is: the lane decides.
+
+    ARC-2b (``one_projects_app.md`` §9b.6 rule 2). The reopen changes the
+    status, and the status is project work. So a task in an archived project
+    answers 409 with ``ARCHIVED_PROJECT_REFUSAL`` here, before the status
+    write and before ``pm.task.status_changed``. An overlay write that
+    reopens nothing never reaches the guard, so it stays open. The bulk
+    ``personal`` act catches this 409 and names the task as failed.
     """
     if disposition not in OPEN_DISPOSITIONS:
         return None
@@ -407,6 +426,8 @@ async def reopen_if_closed(
             return None
     if getattr(lane, "category", None) in CLOSING_CATEGORIES:
         return None
+    # ARC-2b: refuse before the write and before the event (docstring).
+    await assert_task_project_open(db, task)
     moved = await apply_status_transition(db, task, str(lane.id), created_by=email)
     await emit("pm.task.status_changed", {
         "task_id": str(task.id), "from": moved["from"].name,
@@ -662,7 +683,7 @@ async def capture(
 async def create_personal_task(
     db: Any, email: str, project_id: str, root_id: str, status_id: str,
     values: dict[str, Any], overlay: dict[str, Any] | None = None,
-    *, announce: bool = True,
+    *, announce: bool = True, actor: str | None = None,
 ) -> Any:
     """One `pm_tasks` row in the member's own tree, assigned to them.
 
@@ -696,6 +717,13 @@ async def create_personal_task(
     that. With no event, the `shell.cache.on_event` sink moves no My Day
     version, so the park calls `shell.cache.bump_member_safe` for the owner
     after its commit. Fence: `tests/unit/test_auto_park.py`.
+
+    **`actor`** (STU-E4) names who acted when it is not the member: the
+    `system:workflow:<id>` of D-PM-4. It stamps `assigned_by` and the
+    "Captured" activity, and flags that activity `meta.automation`. It never
+    stamps `created_by`: the member stays the creator of a task in their own
+    tree, because `authority.may_move_task` and `may_delete_task` read the
+    creator. Left out, each caller writes the member as before.
     """
     # WS-64. A capture is a NEW placement, so it is refused under an archived
     # Area (one `archived_at` read by id, since callers hold ids and no row).
@@ -703,7 +731,7 @@ async def create_personal_task(
         text("SELECT name, archived_at FROM pm_projects WHERE id = CAST(:p AS uuid)"),
         {"p": project_id},
     )).fetchone()
-    assert_not_archived(target, then="Capture into")
+    assert_project_open_for_writes(target)
     stated = dict(overlay or {})
     if stated.get("disposition") is None and not values.get("parent_task_id"):
         stated["disposition"] = "INBOX"
@@ -722,16 +750,16 @@ async def create_personal_task(
     await db.execute(
         text(
             "INSERT INTO pm_task_assignees (task_id, assignee, assigned_by) "
-            "VALUES (CAST(:tid AS uuid), :who, :who) "
+            "VALUES (CAST(:tid AS uuid), :who, :by) "
             "ON CONFLICT (task_id, assignee) DO NOTHING"
         ),
-        {"tid": task_id, "who": email},
+        {"tid": task_id, "who": email, "by": actor or email},
     )
     if overlay:
         await _upsert_personal(db, task_id, email, overlay)
     await record_activity(
-        db, activity_type="system", created_by=email, task_id=task_id,
-        body="Captured",
+        db, activity_type="system", created_by=actor or email, task_id=task_id,
+        body="Captured", automation=actor is not None,
     )
     if not announce:
         return task
@@ -838,8 +866,16 @@ async def capture_batch(
 
 async def _upsert_personal(
     db: Any, task_id: str, email: str, values: dict[str, Any],
+    *, focus: today_rule.FocusGuard | None = None,
 ) -> Any:
-    """Write MY overlay row for a task. Never anybody else's."""
+    """Write MY overlay row for a task. Never anybody else's.
+
+    *focus* is the guard of a today's-focus mark (WS-MDC CC-2). Only
+    :func:`mark_focus` passes it. The value of ``focus_on`` is then
+    ``today_rule.focus_room_sql`` (``focus.sql``), so this ONE statement
+    counts the marks of the day and writes the mark. A full day writes NULL,
+    and the caller answers 409.
+    """
     # D77's fence at the ONE writer. Every overlay write in the gateway —
     # the PATCH, bulk, organize, the planner, the AI seam — comes through
     # here, so a retired column cannot be written by a path the 422 in
@@ -850,6 +886,18 @@ async def _upsert_personal(
             f"pm_task_personal: {retired} retired by D77/D78 — "
             + " ".join(RETIRED_OVERLAY_KEYS[k] for k in retired)
         )
+    # CC-2's fence at the same writer: a mark is written under the cap only.
+    # A clear (NULL) needs no guard.
+    if values.get("focus_on") is not None and focus is None:
+        raise ValueError(
+            "pm_task_personal: a today's-focus mark is written only through "
+            "personal.mark_focus, under the cap (today_rule.focus_room_sql)."
+        )
+    placeholders = {c: _placeholder(c) for c in values}
+    binds = {"task_id": task_id, "member_email": email, **_bindable(values)}
+    if focus is not None:
+        placeholders["focus_on"] = focus.sql
+        binds.update(focus.binds)
     columns = ["task_id", "member_email", *values]
     assignments = ", ".join(f"{c} = EXCLUDED.{c}" for c in values)
     # `pm_task_personal` has a COMPOSITE key, so the shared `update_row` helper
@@ -869,13 +917,91 @@ async def _upsert_personal(
         text(
             f"INSERT INTO pm_task_personal ({', '.join(columns)}) "
             f"VALUES (CAST(:task_id AS uuid), :member_email, "
-            f"{', '.join(_placeholder(c) for c in values)}) "
+            f"{', '.join(placeholders[c] for c in values)}) "
             f"ON CONFLICT (task_id, member_email) DO UPDATE "
             f"SET {assignments}, updated_at = now() "
             f"RETURNING *"
         ),
-        {"task_id": task_id, "member_email": email, **_bindable(values)},
+        binds,
     )).fetchone()
+
+
+async def check_focus_on(db: Any, email: str, values: dict[str, Any]) -> date | None:
+    """The member's mark of a PATCH, checked: the date of today, or ``None``.
+
+    ⚠️ **Dark by org** (fix round 1, item 4). While ``TODAY_RULE_ORGS`` leaves
+    the session's org out, a mark AND a clear answer 403 ``today_focus_off``,
+    and nothing changes. This is the one check of the flag on a write, and
+    the chat's ``focus`` reaches it through the same PATCH.
+
+    ``focus_on`` takes the member's own today (``YYYY-MM-DD`` in the stored
+    zone) or null. Any other value is a 422, so a mark of another day never
+    lands. Absent from *values* reads as ``None``, and so does a clear.
+    """
+    if "focus_on" not in values:
+        return None
+    if not today_rule.today_rule_allowed(current_tenant()):
+        raise HTTPException(
+            status_code=403,
+            detail={"error": today_rule.FOCUS_OFF, "message": today_rule.FOCUS_OFF_MESSAGE},
+        )
+    if values["focus_on"] is None:
+        return None
+    raw = str(values["focus_on"]).strip()
+    today = local_date(await stored_zone(db, email), today_rule.clock())
+    try:
+        day = date.fromisoformat(raw) if len(raw) == 10 else None
+    except ValueError:
+        day = None
+    if day != today:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"focus_on is your today ({today.isoformat()}) or null. A mark of "
+                "today's focus holds for one day, so another date is refused."
+            ),
+        )
+    return day
+
+
+async def mark_focus(
+    db: Any, vis: Visibility, task_id: str, email: str, day: date,
+) -> None:
+    """Mark *task_id* as one of the member's focus tasks for *day*, under the cap.
+
+    WS-MDC CC-2 (D-MD-3). It takes the transaction lock of the org, the
+    member and the day first (``today_rule.FOCUS_LOCK_SQL``), so two marks of
+    one day never count at the same time. Then ONE statement counts the other
+    marks, plus the One Thing with no mark, and writes the mark when the
+    count is under the cap. The count reads only open tasks that the member
+    can see (``today_rule.focus_count_sql``). A mark that the task holds
+    already is kept. A full day answers 409 ``focus_cap_reached``, and the
+    transaction rolls back. The member is the session's, and the cap is the
+    member's own.
+    """
+    org = str(vis.organization_id or "")
+    await db.execute(
+        text(today_rule.FOCUS_LOCK_SQL),
+        {"key": today_rule.focus_lock_key(org, email, day)},
+    )
+    cap = await today_rule.focus_cap_of(db, email)
+    guard = today_rule.FocusGuard(vis=vis, task_id=task_id, day=day, cap=cap)
+    row = await _upsert_personal(db, task_id, email, {"focus_on": day}, focus=guard)
+    if row is None or getattr(row, "focus_on", None) != day:
+        count = await today_rule.focus_count(db, vis, day)
+        held = f"{cap} task" if cap == 1 else f"{cap} tasks"
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": today_rule.FOCUS_CAP_REACHED,
+                "message": (
+                    f"Today's focus holds {held}, and it is full. Unmark one "
+                    "first, then mark this task."
+                ),
+                "focus_cap": cap,
+                "focus_count": count,
+            },
+        )
 
 
 def _as_utc(value: Any) -> Any:
@@ -1049,12 +1175,21 @@ async def set_personal(
         # in exchange for the API telling the truth about whose fault it is.
         await _reject_impossible_block(db, task_id, email, values)
         await _reject_waiting_without_since(db, task_id, email, values)
+        # WS-MDC CC-2: a mark of today's focus, under the cap, BEFORE any
+        # write that emits an event. A refused mark (409) rolls the whole
+        # PATCH back. A clear (null) rides with the other values.
+        day = await check_focus_on(db, email, values)
+        if day is not None:
+            values.pop("focus_on")
+            await mark_focus(db, vis, task_id, email, day)
 
         # Triage is recorded even when nothing changed: "when did I last look at
         # this" is the Weekly Review's question, and a no-op PATCH is still a
         # member looking at it.
         values["clarified_at"] = now()
         # D77 — INBOX, NEXT or WAITING on a closed task reopens it for the board.
+        # ARC-2b: in an archived project the reopen answers 409, and the
+        # overlay is not written either.
         await reopen_if_closed(db, task, email, values.get("disposition"))
         row = await _upsert_personal(db, task_id, email, values)
         out = _personal_to_dict(row)
@@ -1121,6 +1256,8 @@ def _personal_to_dict(row: Any) -> dict[str, Any]:
         # collecting a real value that no caller could read — the Weekly
         # Review's "when did I last look at this" had no way to ask.
         "clarified_at": _iso(row, "clarified_at"),
+        # WS-MDC CC-2 (507): my mark of today's focus, a date or None.
+        "focus_on": _iso(row, "focus_on"),
     }
 
 
@@ -1168,6 +1305,10 @@ def _apply_overlay(task: dict[str, Any], row: Any) -> None:
     # and it read as a plain bool before 188. Kept that way rather than widened
     # in passing — a wire-shape change is not a free rider on a column add.
     task["is_two_minute"] = bool(getattr(row, "p_is_two_minute", False))
+    # WS-MDC CC-2 (507): my mark of today's focus, a date or None. The chat's
+    # card reads it as the value before a change.
+    focus = getattr(row, "p_focus_on", None)
+    task["focus_on"] = focus.isoformat() if focus is not None else None
     # D78 — the matrix inputs are SHARED facts on the task, not the overlay.
     # `important` keeps its tri-state: NULL `importance` means nobody judged
     # the task, and the triage nudge looks for that. `importance` stays on
@@ -1373,6 +1514,7 @@ SELECT t.*,
        p.expected_by        AS p_expected_by,
        p.last_nudged_at     AS p_last_nudged_at,
        p.clarified_at       AS p_clarified_at,
+       p.focus_on           AS p_focus_on,
        s.name               AS workflow_stage,
        -- The lane's own colour, so My Tasks draws a custom-coloured lane in
        -- the colour its Projects board draws it (AGENTS.md rule 5).
@@ -1587,9 +1729,11 @@ async def stored_due(db: Any, email: str, value: Any) -> Any:
 
 
 @router.get("/my/today")
-async def my_today(user: UserContext = Depends(get_current_user)) -> dict[str, Any]:
+async def my_today(
+    user: UserContext = Depends(get_current_user), with_tasks: bool = False,
+) -> dict[str, Any]:
     """My own date, and my zone (WS-46 P7, `projects_agent_parity.md` §8.1
-    item 4).
+    item 4). With ``with_tasks=true``, also my Today set (WS-MDC CC-2).
 
     The browser knows the member's zone, and a chat tool does not. Before this
     read, a weekly rule with no day took today's weekday in UTC, which is the
@@ -1609,21 +1753,43 @@ async def my_today(user: UserContext = Depends(get_current_user)) -> dict[str, A
     (``shell.state._hour``, 7 when none is saved). The reminder tools read it
     for "tomorrow morning". The zone keeps its own read above, so this field
     changes no zone answer.
+
+    ``with_tasks=true`` (WS-MDC CC-2, `my_day_command_centre.md` §9.2) adds
+    the Today set of the one predicate, ``today_rule.today_answer``: ``rows``
+    (each task with its block and ``why``), ``total``, ``to_fit`` (the set
+    minus the tasks with a block today), ``focus_cap`` and ``focus_count``.
+    The set reads the same zone and the same date as ``today``. With no
+    ``with_tasks`` the answer is the five keys above, and the read runs no
+    extra statement, so the chat's clock read costs nothing more.
+
+    With ``TODAY_RULE_ORGS`` on for the session's org, the answer adds
+    ``today_rule: true``, as ``GET /projects/my/summary`` does. The chat reads
+    it before the card of a focus mark (``writes._focus_day``). With the flag
+    off, the key is absent.
     """
     # Imported here: `shell.state` reaches the projects routes through the feed.
     from gateway.routes.shell.state import DEFAULT_DAY_START, _hour
 
     email = actor(user).lower()
+    at = today_rule.clock()
+    extra: dict[str, Any] = {}
     async with _tenant_session() as db:
         stored = await stored_zone(db, email)
         _day_zone, hour = await member_day(db, user)
+        if with_tasks:
+            vis = await resolve_visibility(db, user)
+            extra = await today_rule.today_answer(
+                db, user, vis, today_rule.window_of(stored, at),
+            )
     zone = zone_name(stored)
     return {
-        "today": local_date(zone, datetime.now(UTC)).isoformat(),
+        "today": local_date(zone, at).isoformat(),
         "timezone": zone,
         "stored": stored is not None,
         "valid": stored is None or zone == str(stored),
         "day_start_hour": _hour(hour, DEFAULT_DAY_START, 23),
+        **({"today_rule": True} if today_rule.today_rule_allowed(current_tenant()) else {}),
+        **extra,
     }
 
 
@@ -2319,6 +2485,7 @@ async def in_my_tree(db: Any, email: str, task: Any) -> bool:
 
 
 @router.delete("/my/tasks/{task_id}")
+@transient_as_409
 async def purge_my_task(
     task_id: str, user: UserContext = Depends(get_current_user),
 ) -> DeleteResponse:
@@ -2428,6 +2595,12 @@ async def my_task_lanes(
     alone holds none, so that read 404s and the select is dead. Here the
     membership fragment is the grant: ``_read_my_task`` answers 404 for a
     task that is not mine, exactly as ``/my/tasks/{id}`` does.
+
+    The chat uses this route too (Task 3865). ``update_task`` resolves a
+    status NAME through it when the project read 404s, and ``vocabulary``
+    does the same when it gets a ``task_id``. It answers lanes only: no
+    counts, no tags and no name of a project, so it shows an assignee no more
+    than the task shows. Fence: tests/unit/test_projects_status_read_assignee_r8.py.
 
     A sibling read rather than a field on ``/my/tasks/{id}``, on purpose.
     ``test_the_inbox_and_the_calendar_project_the_same_task_shape`` holds the
@@ -2744,6 +2917,7 @@ async def complete_task(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
+        await assert_task_project_open(db, task)
         # The subtree FIRST. `complete_for_member` emits the parent's
         # `pm.task.status_changed` inside this transaction, so a cascade that
         # refuses after it would have announced a completion that rolled back
@@ -2967,6 +3141,10 @@ async def _organize(
         # field People capacity and analytics read.
         shared["estimate_mins"] = payload.time_estimate_mins
     if shared:
+        # ARC-2b: a date or an estimate is the team's, so an archived project
+        # refuses it (409). The overlay writes below stay open, except a
+        # reopen, which `reopen_if_closed` refuses before its event.
+        await assert_task_project_open(db, task)
         # The way `patch_task` writes them: the row, then what actually moved
         # through the ONE field_change door, so the timeline shows the
         # deadline and the estimate an organize set (D77 repair).
@@ -2982,8 +3160,10 @@ async def _organize(
     if payload.kind == "do-now":
         # Completed for the PROJECT, then the two-minute marker on my view.
         # Writing DONE onto the overlay alone would leave the board open
-        # (§13.5a decision 1). `complete_for_member` is the one completion
+        # (§13.5a decision 1). ARC-2b: the status is the project's, so an
+        # archived project refuses it. `complete_for_member` is the one completion
         # path: it emits the status event and closes an email thread too.
+        await assert_task_project_open(db, task)
         await complete_for_member(db, task, email)
     values: dict[str, Any] = {
         "disposition": disposition,

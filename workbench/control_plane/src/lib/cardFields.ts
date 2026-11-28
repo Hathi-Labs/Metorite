@@ -62,13 +62,19 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "Note": { label: "Note" },
   "actual_end": { label: "Ended", kind: "date" },
   "actual_start": { label: "Started", kind: "date" },
+  "add task N": { label: "Add task", kind: "task" },
   "after": { label: "After" },
   "amount": { label: "Amount" },
   "answer": { label: "Your answer" },
+  // SP-8a: the appetite of an epic contract.
+  "appetite credits": { label: "Appetite (credits)" },
+  "appetite review hours": { label: "Appetite (review hours)" },
   "archive_after_months": { label: "Archive after (months)" },
   "archived": { label: "Archived", kind: "date" },
   "area": { label: "Area" },
   "assignees": { label: "Assignees", kind: "person", many: true },
+  // WS-39 LP-1a: who wrote a project update, on its delete card.
+  "author": { label: "Author", kind: "person" },
   "assignees_add": { label: "Assign", kind: "person", many: true },
   "assignees_remove": { label: "Unassign", kind: "person", many: true },
   "body": { label: "Text" },
@@ -77,8 +83,13 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "cannot link N": { label: "Cannot link", plural: "Cannot link" },
   "cannot move N": { label: "Cannot move", plural: "Cannot move" },
   "cannot change N": { label: "Cannot change", plural: "Cannot change" },
+  "cannot open the task": { label: "Cannot open the task", kind: "person", many: true },
   "capacity": { label: "Capacity" },
+  "carry to": { label: "Carry over to" },
   "category": { label: "Category", kind: "category" },
+  // SP-8a: the checks of an epic contract that a save adds, changes or removes.
+  "changed check N": { label: "Changed check", plural: "Changed checks" },
+  "checks unchanged": { label: "Checks unchanged" },
   "close_after_months": { label: "Close after (months)" },
   "color": { label: "Colour", kind: "color" },
   "comment": { label: "Comment" },
@@ -89,6 +100,7 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "covers": { label: "Covers" },
   "created_at": { label: "Created", kind: "date" },
   "current triage": { label: "Your triage now" },
+  "cycle": { label: "Cycle" },
   "deal": { label: "Deal" },
   "decision": { label: "Decision", kind: "words" },
   "deep_work": { label: "Deep work", kind: "flag" },
@@ -104,10 +116,13 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "due_at": { label: "Due", kind: "date" },
   "duplicate of": { label: "Duplicate of", kind: "task" },
   "email": { label: "Email", kind: "person" },
+  "ends_on": { label: "Ends", kind: "date" },
   "energy": { label: "Energy", kind: "words" },
   "estimate_mins": { label: "Estimate", kind: "minutes" },
   "expected_by": { label: "Expected by", kind: "date" },
   "expected_close_date": { label: "Expected close", kind: "date" },
+  // WS-CRM CRM-M4a: the deal pipeline that a new lead pipeline feeds.
+  "feeds deals into": { label: "Feeds deals into" },
   "field": { label: "Field" },
   "field *": { label: "Field" },
   "field_type": { label: "Field type", kind: "words" },
@@ -117,11 +132,16 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "filters": { label: "Filters" },
   "first due": { label: "First due" },
   "flexible": { label: "Flexible", kind: "flag" },
+  // WS-MDC CC-2: the member's mark of today's focus, a date or cleared.
+  "focus_on": { label: "Today's focus", kind: "date" },
   // WS-64 OP-10: the folder that `convert_folder_to_project` turns into a project.
   "folder": { label: "Folder" },
   "from": { label: "From", kind: "task" },
   "gives access to": { label: "Gives access to" },
+  "goal": { label: "Goal" },
   "group by": { label: "Group by", kind: "words" },
+  // WS-39 LP-1a: the health of a project update, in words ("At risk").
+  "health": { label: "Health", kind: "words" },
   "icon": { label: "Icon" },
   "icon_slot": { label: "Icon colour" },
   "impact": { label: "Impact" },
@@ -149,6 +169,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "move to": { label: "Move to", kind: "status" },
   "moves": { label: "Moves" },
   "name": { label: "Name" },
+  // SP-8a: a check that a save adds to, or removes from, an epic contract.
+  "new check N": { label: "New check", plural: "New checks" },
   "next copy": { label: "Next copy" },
   "next_action": { label: "Next action" },
   "no longer the default": { label: "No longer the default" },
@@ -159,12 +181,21 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "order": { label: "Order" },
   "organization": { label: "Organisation" },
   "organization_name": { label: "Organisation" },
+  // SP-8a: the parts of an epic contract.
+  "out of scope": { label: "Out of scope" },
+  "outcome": { label: "Outcome" },
   "owner_email": { label: "Owner", kind: "person" },
   "parent": { label: "Parent task", kind: "task" },
   "parent_id": { label: "Parent" },
   "parent_project_id": { label: "Parent project" },
   "parent_task_id": { label: "Parent task" },
   "place": { label: "Place" },
+  // WS-CRM CRM-M2i (task 3953): an item of the mapping plan that is not a
+  // field rule, such as the module that plays a slot, on an approve or a restore.
+  "plan item N": { label: "Plan item", plural: "Plan items" },
+  // The field rules of the same cards, one row each. The key is "rule N" and
+  // never "field N": `cardKey` reads `field <Name>` as a custom field.
+  "rule N": { label: "Rule", plural: "Rules" },
   "people on the list now": { label: "On the list now" },
   "person": { label: "Person" },
   // WS-CRM CRM-M3a: the card of `crm_create_pipeline`.
@@ -174,12 +205,16 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "project": { label: "Project", kind: "project" },
   "project_id": { label: "Project" },
   "question": { label: "Question" },
+  "remove task N": { label: "Remove task", kind: "task" },
   "reopens": { label: "Reopens" },
   "repeat day": { label: "Repeat day" },
   "repeats": { label: "Repeats" },
   "recipient": { label: "Recipient" },
+  "removed check N": { label: "Removed check", plural: "Removed checks" },
   "report": { label: "Report" },
   "required": { label: "Required", kind: "flag" },
+  // SP-8a: the review depth of an epic, which the lead sets.
+  "risk tier": { label: "Risk tier", kind: "words" },
   "rule": { label: "Rule" },
   "schedule": { label: "Schedule" },
   "scheduled_end": { label: "Ends", kind: "date" },
@@ -192,6 +227,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "source": { label: "Source", kind: "words" },
   "source N": { label: "Source", kind: "task" },
   "source_ref": { label: "Reference" },
+  // SP-8a: a Knowledge page or a repository file.
+  "spec link": { label: "Spec link" },
   "stage": { label: "Stage" },
   // WS-CRM CRM-M3a: each stage of a new pipeline, in order.
   "stage N": { label: "Stage", plural: "Stages" },
@@ -199,7 +236,11 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "start_date": { label: "Start", kind: "date" },
   // WS-CRM CRM-M3a: where a new pipeline starts, "new" or "a copy of X".
   "starts from": { label: "Starts from" },
+  "starts_on": { label: "Starts", kind: "date" },
+  "state": { label: "State", kind: "words" },
   "status": { label: "Status", kind: "status" },
+  // WS-CRM CRM-M4a: each lead status of a new lead pipeline, in order.
+  "status N": { label: "Status", plural: "Statuses" },
   "status set": { label: "Status set", kind: "project" },
   "status_category": { label: "Status category", kind: "category" },
   "status_id": { label: "Status" },
@@ -226,6 +267,7 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "type": { label: "Type", kind: "words" },
   "under": { label: "Under", kind: "project" },
   "undo": { label: "Undo" },
+  "unfinished": { label: "Unfinished tasks" },
   "until": { label: "Until", kind: "date" },
   "updated_at": { label: "Updated", kind: "date" },
   "view": { label: "View" },
@@ -237,6 +279,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "when": { label: "When" },
   // `file_tasks`: a subtask that moves with its parent's row, not on its own.
   "with parent N": { label: "With parent", plural: "With parent" },
+  // SP-8a: the track that owns an epic.
+  "workstream": { label: "Workstream" },
 };
 
 /**

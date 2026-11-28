@@ -172,6 +172,13 @@ class Apps:
              "chat_name": None, "body_text": "", "transcript_text": "voice words"},
         ]
 
+    async def studio(self, user, q, k):
+        # C5a: the studio flags stay OFF in this fixture, so this reader is never
+        # reached and each old test sees the answer of before C5a. The tests of the
+        # source with the flag on are in test_studio_search.py.
+        await self._enter("studio", user, {"q": q, "limit": k})
+        return []
+
     async def knowledge(self, **kw):
         await self._enter("knowledge", kw["user"], kw)
         return {"query": kw["q"], "degraded": True, "hits": [
@@ -199,6 +206,7 @@ def apps(monkeypatch) -> Apps:
     import gateway.routes.people.directory as directory
     import gateway.routes.projects.search as projects_search
     import gateway.routes.whatsapp.transport.messages as wa_messages
+    import gateway.studio.search as studio_search
     from acb_common import get_settings
     from gateway.routes.crm import access, records
 
@@ -212,6 +220,7 @@ def apps(monkeypatch) -> Apps:
     monkeypatch.setattr(registry, "enabled", lambda: True)
     monkeypatch.setattr(wa_messages, "search_messages", f.whatsapp)
     monkeypatch.setattr(kb_search, "search_knowledge", f.knowledge)
+    monkeypatch.setattr(studio_search, "search_records", f.studio)
     settings = get_settings()
     monkeypatch.setattr(settings, "crm_enabled", True, raising=False)
     monkeypatch.setattr(settings, "crm_orgs", ORG, raising=False)
@@ -231,11 +240,31 @@ def run(user: UserContext, q: str = "acme", apps: str | None = None, k: int = 5)
 # ── The registry ────────────────────────────────────────────────────────────
 
 class TestTheRegistry:
-    def test_seven_sources_each_with_its_routers_feature(self):
-        assert {k: s.feature for k, s in sources.REGISTRY.items()} == FEATURES
-        assert list(sources.REGISTRY) == list(FEATURES)
+    def test_nine_sources_each_with_its_routers_feature(self):
+        # The seven apps of before C5a, then `studio` (C5a), then `chat` LAST
+        # (HRD-21), the feature of the chat router. FEATURES stays the seven, so
+        # each old test sees the answer of before C5a.
+        assert {k: s.feature for k, s in sources.REGISTRY.items()} == {
+            **FEATURES, "studio": "studio", "chat": "chat"}
+        assert list(sources.REGISTRY) == [*FEATURES, "studio", "chat"]
         for key, source in sources.REGISTRY.items():
             assert source.key == key and source.label
+        # Only the chat source takes the current chat, and it has a switch.
+        assert [k for k, s in sources.REGISTRY.items() if s.current] == ["chat"]
+        assert sources.REGISTRY["chat"].gate is sources._chat_open
+
+    def test_the_chat_routers_feature_is_the_sources_feature(self):
+        """HRD-21: the source checks the feature that the chat router demands."""
+        router = (ROOT / "apps/services/gateway/gateway/routes/chat.py").read_text(
+            encoding="utf-8")
+        feature = sources.REGISTRY["chat"].feature
+        assert f'dependencies=[require_feature_router("{feature}")]' in router
+
+    def test_the_bar_never_asks_the_past_chats(self):
+        """HRD-21: the command bar keeps its five apps (``find_engine.md`` §2)."""
+        from gateway.routes.shell import search as shell
+
+        assert "chat" not in shell.BAR_APPS and "chat" not in shell.PROVIDERS
 
     def test_the_bar_is_a_projection_of_five_sources_in_its_order(self):
         from gateway.routes.shell import search as shell
@@ -409,9 +438,14 @@ class TestTheRouteTakesNoTenant:
     def test_the_route_takes_the_words_the_apps_k_and_after_and_nothing_else(self):
         # CX-1 added `after`, a date (company_context.md §4.5). It names no
         # org and no member. KB-9a added `background`, the route's own
-        # BackgroundTasks, which FastAPI fills and no request can set.
+        # BackgroundTasks, which FastAPI fills and no request can set. FIND-4
+        # added `explain`, a bool that names no org and no member
+        # (find_engine.md §3.7, §5.2). HRD-21 added `current_chat`, the id of
+        # the chat that the search runs in: it only takes a chat away, and
+        # names no org and no member (find_engine.md §6).
         params = inspect.signature(company.company_search).parameters
-        assert set(params) == {"q", "apps", "k", "after", "verified", "user", "background"}
+        assert set(params) == {"q", "apps", "k", "after", "verified", "explain",
+                               "current_chat", "user", "background"}
         assert params["user"].default.dependency is get_current_user
         assert params["background"].annotation in (BackgroundTasks, "BackgroundTasks")
 
@@ -459,12 +493,26 @@ class TestTheAnswer:
     def test_a_named_app_goes_first(self, apps):
         hits = run(member(*ALL), apps="crm, email")["hits"]
         assert [h["app"] for h in hits[:3]] == ["crm", "email", "tasks"]
-        assert apps.called()[:3] == ["crm_access", "crm", "email"]
+        # HRD-4: the sources start together, so only the start order is fixed.
+        assert apps.called()[:2] == ["crm_access", "email"]
 
     def test_an_unknown_app_is_a_422(self, apps):
         with pytest.raises(HTTPException) as e:
             run(member(*ALL), apps="tasks,ledger")
         assert e.value.status_code == 422 and "ledger" in e.value.detail
+        # HRD-21: the list of keys names `chat` only while CHAT_SEARCH_ORGS
+        # names the org. The flag is empty here, so it is the list of before.
+        keys = [k for k in sources.REGISTRY if k != "chat"]
+        assert e.value.detail.endswith(f"One of: {', '.join(keys)}.")
+        assert "chat" not in e.value.detail
+        assert apps.calls == []
+
+    def test_naming_chat_while_it_is_dark_is_the_422_of_before(self, apps):
+        """HRD-21: with the switch closed, ``apps=chat`` gets the 422 of an
+        unknown app, as before HRD-21. The chat source is never asked."""
+        with pytest.raises(HTTPException) as e:
+            run(member(*ALL, "chat"), apps="chat")
+        assert e.value.status_code == 422 and "chat" not in e.value.detail.split("One of:")[1]
         assert apps.calls == []
 
     @pytest.mark.parametrize("q", ["a", " a ", "x" * 301])
@@ -479,9 +527,10 @@ class TestTheAnswer:
         assert len(hits) == 7
         assert [kw.get("limit") for n, _, kw in apps.calls if n == "tasks"] == [1]
 
-    def test_the_sources_never_overlap(self, apps):
+    def test_the_sources_overlap_but_four_at_most(self, apps):
+        # HRD-4 (D-FIND-6): the sources run at once, and a fifth waits.
         run(member(*ALL))
-        assert apps.max_active == 1
+        assert 1 < apps.max_active <= company.FIND_SESSIONS
 
     @pytest.mark.parametrize("error", [HTTPException(status_code=422, detail="too short"),
                                        RuntimeError("db down"), TimeoutError()])

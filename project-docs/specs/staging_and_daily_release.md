@@ -6,6 +6,8 @@
 
 **Status update, 2026-11-07:** production releases three times a day, at 05:30, 13:30 and 21:30 UTC (D194, CIV-21, built). That is 11:00, 19:00 and 03:00 IST. Each slot has its own cron, timer line and window (§4.1b). The text below that says "once a day" is the record of the first clock.
 
+**Status update, 2026-11-13:** each slot ships `green/main`, the newest commit that passed the full suite of a push batch (D218, CIV-30, built). A red tip of `main` holds no release. A plain dispatch still ships its own commit. `ci_velocity.md` §8.7 holds the design. The text below that says a slot ships "the tip of `main`" is the record before CIV-30.
+
 **Status:** 🟠 **PROPOSED, 2026-10-15. Revised 2026-10-16:** staging goes on the dev box (§5).
 
 **Built:** 🔨 phase 1, the daily clock (§5.7), 🔨 phase 2 (§5.8 and §5.9), and 🔨 the code of phases 4 and 5 (§5.11).

@@ -28,7 +28,11 @@ from customer_console import store
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
-from tests.unit._customer_console_ladder import apply_ladder, ensure_deployment
+from tests.unit._customer_console_ladder import (
+    apply_ladder,
+    callable_test_vendors,
+    ensure_deployment,
+)
 from tests.unit.test_customer_console_end_to_end import (
     ENC_KEY,
     OP,
@@ -69,6 +73,9 @@ def db():
 
 @pytest.fixture
 def client(monkeypatch):
+    # MS-2 refuses a provider the Router cannot call (rule H2). The vendors
+    # here are made up per run (`e2ez<run>`), and a fake answers for them.
+    callable_test_vendors(monkeypatch, starts=("e2e",))
     monkeypatch.setenv("CUSTOMER_CONSOLE_OPERATOR_TOKEN", TOKEN)
     monkeypatch.setenv("CUSTOMER_CONSOLE_ENCRYPTION_KEY", ENC_KEY)
     pb.drain_refusals()

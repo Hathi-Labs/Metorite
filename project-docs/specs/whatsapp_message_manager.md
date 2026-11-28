@@ -1,5 +1,7 @@
 # WhatsApp Message Manager — plan & feature brainstorm
 
+> **Dated 2026-11-11, ON HOLD (D205.3).** The inbox and ingest direction waits. The transport, the webhook and Embedded Signup are the base of WS-WB. WB-0 (task 2651) writes the bots spec.
+
 > **Product:** Metorite · **Feature:** WhatsApp channel vertical (channel #2, after email)
 > **Created:** 2026-07-23 · **Revised:** 2026-07-23 (v3 — calm-UI pass grounded in a prior-art
 > study; v2 — official WhatsApp Business Platform only, per founder decision; unofficial
@@ -612,6 +614,9 @@ streams/list/digest all hide snoozed chats and a new **"Snoozed" nav stream**
 surfaces them; the conversation header gains a Snooze menu (Later today / This
 evening / Tomorrow 9am / Next week) and a one-tap "wake". An OUTBOUND reply never
 wakes a snooze.
+*(Fix, task 4011: a snooze keeps a group @mention in Needs reply.
+`recompute_chat_status` reads the account phone when the caller gives none.
+Fence: `tests/unit/test_whatsapp_snooze_mention_r8.py`.)*
 
 **W7 — Pulse (analytics / insights) — BUILT (the founder-CEO's "am I keeping
 up?").** A read-only projection (`pulse.py`, alongside `digest.py`) over the

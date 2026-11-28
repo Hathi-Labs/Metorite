@@ -40,6 +40,7 @@ from gateway.routes.crm.core import (
     NEXT_ACTIVITY_SQL,
     NEXT_AT_SQL,
     ORGANIZATIONS,
+    PIPELINE_STAGE_COLUMNS,
     WEIGHTED_SQL,
     WEIGHTED_TYPES,
     DealModel,
@@ -55,6 +56,7 @@ from gateway.routes.crm.core import (
     current_tenant,
     custom_pairs,
     default_pipeline_id,
+    entry_probability,
     extra_filters,
     has_column,
     insert_row,
@@ -65,8 +67,10 @@ from gateway.routes.crm.core import (
     pipeline_scope_sql,
     pipeline_takes_unset,
     project_joined,
-    read_statuses,
+    read_deal_stages,
     record_activity,
+    related_hits,
+    require_deal_pipeline,
     require_row,
     resolve_owner,
     router,
@@ -194,8 +198,13 @@ async def apply_status_transition(
         updates["closed_at"] = changed_at
     if has_column(entity, "probability"):
         chosen = patch.get("probability", getattr(record, "probability", None))
-        if chosen is None and getattr(status, "probability", None) is not None:
-            updates["probability"] = status.probability
+        if chosen is None:
+            # CRM-M3b: the win chance of the stage in the deal's pipeline.
+            inherited = await entry_probability(
+                db, status, patch.get("pipeline_id", getattr(record, "pipeline_id", None)),
+            )
+            if inherited is not None:
+                updates["probability"] = inherited
     return updates
 
 
@@ -439,6 +448,7 @@ _NEXT_AT_COLUMN = (
 
 #: The lane rows carry the effective and the source values (CRM-C3, §20.6
 #: item 6). So ``stage_probability`` below binds the effective probability.
+#: A held stage, which the pipeline does not list, reads its stage row.
 _STAGE_COLUMNS = EFFECTIVE_STATUS_COLUMNS["crm_deal_statuses"]
 
 
@@ -459,12 +469,16 @@ async def _board_lanes(
     must already hold EVERY filter, because the held read rebinds its lane
     predicate to the stage row and keeps the rest with the same binds.
     Without a pipeline: every stage.
+
+    CRM-M3b: a listed stage carries the win chance and the warning days of
+    its membership of the pipeline. Without a pipeline, each stage carries
+    those of the default deal pipeline (``core.read_deal_stages``).
     """
     if not pipeline_id:
-        return await read_statuses(db, "crm_deal_statuses")
+        return await read_deal_stages(db)
     listed = (await db.execute(
         text(
-            f"SELECT {_STAGE_COLUMNS}, ps.position AS pipeline_position "
+            f"SELECT {PIPELINE_STAGE_COLUMNS}, ps.position AS pipeline_position "
             "FROM crm_deal_statuses s "
             "JOIN crm_pipeline_stages ps ON ps.status_id = s.id "
             "WHERE ps.pipeline_id = CAST(:pipeline_id AS uuid) "
@@ -564,7 +578,8 @@ async def get_pipeline(
         wanted: str | None = None
         if pipeline_id:
             wanted = checked_uuid(pipeline_id, "pipeline_id")
-            await require_row(db, "crm_pipelines", wanted, "Pipeline")
+            # CRM-M4a: the board of a deal pipeline only.
+            await require_deal_pipeline(db, wanted)
             where += " AND " + pipeline_scope_sql(
                 await pipeline_takes_unset(db, wanted),
             )
@@ -576,7 +591,10 @@ async def get_pipeline(
         if source:
             where += " AND source = :source"
             params["source"] = source
-        search_clause, search_params = search_where(DEALS, q)
+        # HRD-18a: the related names, read once for every lane.
+        search_clause, search_params = search_where(
+            DEALS, q, related=await related_hits(db, DEALS, q),
+        )
         if search_clause:
             where += f" AND {search_clause}"
             params.update(search_params)
@@ -900,7 +918,8 @@ async def _create_deal(
     wanted = body.deal or ConvertDeal()
     stated = (body.pipeline_id or "").strip()
     if stated:
-        await require_row(db, "crm_pipelines", checked_uuid(stated, "pipeline_id"), "Pipeline")
+        # CRM-M4a: the deal of a convert joins a deal pipeline only.
+        await require_deal_pipeline(db, checked_uuid(stated, "pipeline_id"))
     pipeline_id = stated or await default_pipeline_id(db)
     status = await load_pipeline_start_status(
         db, DEALS.status_table or "crm_deal_statuses", pipeline_id,
@@ -917,10 +936,16 @@ async def _create_deal(
         "status_id": str(status.id),
         "amount": wanted.amount,
         "currency": wanted.currency or "INR",
-        "probability": getattr(status, "probability", None),
+        # CRM-M3b: the win chance of the start stage in this pipeline.
+        "probability": await entry_probability(db, status, pipeline_id),
         "expected_close_date": wanted.expected_close_date,
         "next_step": wanted.next_step,
-        "description": wanted.description,
+        # Task 2490: the lead's own description goes to the deal when the
+        # caller passes none, so a 300-character equipment note is not lost.
+        "description": (
+            wanted.description if wanted.description is not None
+            else getattr(lead, "description", None)
+        ),
         # Provenance (§3.4) — this is what lets the deal's timeline union the
         # lead's history instead of losing everything said before conversion.
         "lead_id": str(lead.id),

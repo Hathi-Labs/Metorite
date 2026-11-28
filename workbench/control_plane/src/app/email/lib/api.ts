@@ -2,6 +2,7 @@ import {
   Email, EmailAccount,
   AnalyticsOverview, SenderStat, NewsletterStatus, UnsubscribeResult,
   AutomationRule, RuleTestResult, ExecutedRule, AssistantSettings,
+  AssistantSettingsSave,
   RecentTestResult, ColdSender, KnowledgeEntry,
   LearnedPattern, RunMessageResult, LearnedRulePattern, LabelInfo,
   RuleGuidance, MessageTimeline,
@@ -17,7 +18,9 @@ import {
   type ProviderAvailability,
 } from "./connect";
 import type { ForwardBody } from "./forward";
+import type { PreviousState } from "./markDone";
 import { announceDraftLeft } from "@/lib/draftLeftEvent";
+import { announceRulesChanged } from "./rulesChanged";
 
 /** The answer of `POST /email/forward`. */
 export interface ForwardResult {
@@ -868,6 +871,8 @@ export interface SearchEmailsParams {
 export interface SearchEmailsResult extends ListEmailsResponse {
   /** True when the server actually applied semantic re-ranking. */
   hybrid: boolean;
+  /** True when no mail held every word, so the server searched for ANY word. */
+  broadened: boolean;
 }
 
 /** Ranked search over the user's email — the query surface behind the search bar.
@@ -909,6 +914,7 @@ export async function searchEmails(
     page: number;
     page_size: number;
     hybrid?: boolean;
+    broadened?: boolean;
   }>(`/email/search?${sp.toString()}`);
 
   return {
@@ -917,6 +923,7 @@ export async function searchEmails(
     page: raw.page ?? 1,
     pageSize: raw.page_size ?? 50,
     hybrid: Boolean(raw.hybrid),
+    broadened: Boolean(raw.broadened),
   };
 }
 
@@ -1541,24 +1548,29 @@ export async function listRules(accountId: string): Promise<AutomationRule[]> {
 }
 
 export async function createRule(rule: AutomationRule): Promise<AutomationRule> {
-  return gatewayFetch<AutomationRule>("/email/rules", {
+  const created = await gatewayFetch<AutomationRule>("/email/rules", {
     method: "POST",
     body: JSON.stringify(rule),
   });
+  announceRulesChanged();
+  return created;
 }
 
 export async function updateRule(
   id: string,
   rule: AutomationRule
 ): Promise<AutomationRule> {
-  return gatewayFetch<AutomationRule>(`/email/rules/${id}`, {
+  const updated = await gatewayFetch<AutomationRule>(`/email/rules/${id}`, {
     method: "PATCH",
     body: JSON.stringify(rule),
   });
+  announceRulesChanged();
+  return updated;
 }
 
 export async function deleteRule(id: string): Promise<void> {
   await gatewayFetch(`/email/rules/${id}`, { method: "DELETE" });
+  announceRulesChanged();
 }
 
 /** Everything ELSE that acts on the mailbox, for the Rules screen's
@@ -1632,19 +1644,24 @@ export async function generateRules(
   accountId: string,
   prompt: string,
 ): Promise<{ created: AutomationRule[]; error?: string }> {
-  return gatewayFetch("/email/rules/generate", {
+  const res = await gatewayFetch<{ created: AutomationRule[]; error?: string }>("/email/rules/generate", {
     method: "POST",
     body: JSON.stringify({ account_id: accountId, prompt }),
   });
+  // The route saves the rules it makes (task 2451).
+  announceRulesChanged();
+  return res;
 }
 
 export async function installPresetRules(
   accountId: string
 ): Promise<{ installed: string[]; total_presets: number }> {
-  return gatewayFetch(
+  const res = await gatewayFetch<{ installed: string[]; total_presets: number }>(
     `/email/rules/install-presets?account_id=${encodeURIComponent(accountId)}`,
     { method: "POST" }
   );
+  announceRulesChanged();
+  return res;
 }
 
 /**
@@ -1667,6 +1684,7 @@ export async function copyRules(
       ...(skipNames.length > 0 ? { skip_names: skipNames.slice(0, 200) } : {}),
     }),
   });
+  announceRulesChanged();
   return mapRuleCopyResult(raw ?? {});
 }
 
@@ -1700,10 +1718,12 @@ function mapRuleCopyResult(raw: Record<string, unknown>): RuleCopyResult {
 export async function resetRules(
   accountId: string
 ): Promise<{ installed: string[]; total_presets: number; reset: boolean }> {
-  return gatewayFetch(
+  const res = await gatewayFetch<{ installed: string[]; total_presets: number; reset: boolean }>(
     `/email/rules/reset?account_id=${encodeURIComponent(accountId)}`,
     { method: "POST" }
   );
+  announceRulesChanged();
+  return res;
 }
 
 export async function undoExecution(
@@ -2015,17 +2035,32 @@ export async function getRulesHistory(
 export async function resolveThread(
   accountId: string,
   threadId: string,
-  opts: { done?: boolean; dismiss?: boolean } = {}
-): Promise<void> {
-  await gatewayFetch(`/email/reply-zero/resolve`, {
+  opts: { done?: boolean; dismiss?: boolean; restore?: PreviousState } = {}
+): Promise<{ previous: PreviousState | null }> {
+  const res = await gatewayFetch<{
+    previous?: { status: PreviousState["status"]; follow_up: boolean } | null;
+  }>(`/email/reply-zero/resolve`, {
     method: "POST",
     body: JSON.stringify({
       account_id: accountId,
       thread_id: threadId,
       done: opts.done ?? true,
       dismiss: opts.dismiss ?? false,
+      // A move back after Mark done (§6.6). The gateway names the labels.
+      ...(opts.restore
+        ? { restore: { status: opts.restore.status, follow_up: opts.restore.followUp } }
+        : {}),
     }),
   });
+  // `previous` comes only from a Mark done with the flag on.
+  const was = res?.previous;
+  return { previous: was ? { status: was.status, followUp: was.follow_up } : null };
+}
+
+/** Whether this organization has "Mark done" (§6.6). */
+export async function getMarkDoneEnabled(): Promise<boolean> {
+  const res = await gatewayFetch<{ enabled?: boolean }>("/email/reply-zero/mark-done");
+  return res?.enabled === true;
 }
 
 /** Snooze (or, with until=null, un-snooze) a conversation. Applies to the whole
@@ -2121,13 +2156,53 @@ export async function getAssistantSettings(
   );
 }
 
+/** The settings PUT. Only the member's own Auto-run act sends the marker
+ *  `auto_run_choice` (task 2305, `autoRunChoiceBody`). */
 export async function saveAssistantSettings(
-  settings: AssistantSettings
+  settings: AssistantSettingsSave
 ): Promise<AssistantSettings> {
   return gatewayFetch<AssistantSettings>("/email/assistant/settings", {
     method: "PUT",
     body: JSON.stringify(settings),
   });
+}
+
+/** The answer of `POST /email/signature/images` (WS-17 SG-1). `url` is the
+ *  public https address of the hosted image, and it never changes. */
+export interface SignatureImage {
+  id: string;
+  url: string;
+  kind: "logo" | "photo";
+  content_type: string;
+  width: number;
+  height: number;
+  dark_share: number;
+  clear_share: number;
+}
+
+/** Upload one signature image for a mailbox. The server re-encodes it and
+ *  hosts it, so the signature carries an https address and never a `data:`
+ *  URI (D-EM-67). A refusal throws the server's sentence. The body is
+ *  multipart, so this sets no Content-Type: `fetch` adds the boundary. */
+export async function uploadSignatureImage(
+  accountId: string,
+  file: File,
+  kind: "logo" | "photo" = "logo",
+): Promise<SignatureImage> {
+  const form = new FormData();
+  form.append("account_id", accountId);
+  form.append("kind", kind);
+  form.append("file", file);
+  const res = await fetch("/api/email/signature/images", {
+    method: "POST",
+    body: form,
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = typeof body.detail === "string" ? body.detail : "";
+    throw new Error(detail || body.error || `The upload failed (${res.status}).`);
+  }
+  return body as SignatureImage;
 }
 
 /** One "always copy" rule of a mailbox (§21.16): a domain or an address,

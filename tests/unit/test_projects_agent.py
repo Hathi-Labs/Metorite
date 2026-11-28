@@ -49,10 +49,23 @@ from tests.unit._sandbox_tools_fakes import (  # noqa: E402,F401 — fixtures by
     short_tmp,
 )
 
+#: WS-24c slice 2: an empty internal token sends no ``Authorization`` header.
+#: These tests set one, and check the exact bearer.
+_INTERNAL = "test-internal-token"
+
+
+@pytest.fixture(autouse=True)
+def _internal_token_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", _INTERNAL)
+
+
 _M = load_agent_module()
 AGENT = "projects-assistant"
 UUID = "0f8fad5b-d9cb-469f-a165-70867728950e"
 OTHER = "1f8fad5b-d9cb-469f-a165-70867728950e"
+#: Task 3865: a project that the caller reaches only through an assigned task,
+#: so every project read of it answers 404.
+HIDDEN = "2f8fad5b-d9cb-469f-a165-70867728950e"
 
 
 def _registry_entry(name: str) -> dict | None:
@@ -149,7 +162,8 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     # WS-46 P7: "what landed on my plate" reads the inbox with `untriaged`.
     "my_work": [{"view": "inbox"}, {"view": "assigned"}, {"untriaged": True}],
     "people_for": [{"query": "pri"}, {"emails": "a@x.io,b@x.io"}],
-    "vocabulary": [{"project_id": UUID}],
+    # Task 3865: with a task_id, a 404 on the project reads the task's own lanes.
+    "vocabulary": [{"project_id": UUID}, {"project_id": HIDDEN, "task_id": UUID}],
     "analytics_stuck": [{"project_id": UUID}],
     "analytics_load": [{}],
     "analytics_throughput": [{"project_id": UUID, "weeks": 4}],
@@ -162,6 +176,8 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     "waiting_agent_requests": [{}],
     # WS-55 SW-11a: what needs a person, for one project, and the member's own.
     "needs_attention": [{"project_id": UUID}, {"mine": True, "offset": 25}],
+    # WS-55 EA-18d: the agent questions that wait on the member.
+    "agent_questions": [{}, {"scope": "everyone", "project_id": UUID, "sort": "newest", "offset": 25}],
     "report_render": [{"report_id": UUID}],
     # S2b — the two reads the overlay and the repeat rule needed
     "recurrence": [{"task_id": UUID}],
@@ -180,8 +196,16 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     "project_access": [{"project_id": UUID}],
     # WS-ALN ALN-4 — the pins of a project, and its removed pins
     "project_authorities": [{"project_id": UUID}, {"project_id": UUID, "include_removed": True}],
+    # WS-39 LP-1a — the updates of a project, and an older page of them
+    "list_project_updates": [{"project_id": UUID},
+                             {"project_id": UUID, "limit": 2, "before": UUID}],
+    # WS-39 SP-5a — the cycles of a node, and one cycle with a page of its tasks
+    "list_cycles": [{"project_id": UUID}, {"project_id": UUID, "limit": 1, "offset": 1}],
+    "cycle_detail": [{"cycle_id": UUID}, {"cycle_id": UUID, "limit": 1}],
     # WS-ALN ALN-2a — the member's own open decisions
     "my_decisions": [{}],
+    # WS-39 TPL-1a — the templates of the organization
+    "list_templates": [{}],
     "project_views": [{"project_id": UUID}],
     "calendar": [
         {"start": "2026-09-22", "end": "2026-09-29", "project_id": UUID},
@@ -589,6 +613,13 @@ def _report_detail(path: str) -> Any:
 
 def _detail_responder(call: dict) -> Any:
     path = call["path"]
+    if path.startswith(f"/projects/nodes/{HIDDEN}/"):
+        from tests.unit._projects_agent_fakes import FakeResponse
+
+        return FakeResponse({"detail": "Project not found"}, status_code=404)
+    if path == f"/projects/my/tasks/{UUID}/lanes":
+        return {"rows": [{"id": "s1", "name": "To do", "category": "todo",
+                          "is_default": True}], "total": 1}
     if path.endswith("/relations"):
         return {"subtasks": [], "links": [], "blocked_by": [], "progress": {}}
     if path.startswith("/projects/tasks/") and path.count("/") == 3:
@@ -628,6 +659,19 @@ def _detail_responder(call: dict) -> Any:
             "energy": None,
             "is_triaged": True,
         }
+    # WS-39 SP-5a: the cycles of a node, and one cycle.
+    if path.startswith("/projects/nodes/") and path.endswith("/cycles"):
+        return {"project_id": UUID, "cycles": [
+            {"id": UUID, "project_id": UUID, "name": "Sprint 7", "state": "planned",
+             "starts_on": "2026-11-16", "ends_on": "2026-11-27", "goal": "Ship", "tasks": 2,
+             "hidden": 0}]}
+    if path.startswith("/projects/cycles/") and path.count("/") == 3:
+        return {"cycle": {"id": UUID, "project_id": UUID, "name": "Sprint 7", "state": "planned",
+                          "starts_on": "2026-11-16", "ends_on": "2026-11-27", "goal": "Ship"},
+                "tasks": [{"id": UUID, "task_number": 7, "title": "Fix the extruder",
+                           "status_name": "To do", "status_category": "todo",
+                           "estimate_mins": 60, "archived": False}],
+                "hidden": 0, "committed": None, "capacity": []}
     if path.startswith("/projects/nodes/") and path.endswith("/summary"):
         return {
             "id": UUID,
@@ -640,6 +684,14 @@ def _detail_responder(call: dict) -> Any:
             "own": {"tasks": 3, "overdue": 1},
             "children": [],
         }
+    if path == "/projects/assigned-to-me":
+        # SW-68a: one row, so `my_work` reaches the plan order route.
+        return {"rows": [{"id": UUID, "title": "Fix the extruder", "task_number": 7,
+                          "status_id": "s1", "root_project_id": UUID}], "total": 1}
+    if path == "/projects/plan/order":
+        return {"order": [UUID], "plan": {UUID: {
+            "epic_id": UUID, "ready": False, "slack_mins": 0,
+            "blocked_by": [], "blocked_by_hidden": 1}}}
     return empty_list(call)
 
 
@@ -651,7 +703,7 @@ async def test_every_tool_sends_the_acting_user(tool: str, monkeypatch) -> None:
     assert calls, f"{tool} made no gateway call"
     for call in calls:
         assert call["headers"]["X-User-Email"] == "pm@fracktal.in", tool
-        assert call["headers"]["Authorization"].startswith("Bearer "), tool
+        assert call["headers"]["Authorization"] == f"Bearer {_INTERNAL}", tool
 
 
 @pytest.mark.parametrize("tool", sorted(_INVOCATIONS))
@@ -714,6 +766,13 @@ async def test_every_route_mapped_to_a_built_tool_is_reached_by_it(monkeypatch) 
     # RX-1: a held card reads this row, not a read tool. The fence that reaches
     # it is ``tests/unit/test_held_card_promises.py``.
     expected.discard(("GET", "/projects/nodes/{project_id}/audience"))
+    # HRD-9a: the cards of the twelve vocabulary writes read this row, not a
+    # read tool. The fence that reaches it is ``test_shared_vocab_guard.py``.
+    expected.discard(("GET", "/projects/nodes/{project_id}/vocabulary/reach"))
+    # Task 3636: the cards of the create, bulk, plan and batch acts read this row
+    # to name a person who cannot open the task. No read tool calls it. The fence
+    # that reaches it is ``tests/unit/test_assignee_reach_rows.py``.
+    expected.discard(("GET", "/projects/people/reach"))
     unreached = sorted(expected - reached)
     assert not unreached, (
         "manifest rows whose built tool never calls them — repoint, exclude, "

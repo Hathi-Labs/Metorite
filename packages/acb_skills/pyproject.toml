@@ -12,7 +12,11 @@ dependencies = [
     # module level by several tools. `acb_llm` is the `decide` tool's facade
     # (WS-31 CP-13d). Declared HERE, or the import is green in the root venv
     # and broken in an image whose closure lacks them. None of them imports
-    # acb_skills, so there is no cycle.
+    # acb_skills, so there is no cycle. `acb_auth` (the permission match rule
+    # of org_admin_more_tools.py, permission_policy.py and others) is not
+    # named here. It comes through `acb-llm`, which declares `acb-auth`, so
+    # each image that holds acb_skills holds acb_auth. A direct line would
+    # change uv.lock and make pr-check run FULL for no new package.
     "acb-common",
     "acb-llm",
     # The sandbox tools (WS-43d) build on MAF's file tools and skills
@@ -53,6 +57,11 @@ dependencies = [
     # tests/unit/test_no_agpl_dependency.py.
     "markitdown[pdf,docx,pptx,xlsx]==0.1.9",
     "pdfplumber==0.11.10",
+    # The step engine of a user tool (SBX-4b1, agent_sandbox.md §12.4
+    # decisions 5 and 7) checks the schemas of `tool.json`, the smoke input
+    # and the smoke output with jsonschema (MIT). The lock held it as an
+    # indirect package, and this line names the direct use.
+    "jsonschema>=4.26",
 ]
 
 [build-system]

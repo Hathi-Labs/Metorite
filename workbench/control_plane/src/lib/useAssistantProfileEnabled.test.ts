@@ -122,8 +122,8 @@ describe("source scan: each place asks the hook, not the build switch alone", ()
   });
 
   it("each account row passes the hook's answer", () => {
-    expect(read("components/Sidebar.tsx")).toMatch(/accountLinks\(sections, \{ assistant \}\)/);
-    expect(read("components/AppShell.tsx")).toMatch(/accountLinks\(navSections, \{ assistant \}\)/);
+    expect(read("components/Sidebar.tsx")).toMatch(/accountLinks\(sections, \{ assistant, agents \}\)/);
+    expect(read("components/AppShell.tsx")).toMatch(/accountLinks\(navSections, \{ assistant, agents \}\)/);
     expect(read("components/AccountSwitcher.tsx")).toMatch(/assistant=\{assistant\}/);
   });
 });

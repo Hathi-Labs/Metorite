@@ -7,8 +7,10 @@ The sync engine calls these methods without knowing the provider details.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+import math
 import re
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Generator
@@ -31,6 +33,96 @@ class ProviderRateLimited(Exception):
     then backs off (WS-17 EM-G4a item 9, EM-G4b-f3). The scheduler reads it
     where it degrades other failures, so a rate limit is never degraded
     (EM-G4b review round 1, F2)."""
+
+
+class ProviderDidNotAnswer(Exception):
+    """A provider did not answer a request that writes (HRD-20, task 3224).
+
+    A 502, 503 or 504, or a read timeout, on a send, a reply or a draft write.
+    The write may have landed, so no code tries it again. It holds the name of
+    the provider and the kind of write, and nothing else. It never takes a
+    URL, a request or a response, and it never subclasses
+    ``httpx.HTTPStatusError``, whose text holds the URL. The gateway answers
+    503 with :attr:`detail` (``main._provider_did_not_answer``).
+
+    ``kind`` is ``"send"`` or ``"draft"``. The text never says that nothing
+    was written, because the provider may have done the write before the
+    failure."""
+
+    def __init__(self, provider: str, kind: str) -> None:
+        self.provider = provider
+        self.kind = kind
+        if kind == "draft":
+            tail = "It may not have saved the draft. Check Drafts before you try again."
+        else:
+            tail = "It may not have sent the mail. Check Sent before you try again."
+        self.detail = f"{provider} did not answer. {tail}"
+        super().__init__(self.detail)
+
+
+#: A gateway fault of a mail API. A read that gets one is tried again. A write
+#: that gets one is not, because the write may have landed (HRD-20).
+GATEWAY_FAULTS = frozenset({502, 503, 504})
+#: The waits before the tries again of a read, and the cap of ``Retry-After``.
+READ_FAULT_WAITS = (0.5, 1.5)
+READ_RETRY_MAX_WAIT_SECS = 5.0
+
+
+def guard_client(
+    client: httpx.AsyncClient, provider: str,
+    write_kind: Callable[[httpx.Request], str | None],
+    *, retry_reads: Callable[[], bool] | bool = True,
+) -> httpx.AsyncClient:
+    """Give *client* the two rules of HRD-20 (task 3224), and return it.
+
+    * A GET that gets 502, 503 or 504 is tried again, twice at most. The wait
+      is ``Retry-After`` up to :data:`READ_RETRY_MAX_WAIT_SECS`, else a short
+      back-off. ``retry_reads`` is a flag, or a function that gives it at each
+      request. Outlook gives ``provider.read_retry_429``, which is OFF unless
+      the caller holds no database session (H-352). Gmail gives False, because
+      ``test_gmail_rate_limits.py`` fences "a 5xx is not retried" (§12.3.5.1).
+    * A request for which *write_kind* gives ``"send"`` or ``"draft"`` is
+      never tried again. A 502, 503 or 504, or a read timeout, raises
+      :class:`ProviderDidNotAnswer`, because the write may have landed.
+
+    It wraps ``client.send`` on the instance, and not a subclass, so a test
+    that replaces ``httpx.AsyncClient`` still reaches the guard.
+    Fence: ``tests/unit/test_outlook_gateway_faults.py`` and
+    ``tests/unit/test_gmail_gateway_faults.py``."""
+    inner = client.send
+
+    async def send(request: httpx.Request, **kwargs: Any) -> httpx.Response:
+        if request.method == "GET" and (
+                retry_reads() if callable(retry_reads) else retry_reads):
+            waits = list(READ_FAULT_WAITS)
+            while True:
+                resp = await inner(request, **kwargs)
+                if resp.status_code not in GATEWAY_FAULTS or not waits:
+                    return resp
+                wait = waits.pop(0)
+                if "Retry-After" in resp.headers:
+                    with contextlib.suppress(ValueError):
+                        asked = float(resp.headers["Retry-After"])
+                        # nan and inf are no wait that a caller can use.
+                        if math.isfinite(asked):
+                            wait = asked
+                    wait = min(max(wait, 0.0), READ_RETRY_MAX_WAIT_SECS)
+                await resp.aclose()
+                await asyncio.sleep(wait)
+        kind = write_kind(request) if request.method != "GET" else None
+        if kind is None:
+            return await inner(request, **kwargs)
+        try:
+            resp = await inner(request, **kwargs)
+        except httpx.ReadTimeout:
+            raise ProviderDidNotAnswer(provider, kind) from None
+        if resp.status_code in GATEWAY_FAULTS:
+            await resp.aclose()
+            raise ProviderDidNotAnswer(provider, kind)
+        return resp
+
+    client.send = send  # type: ignore[method-assign]
+    return client
 
 
 class FolderCheckIncomplete(ValueError):
@@ -576,6 +668,13 @@ class BaseEmailProvider(ABC):
     #: because some test fakes do not subclass this class.
     forwards_natively: bool = False
 
+    #: True when :meth:`trash_message` takes the stored Message-ID of the
+    #: mail as ``message_id=`` and refuses a mail with another one (task
+    #: 4095, ``email_app_master_plan.md`` §18.13.3). Only IMAP does, because
+    #: an IMAP UID can name another mail after a change of UIDVALIDITY. Call
+    #: the trash through :func:`trash_checked`, which reads this flag.
+    TRASH_CHECKS_MESSAGE_ID: bool = False
+
     def __init__(self, credentials: dict[str, Any]):
         self.credentials = credentials
 
@@ -767,6 +866,7 @@ class BaseEmailProvider(ABC):
     async def bulk_apply(
         self, provider_message_ids: list[str], action: str,
         failed_out: list[str] | None = None,
+        *, message_ids: dict[str, str | None] | None = None,
     ) -> dict[str, str]:
         """Apply one of :attr:`BULK_ACTIONS` to many messages.
 
@@ -785,6 +885,10 @@ class BaseEmailProvider(ABC):
         The default walks the per-message API one call at a time — correct
         everywhere, slow at volume. Providers with a native batch endpoint
         override this (see :class:`GmailProvider`).
+
+        ``message_ids`` maps each provider id to the stored Message-ID of its
+        row (task 4095). A trash passes it through :func:`trash_checked`, so
+        an IMAP id with no entry fails and lands in ``failed_out``.
         """
         rekeys: dict[str, str] = {}
         for pmid in provider_message_ids:
@@ -793,7 +897,8 @@ class BaseEmailProvider(ABC):
                 if action == "archive":
                     new_id = await self.move_to_folder(pmid, "archive")
                 elif action == "trash":
-                    new_id = await self.trash_message(pmid)
+                    new_id = await trash_checked(
+                        self, pmid, (message_ids or {}).get(pmid))
                 elif action in ("read", "unread"):
                     await self.apply_flags(pmid, is_read=action == "read")
                 elif action in ("star", "unstar"):
@@ -1109,6 +1214,30 @@ class BaseEmailProvider(ABC):
         shows the alt text, as before.
         """
         return InlineRead()
+
+
+def trash_checks_message_id(provider: Any) -> bool:
+    """True when the trash of ``provider`` checks the stored Message-ID.
+
+    Task 4095 (§18.13.3). It reads :attr:`BaseEmailProvider.TRASH_CHECKS_MESSAGE_ID`
+    and asks for ``True`` itself, because an attribute of a ``MagicMock`` fake
+    is a mock and not ``True``."""
+    return getattr(provider, "TRASH_CHECKS_MESSAGE_ID", False) is True
+
+
+async def trash_checked(
+    provider: Any, provider_message_id: str, message_id: str | None,
+) -> str | None:
+    """Trash one mail, with its stored Message-ID when the provider checks it.
+
+    Task 4095 (§18.13.3). Each caller that has the row of the mail calls the
+    trash through this function. IMAP gets ``message_id=``, and it raises,
+    and moves nothing, when the mail at the UID has another Message-ID or
+    when ``message_id`` is empty. Gmail and Outlook get the call as before,
+    so their signature and each test fake stay as they are."""
+    if trash_checks_message_id(provider):
+        return await provider.trash_message(provider_message_id, message_id=message_id)
+    return await provider.trash_message(provider_message_id)
 
 
 def local_folder_after_move(provider: Any, name: str) -> str | None:
