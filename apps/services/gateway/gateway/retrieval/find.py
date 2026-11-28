@@ -39,9 +39,11 @@ from typing import Any
 
 from acb_common import get_settings, name_match
 from acb_common.edge_vocabulary import (  # noqa: F401  (EDGES: re-export)
+    CODES,
     EDGES,
     MAIL_EDGES,
     RECORD_EDGES,
+    record_code,
 )
 
 #: The ``matched_by`` values of §3.5, from the closed list. The lower the
@@ -451,6 +453,9 @@ RELATED_KINDS = frozenset({"deal", "lead", "contact", "person", "company"})
 #: with a lead, contacts and a company still shows its mail.
 LANES: tuple[str, ...] = (
     "mail_from", "lead_of", "contact_of", "mail_to", "company_of", "mail_domain", "deal_of",
+    # The codes that only a stored edge gives (CI-R1b) take their places after
+    # the live ones, so a live answer does not move.
+    *(c.code for c in CODES if not c.live),
 )
 
 #: One candidate of a hit: the linked ref, its edge, and the record edge that
@@ -530,6 +535,28 @@ def sort_links(
             if right not in mine:
                 mine.append(right)
     return out, keys
+
+
+def add_stored(
+    chosen: list[str], links: dict[str, list[tuple[str, str]]],
+    edges: Iterable[tuple[str, str]],
+) -> None:
+    """Add the neighbours of the stored edges to *links* (CI-R1b), in place.
+
+    *edges* holds ``(ref, neighbour ref)`` pairs, from ``kb_links``. Each gets
+    the record code of the neighbour's kind. A neighbour that is a chosen ref,
+    that the chosen ref already links, or of a kind with no code, is dropped.
+    So a live link keeps its place and its code, and one record never shows
+    twice under one hit. Pure.
+    """
+    asked = set(chosen)
+    for ref, other in edges:
+        code = record_code(kind_of(other))
+        mine = links.get(ref)
+        if code is None or mine is None or other in asked \
+                or any(record == other for _e, record in mine):
+            continue
+        mine.append((code, other))
 
 
 def sort_mail(keys: Iterable[str], triples: Iterable[Any]) -> dict[str, list[tuple[str, str]]]:

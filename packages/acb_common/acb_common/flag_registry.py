@@ -959,6 +959,17 @@ class FlagRegistry(BaseSettings):
     # Fence: tests/unit/test_github_webhook_r8.py.
     github_app_orgs: str = ""
 
+    # WS-KG CI-R1b (knowledge_graph.md §8 and §9.1). The organization ids
+    # whose company search also reads the stored edges of `kb_links` in the
+    # related step, each neighbour opened again as the member. `*` is each org.
+    # Empty, the default, means no organization: no edge is read, and the
+    # answer is the one of FIND-3. It acts only with FIND_ORGS and
+    # CONTEXT_RECENCY on. It calls no model and spends nothing. The one reader
+    # is `gateway.kb_entities.graph.search_allowed`. A SIGHUP reload applies a
+    # change. A flip is gate `enforcement-flip`.
+    # Fences: tests/unit/test_find_stored_edges.py, test_find_stored_edges_r8.py.
+    graph_search_orgs: str = ""
+
     # WS-KG KG-4 (knowledge_graph.md §4.1 and §8). The organization ids whose
     # records the graph sweep joins each night, in the grammar of
     # `knowledge_orgs`. `*` is each org. Empty, the default, means no

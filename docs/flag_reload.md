@@ -565,6 +565,15 @@ connect routes, the poll and `github.installation_of` ask it, so the lazy
 readers follow the list too. A reload applies a change, and the flip stays
 OWNER-GATE (`enforcement-flip`).
 
+`GRAPH_SEARCH_ORGS` adds the stored edges of `kb_links` to the related records
+of `search_company` (`knowledge_graph.md` §9.1, CI-R1b). For each listed org,
+the related step reads the edges of the best hits, and each app opens a
+neighbour as the member. `*` lists every org, and the default is empty. Empty
+reads no edge, and the answer is the one of FIND-3. It acts only with
+`FIND_ORGS` and `CONTEXT_RECENCY` on. Its one reader is
+`gateway.kb_entities.graph.search_allowed`. A reload applies a change. A name
+in the list spends nothing, so the flip is `enforcement-flip`.
+
 `HOME_TOOLS_ORGS` gives the chat of each listed org the five Home tools
 (`chat_parity.md` §6.4, PAR-8b, task 3903). They read the Home feed, Needs
 you, the brief, the quick find and the Home settings. They change a Home card,

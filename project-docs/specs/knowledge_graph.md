@@ -420,7 +420,7 @@ Each flag names orgs. Empty is off, and a star is every org.
 | Flag | Default | Opens | Gate |
 |---|---|---|---|
 | `GRAPH_SWEEP_ORGS` | empty | The KG-4 and KG-5 sweeps, and the code half of KG-10. They spend nothing | AGENT-SAFE. Flip under the `enforcement-flip` grant, staging first |
-| `GRAPH_SEARCH_ORGS` | empty | The graph step (KG-6) and `get_entity` (KG-7) | AGENT-SAFE. Same rule |
+| `GRAPH_SEARCH_ORGS` | empty | The stored edges in the related step (CI-R1b, §9.1) and `get_entity` (KG-7) | AGENT-SAFE. Same rule |
 | `GRAPH_EXTRACT_ORGS` | empty | The model half of KG-10. It spends credits, with a cap for each org and a usage row (D-KC-9) | **OWNER-GATE** |
 
 ---

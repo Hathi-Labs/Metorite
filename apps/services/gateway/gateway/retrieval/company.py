@@ -117,6 +117,16 @@ most 3 for each hit, 15 in all, inside :data:`RELATED_BUDGET_S`. A record that
 the member cannot open leaves no trace. The log line is
 ``search.company.related``, with counts only.
 
+**The stored edges, behind ``GRAPH_SEARCH_ORGS``** (CI-R1b, task 4171,
+``knowledge_graph.md`` §9.1). For an org that the flag names, the same step also
+reads the ``kb_links`` edges of the chosen hits, in both directions, through
+``gateway/kb_entities/graph.py``. Each neighbour then goes through the ``open``
+of its app, as a live link does, and takes the code of its kind. A live link
+comes first, and the budgets are the same. With ``verified`` asked, no
+Knowledge page neighbour is added, because no ``open`` reads the care of a
+page. A failed or late read gives the live links only. With the flag off, the
+step reads no edge, and the answer is the one of FIND-3.
+
 **The honest zero, the explain mode and the log line, behind ``FIND_ORGS``**
 (FIND-4, task 3241, ``find_engine.md`` §3.6 and §3.7). Each value comes from
 a closed list of :mod:`gateway.retrieval.find`:
@@ -1098,10 +1108,46 @@ def _stamp_related(
     ]
 
 
+async def _stored_edges(
+    user: UserContext, chosen: list[str], until: float, *, verified: bool,
+) -> list[tuple[str, str]]:
+    """``(ref, neighbour ref)`` of the stored edges of *chosen* (CI-R1b).
+
+    ``[]`` when ``GRAPH_SEARCH_ORGS`` does not name the org: then no edge is
+    read. The kinds asked for are the kinds that some source's ``open`` gives
+    to this member, so an edge to any other record takes no place. With
+    *verified*, no page is asked. It never raises: a failed or late read gives
+    ``[]``, and the log line holds the error type only.
+    """
+    loop = asyncio.get_running_loop()
+    from gateway.kb_entities import graph
+
+    if not graph.search_allowed(user.organization_id):
+        return []
+    kinds = [kind for source in REGISTRY.values()
+             if source.open is not None and source.reaches(user)
+             for kind in source.kinds if not (verified and kind == "page")]
+    nodes = [parts for ref in chosen if (parts := find.split_ref(ref)) is not None]
+    left = until - loop.time()
+    if not kinds or not nodes or left <= 0.05:
+        return []
+    async with _slots():
+        left = until - loop.time()
+        if left <= 0.05:
+            return []
+        try:
+            edges = await asyncio.wait_for(
+                graph.neighbour_edges(user, nodes, kinds=kinds), left)
+        except Exception as exc:
+            logger.warning("search.company graph skipped", extra={"error": type(exc).__name__})
+            return []
+    return [(f"{e.node_kind}:{e.node_id}", f"{e.kind}:{e.id}") for e in edges]
+
+
 async def _related_step(
     user: UserContext, shown: list[Hit], words_of: list[str], *,
     since: datetime | None, until: float,
-    notes: dict[str, dict[str, Any]] | None = None,
+    notes: dict[str, dict[str, Any]] | None = None, verified: bool = False,
 ) -> list[Hit]:
     """Rung 4 (FIND-3, ``find_engine.md`` §3.1, §3.2, §4.3 and §6).
 
@@ -1129,8 +1175,11 @@ async def _related_step(
     chosen = find.related_chosen(shown, RELATED_HITS)
     if not chosen or until - started < BROADEN_FLOOR_S:
         return []
-    links, keys = find.sort_links(
-        chosen, await _ask_sources(user, chosen, until, opening=False, notes=notes))
+    triples, stored = await asyncio.gather(
+        _ask_sources(user, chosen, until, opening=False, notes=notes),
+        _stored_edges(user, chosen, until, verified=verified))
+    links, keys = find.sort_links(chosen, triples)
+    find.add_stored(chosen, links, stored)
     linked = list(dict.fromkeys(ref for owner in chosen for _e, ref in links[owner]))
     records = await _ask_sources(user, linked, until, opening=True, notes=notes)
     links, keys = find.only_opened(chosen, links, keys, {find.ref_of(h) for h in records})
@@ -1156,12 +1205,12 @@ async def _related_step(
 async def _add_related(
     answer: dict[str, Any], user: UserContext, shown: list[Hit], words_of: list[str], *,
     since: datetime | None, until: float,
-    notes: dict[str, dict[str, Any]] | None = None,
+    notes: dict[str, dict[str, Any]] | None = None, verified: bool = False,
 ) -> None:
     """Put the hits of :func:`_related_step` in ``answer["related"]``. With
     none, the answer gets no ``related`` key (FIND-3)."""
     related = await _related_step(user, shown, words_of, since=since, until=until,
-                                  notes=notes)
+                                  notes=notes, verified=verified)
     if related:
         answer["related"] = [h.as_dict(stamp=True, find=True) for h in related]
 
@@ -1198,6 +1247,7 @@ async def _find_tail(
     found: dict[str, list[Hit]], words_of: list[str], skipped: list[str],
     answered: list[str], limited: bool, hybrid: bool, since: datetime | None, until: float,
     near: list[dict[str, Any]], first_zero: bool, chat_asked: bool = False,
+    verified: bool = False,
 ) -> dict[str, Any]:
     """The end of an answer with ``FIND_ORGS`` on: rung 4 (FIND-3), then the
     log line, and the honest zero or the trace (FIND-4).
@@ -1219,7 +1269,7 @@ async def _find_tail(
     loop = asyncio.get_running_loop()
     started = loop.time()
     await _add_related(answer, user, shown, words_of, since=since, until=until,
-                       notes=ladder.notes["related"])
+                       notes=ladder.notes["related"], verified=verified)
     ladder.ms["related"] = _ms_since(loop, started)
     why = ladder.skip_reasons(skipped)
     # The miss of the FINAL answer: every hit, a past chat too (HRD-21). A past
@@ -1574,4 +1624,5 @@ async def company_search(
         answered=answered, limited=limited, hybrid=hybrid, since=since,
         until=min(loop.time() + RELATED_BUDGET_S, began + ANSWER_CAP_S),
         near=near, first_zero=first_zero, chat_asked=current is not None,
+        verified=only_verified,
     )

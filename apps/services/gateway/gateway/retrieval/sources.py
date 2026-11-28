@@ -514,22 +514,23 @@ def _as_dict(row: Any) -> dict[str, Any]:
 
 # ── tasks ───────────────────────────────────────────────────────────────────
 
+def _task_hit(r: dict[str, Any]) -> Hit:
+    return Hit(
+        app="tasks", kind="task", id=str(r["id"]), title=_title(r.get("title")),
+        hint=f"Task · {r.get('project_name') or 'Projects'}",
+        href=f"/projects?task={quote(str(r['id']))}",
+        snippet=_clip(r.get("snippet")), when=_when(r.get("due_at")),
+        stamp=_when(r.get("updated_at")),
+    )
+
+
 async def _tasks(user: UserContext, q: str, k: int) -> list[Hit]:
     from gateway.routes.projects.search import search_tasks
 
     answer = await search_tasks(
         q=q, limit=k, exclude_relatives_of=None, include_triage=False, user=user,
     )
-    return [
-        Hit(
-            app="tasks", kind="task", id=str(r["id"]), title=_title(r.get("title")),
-            hint=f"Task · {r.get('project_name') or 'Projects'}",
-            href=f"/projects?task={quote(str(r['id']))}",
-            snippet=_clip(r.get("snippet")), when=_when(r.get("due_at")),
-            stamp=_when(r.get("updated_at")),
-        )
-        for r in (answer.get("rows") or [])[:k]
-    ]
+    return [_task_hit(r) for r in (answer.get("rows") or [])[:k]]
 
 
 # ── email ───────────────────────────────────────────────────────────────────
@@ -822,18 +823,19 @@ async def _artifacts(user: UserContext, q: str, k: int) -> list[Hit]:
         q=q, kind=None, made_by=None, via=None, session_id=None, scope=None,
         status="active", sort="recent", limit=k, offset=0, _user=user,
     )
-    out = []
-    for row in (answer.get("rows") or [])[:k]:
-        session = row.get("session_id")
-        out.append(Hit(
-            app="artifacts", kind="artifact", id=str(row["id"]),
-            title=_title(row.get("title") or row.get("path")),
-            hint=f"Artifact · {row.get('kind') or 'file'}",
-            href=f"/artifacts?session={quote(str(session))}" if session else "/artifacts",
-            when=_when(row.get("last_activity_at")),
-            stamp=_when(row.get("last_activity_at")),
-        ))
-    return out
+    return [_artifact_hit(row) for row in (answer.get("rows") or [])[:k]]
+
+
+def _artifact_hit(row: dict[str, Any]) -> Hit:
+    session = row.get("session_id")
+    return Hit(
+        app="artifacts", kind="artifact", id=str(row["id"]),
+        title=_title(row.get("title") or row.get("path")),
+        hint=f"Artifact · {row.get('kind') or 'file'}",
+        href=f"/artifacts?session={quote(str(session))}" if session else "/artifacts",
+        when=_when(row.get("last_activity_at")),
+        stamp=_when(row.get("last_activity_at")),
+    )
 
 
 # ── whatsapp ────────────────────────────────────────────────────────────────
@@ -850,21 +852,21 @@ async def _whatsapp(
         chat_id=None, contact=None, chat_kind=None, sent_after=after,
         sent_before=None, direction=None, has_media=None, user=user,
     )
-    out = []
-    for m in list(rows or [])[:k]:
-        row = _as_dict(m)
-        sender = row.get("sender_name") or ""
-        # The app reads no record parameter yet, so the link opens the app.
-        out.append(Hit(
-            app="whatsapp", kind="whatsapp", id=str(row["id"]),
-            title=_title(row.get("chat_name") or sender or "WhatsApp message"),
-            hint=f"WhatsApp · from {sender}" if sender else "WhatsApp",
-            href="/whatsapp",
-            snippet=_clip(row.get("body_text") or row.get("transcript_text")),
-            when=_when(row.get("sent_at")),
-            stamp=_when(row.get("sent_at")),
-        ))
-    return out
+    return [_whatsapp_hit(_as_dict(m)) for m in list(rows or [])[:k]]
+
+
+def _whatsapp_hit(row: dict[str, Any], *, snippet: bool = True) -> Hit:
+    sender = row.get("sender_name") or ""
+    # The app reads no record parameter yet, so the link opens the app.
+    return Hit(
+        app="whatsapp", kind="whatsapp", id=str(row["id"]),
+        title=_title(row.get("chat_name") or sender or "WhatsApp message"),
+        hint=f"WhatsApp · from {sender}" if sender else "WhatsApp",
+        href="/whatsapp",
+        snippet=_clip(row.get("body_text") or row.get("transcript_text")) if snippet else "",
+        when=_when(row.get("sent_at")),
+        stamp=_when(row.get("sent_at")),
+    )
 
 
 # ── knowledge ───────────────────────────────────────────────────────────────
@@ -1351,11 +1353,62 @@ async def _email_opened(user: UserContext, refs: list[str]) -> list[Hit]:
     return [_email_hit(m, thread=True) for m in await search.open_mail(user, ids)]
 
 
+# ── The reads by id of the graph neighbours (CI-R1b) ────────────────────────
+# Each applies its app's own rule and answers no snippet: a neighbour is a
+# link, and a member opens the record to read it.
+
+async def _tasks_opened(user: UserContext, refs: list[str]) -> list[Hit]:
+    """``resolve_visibility`` and the search's own clauses (kg §6)."""
+    ids = _ids_of(refs, ("task",)).get("task", [])
+    if not ids or not holds(user, "projects"):
+        return []
+    search = await _module("gateway.routes.projects.search")
+    return [_task_hit(r) for r in await search.open_tasks(user, ids)]
+
+
+async def _artifacts_opened(user: UserContext, refs: list[str]) -> list[Hit]:
+    """The registry switch and its owner rule, ``can_read`` (kg §6)."""
+    from acb_memory import artifacts as registry
+
+    ids = _ids_of(refs, ("artifact",)).get("artifact", [])
+    if not ids or not holds(user, "artifacts") or not registry.enabled():
+        return []
+    return [_artifact_hit(r) for r in await registry.open_artifacts(ids, user.email or "")]
+
+
+async def _whatsapp_opened(user: UserContext, refs: list[str]) -> list[Hit]:
+    """The messages of the member's own accounts (kg §6)."""
+    ids = _ids_of(refs, ("whatsapp",)).get("whatsapp", [])
+    if not ids or not holds(user, "whatsapp"):
+        return []
+    messages = await _module("gateway.routes.whatsapp.transport.messages")
+    return [_whatsapp_hit(_as_dict(m), snippet=False)
+            for m in await messages.open_messages(user, ids)]
+
+
+async def _knowledge_opened(user: UserContext, refs: list[str]) -> list[Hit]:
+    """The Knowledge kill switch, then ``visible_pages_clause`` (kg §6)."""
+    ids = _ids_of(refs, ("page",)).get("page", [])
+    if not ids or not holds(user, "knowledge") or not _knowledge_open(user):
+        return []
+    kb_search = await _module("gateway.routes.knowledge.search")
+    return [
+        Hit(
+            app="knowledge", kind="page", id=str(row["page_id"]),
+            title=_title(row.get("title")),
+            hint=f"Knowledge · {row.get('space_name') or 'Knowledge'}",
+            href=f"/knowledge/pages/{quote(str(row['page_id']))}",
+            when=_when(row.get("updated_at")), stamp=_when(row.get("updated_at")),
+        )
+        for row in await kb_search.open_pages(user, ids)
+    ]
+
+
 #: Every source, in the order the command bar and the route ask them.
 REGISTRY: dict[str, Source] = {
     s.key: s
     for s in (
-        Source("tasks", "projects", "Tasks", _tasks),
+        Source("tasks", "projects", "Tasks", _tasks, open=_tasks_opened, kinds=("task",)),
         Source("email", "email", "Email", _email, dated=True, vectors=True,
                near=_email_near, senders=True, related=_email_related,
                takes=("address", "domain"), open=_email_opened, kinds=("email",),
@@ -1368,10 +1421,13 @@ REGISTRY: dict[str, Source] = {
                related=_crm_related, takes=CRM_REF_KINDS, open=_crm_opened,
                kinds=CRM_REF_KINDS, names=CRM_NAME_KINDS, named=_crm_named,
                named_extra=(MODULE_KIND,)),
-        Source("artifacts", "artifacts", "Artifacts", _artifacts, gate=_artifacts_open),
-        Source("whatsapp", "whatsapp", "WhatsApp", _whatsapp, dated=True),
+        Source("artifacts", "artifacts", "Artifacts", _artifacts, gate=_artifacts_open,
+               open=_artifacts_opened, kinds=("artifact",)),
+        Source("whatsapp", "whatsapp", "WhatsApp", _whatsapp, dated=True,
+               open=_whatsapp_opened, kinds=("whatsapp",)),
         Source("knowledge", "knowledge", "Knowledge", _knowledge, meaning=True,
-               reviewed=True, gate=_knowledge_open),
+               reviewed=True, gate=_knowledge_open, open=_knowledge_opened,
+               kinds=("page",)),
         Source("studio", "studio", "Studio apps", _studio, gate=_studio_open),
         # HRD-21: last, and never in the command bar (BAR_APPS). The route asks
         # it only when its switch is open and the request names the current chat.

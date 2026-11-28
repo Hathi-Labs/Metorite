@@ -650,9 +650,11 @@ async def open_mail(user: UserContext, ids: list[str]) -> list[dict[str, Any]]:
     """The mails of *ids* that the member may read, in the shape of the
     search, with no body (FIND-3, ``knowledge_graph.md`` §6).
 
-    The mailboxes are the ones of :func:`related_mail`, the scope of the
-    search: those that the member may read, with no separate mailbox. So
-    ``open`` never shows a mail that the related read could not give. Unlike
+    The mailboxes and the folders are the ones of :func:`related_mail`, the
+    scope of the search: those that the member may read, with no separate
+    mailbox, and no junk or trash. So ``open`` never shows a mail that the
+    related read could not give, also when the id comes from a stored edge
+    (CI-R1b). Unlike
     ``get_message``, it marks nothing read and calls no provider. A mail of
     another member, or of another tenant, gives no row.
     """
@@ -660,6 +662,7 @@ async def open_mail(user: UserContext, ids: list[str]) -> list[dict[str, Any]]:
         return []
     params: dict[str, Any] = {"uid": user.email or "anonymous", "ids": ids}
     scope = _account_scope(None, params, pooled_only=True, level="read")
+    folder = folder_scope("all", params, include_sent=True) or "true"
     async with _tenant_session() as db:
         await db.execute(text(_RELATED_LIMIT_SQL), {"ms": str(RELATED_STATEMENT_MS)})
         rows = (await db.execute(text(
@@ -673,7 +676,7 @@ async def open_mail(user: UserContext, ids: list[str]) -> list[dict[str, Any]]:
                        em.importance, em.categories,
                        em.received_at, em.synced_at
                   FROM email_messages em
-                 WHERE em.id = ANY(CAST(:ids AS uuid[])) AND {scope}
+                 WHERE em.id = ANY(CAST(:ids AS uuid[])) AND {scope} AND {folder}
                  ORDER BY em.received_at DESC NULLS LAST, em.id"""
         ), params)).fetchall()
     out = []

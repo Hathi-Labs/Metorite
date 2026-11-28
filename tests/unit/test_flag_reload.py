@@ -198,6 +198,7 @@ def test_github_app_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> Non
 _READERS = {
     "APP_LEAD_RUNS_ORGS": ("gateway.routes.projects.filters", "app_lead_runs_allowed"),
     "CORE_EVENTS_ORGS": ("gateway.core_events", "core_events_allowed"),
+    "GRAPH_SEARCH_ORGS": ("gateway.kb_entities.graph", "search_allowed"),
     "MEMBER_ACTIONS_ORGS": ("acb_common.member_actions", "enabled_for"),
     "PROJECTS_GOALS_ORGS": ("gateway.routes.projects.core", "goals_allowed"),
     "STUDIO_DOOR_OPS_ORGS": ("gateway.routes.studio.flags", "door_ops_allowed"),
