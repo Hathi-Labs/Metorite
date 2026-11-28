@@ -234,6 +234,11 @@ _FOCUS_LOG = (
     "(my_day_command_centre.md §9.3). No chat tool reaches it yet. CC-10 adds "
     "the tools, and the door adds nothing before then."
 )
+_JOB_REPORT = (
+    "The typed tool report_job of §9 serves this route (SW-116). Only a "
+    "signed agent reports an external job under its run, through its hook. "
+    "MCP_ROUTES stays its allowlist."
+)
 _AGENT_DELETE = (
     "The typed tool delete_task of §9 serves this route, after the yes of the "
     "member (EA3-51). MCP_ROUTES stays its allowlist."
@@ -624,6 +629,7 @@ PROJECTS_DOOR = App(
               reason=_ARCHIVE_ANSWER),
         Route("GET", "/projects/agent-runs/{run_id}/children", "", "X", reason=_CHILD_RUN),
         Route("POST", "/projects/agent-runs/{run_id}/children", "", "X", reason=_CHILD_REPORT),
+        Route("POST", "/projects/agent-runs/{run_id}/jobs", "", "X", reason=_JOB_REPORT),
         Route("POST", "/projects/tasks/{task_id}/agent-delete", "", "X", reason=_AGENT_DELETE),
         # ── agent_summary.py · needs_attention.py · agent_questions.py ──
         Route("GET", "/projects/{project_id}/agent-summary", "agent_summary", "A",

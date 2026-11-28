@@ -709,6 +709,14 @@ describe("parseAgentMap: children", () => {
     );
     expect(map.children.map((c) => c.child_id)).toEqual(["c1"]);
   });
+  it("drops an external job (SW-116), so the sub-agent list never shows it", () => {
+    const map = withChildren(
+      [session()],
+      [run()],
+      [child(), child({ child_id: "j1", name: "pr-check", job_kind: "github_action" })],
+    );
+    expect(map.children.map((c) => c.child_id)).toEqual(["c1"]);
+  });
   it("reads an empty list when the answer has no children", () => {
     expect(parse([session()], [run()]).children).toEqual([]);
   });

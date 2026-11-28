@@ -140,6 +140,16 @@ This unit serves outside agents on `https://mcp.metorite.com` (WS-55). The spec 
   - It shows while the runs flag is on (`runs=True`), as `release_task`. It is dark behind `AGENT_MAP_ORGS`, and only the gateway reads that flag. So the edge lists the tool for every org, and the gateway answers 404 where the flag is off. The edge gives `TEXT_SUBAGENT_RUN_NOT_FOUND` for every 404, so the agent cannot tell the flag from an unknown run. Fences: `test_mcp_edge_report_subagent.py`, `test_mcp_edge_coverage.py` and `test_agent_child_runs_r8.py`.
   - Review notes for the hooks. Each sub-agent costs two writes of the write cap of the connection (120 in 10 minutes), and the parent's own writes share it. The total children of a run have no cap. A `start_agent_run` with the key `child:<parent>:<agent_id>` gets 409 when it tries again. A start with the `agent_id` of a stopped child answers the ended child. If Claude Code uses an `agent_id` again on a resume, the map shows the sub-agent as ended.
 
+- SW-116 (`agent_coordination.md` §3.12.11) adds the write `report_job`. A lane hook calls it at each change of state of an external job.
+  - It sends one POST to `tools.RUN_JOBS_ROUTE`. The body holds `tools.JOB_BODY_KEYS` only. The edge sends no header of its own.
+  - `kind` is one of `tools.JOB_KINDS`, and `state` is one of `tools.JOB_STATES`. `job_id` takes the rule of `agent_id`. `name` takes the label rule. `link` must start with `https://`, and the gateway refuses a user name or a password.
+  - The answer is `job`, `created` and `moved`. `tools.job_row` keeps `JOB_ROW_KEYS`. The name and the link leave as untrusted text, and the kind leaves only as a fixed word.
+  - `_JOB_DETAILS` maps four details of the gateway to fixed texts. They are the 403 of another connection, the 429 of the cap, the 409 of a used key and the 422 of a link. Each detail is a pinned copy.
+  - It shows while the runs flag is on, as `report_subagent`. It is dark behind `AGENT_MAP_ORGS`, which only the gateway reads. The edge gives `TEXT_JOB_RUN_NOT_FOUND` for every 404.
+  - `get_agent_map` gives `job_kind` (a fixed word of `_MAP_JOB_KINDS`) and `link` (untrusted text) on each child. `AGENT_MAP_CHILD_KEYS` stays equal to the gateway's `MAP_CHILD_KEYS`.
+  - `scripts/report_job.mjs` is the lane script. It takes `--run <run_id>`, because a plain script gets no transcript. It reuses `mcpEntry` and `bearerFrom` of the SW-114b hook, and it always exits 0.
+  - Fences: `test_mcp_edge_report_job.py`, `test_mcp_edge_coverage.py`, `test_agent_run_jobs_r8.py` and `test_report_job_script.py`.
+
 - SW-113 (`agent_coordination.md` §3.12.7 rule 12) adds the read `get_agent_map`, with the optional `project_id` and `show_quiet`. It sends `shape=map` to `GET /projects/agents/overview`, the map read of SW-102, under the session of the member.
   - The edge never reads `AGENT_MAP_ORGS`. The gateway gives one 404 for a flag that is off and for a hidden project, so the tool gives one text for both (`tools.TEXT_MAP_NOT_FOUND`).
   - `tools.agent_map` keeps the pinned keys only. Each person, session name, client and task title leaves as untrusted text. A new key of the gateway, such as a machine or a model, does not leave until a slice maps it as untrusted text.

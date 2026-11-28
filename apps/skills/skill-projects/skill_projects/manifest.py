@@ -113,6 +113,11 @@ _CHILD_RUN_REASON = (
     "A child run is a sub-agent of an open run. Only a signed agent starts one, "
     "through its hook, and the parent run shows it (SW-39). The chat starts no sub-agent."
 )
+#: SW-116. A job of a run is a child run with a job kind. A lane hook reports it.
+_JOB_REASON = (
+    "A job is an external job of an open run, such as CI or the merge queue. Only a "
+    "signed agent reports one, through its hook (SW-116). The chat runs no job."
+)
 #: Per-client UI state and board order. The browser owns these.
 _UI_STATE_REASON = "Client UI state. The browser writes it, and a chat has no view to keep."
 #: The day planner belongs to the Calendar app and the Tasks assistant
@@ -634,6 +639,9 @@ MANIFEST: tuple[Route, ...] = (
     # and `test_mcp_edge_coverage.py` names it in CLASS_X_WRITES.
     Route("GET", "/projects/agent-runs/{run_id}/children", "", "X", _CHILD_RUN_REASON),
     Route("POST", "/projects/agent-runs/{run_id}/children", "", "X", _CHILD_RUN_REASON),
+    # SW-116: the jobs of a run. A pair of MCP_WRITE_ROUTES, the route of
+    # `report_job`, and `test_mcp_edge_coverage.py` names it in CLASS_X_WRITES.
+    Route("POST", "/projects/agent-runs/{run_id}/jobs", "", "X", _JOB_REASON),
     # WS-55 EA-6h (EA3-51). The ONE destructive pair of MCP_WRITE_ROUTES. It
     # is class X: the chat never reaches it. `test_mcp_edge_coverage.py`
     # names it as the one class X pair that the edge may hold (§9.5).

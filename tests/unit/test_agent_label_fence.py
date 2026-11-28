@@ -131,6 +131,21 @@ too (:data:`_TAKES_LABEL`), and sends it to the read of the gate only.
   :label``. ``test_the_claim_gate_is_the_one_decision_reader_of_the_label``.
 * L26. ``claim_gate.py`` ``_counted_sql``: drop the label test.
   ``test_the_claim_gate_is_the_one_decision_reader_of_the_label``.
+
+**SW-116 extends the fence to ``job_kind``** (§3.12.11). A job is a child run
+with a job kind. It is display data: no authorization check, visibility seam,
+run slot, merge gate or session key reads it. The intended readers are the
+job code of ``agent_runs.py`` and the map read of ``agent_summary.py``, which
+splits the sub-agent count from the job count.
+
+* L27. ``F`` ``unheld_clause``: add ``AND h.job_kind IS NULL``.
+  ``test_no_visibility_seam_reads_the_job_kind``.
+* L28. ``G`` ``_HOLDER_SQL``: add ``AND r.job_kind IS NULL``.
+  ``test_no_run_slot_rule_reads_the_job_kind``.
+* L29. A migration: ``CREATE INDEX ... ON pm_agent_runs (job_kind)``.
+  ``test_no_index_names_the_job_kind``.
+* L30. ``claim_gate.py``: read ``job_kind``.
+  ``test_no_gate_reads_the_job_kind``.
 """
 
 from __future__ import annotations
@@ -218,7 +233,11 @@ _CHILD = re.compile(r"\bparent_run_id\b|\bkind\s*(?:=|<>|!=)\s*'(?:run|child)'")
 
 #: The statements of ``agent_summary.py`` that read a child run, sorted. Each
 #: reaches a child only through a run of the one ``seen`` text.
-_CHILD_READS = ["_MAP_CHILDREN_SQL", "_MAP_CHILD_COUNTS_SQL", "_MAP_NODE_CHILDREN_SQL"]
+_CHILD_READS = ["_MAP_CHILDREN_SQL", "_MAP_CHILD_COUNTS_SQL", "_MAP_JOB_COUNTS_SQL",
+                "_MAP_NODE_CHILDREN_SQL"]
+
+#: SW-116. The column of the kind of a job, as code reads it.
+_JOB = re.compile(r"\bjob_kind\b")
 
 
 def _read(path: Path) -> str:
@@ -780,7 +799,8 @@ class TestTheChildGrantsNothing:
         assert not _LABEL.search(guarded), guarded
         # AMR-4: the two reads over ``cur`` hold the same rule after ``FROM cur``.
         assert "FROM cur" not in agent_summary._MAP_CUR_CTE
-        for sql in (agent_summary._MAP_CHILD_COUNTS_SQL, agent_summary._MAP_NODE_CHILDREN_SQL):
+        for sql in (agent_summary._MAP_CHILD_COUNTS_SQL, agent_summary._MAP_JOB_COUNTS_SQL,
+                    agent_summary._MAP_NODE_CHILDREN_SQL):
             tail = sql.split("FROM cur", 1)[1]
             assert not _LABEL.search(tail), tail
 
@@ -801,6 +821,150 @@ class TestTheChildGrantsNothing:
         files = [_EDGE / "mcp.py", _EDGE / "bearer.py", _EDGE / "gateway_client.py"]
         bad = [p.relative_to(_REPO).as_posix() for p in files if _CHILD.search(_read(p))]
         assert not bad, bad
+
+
+class TestTheJobGrantsNothing:
+    """SW-116 (``agent_coordination.md`` §3.12.11). A job is display data. No
+    seam that decides access, a holder, a run slot, a merge or a session reads
+    ``job_kind``. The intended readers are the job code of ``agent_runs.py``
+    and the map read of ``agent_summary.py``. The edge carries it as a wire
+    key only."""
+
+    def _job_offenders(self, path: Path, names: tuple[str, ...]) -> list[str]:
+        rel = path.relative_to(_REPO).as_posix()
+        return [f"{rel}::{name}" for name, body in _named_sources(path, names).items()
+                if _JOB.search(body)]
+
+    def test_no_visibility_seam_reads_the_job_kind(self) -> None:
+        whole = [_GATEWAY / "authority.py", _ACB_COMMON / "db.py",
+                 _ACB_COMMON / "tenant_redis.py", *sorted(_ACB_AUTH.rglob("*.py"))]
+        bad = [p.relative_to(_REPO).as_posix() for p in whole if _JOB.search(_read(p))]
+        bad += self._job_offenders(_GATEWAY / "core.py", (
+            "resolve_visibility", "resolve_visibility_for", "load_visible_task",
+            "task_visibility_clause", "_AGENT_REACH_SQL"))
+        bad += self._job_offenders(_GATEWAY / "filters.py", (
+            "unheld_clause", "holder_sql", "holder_free", "holder_free_sql",
+            "connection_gone_sql", "lease_held_sql", "lease_expired",
+            "agent_run_lease_s", "agent_run_hold_s", "held_by_of"))
+        assert not bad, f"SW-116: a job grants nothing. Remove job_kind from: {bad}"
+        rendered = (filters.unheld_clause(), filters.holder_sql(),
+                    filters.holder_free_sql("r"), filters.connection_gone_sql("r"))
+        assert not [s for s in rendered if _JOB.search(s)], rendered
+
+    def test_no_run_slot_rule_reads_the_job_kind(self) -> None:
+        bad = self._job_offenders(_GATEWAY / "agent_runs.py", (
+            "_OPEN_RUN_SQL", "_HOLDER_SQL", "_ADOPT_SQL", "_RESUME_KEY_SQL",
+            "_LOAD_TASK_RUN_SQL", "_LOCK_TASK_RUN_SQL", "_RUN_SELECT",
+            "_open_run_args", "_gate_task", "_same_client", "_task_held", "_free",
+            "_take_over", "_agent_session", "_agent_connection", "_move_run",
+            "may_end_run", "person_may_end_sql", "may_answer_run",
+            "person_may_answer_sql", "holds_answer_role", "_reads_for_member",
+            "release_agent_run", "start_agent_run", "_parent_for_child",
+            "_check_open_parent", "_child_writes_on"))
+        assert not bad, (
+            "SW-116: a job never chooses a run, a holder or a session. Remove"
+            f" job_kind from: {bad}")
+        # The intended readers do name it.
+        for sql in (agent_runs._END_CHILDREN_SQL, agent_runs._OPEN_CHILDREN_SQL,
+                    agent_runs._OPEN_JOBS_SQL, agent_runs._MOVE_JOB_SQL,
+                    agent_runs._INSERT_CHILD_SQL, agent_runs.CHILD_COLUMNS):
+            assert _JOB.search(sql), sql
+
+    def test_no_gate_reads_the_job_kind(self) -> None:
+        """The claim gate and the reference writer decide on GitHub and on
+        the references, never on a job row (§3.12.11, "It grants nothing")."""
+        for name in ("claim_gate.py", "claim_scope.py", "refs.py", "tasks.py"):
+            assert not _JOB.search(_read(_GATEWAY / name)), name
+
+    def test_no_index_names_the_job_kind(self) -> None:
+        for path in sorted(_MIGRATIONS.glob("[0-9]*_*.sql")):
+            for found in _RUNS_INDEX.finditer(_read(path)):
+                assert not _JOB.search(found.group(0)), (path.name, found.group(0))
+
+    def test_only_the_job_code_names_the_job_kind(self) -> None:
+        found = []
+        for top in ("apps", "packages"):
+            for path in sorted((_REPO / top).rglob("*.py")):
+                if "tests" in path.parts or ".venv" in path.parts:
+                    continue
+                if _JOB.search(_read(path)):
+                    found.append(path.relative_to(_REPO).as_posix())
+        assert found == ["apps/services/agent_edge/agent_edge/tools.py",
+                         "apps/services/gateway/gateway/routes/projects/agent_runs.py",
+                         "apps/services/gateway/gateway/routes/projects/agent_summary.py"], found
+
+    def test_the_map_reads_the_job_kind_only_to_split_the_counts(self) -> None:
+        """In ``agent_summary.py`` only the two count reads name ``job_kind``
+        in SQL. The reach rule and the ``seen`` text never do. The other
+        names are the Python of the answer rows."""
+        source = _read(_GATEWAY / "agent_summary.py")
+        in_sql = []
+        for node in ast.parse(source).body:
+            if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+                joined = " ".join(sub.value for sub in ast.walk(node)
+                                  if isinstance(sub, ast.Constant) and isinstance(sub.value, str))
+                if _JOB.search(joined):
+                    in_sql.append(node.targets[0].id)
+        assert sorted(in_sql) == ["_MAP_CHILD_COUNTS_SQL", "_MAP_JOB_COUNTS_SQL"], in_sql
+        for admin in (True, False):
+            assert not _JOB.search(agent_summary._reach_sql(admin)), admin
+        assert "job_kind IS NULL" in agent_summary._MAP_CHILD_COUNTS_SQL
+        assert "job_kind IS NOT NULL" in agent_summary._MAP_JOB_COUNTS_SQL
+
+    def test_the_session_key_never_meets_the_job_kind(self) -> None:
+        files = [_EDGE / "mcp.py", _EDGE / "bearer.py", _EDGE / "gateway_client.py"]
+        bad = [p.relative_to(_REPO).as_posix() for p in files if _JOB.search(_read(p))]
+        assert not bad, bad
+
+    def test_the_name_of_a_job_takes_the_label_rule(self) -> None:
+        """The gateway caps the name with the label bound and cleans it with
+        ``clean_agent_label``. The edge takes it with the label rule, and its
+        description says display data only."""
+        field = agent_runs.JobIn.model_fields["name"]
+        bound = [m.max_length for m in field.metadata if hasattr(m, "max_length")]
+        assert bound == [agent_runs.AGENT_LABEL_INPUT_MAX]
+        got = tools.TOOLS["report_job"].input_schema["properties"]["name"]
+        assert {k: v for k, v in got.items() if k != "description"} == {
+            k: v for k, v in tools._LABEL_INPUT.items() if k != "description"}
+        assert "display data only" in got["description"]
+        assert not re.search(r"projects:|scope|admin|permission", got["description"])
+
+
+class TestTheJobMigration:
+    """SW-116. Found by CONTENT, never by number (R1)."""
+
+    def _file(self) -> Path:
+        found = [p for p in _MIGRATIONS.glob("[0-9]*_*.sql")
+                 if "ADD COLUMN IF NOT EXISTS job_kind TEXT NULL" in _read(p)]
+        assert len(found) == 1, found
+        return found[0]
+
+    def test_it_adds_one_nullable_column_and_two_checks(self) -> None:
+        sql = self._file().read_text(encoding="utf-8")
+        body = "\n".join(line for line in sql.splitlines() if not line.startswith("--"))
+        assert "ALTER TABLE pm_agent_runs ADD COLUMN IF NOT EXISTS job_kind TEXT NULL;" in body
+        assert ("job_kind IN ('github_action', 'ci_local', 'merge_queue', 'release',"
+                " 'review')") in _squash(body)
+        assert "CHECK (job_kind IS NULL OR kind = 'child')" in body
+        assert body.count("NOT VALID") == 2
+        for name in ("pm_agent_runs_job_kind_check", "pm_agent_runs_job_on_child"):
+            assert f"VALIDATE CONSTRAINT {name}" in body, name
+        assert "SET lock_timeout = '5s';" in body
+        # Expand only (R6): no index, no policy, no drop, no default, no backfill.
+        for word in ("INDEX", "POLICY", "DROP", "DEFAULT", "UPDATE"):
+            assert word not in body, word
+
+    def test_the_number_is_unique(self) -> None:
+        number = self._file().name.split("_", 1)[0]
+        assert [p.name for p in _MIGRATIONS.glob(f"{number}_*.sql")] == [self._file().name]
+
+    def test_the_kinds_are_one_list(self) -> None:
+        kinds = ("github_action", "ci_local", "merge_queue", "release", "review")
+        assert agent_runs.JOB_KINDS == kinds == tools.JOB_KINDS
+        assert agent_runs.JOB_STATES == tools.JOB_STATES
+        assert (agent_runs.JOB_ID_MAX, agent_runs.JOB_ID_PATTERN) == (
+            tools.JOB_ID_MAX, tools.JOB_ID_PATTERN)
+        assert agent_runs.JOB_LINK_MAX == tools.JOB_LINK_MAX == 2048
 
 
 class TestTheChildMigration:
