@@ -123,3 +123,38 @@ export function workingFleet(size = 500): AgentMap {
   });
   return mapOf(sessions, sessions.map((s) => run(`r-${s.id}`, s.id)), lines);
 }
+
+/** AMR-5b. A context row of the summary read: an orchestrator outside the project. */
+export const contextRow = (id: string, person: string, project: string | null = null) => ({
+  id,
+  name: id,
+  person,
+  context: true,
+  context_project: project === null ? null : { name: project },
+});
+
+/**
+ * AMR-5b. Ana holds `boss` with its lane, and two lanes with no orchestrator.
+ * Ben holds one lane. `ctx-ana` (Ana, outside the project) dispatched `own-1`
+ * and Ben's lane. `ctx-zed` (Zed, not on the map) dispatched `own-2`.
+ */
+export function outsideFleet(): AgentMap {
+  return mapOf(
+    [
+      session("boss"),
+      session("lane-x"),
+      session("own-1"),
+      session("own-2"),
+      session("ben-1", { person: "ben@x.test" }),
+      contextRow("ctx-ana", "ana@x.test", "Platform"),
+      contextRow("ctx-zed", "zed@x.test"),
+    ],
+    ["boss", "lane-x", "own-1", "own-2", "ben-1"].map((id) => run(`r-${id}`, id)),
+    [
+      { from: "boss", to: "lane-x" },
+      { from: "ctx-ana", to: "own-1" },
+      { from: "ctx-ana", to: "ben-1" },
+      { from: "ctx-zed", to: "own-2" },
+    ],
+  );
+}

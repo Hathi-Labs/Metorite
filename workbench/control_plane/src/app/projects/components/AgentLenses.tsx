@@ -30,7 +30,7 @@ import { agentMapApi, questionsApi } from "../lib/api";
 import { QUESTIONS_COPY } from "../lib/agentQuestions";
 import { type MapPrefs, readPrefs, writePrefs } from "../lib/agentMapPrefs";
 import { type AgentMap, type AgentMapRead, MAP_RESPONSE_MARK, MAP_TRUNCATED_COPY } from "../lib/agentMap";
-import { type GraphNode, type OpenSubs, ROOT_ID } from "../lib/agentGraph";
+import { type GraphNode, type OpenSubs, ROOT_ID, drawnContextIds } from "../lib/agentGraph";
 import { type LensSession, type LensState, buildLensModel, lensIcon, matchesFind, subRows } from "../lib/agentLenses";
 import {
   type MapMode,
@@ -47,7 +47,7 @@ import {
   stepStop,
 } from "../lib/agentScale";
 import { type ReadSession, useSessionReads, wantedSessions } from "../lib/agentSessionReads";
-import { AgentDetails, type LensSelection, selectionNodeId, selectionTitle } from "./AgentDetails";
+import { AgentDetails, type LensSelection, selectedSessionId, selectionNodeId, selectionTitle } from "./AgentDetails";
 import { AgentGraphLens, EVERYONE, type GraphFocus, type NodeActions } from "./AgentGraphLens";
 import { NO_MATCH_COPY } from "./AgentSquares";
 import { AgentsPhone } from "./AgentsPhone";
@@ -277,7 +277,7 @@ export function AgentLenses({
     choice === ME_VALUE
       ? (model?.people.find((p) => p.person.toLowerCase() === mine)?.person ?? (mine || ME_VALUE))
       : choice;
-  const selected = selection?.kind === "session" ? selection.id : null;
+  const selected = selectedSessionId(selection);
   // Decision G4: the order of the orchestrators holds over a new read.
   const [starts, setStarts] = useState<ReadonlyMap<string, number>>(() => new Map());
   const seenStarts = model ? rememberStarts(starts, model.sessions, nowMs) : starts;
@@ -287,6 +287,14 @@ export function AgentLenses({
     [view, mode, scope, find, nameOf, mine, selected, seenStarts],
   );
 
+  // AMR-5b: a context node draws only with a lane that it dispatched. When its
+  // card leaves the map (a fold, the People choice, the switch), its details close.
+  const contextId = selection?.kind === "context" ? selection.id : null;
+  const contextGone = useMemo(
+    () => contextId !== null && model !== null && !drawnContextIds(model, options).has(contextId),
+    [contextId, model, options],
+  );
+  if (contextGone) setSelection(null);
   const stops = useMemo(() => (model ? questionStops(model, questions.order) : []), [model, questions.order]);
   const drawn = !phone && model !== null && model.sessions.length > 0;
   useMapTiming(drawn, map);
@@ -331,6 +339,7 @@ export function AgentLenses({
     if (node.kind === "root") setSelection({ kind: "root", person: node.person });
     else if (node.kind === "person") setSelection({ kind: "person", person: node.person });
     else if (node.kind === "session" || node.kind === "orch") setSelection({ kind: "session", id: node.session.id });
+    else if (node.kind === "context") setSelection({ kind: "context", id: node.context.id });
   }, []);
   /** Unfolds the way to a session, selects it and centres its card. */
   const goToSession = useCallback(

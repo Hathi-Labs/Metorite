@@ -113,9 +113,26 @@ export interface MapChild {
   last_at: string | null;
 }
 
+/**
+ * AMR-5b (`agent_coordination.md` §3.12.8, G8). The orchestrator of a listed
+ * lane whose run is outside the project. The name and the project name are
+ * untrusted text. `project` is `null` when the viewer may not see the project.
+ */
+export interface MapContext {
+  id: string;
+  name: string;
+  person: string;
+  project: string | null;
+}
+
 export interface AgentMap {
   people: MapPerson[];
   sessions: MapSession[];
+  /**
+   * AMR-5b: the context rows of the summary read of a project. They are never
+   * in `sessions`, so no total, People choice, find or phone view holds them.
+   */
+  contexts?: MapContext[];
   runs: MapRun[];
   lines: MapLine[];
   /** SW-110. The open sub-agents of the listed runs. Not in `count`. */
@@ -148,6 +165,8 @@ export const GROUP_BY_MACHINE_LABEL = "Group by machine";
 export const DISPATCHED_BY_LABEL = "Dispatched by";
 export const DISPATCHED_LABEL = "Dispatched";
 export const OPEN_TASK_LABEL = "Open task";
+/** AMR-5b. The mark of an orchestrator whose run is outside the project. */
+export const OUTSIDE_PROJECT = "Outside this project";
 /** SW-110. The name of a sub-agent that reported no name. */
 export const UNNAMED_CHILD = "Sub-agent";
 
@@ -344,7 +363,7 @@ export function parseAgentMap(raw: unknown): AgentMap | null {
   const seen = new Set<string>();
   for (const item of body.sessions) {
     const row = record(item);
-    if (!row) continue;
+    if (!row || row.context === true) continue;
     const id = text(row.id);
     const person = text(row.person);
     const state = text(row.state) as MapSessionState;
@@ -366,6 +385,25 @@ export function parseAgentMap(raw: unknown): AgentMap | null {
     });
   }
 
+  // AMR-5b: a context row goes to its own list, after the sessions, so its id
+  // never stands for a session.
+  const contexts: MapContext[] = [];
+  for (const item of body.sessions) {
+    const row = record(item);
+    if (!row || row.context !== true) continue;
+    const id = text(row.id);
+    const person = text(row.person);
+    if (!id || !person || seen.has(id)) continue;
+    seen.add(id);
+    contexts.push({
+      id,
+      person,
+      name: text(row.name) || "Unnamed session",
+      project: text(record(row.context_project)?.name) || null,
+    });
+  }
+
+  const sessionIds = new Set(sessions.map((s) => s.id));
   const runs: MapRun[] = [];
   const seenRuns = new Set<string>();
   for (const item of body.runs) {
@@ -374,7 +412,7 @@ export function parseAgentMap(raw: unknown): AgentMap | null {
     const run_id = text(row.run_id);
     const session_id = text(row.session_id);
     const task_id = text(row.task_id);
-    if (!run_id || !task_id || !seen.has(session_id) || seenRuns.has(run_id)) continue;
+    if (!run_id || !task_id || !sessionIds.has(session_id) || seenRuns.has(run_id)) continue;
     seenRuns.add(run_id);
     runs.push({
       run_id,
@@ -431,6 +469,7 @@ export function parseAgentMap(raw: unknown): AgentMap | null {
   return {
     people,
     sessions,
+    contexts,
     runs,
     lines,
     children,

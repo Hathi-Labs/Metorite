@@ -25,9 +25,11 @@ import {
   DISPATCHED_BY_LABEL,
   DISPATCHED_LABEL,
   OPEN_TASK_LABEL,
+  OUTSIDE_PROJECT,
   sessionPlace,
 } from "../lib/agentMap";
 import {
+  type LensContext,
   type LensModel,
   type LensPerson,
   type LensSession,
@@ -57,12 +59,26 @@ export type LensSelection =
   | { kind: "session"; id: string }
   | { kind: "person"; person: string }
   /** The root of the map: one person, or everyone with "". */
-  | { kind: "root"; person: string };
+  | { kind: "root"; person: string }
+  /**
+   * AMR-5b: an orchestrator outside the project. It is no session, so the view
+   * never reads `session=` for it (under `project_id`, that read is empty).
+   */
+  | { kind: "context"; id: string };
+
+/**
+ * The session that a selection reads with `session=`, or `null`. Only a session
+ * is read. A context node is never read (AMR-5b).
+ */
+export function selectedSessionId(selection: LensSelection | null): string | null {
+  return selection?.kind === "session" ? selection.id : null;
+}
 
 /** The node of the graph that a selection lights. */
 export function selectionNodeId(selection: LensSelection | null): string | null {
   if (!selection) return null;
   if (selection.kind === "session") return `s:${selection.id}`;
+  if (selection.kind === "context") return `c:${selection.id}`;
   if (selection.kind === "root") return ROOT_ID;
   return `p:${selection.person}`;
 }
@@ -74,6 +90,7 @@ export function selectionTitle(
   nameOf: (email: string) => string,
 ): string | null {
   if (selection.kind === "session") return model.byId.get(selection.id)?.name ?? null;
+  if (selection.kind === "context") return model.contexts.find((c) => c.id === selection.id)?.name ?? null;
   if (selection.kind === "person") {
     return model.people.some((p) => p.person === selection.person) ? nameOf(selection.person) : null;
   }
@@ -386,8 +403,25 @@ function PersonDetails({ person, ...props }: DetailsProps & { person: LensPerson
   );
 }
 
+/** AMR-5b: the same three facts as the card: the name, the mark and the project when the read gives one. */
+function ContextDetails({ context }: { context: LensContext }) {
+  return (
+    <div className="flex flex-col gap-3" data-agent-details="context">
+      <p className="text-xs text-muted-foreground">{OUTSIDE_PROJECT}</p>
+      <dl className="flex flex-col gap-1.5">
+        <Fact term="Orchestrator">{context.name}</Fact>
+        {context.project ? <Fact term="Project">{context.project}</Fact> : null}
+      </dl>
+    </div>
+  );
+}
+
 export function AgentDetails(props: DetailsProps) {
   const { model, selection } = props;
+  if (selection.kind === "context") {
+    const context = model.contexts.find((c) => c.id === selection.id);
+    return context ? <ContextDetails context={context} /> : null;
+  }
   if (selection.kind === "session") {
     const session = model.byId.get(selection.id);
     return session ? <SessionDetails key={session.id} {...props} session={session} /> : null;

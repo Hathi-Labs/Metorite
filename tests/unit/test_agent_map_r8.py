@@ -1495,8 +1495,13 @@ def lenses(w, monkeypatch):
 
 
 def _named(body: dict[str, Any]) -> dict[str, str]:
-    """Session name to its state."""
-    return {s["name"]: s["state"] for s in body["sessions"]}
+    """Session name to its state. A context row of AMR-5b has no state."""
+    return {s["name"]: s["state"] for s in body["sessions"] if not s.get("context")}
+
+
+def _contexts(body: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """AMR-5b. The context rows of a summary, by name."""
+    return {s["name"]: s for s in body["sessions"] if s.get("context")}
 
 
 def _ageless(body: dict[str, Any]) -> dict[str, Any]:
@@ -1730,6 +1735,10 @@ class TestTheSummary:
         _, body, _ = await _get(lenses, lenses.admin_a, SUMMARY + f"&project_id={lenses.led['id']}")
         assert set(_named(body)) == {LABEL_1, "led-sleeper", "Unnamed session"}
         assert _node(body, LABEL_1)["subagents"]["total"] == 1
+        # AMR-5b: the unnamed lane of the sub-project was dispatched from the
+        # private project, which the admin sees. Its orchestrator is a context row.
+        assert set(_contexts(body)) == {"hidden"}
+        assert _contexts(body)["hidden"]["context_project"] == {"name": "board"}
 
     async def test_the_session_cap_sets_truncated(self, lenses, monkeypatch):
         from gateway.routes.projects import agent_summary as m
@@ -1815,3 +1824,435 @@ class TestOneSession:
         monkeypatch.setattr(m, "MAP_RUNS_MAX", 1)
         _, body, _ = await _get(lenses, lenses.admin_a, MAP + f"&session={node}")
         assert len(body["runs"]) == 1 and body["truncated"] is True
+
+
+# ── WS-MCP AMR-5b: the orchestrator outside the project (§3.12.8, G8) ───────
+#
+# R7, the mutations (each turns a test here red):
+#
+# * **X1** step 2 reads ``seen`` with the scope of the project -> the admin
+#   test (no context row).
+# * **X2** step 2 reads ``pm_agent_runs`` and not ``seen`` -> the hidden test
+#   (the member gets the node of B).
+# * **X3** the context row adds ``state`` or ``tasks`` -> the key test.
+# * **X4** ``_leaf_name`` skips the visible path -> the assignee test (the
+#   name of B leaks).
+# * **X5** step 1 drops ``(src.is_open OR NOT src.node_open)`` -> the ended
+#   lane test.
+# * **X6** step 3 is not run -> the test of a dispatcher that the map of
+#   everyone does not list.
+
+NAME_A = "amr5b-project-a"
+NAME_B = "amr5b-secret-project-b"
+NAME_C = "amr5b-project-c"
+TITLE_B = "amr5b-secret-task-b"
+
+
+def _rename(p: Any, proj: dict[str, Any], name: str) -> None:
+    with p.admin_engine.begin() as c:
+        c.execute(text("UPDATE pm_projects SET name = :n WHERE id = CAST(:p AS uuid)"),
+                  {"n": name, "p": proj["id"]})
+
+
+def _number_of(p: Any, tid: str) -> int:
+    with p.admin_engine.begin() as c:
+        return int(c.execute(text("SELECT task_number FROM pm_tasks WHERE id = CAST(:t AS uuid)"),
+                             {"t": tid}).scalar())
+
+
+def _numbers(value: Any) -> set[Any]:
+    """Every value of a task number key of an answer."""
+    if isinstance(value, dict):
+        return ({v for k, v in value.items() if k in ("number", "task_number")}
+                | {n for v in value.values() for n in _numbers(v)})
+    if isinstance(value, list):
+        return {n for v in value for n in _numbers(v)}
+    return set()
+
+
+def _not_context(body: dict[str, Any]) -> dict[str, Any]:
+    """A summary with no context row and no line, so two answers compare."""
+    return {**_ageless(body), "lines": None,
+            "sessions": [s for s in body["sessions"] if not s.get("context")]}
+
+
+@pytest.fixture
+def outside(lenses):
+    """Project A (granted to the org) holds the lanes, on the member's tasks.
+    Project B has no grant, so the member cannot see it. Project C is granted."""
+    p = lenses.p
+    lenses.proj_a = b.project(p, p.org_a, OTHER_A, grant="org")
+    lenses.proj_b = b.project(p, p.org_a, OTHER_A)
+    lenses.proj_c = b.project(p, p.org_a, OTHER_A, grant="org")
+    for proj, name in ((lenses.proj_a, NAME_A), (lenses.proj_b, NAME_B), (lenses.proj_c, NAME_C)):
+        _rename(p, proj, name)
+    lenses.on_a = lambda title="amr5b-lane-task": b.task(
+        p, p.org_a, MEMBER_A, lenses.proj_a, title=title)
+    lenses.task_b = b.task(p, p.org_a, OTHER_A, lenses.proj_b, title=TITLE_B)
+    lenses.scope_a = SUMMARY + f"&project_id={lenses.proj_a['id']}"
+    return lenses
+
+
+@_DB_GATE
+class TestTheOrchestratorOutside:
+    async def test_the_admin_gets_the_context_node_and_its_lines(self, outside):
+        from gateway.routes.projects import agent_summary as m
+
+        o = outside
+        boss = o.add("amr5b-orch", "in_progress", on=o.task_b)
+        lanes = [o.add(f"amr5b-lane-{n}", "in_progress", on=o.on_a()) for n in (1, 2)]
+        for lane in lanes:
+            _dispatch(o.p, lane, boss)
+        _, body, raw = await _get(o, o.admin_a, o.scope_a)
+        ctx = _contexts(body)
+        assert set(ctx) == {"amr5b-orch"}
+        row = ctx["amr5b-orch"]
+        assert tuple(row) == m.MAP_CONTEXT_KEYS
+        assert row == {"id": row["id"], "name": "amr5b-orch", "person": OTHER_A,
+                       "context": True, "context_project": {"name": NAME_B}}
+        assert {(row["id"], _node(body, f"amr5b-lane-{n}")["id"]) for n in (1, 2)} <= _lines(body)
+        # No id, task or title of the orchestrator run or its project leaves.
+        for secret in (boss, o.task_b, o.proj_b["id"], TITLE_B):
+            assert secret not in raw, secret
+        assert _number_of(o.p, o.task_b) not in _numbers(body)
+        # The totals do not change: the same answer with no dispatcher, but the row and the lines.
+        for lane in lanes:
+            _dispatch(o.p, lane, None)
+        _, plain, _ = await _get(o, o.admin_a, o.scope_a)
+        assert _contexts(plain) == {}
+        assert _not_context(body) == _not_context(plain)
+        assert body["count"] == plain["count"] == 2
+        assert body["people"] == plain["people"] == [{"person": OTHER_A, "sessions": 2}]
+
+    async def test_the_context_row_is_fenced(self, outside):
+        """C4. A fixed key set: no machine, model, state, clock, client or task."""
+        from gateway.routes.projects import agent_summary as m
+
+        assert m.MAP_CONTEXT_KEYS == ("id", "name", "person", "context", "context_project")
+        o = outside
+        boss = o.add("amr5b-orch", "awaiting", on=o.task_b)
+        _place(o.p, boss, host="amr5b-host", kind="server", model="amr5b-model")
+        _child(o.p, boss, label="amr5b-sub", model=None)
+        _dispatch(o.p, o.add("amr5b-lane", "in_progress", on=o.on_a()), boss)
+        _, body, raw = await _get(o, o.admin_a, o.scope_a)
+        row = _contexts(body)["amr5b-orch"]
+        assert set(row) == set(m.MAP_CONTEXT_KEYS)
+        for secret in ("amr5b-host", "amr5b-model", "amr5b-sub"):
+            assert secret not in raw, secret
+        assert "waiting_on_person" not in {s.get("state") for s in body["sessions"]}
+        assert boss not in _run_ids(body) and body["children"] == []
+
+    async def test_a_viewer_who_cannot_see_b_gets_no_trace(self, outside, monkeypatch):
+        """C3. The answer equals the answer with no dispatcher, key for key.
+        ``age`` ticks between two reads, so the comparison drops it."""
+        from gateway.routes.projects import agent_summary as m
+
+        o = outside
+        boss = o.add("amr5b-orch", "in_progress", on=o.task_b)
+        lane = o.add("amr5b-lane", "in_progress", on=o.on_a())
+        _dispatch(o.p, lane, boss)
+        _, admin, _ = await _get(o, o.admin_a, o.scope_a)
+        node = _contexts(admin)["amr5b-orch"]["id"]
+        # Step 3 does not run for a dispatcher that the viewer cannot see.
+        monkeypatch.setattr(m, "_CONTEXT_NODES", "no_such_column")
+        status, body, raw = await _get(o, o.member_a, o.scope_a)
+        assert status == 200 and body["viewer"] == "member"
+        assert _named(body) == {"amr5b-lane": "working"}
+        assert _contexts(body) == {} and body["lines"] == []
+        for secret in ("amr5b-orch", NAME_B, TITLE_B, o.proj_b["id"], o.task_b, boss, node):
+            assert secret not in raw, secret
+        assert _number_of(o.p, o.task_b) not in _numbers(body)
+        _dispatch(o.p, lane, None)
+        _, plain, _ = await _get(o, o.member_a, o.scope_a)
+        assert _ageless(body) == _ageless(plain)
+
+    async def test_a_viewer_who_sees_the_run_but_not_its_project_gets_no_project(
+            self, outside):
+        """C5. The member holds the task of B as its assignee: the run shows, B does not."""
+        o = outside
+        assigned = b.task(o.p, o.p.org_a, OTHER_A, o.proj_b, title=TITLE_B, assignee=MEMBER_A)
+        boss = o.add("amr5b-orch", "in_progress", on=assigned)
+        _dispatch(o.p, o.add("amr5b-lane", "in_progress", on=o.on_a()), boss)
+        _, body, raw = await _get(o, o.member_a, o.scope_a)
+        row = _contexts(body)["amr5b-orch"]
+        assert row["context_project"] is None
+        assert (row["id"], _node(body, "amr5b-lane")["id"]) in _lines(body)
+        serial = json.dumps(body)
+        for secret in (NAME_B, o.proj_b["id"], TITLE_B, assigned, boss):
+            assert secret not in serial and secret not in raw, secret
+        assert _number_of(o.p, assigned) not in _numbers(body)
+        # The admin sees B, so the admin gets its name.
+        _, admin, _ = await _get(o, o.admin_a, o.scope_a)
+        assert _contexts(admin)["amr5b-orch"]["context_project"] == {"name": NAME_B}
+
+    async def test_a_hidden_run_of_a_listed_dispatcher_draws_no_line(self, outside):
+        """C2. The orchestrator is listed through its run in A. Its run in B,
+        which dispatched the lane, is hidden from the member: no line."""
+        o = outside
+        o.add("amr5b-shared", "in_progress", on=o.on_a("amr5b-shared-task"))
+        boss = o.add("amr5b-shared", "in_progress", on=o.task_b)
+        lane = o.add("amr5b-lane", "in_progress", on=o.on_a())
+        _dispatch(o.p, lane, boss)
+        _, member, raw = await _get(o, o.member_a, o.scope_a)
+        assert set(_named(member)) == {"amr5b-shared", "amr5b-lane"}
+        assert member["lines"] == [] and _contexts(member) == {}
+        assert boss not in raw and TITLE_B not in raw
+        # The admin sees the run in B, so the listed node draws the line, and no context row.
+        _, admin, _ = await _get(o, o.admin_a, o.scope_a)
+        edge = (_node(admin, "amr5b-shared")["id"], _node(admin, "amr5b-lane")["id"])
+        assert edge in _lines(admin) and _contexts(admin) == {}
+
+    async def test_an_old_dispatcher_run_in_the_project_gives_a_context_node(self, outside):
+        """C1, the missed case. The run is in A, but its node has no current run in A.
+        P2-1: the card names the project where the node works now (C), never A."""
+        o = outside
+        old = o.add("amr5b-old", "completed", ago="30 hours", on=o.on_a("amr5b-old-task"))
+        o.add("amr5b-old", "in_progress", on=b.task(o.p, o.p.org_a, OTHER_A, o.proj_c))
+        _dispatch(o.p, o.add("amr5b-lane", "in_progress", on=o.on_a()), old)
+        _, body, raw = await _get(o, o.admin_a, o.scope_a)
+        assert set(_named(body)) == {"amr5b-lane"}
+        row = _contexts(body)["amr5b-old"]
+        assert row["context_project"] == {"name": NAME_C}
+        assert (row["id"], _node(body, "amr5b-lane")["id"]) in _lines(body)
+        assert NAME_A not in raw
+
+    async def test_a_dispatcher_run_in_a_sub_project_never_names_a_project_in_scope(
+            self, outside):
+        """P2-1. The run is in a sub-project of A and ended long ago. The node
+        works in C now, so the card names C, and no project of the scope."""
+        o = outside
+        p = o.p
+        sub = b.project(p, p.org_a, OTHER_A, parent=o.proj_a)
+        _rename(p, sub, "amr5b-sub-of-a")
+        old = o.add("amr5b-old", "completed", ago="30 hours",
+                    on=b.task(p, p.org_a, MEMBER_A, sub, title="amr5b-sub-task"))
+        o.add("amr5b-old", "in_progress", on=b.task(p, p.org_a, OTHER_A, o.proj_c))
+        _dispatch(p, o.add("amr5b-lane", "in_progress", on=o.on_a()), old)
+        _, body, raw = await _get(o, o.admin_a, o.scope_a)
+        assert _contexts(body)["amr5b-old"]["context_project"] == {"name": NAME_C}
+        assert "amr5b-sub-of-a" not in raw and NAME_A not in raw
+
+    async def test_a_dispatcher_that_the_map_of_everyone_does_not_list_gives_nothing(
+            self, outside):
+        """C7. Its only run ended 30 hours ago, so no summary lists its node."""
+        o = outside
+        gone = o.add("amr5b-gone", "completed", ago="30 hours", on=o.task_b)
+        _dispatch(o.p, o.add("amr5b-lane", "in_progress", on=o.on_a()), gone)
+        _, body, raw = await _get(o, o.admin_a, o.scope_a)
+        assert _contexts(body) == {} and body["lines"] == []
+        assert "amr5b-gone" not in raw and NAME_B not in raw
+
+    async def test_one_node_takes_the_project_of_its_newest_current_run(self, outside):
+        """C5 as amended by P2-1. One context node for two runs in two projects:
+        the run with the newest event names the project, not the newest dispatch."""
+        o = outside
+        in_b = o.add("amr5b-two", "in_progress", ago="3 hours", on=o.task_b)
+        in_c = o.add("amr5b-two", "in_progress", ago="1 hour",
+                     on=b.task(o.p, o.p.org_a, OTHER_A, o.proj_c))
+        _dispatch(o.p, o.add("amr5b-lane-1", "in_progress", on=o.on_a()), in_b)
+        _dispatch(o.p, o.add("amr5b-lane-2", "in_progress", on=o.on_a()), in_c)
+        _place(o.p, in_b, host=None, kind=None, model=None, ago_s=7200)
+        _, body, _ = await _get(o, o.admin_a, o.scope_a)
+        rows = [s for s in body["sessions"] if s.get("context")]
+        assert len(rows) == 1 and rows[0]["context_project"] == {"name": NAME_C}
+        for n in (1, 2):
+            assert (rows[0]["id"], _node(body, f"amr5b-lane-{n}")["id"]) in _lines(body)
+        # The run in B gets the newest event: B names the node now.
+        _place(o.p, in_b, host=None, kind=None, model=None, ago_s=0)
+        _place(o.p, in_c, host=None, kind=None, model=None, ago_s=10800)
+        _, body, _ = await _get(o, o.admin_a, o.scope_a)
+        assert _contexts(body)["amr5b-two"]["context_project"] == {"name": NAME_B}
+
+    async def test_the_project_skips_a_project_the_viewer_cannot_see(self, outside):
+        """P2-1. The newest run of the node is on a task of B that the member
+        holds as its assignee, so B is hidden. The next run outside, in C, names it."""
+        o = outside
+        p = o.p
+        in_c = o.add("amr5b-skip", "in_progress",
+                     on=b.task(p, p.org_a, MEMBER_A, o.proj_c, title="amr5b-skip-task-c"))
+        assigned = b.task(p, p.org_a, OTHER_A, o.proj_b, title=TITLE_B, assignee=MEMBER_A)
+        in_b = o.add("amr5b-skip", "in_progress", on=assigned)
+        _place(p, in_c, host=None, kind=None, model=None, ago_s=7200)
+        _dispatch(p, o.add("amr5b-lane", "in_progress", on=o.on_a()), in_b)
+        _, body, raw = await _get(o, o.member_a, o.scope_a)
+        assert _contexts(body)["amr5b-skip"]["context_project"] == {"name": NAME_C}
+        self._no_trace(raw, body, NAME_B, o.proj_b["id"], o.proj_c["id"], TITLE_B, assigned,
+                       in_b, in_c)
+
+    async def test_a_hidden_dispatcher_does_not_change_truncated(self, outside, monkeypatch):
+        """P2-2. The cap counts only the lines that pass the ``seen`` text. Two
+        hidden dispatcher runs give the answer of no dispatcher, ``truncated`` too."""
+        from gateway.routes.projects import agent_summary as m
+
+        o = outside
+        monkeypatch.setattr(m, "MAP_SUMMARY_SESSIONS_MAX", 1)
+        lanes = [o.add("amr5b-lane", "in_progress", on=o.on_a()) for _ in range(2)]
+        for lane in lanes:
+            _dispatch(o.p, lane, o.add("amr5b-orch", "in_progress",
+                                       on=b.task(o.p, o.p.org_a, OTHER_A, o.proj_b)))
+        _, body, raw = await _get(o, o.member_a, o.scope_a)
+        assert body["truncated"] is False
+        for lane in lanes:
+            _dispatch(o.p, lane, None)
+        _, plain, _ = await _get(o, o.member_a, o.scope_a)
+        assert _ageless(body) == _ageless(plain)
+        self._no_trace(raw, body, "amr5b-orch", NAME_B)
+
+    async def test_an_ended_run_of_an_open_lane_draws_no_line(self, outside):
+        """C7. A lane with an open run takes its lines from its open runs only."""
+        o = outside
+        boss = o.add("amr5b-orch", "in_progress", on=o.task_b)
+        o.add("amr5b-mixed", "in_progress", ago="0 seconds", on=o.on_a())
+        ended = o.add("amr5b-mixed", "completed", ago="1 hour", on=o.on_a())
+        _dispatch(o.p, ended, boss)
+        _, body, _ = await _get(o, o.admin_a, o.scope_a)
+        assert _contexts(body) == {} and body["lines"] == []
+
+    async def test_no_dispatcher_gives_no_extra_read(self, outside, monkeypatch):
+        """C9. With no dispatcher, steps 2 and 3 do not run."""
+        from gateway.routes.projects import agent_summary as m
+
+        o = outside
+        o.add("amr5b-lane", "in_progress", on=o.on_a())
+        monkeypatch.setattr(m, "_MAP_DISPATCHERS_SQL", "SELECT no_such_column")
+        monkeypatch.setattr(m, "_CONTEXT_NODES", "no_such_column")
+        status, body, _ = await _get(o, o.admin_a, o.scope_a)
+        assert status == 200 and set(_named(body)) == {"amr5b-lane"}
+
+    async def test_the_other_reads_do_not_change(self, outside):
+        """The map of everyone, the plain map and ``session=`` give no context row."""
+        o = outside
+        boss = o.add("amr5b-orch", "in_progress", on=o.task_b)
+        lane = o.add("amr5b-lane", "in_progress", on=o.on_a())
+        _dispatch(o.p, lane, boss)
+        _, wide, _ = await _get(o, o.admin_a, SUMMARY)
+        assert _contexts(wide) == {} and "amr5b-orch" in _named(wide)
+        _, plain, _ = await _get(o, o.admin_a, MAP + f"&project_id={o.proj_a['id']}")
+        assert "amr5b-orch" not in {s["name"] for s in plain["sessions"]}
+        assert all("context" not in s for s in plain["sessions"])
+        node = _node(wide, "amr5b-orch")["id"]
+        _, one, _ = await _get(o, o.admin_a, MAP + f"&session={node}&project_id={o.proj_a['id']}")
+        assert one["sessions"] == []
+
+    # ── The probe cases of the verifier, as fences (each asserts no trace) ──
+
+    @staticmethod
+    def _no_trace(raw: str, body: dict[str, Any], *secrets: str) -> None:
+        """No secret in the raw answer, nor in the answer serialized again."""
+        serial = json.dumps(body)
+        for secret in secrets:
+            assert secret not in raw and secret not in serial, secret
+
+    async def test_a_pinned_agent_reaches_the_context_only_through_its_pins(self, outside):
+        """(a) D-EA-12. Pinned to A only: no context, no line, no name of B.
+        Pinned to A and B: the context with the name of B."""
+        import dataclasses
+
+        o = outside
+        boss = o.add("amr5b-orch", "in_progress", on=o.task_b)
+        _dispatch(o.p, o.add("amr5b-lane", "in_progress", on=o.on_a()), boss)
+        agent = b._principal(ADMIN_A, o.p.org_a, agent_connection=o.conn_m,
+                             scopes=("projects:read",))
+
+        def pinned(*projects: dict[str, Any]) -> Any:
+            return dataclasses.replace(agent, agent=dataclasses.replace(
+                agent.agent, pinned_projects=tuple(p["id"] for p in projects)))
+
+        status, body, raw = await _get(o, pinned(o.proj_a), o.scope_a)
+        assert status == 200, body
+        assert set(_named(body)) == {"amr5b-lane"}
+        assert _contexts(body) == {} and body["lines"] == []
+        self._no_trace(raw, body, "amr5b-orch", NAME_B, TITLE_B, o.proj_b["id"], o.task_b, boss)
+        status, both, raw = await _get(o, pinned(o.proj_a, o.proj_b), o.scope_a)
+        assert status == 200, both
+        row = _contexts(both)["amr5b-orch"]
+        assert row["context_project"] == {"name": NAME_B}
+        assert (row["id"], _node(both, "amr5b-lane")["id"]) in _lines(both)
+        self._no_trace(raw, both, TITLE_B, o.proj_b["id"], o.task_b, boss)
+
+    async def test_the_led_arm_of_d12_gives_the_context_to_a_lead_only(self, outside):
+        """(b) B2 is granted to the org, so the grant does not hide its tasks.
+        The reach does: a lead of B2 gets the context, a plain member gets nothing."""
+        o = outside
+        p = o.p
+        proj_b2 = b.project(p, p.org_a, OTHER_A, grant="org")
+        _rename(p, proj_b2, "amr5b-led-project-b2")
+        task_b2 = b.task(p, p.org_a, OTHER_A, proj_b2, title="amr5b-led-task-b2")
+        boss = o.add("amr5b-orch", "in_progress", on=task_b2)
+        _dispatch(p, o.add("amr5b-lane", "in_progress", on=o.on_a()), boss)
+
+        def lead(*projects: dict[str, Any]) -> None:
+            with p.admin_engine.begin() as c:
+                c.execute(text("UPDATE pm_projects SET lead = NULL"
+                               " WHERE id = ANY(CAST(:all AS uuid[]))"),
+                          {"all": [o.proj_a["id"], proj_b2["id"]]})
+                c.execute(text("UPDATE pm_projects SET lead = :l WHERE id = ANY(CAST(:p AS uuid[]))"),
+                          {"l": LEAD_A, "p": [x["id"] for x in projects]})
+
+        secrets = ("amr5b-orch", "amr5b-led-project-b2", "amr5b-led-task-b2",
+                   proj_b2["id"], task_b2, boss)
+        try:
+            # The lead of A only sees the lane, and nothing of B2.
+            lead(o.proj_a)
+            _, body, raw = await _get(o, o.lead_a, o.scope_a)
+            assert set(_named(body)) == {"amr5b-lane"} and body["viewer"] == "lead"
+            assert _contexts(body) == {} and body["lines"] == []
+            self._no_trace(raw, body, *secrets)
+            # The lead of A and B2 gets the context and the name of B2.
+            lead(o.proj_a, proj_b2)
+            _, body, raw = await _get(o, o.lead_a, o.scope_a)
+            row = _contexts(body)["amr5b-orch"]
+            assert row["context_project"] == {"name": "amr5b-led-project-b2"}
+            assert (row["id"], _node(body, "amr5b-lane")["id"]) in _lines(body)
+            self._no_trace(raw, body, "amr5b-led-task-b2", proj_b2["id"], task_b2, boss)
+            # A plain member sees B2 by its grant, but the reach keeps the run out.
+            _, body, raw = await _get(o, o.member_a, o.scope_a)
+            assert set(_named(body)) == {"amr5b-lane"}
+            assert _contexts(body) == {} and body["lines"] == []
+            self._no_trace(raw, body, *secrets)
+        finally:
+            lead()
+
+    async def test_a_sealed_project_gives_the_context_with_no_project(self, outside):
+        """(c) D63. The member holds a task of a sealed project as its assignee.
+        The run shows, so the context shows. The sealed name shows nowhere."""
+        o = outside
+        p = o.p
+        sealed = b.project(p, p.org_a, OTHER_A, grant="org")
+        _rename(p, sealed, "amr5b-sealed-project")
+        assigned = b.task(p, p.org_a, OTHER_A, sealed, title="amr5b-sealed-task",
+                          assignee=MEMBER_A)
+        boss = o.add("amr5b-orch", "in_progress", on=assigned)
+        _dispatch(p, o.add("amr5b-lane", "in_progress", on=o.on_a()), boss)
+        with p.admin_engine.begin() as c:
+            c.execute(text("UPDATE pm_projects SET sealed_at = now() WHERE id = CAST(:p AS uuid)"),
+                      {"p": sealed["id"]})
+        secrets = ("amr5b-sealed-project", sealed["id"], "amr5b-sealed-task", assigned, boss)
+        _, body, raw = await _get(o, o.member_a, o.scope_a)
+        row = _contexts(body)["amr5b-orch"]
+        assert row["context_project"] is None
+        assert (row["id"], _node(body, "amr5b-lane")["id"]) in _lines(body)
+        self._no_trace(raw, body, *secrets)
+        # The seal binds the admin too, and the admin is no assignee: nothing shows.
+        _, admin, raw = await _get(o, o.admin_a, o.scope_a)
+        assert _contexts(admin) == {} and admin["lines"] == []
+        self._no_trace(raw, admin, "amr5b-orch", *secrets)
+
+    async def test_a_node_seen_in_c_does_not_open_a_hidden_dispatcher_run_in_b(self, outside):
+        """(d) The orchestrator node shows through its run in C. Its run in B,
+        which dispatched the lane, is hidden from the member: nothing shows."""
+        o = outside
+        seen_c = o.add("amr5b-split", "in_progress",
+                       on=b.task(o.p, o.p.org_a, MEMBER_A, o.proj_c, title="amr5b-split-task-c"))
+        hidden_b = o.add("amr5b-split", "in_progress", on=o.task_b)
+        _dispatch(o.p, o.add("amr5b-lane", "in_progress", on=o.on_a()), hidden_b)
+        _, wide, _ = await _get(o, o.member_a, SUMMARY)
+        assert "amr5b-split" in _named(wide)
+        _, body, raw = await _get(o, o.member_a, o.scope_a)
+        assert set(_named(body)) == {"amr5b-lane"}
+        assert _contexts(body) == {} and body["lines"] == []
+        self._no_trace(raw, body, "amr5b-split", NAME_B, NAME_C, TITLE_B, "amr5b-split-task-c",
+                       o.proj_b["id"], o.proj_c["id"], o.task_b, seen_c, hidden_b)
+        # The admin sees the run in B, so it gets the context with the name of B.
+        _, admin, _ = await _get(o, o.admin_a, o.scope_a)
+        assert _contexts(admin)["amr5b-split"]["context_project"] == {"name": NAME_B}

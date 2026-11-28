@@ -19,6 +19,7 @@ import { type AgentEdge, agentCardLook } from "./agentCardLook";
 import {
   type AgentMap,
   type MapChild,
+  type MapContext,
   type MapRun,
   type MapSession,
   type MapTaskWords,
@@ -183,6 +184,17 @@ export interface LensSession {
   dispatchers: string[];
   /** The ids of the sessions that this one dispatched. */
   dispatched: string[];
+  /** AMR-5b: the ids of the context nodes (orchestrators outside the project) that dispatched it. */
+  contexts: string[];
+}
+
+/**
+ * AMR-5b (§3.12.8, G8). An orchestrator whose run is outside the project. It is
+ * no session: it counts in no total, and only a lane that it dispatched draws it.
+ */
+export interface LensContext extends MapContext {
+  /** The ids of the sessions of the map that it dispatched, sorted. */
+  lanes: string[];
 }
 
 export interface LensGroup {
@@ -203,6 +215,8 @@ export interface LensModel {
   people: LensPerson[];
   sessions: LensSession[];
   byId: Map<string, LensSession>;
+  /** AMR-5b: the orchestrators outside the project, with at least one lane on the map. */
+  contexts: LensContext[];
 }
 
 const STATE_OF_MAP = {
@@ -272,6 +286,7 @@ export function buildLensModel(
 ): LensModel {
   const me = (viewer.email ?? "").trim().toLowerCase();
   const dispatch = dispatchGraph(map);
+  const outside = contextLanes(map);
   const sessions: LensSession[] = sortSessions(map.sessions, dispatch.waiting).map((s) => {
     const runs = map.runs
       .filter((r) => r.session_id === s.id)
@@ -308,6 +323,7 @@ export function buildLensModel(
       question: state === "you" && asked ? (questions.get(asked.run_id) ?? null) : null,
       dispatchers: dispatch.dispatchers.get(s.id) ?? [],
       dispatched: dispatch.dispatched.get(s.id) ?? [],
+      contexts: outside.of.get(s.id) ?? [],
     };
   });
   const byId = new Map(sessions.map((s) => [s.id, s]));
@@ -360,7 +376,35 @@ export function buildLensModel(
       urgency(a.groups.flatMap(membersOf)) - urgency(b.groups.flatMap(membersOf)) ||
       a.person.localeCompare(b.person),
   );
-  return { people: out, sessions, byId };
+  return { people: out, sessions, byId, contexts: outside.contexts };
+}
+
+/**
+ * AMR-5b. The lanes of each context node: the lines from it to a session of the
+ * map. A context with no such lane is left out. A line from a session never
+ * makes a context, and `dispatchGraph` drops each line from a context.
+ */
+function contextLanes(map: Pick<AgentMap, "sessions" | "lines" | "contexts">): {
+  contexts: LensContext[];
+  of: Map<string, string[]>;
+} {
+  const known = new Set(map.sessions.map((s) => s.id));
+  const lanes = new Map<string, Set<string>>();
+  for (const c of map.contexts ?? []) if (!known.has(c.id)) lanes.set(c.id, new Set());
+  for (const line of map.lines) {
+    if (known.has(line.to)) lanes.get(line.from)?.add(line.to);
+  }
+  const contexts: LensContext[] = [];
+  const of = new Map<string, string[]>();
+  for (const c of map.contexts ?? []) {
+    const mine = [...(lanes.get(c.id) ?? [])].sort();
+    if (mine.length === 0 || contexts.some((x) => x.id === c.id)) continue;
+    contexts.push({ ...c, lanes: mine });
+    for (const lane of mine) of.set(lane, [...(of.get(lane) ?? []), c.id]);
+  }
+  contexts.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || a.id.localeCompare(b.id));
+  for (const list of of.values()) list.sort();
+  return { contexts, of };
 }
 
 /** The orchestrator of a group, then its sessions. */
