@@ -3093,7 +3093,9 @@ that mount. So the `tools` branch mounts a sibling dir outside it:
   or a smoke test never writes a member file. SBX-5 decides the outputs of a
   real run.
 - Each build starts with an empty `pkg/`.
-- Each round deletes `site/`, `outputs/` and `input.json` first.
+- Each round first deletes every top-level name in `<tool-data>` except
+  `pkg/` and `outputs/`, and it empties `outputs/`. So `site/`, `input.json`
+  and any file that an earlier smoke command wrote (a dead token) are gone.
 - The run end deletes `<tool-data>` too. `_note_run_data` (`:3764`) records
   the rel of `<tool-data>` for the thread. `end_run` (`:3822`) removes it with
   `_remove_run_data`, as it removes the run-data dir (`maf_coding_engine.md`
@@ -3486,7 +3488,7 @@ SBX-4b1, the step engine:
 16. Each condition fails alone: exit 1, a `result.json` off the schema, a
     timeout, and one refusal.
     `test_user_tool_build.py::test_each_smoke_condition_fails_alone`.
-17. A round deletes `site/`, `outputs/` and `input.json` first, and a build
+17. A round deletes every top-level name of `<tool-data>` except `pkg/` first, and a build
     starts with an empty `pkg/`.
     `test_user_tool_build.py::test_each_round_starts_clean`.
 18. An install past 180 s, or a `site/` over 300 MiB, fails the round. A
