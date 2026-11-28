@@ -85,8 +85,23 @@ def machine(tmp_path):
     active = tree("active", "devx-active-mt-cccc3333")
     (active / "now.txt").write_text("just now", encoding="utf-8")
     # S3: a pushed branch with no PR, its commit 30 h old.
-    git(repo, "branch", "devx-nopr-mt-dddd4444", "main")
+    git(repo, "checkout", "-q", "-b", "devx-nopr-mt-dddd4444", "main")
+    commit(repo, "nopr.txt", "work with no PR")
     git(repo, "push", "-q", "origin", "devx-nopr-mt-dddd4444")
+    git(repo, "checkout", "-q", "main")
+    # Not S3: a branch that main holds (a direct merge), with no PR.
+    git(repo, "checkout", "-q", "-b", "devx-merged-mt-9999aaaa", "main")
+    commit(repo, "merged.txt", "merged work")
+    git(repo, "push", "-q", "origin", "devx-merged-mt-9999aaaa")
+    git(repo, "checkout", "-q", "main")
+    git(repo, "merge", "-q", "--no-ff", "-m", "merge", "devx-merged-mt-9999aaaa", when=OLD)
+    git(repo, "push", "-q", "origin", "main")
+    # S3 with no short id in its name: the task comes from ITS commit.
+    git(repo, "checkout", "-q", "-b", "devx-plain", "main")
+    commit(repo, "plain.txt", "work for mt-1234abcd")
+    git(repo, "push", "-q", "origin", "devx-plain")
+    git(repo, "checkout", "-q", "main")
+    commit(repo, "head.txt", "main head names mt-deadbeef")
     # Not S3: a branch with a PR, and a person's branch.
     for b in ("devx-haspr-mt-eeee5555", "ishaan-feature"):
         git(repo, "branch", b, "main")
@@ -157,7 +172,8 @@ def test_one_line_for_each_state_on_a_fake_machine(machine):
     s = by_state(finder(machine).scan())
     assert [(t, k) for t, k, _ in s["S1"]] == [(str(machine.dirty), "mt-aaaa1111")]
     assert [(t, k) for t, k, _ in s["S2"]] == [(str(machine.unpushed), "mt-bbbb2222")]
-    assert [(t, k) for t, k, _ in s["S3"]] == [("devx-nopr-mt-dddd4444", "mt-dddd4444")]
+    assert sorted((t, k) for t, k, _ in s["S3"]) == [
+        ("devx-nopr-mt-dddd4444", "mt-dddd4444"), ("devx-plain", "mt-1234abcd")]
     assert [t for t, _, _ in s["RESCUE"]] == ["rescue/devx-saved/20261128"]
     assert s["RESCUE"][0][1] == "mt-ffff6666"
     assert {"LBB-3", "REAPER", "S4", "S5"} <= set(s)
@@ -298,3 +314,13 @@ def test_every_git_read_takes_no_optional_lock(machine):
     finder(machine, runner=runner).scan()
     gits = [a for a in calls if a[0] == "git"]
     assert gits and all(a[1] == "--no-optional-locks" for a in gits)
+
+
+def test_s3_skips_a_branch_that_main_holds(machine):
+    s3 = [t for st, t, _, _ in finder(machine).scan() if st == "S3"]
+    assert "devx-merged-mt-9999aaaa" not in s3
+
+
+def test_s3_takes_the_task_from_its_own_commit_not_the_checkout_head(machine):
+    s3 = {t: k for st, t, k, _ in finder(machine).scan() if st == "S3"}
+    assert s3["devx-plain"] == "mt-1234abcd"  # main's HEAD names mt-deadbeef

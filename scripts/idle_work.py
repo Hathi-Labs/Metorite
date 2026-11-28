@@ -134,7 +134,7 @@ class Finder:
         trees, cur = [], {}
         for line in [*out.splitlines(), ""]:
             if not line.strip():
-                if cur.get("path"):
+                if cur.get("path") and not cur.get("bare"):
                     trees.append(cur)
                 cur = {}
                 continue
@@ -145,6 +145,8 @@ class Finder:
                 cur["branch"] = val.removeprefix("refs/heads/")
             elif key == "detached":
                 cur["branch"] = None
+            elif key == "bare":
+                cur["bare"] = True
         if trees:
             trees[0]["primary"] = True
         return trees
@@ -191,7 +193,9 @@ class Finder:
                 self.add("UNKNOWN", wt["path"], None, facts["error"])
                 continue
             if facts["idle"] < RECENT_S:
-                continue  # rule 2: changed in the last hour, so active
+                # Rule 2. The 6 h limits below hold it too. This line keeps it
+                # when a later slice lowers a limit.
+                continue
             task = self.task_of(wt.get("branch") or "", Path(wt["path"]))
             note = "primary checkout, report only" if wt.get("primary") else ""
             if facts["dirty"] and facts["idle"] > DIRTY_IDLE_S:
@@ -204,11 +208,15 @@ class Finder:
                     f"{facts['unpushed']} commit(s) on no remote, idle {_h(facts['idle'])}", note])))
         return held
 
-    def task_of(self, branch: str, cwd: Path | None = None) -> str | None:
+    def task_of(self, branch: str, cwd: Path | None = None, rev: str = "HEAD") -> str | None:
+        """The ``mt-`` short id of the branch name, else of the commit at *rev*.
+
+        For a worktree, *rev* is its HEAD in *cwd*. For a branch with no
+        worktree, *rev* is the branch itself, never the HEAD of the checkout."""
         m = SHORT_ID_RE.search(branch)
         if m:
             return f"mt-{m.group(1)}"
-        rc, msg = self.git("log", "-1", "--format=%B", cwd=cwd)
+        rc, msg = self.git("log", "-1", "--format=%B", rev, "--", cwd=cwd)
         m = SHORT_ID_RE.search(msg) if rc == 0 else None
         return f"mt-{m.group(1)}" if m else None
 
@@ -230,16 +238,20 @@ class Finder:
         if with_pr is None:
             self.add("ERROR", "gh pr list", None, "cannot read the PR list, S3 skipped")
             return
+        # A branch that main already holds needs no PR (a direct merge).
+        rc, merged_out = self.git("for-each-ref", "--merged=origin/main", "--format=%(refname:short)", "refs/heads")
+        merged = set(merged_out.split()) if rc == 0 else set()
         rc, local = self.git("for-each-ref", "--format=%(refname:short)\t%(committerdate:unix)", "refs/heads")
         for ln in local.splitlines() if rc == 0 else []:
             name, _, t = ln.partition("\t")
-            if (name not in on_origin or name in with_pr or name.startswith("rescue/")
+            if (name not in on_origin or name in with_pr or name in merged or name.startswith("rescue/")
                     or PROTECTED_HEAD_RE.match(name) or PERSON_HEAD_RE.match(name)
                     or not t.strip().isdigit()):
                 continue
             age = self.now - float(t)
             if age > BRANCH_IDLE_S:
-                self.add("S3", name, self.task_of(name), f"pushed, no PR, last commit {_h(age)} ago")
+                self.add("S3", name, self.task_of(name, rev=f"refs/heads/{name}"),
+                         f"pushed, no PR, last commit {_h(age)} ago")
 
     # ── sessions: S4 ────────────────────────────────────────────────────────
 
@@ -410,7 +422,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if not a.dry_run and mode.startswith("apply"):
         print("idle_work: no action is built yet (IDLE-1). This run is dry.")
-    machine = os.environ.get("IDLE_WORK_MACHINE") or socket.gethostname()
+    machine = re.sub(r"[\t\r\n]", " ", os.environ.get("IDLE_WORK_MACHINE") or socket.gethostname())
     person = os.environ.get("IDLE_WORK_PERSON", "0" if machine == BOX_HOST else "1") == "1"
     now = float(os.environ.get("IDLE_WORK_NOW") or time.time())
     f = Finder(now=now, machine=machine, person=person, runs_reader=metorite_runs,
