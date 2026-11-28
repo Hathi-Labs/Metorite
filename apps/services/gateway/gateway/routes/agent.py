@@ -1801,7 +1801,45 @@ async def _private_repo_refusal(slug: str) -> HTTPException | None:
     )
 
 
-@router.get("/config", summary="Fetch config.json from a GitHub agent repo or local path")
+def _registry_orgs() -> frozenset[str]:
+    # The one parse of AGENT_REGISTRY_ORGS. The chat push gate of the executor
+    # reads the same rule (``acb_auth.agent_operator``).
+    from acb_auth.agent_operator import registry_operator_orgs  # noqa: PLC0415
+
+    return registry_operator_orgs(str(get_settings().agent_registry_orgs or ""))
+
+
+async def _require_registry_operator(
+    user: UserContext = Depends(get_current_user),
+) -> None:
+    """Only the platform operator changes the agent registry.
+
+    ``agents:manage`` alone is not enough: every org's owner and admin hold
+    it. The registry is deployment-wide, a register clones a repo with the
+    operator's ``GITHUB_TOKEN`` (or reads a path on the server), and the code
+    runs inside the shared gateway. ``AGENT_REGISTRY_ORGS`` names the orgs
+    that may do it. Empty means none (fail closed). The org comes from the
+    server-side ``UserContext``, never from the request.
+    """
+    org = str(user.organization_id or "").strip().lower()
+    allowed = _registry_orgs()
+    if org and ("*" in allowed or org in allowed):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Only the platform operator can change the agent registry.",
+    )
+
+
+@router.get(
+    "/config",
+    summary="Fetch config.json from a GitHub agent repo or local path",
+    # Task 4110: the same two checks as POST /agent. The read takes an
+    # absolute server path or a GitHub fetch with the org token, so a member
+    # who may not register an agent must not reach it. Fence:
+    # ``tests/unit/test_agent_observability_route_gate.py``.
+    dependencies=[require_permission("agents:manage"), Depends(_require_registry_operator)],
+)
 async def get_agent_config(
     repo: str,
     user: UserContext = Depends(get_current_user),
@@ -2033,38 +2071,22 @@ async def list_agents(
     # choice that would 403 on use.
     if not user.has_permission("agents:manage"):
         merged = [a for a in merged if user.can_run_agent(a["name"])]
+        # Task 4110: a server path and the install health of each agent are
+        # for an agent manager only. The trim makes a NEW dict for each
+        # entry, at the end, so it covers the static, dynamic and cached
+        # entries alike, and it never writes a shared registry dict.
+        merged = [
+            {k: v for k, v in a.items() if k not in MANAGER_ONLY_AGENT_KEYS}
+            for a in merged
+        ]
 
     return merged
 
 
-def _registry_orgs() -> frozenset[str]:
-    # The one parse of AGENT_REGISTRY_ORGS. The chat push gate of the executor
-    # reads the same rule (``acb_auth.agent_operator``).
-    from acb_auth.agent_operator import registry_operator_orgs  # noqa: PLC0415
-
-    return registry_operator_orgs(str(get_settings().agent_registry_orgs or ""))
-
-
-async def _require_registry_operator(
-    user: UserContext = Depends(get_current_user),
-) -> None:
-    """Only the platform operator changes the agent registry.
-
-    ``agents:manage`` alone is not enough: every org's owner and admin hold
-    it. The registry is deployment-wide, a register clones a repo with the
-    operator's ``GITHUB_TOKEN`` (or reads a path on the server), and the code
-    runs inside the shared gateway. ``AGENT_REGISTRY_ORGS`` names the orgs
-    that may do it. Empty means none (fail closed). The org comes from the
-    server-side ``UserContext``, never from the request.
-    """
-    org = str(user.organization_id or "").strip().lower()
-    allowed = _registry_orgs()
-    if org and ("*" in allowed or org in allowed):
-        return
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail="Only the platform operator can change the agent registry.",
-    )
+#: The keys of a GET /agent item that only a holder of ``agents:manage``
+#: reads (task 4110). ``local_path`` is a path on the server, and
+#: ``dep_status`` is the install health of the agent workspace.
+MANAGER_ONLY_AGENT_KEYS: frozenset[str] = frozenset({"local_path", "dep_status"})
 
 
 #: The 403 detail of the self-mutation queue, for an org that may not review.

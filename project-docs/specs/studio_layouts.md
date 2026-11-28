@@ -2,7 +2,7 @@
 
 **Status: DRAFT (2026-11-14, task 3312). The owner answered the three questions of §9 on 2026-11-14, and the spec is not yet ACTIVE. LY-0 is BUILT, dark (2026-11-15, task 3313, PR 2354): the model, the validator and the TS twin, with no renderer.** Board: WS-STU, Metorite task 3312, slices 3313 to 3322. Parent spec: `ai_studio.md` (§5.5 is the app frame, D219). Research note: the lane file `studio_layouts.md` of 2026-11-14. This spec holds the result, and the note is not a source of record.
 
-**§11 status.** §11, the look of an app (LOOK-0, task 3358), is added on 2026-11-26. The owner answered its three questions on 2026-11-15 (§11.8). LOOK-2 slice 1 is BUILT, dark (task 3362, PR 2401): the icon on a stat view.
+**§11 status.** §11, the look of an app (LOOK-0, task 3358), is added on 2026-11-26. The owner answered its three questions on 2026-11-15 (§11.8). LOOK-2 slice 1 is BUILT, dark (task 3362, PR 2401): the icon on a stat view. LOOK-2b is BUILT, dark (task 3387, PR 2412): the stat target as a progress bar.
 
 **Bottom line.** Studio ships 12 page presets and 2 patterns (record 360 and form wizard). A page preset is one enum value plus named regions. The author and Mira pick a preset, and the app draws it. A page with no preset keeps today's grid, so stored manifests stay valid. Build six first: table workspace, record 360, board, form wizard, work queue with approval, and dashboard. Record 360 and form wizard build as the record page and a Form mode (§6).
 
@@ -347,7 +347,7 @@ D12 forbids a colour key and a size key. It does not forbid a choice of presenta
 | Cover | `cover: <file field key>` with `emphasis: "card"` | An image at the top of a card. A failed image shows a plain plate with the icon | An `attachments` image, never a raw id |
 | Icon | `icon: <name of NAV_ICONS>` on a stat or card view | A small icon before the title. The stat view is BUILT (PR 2401), and the card view is still to come. | `Icon`, the 42 names of the icon list |
 | Stat with trend | exists (D4) | The number and the change against the last period | `StudioStat` |
-| Progress | `target: <number>` on a stat view | A bar for the share of the target | `ProgressBar` |
+| Progress | `target: <number>` on a stat view | A bar for the share of the target, capped at 100 percent. BUILT (PR 2412): above 0, at most 1e12. | `ProgressBar` |
 | Hero header | `hero: true` on the page `header` (after AF-7) | A larger title, the sentence, and an optional cover | `PageHeader` |
 | Empty state with an icon | derived from the object icon | A large icon plate, one sentence and one action | The shared state of LY-1 |
 

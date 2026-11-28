@@ -1708,6 +1708,86 @@ Each fence is advisory until its slice builds.
 
 **The brainstorm, by its owners.** The chat that changes the calendar is CE-7b (`calendar_events_reminders.md`). A capture with a time is CC-1, task 1968 (`my_day_command_centre.md`). A drag from a list onto the day is CC-6, task 1974. Chat parity for the day is CC-10, task 1978. This section adds no slice for them.
 
+## 9e. The project header: the title, one plain line, and About (2026-11-27)
+
+**Status: PLANNED, nothing built. ORD-0 (task 4069) wrote this section.** PR 2915 dropped it, and ORD-0b (task 4161) landed it on 2026-11-28. HDR-1 is rung 1 of the ladder in `project_management_app.md` §13.9.5.
+
+### 9e.1 The owner's ask
+
+```text
+You can also plan on fixing the description or the title of the project in the
+project view. It just looks a little weird. It should just display the title of
+the project with a small description underneath. Right now, it is just a
+hodgepodge of text on the top. Think of a really good UX and UI to display this.
+```
+
+The capture showed the header of Metorite Application with the compact chrome on. The first line read "▍## Start here: the project map (2026-11-11, by the gratification ladder) Metorite is one platform with one task store. Each app below is ...", then "36 need attention", "Needs attention 36" and "Agents".
+
+### 9e.2 What the code does on 2026-11-28
+
+The lines are those of `src/app/projects/page.tsx` at main c750d72b5.
+
+- **The title loses its room.** `page.tsx` (lines 6538 to 6551) puts the title (`h2`) and the description (`p`) in one flex line. Both truncate. A long description takes the line, and the title shrinks to one character. That is the "▍" in the capture.
+- **The description is raw Markdown.** `subtitle` (line 5049) is the stored `description`, joined with the aggregate note. One line of plain text shows the heading marks and runs the paragraphs together. The description of a big project is an agent brief of some kilobytes, and agents read it through `get_project`. So the fix is in the display, and the stored field does not change.
+- **The attention count shows twice.** The SW-11a badge (line 6561) reads "36 need attention". The lens button in `headerTools` (line 5095) reads "Needs attention 36".
+- **Two doors are named Agents.** The lens button in `headerTools` (line 5123) opens Agents at work. The Agents tab (SW-112) opens the map of the project.
+
+### 9e.3 The design
+
+```text
+┌──────────────────────────────────────────────────────────────────────────┐
+│ Metorite ›  Metorite Application                ⚠ 36 need attention  ⋯ │
+│ Metorite is one platform with one task store. More · 12 sub-projects     │
+│ Overview  Board  List  Table  Calendar  Timeline  Agents  + View         │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+The sketch shows the layout. Its counts are examples.
+
+1. **The title has its own line.** The title is the first thing in the header, in the subhead size. It never shares its width with the description. It truncates only at the edge of the line, and its tooltip holds the full name.
+2. **The place comes before the title.** The muted name of the parent and "›" come before the title. The parent of a project is its space, and the parent of a sub-project is its project. A click on the parent opens it.
+3. **One plain line under the title.** The summary line shows one line, made from the description by `projectSummary`:
+   - It skips headings, tables, lists, code and quotes.
+   - It takes the first paragraph that is left, and drops a bold label at its start, such as "**What this app is.**".
+   - It removes the Markdown marks.
+   - It keeps the first sentence. Under 40 characters, it adds the next sentence.
+   - It keeps at most 160 characters. A longer line stops at the end of a word, with "…".
+4. **More opens About.** When the description holds more than the line, "More" ends the line. It opens **About this project**: a popover on a desktop and a sheet on a phone. About draws the whole description with `MarkdownBody`.
+5. **The facts follow the line.** "12 sub-projects" replaces "Includes 12 subprojects" at the end of the summary line, after a dot.
+6. **No description, no second line.** The header then shows the title only. HDR-2 adds "Add a description" for a member who may edit the project.
+7. **One attention control.** The badge and the lens button become one button, "36 need attention". It is pressed while the lens is open, and it hides when the count is 0.
+8. **The phone.** Below 640 px the summary line hides. A tap on the title opens About.
+9. **The one look.** The title, the line and About take their colours and sizes from `globals.css` and the tokens of `DESIGN_SYSTEM.md`. They add no colour of their own.
+
+**The real descriptions are the test.** The rule must give a useful line for the two long briefs on the board:
+
+| Project | The line that `projectSummary` gives |
+|---|---|
+| Metorite Application | "Metorite is one platform with one task store." |
+| Projects/Tasks App | "The Projects and Tasks app: spaces, projects, tasks, the board canvases, planning (cycles, epics, Goals), templates, and the same acts in chat and over the MCP." (160 characters, so it fits) |
+
+### 9e.4 The slices
+
+| Slice | Task | Scope | Done when | Risk |
+|---|---|---|---|---|
+| **HDR-1** | 4072 | Rules 1 to 5 and 7 to 9, and HDR-Q1 (§9e.5). `lib/projectSummary.ts` is new, with its test | Metorite Application shows its full title and the line of the table above. More opens the whole description. The attention count shows once. The header shows no Agents button while the Agents tab shows. `visual-review` passes at four widths, in light mode, at compact density and under a changed accent. The owner sees the captures on the task before the merge (D145), because the owner asked for this look | STANDARD UI |
+| **HDR-2** | 4073 | Rule 6. Edit in About for a member who may edit the project, through the existing project update route | A member who may edit sees "Add a description" and Edit. A member who only reads sees neither. No new route | STANDARD UI |
+
+HDR-2 depends on HDR-1. The demo of HDR-1 is task 4074.
+
+### 9e.5 The owner's decision
+
+| # | Question | Decision |
+|---|---|---|
+| HDR-Q1 | The header has an Agents button (the lens Agents at work) beside the Agents tab (the map). Must the button leave the header while the Agents tab shows? | **Yes. Decided by the owner on 2026-11-28, in Claude Code chat ("go ahead with your recommendations").** One name opens one place. HDR-1 builds it, because HDR-1 already changes `headerTools`. Where the Agents tab does not show, the button stays |
+
+### 9e.6 Fences
+
+- HDR-1: `src/app/projects/lib/projectSummary.test.ts` (new). It holds the two real descriptions above, a description that is only a heading, an empty one, and a long first sentence. `src/app/projects/components/compactChrome.test.ts` (extended): the title and the line sit on two lines, one attention control shows, and no Agents button shows while the Agents tab shows. `src/lib/theme/conformance.test.ts`.
+- HDR-2: a vitest of who sees Edit. `tests/unit/test_chat_parity.py` stays green, because no route is new.
+
+Each fence is advisory until its slice builds (R7).
+
 ## 10. Verification
 
 For OP-1, in `workbench/control_plane`: `npx tsc --noEmit`,
