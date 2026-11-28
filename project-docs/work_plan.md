@@ -6554,9 +6554,21 @@ Vijay Varada ticked all five options on task 4150 (answer `d8c22baa`). Owner spe
 
 The binding rules stay: D105, D128, D132, D12, no score for a person, and a finding's entity is never a person. This decision flips no flag and opens no owner gate.
 
-**Still open on task 4150 (asked 2026-11-28, 07:47 UTC):** D-A, D-B and D-C. D-A is small typed signals on the timeline, and it bends D105. D-B is strict visibility of what exists. D-C is writes driven by events. `knowledge_graph.md` §13.8 lists the rows that wait. Each such row says "pending owner", and no slice builds it before the answer. The answer gets its own D-number, in the first PR that acts on it.
+The owner answered D-A, D-B and D-C of the same task later that day. D236 records them.
 
 Fence: `tests/unit/test_cohesion_map.py` for the map. The fences of each row of `building_blocks.md` §10.3, advisory until their slices build them. `tests/unit/test_decision_ids.py` fails when two D235 entries merge. **Re-check this number at merge.**
+
+### D236 — The company memory layer: typed signals on the timeline, strict visibility of what exists, and writes driven by events (DECIDED, 2026-11-28)
+
+Vijay Varada ticked all three options on task 4150 on 2026-11-28, 14:01 UTC (answer `920e399b`). Owner spec: `knowledge_graph.md` §13. Epic: task 4150. Design: CI-0, task 4163.
+
+1. **D-A: typed signals on the timeline.** `kb_facts` may keep small typed signals. Each signal holds an event type from a closed list, a date, a state, and an amount only where a rule needs it. It holds no free text. Metorite rebuilds each signal from its app, keeps it for a limited time, and isolates it per org under RLS. This bends D105 for signals only, and never for content. Rows KG-24, KG-30 and LOOP-29.
+2. **D-B: strict visibility of what exists.** A member sees an entity only when the member can open at least one of its source records. A member sees a link only when the member can open both ends. A name, an alias or a merge reason from a hidden record never shows. Row KG-31.
+3. **D-C: writes driven by events.** A record change puts one job on the job queue or the workflow engine, and the graph is fresh within minutes. The nightly `graph.sweep` stays as the repair pass. No new bus. Rows KG-29 and LOOP-29.
+
+The binding rules of D235 stay. This decision flips no flag and opens no owner gate. Each row keeps its own risk tier and fence in `knowledge_graph.md` §9 and `proactive_loop.md`.
+
+Fence: the fences of KG-24, KG-29, KG-30, KG-31 and LOOP-29, advisory until their slices build them. `tests/unit/test_decision_ids.py` fails when two D236 entries merge. **Re-check this number at merge.**
 
 ## 4. Single-owner registry (who owns duplicated work)
 

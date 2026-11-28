@@ -360,8 +360,8 @@ The graph, memory and the meaning model form ONE layer in five parts: records,
 identity, links, timeline, and meaning and memory. The apps keep the records.
 The graph is the index that joins the parts, and it copies no record.
 `knowledge_graph.md` §13 owns the layer: its write path, its read path, its
-visibility rule, the traces of the demos and what each member gains. Three
-parts wait on the owner (D-A, D-B and D-C on task 4150).
+visibility rule, the traces of the demos and what each member gains. The owner
+accepted its three open parts on 2026-11-28 (D236).
 
 ### 10.1 The map
 
@@ -396,9 +396,9 @@ The order is rung 1, 2, 4, 3, 6, then 5. Each rung ends in its demo on productio
 | Rung | Task | The demo | Its rows |
 |---|---|---|---|
 | 1 | 4164 | "Tell me everything about Acme" gives one card from every app | `knowledge_graph.md` KG-6, KG-7, KG-8 and the R1 rows that lane-kg writes (ids KG-15 to KG-19 are kept for them) |
-| 2 | 4165 | A Zoho Books customer and a CRM company show as one entity, with the reason. An admin splits them with one click | `knowledge_graph.md` KG-20 to KG-23, and KG-31 (pending owner, D-B) |
+| 2 | 4165 | A Zoho Books customer and a CRM company show as one entity, with the reason. An admin splits them with one click | `knowledge_graph.md` KG-20 to KG-23, and KG-31 (D236.2) |
 | 4 | 4167 | "I worry about cash flow" becomes a watch after one tap, and the next answers lead with cash | `personalization.md` PZ-54 to PZ-57, `memory_architecture.md` MEM-10 to MEM-14, KG-11 (task 795) |
 | 3 | 4166 | A new database gets a proposed map. An admin certifies it, and the chat answers over it | `semantic_model.md` SEM-13c, SEM-14, SEM-15, SEM-16, SEM-18 to SEM-21, SEM-9b |
-| 6 | 4169 | Three signals of one account give ONE nudge to its owner. The team lead gets it after 2 days with no act | `proactive_loop.md` LOOP-28 to LOOP-34, `proactive_reach.md` RE-11, `knowledge_graph.md` KG-29 and KG-30 (pending owner, D-C and D-A) |
+| 6 | 4169 | Three signals of one account give ONE nudge to its owner. The team lead gets it after 2 days with no act | `proactive_loop.md` LOOP-28 to LOOP-34, `proactive_reach.md` RE-11, `knowledge_graph.md` KG-29 and KG-30 (D236.3 and D236.1) |
 | 5 | 4168 | "Why did collections slow in October?" joins four sources, shows the evidence and says "consistent with" | `knowledge_graph.md` KG-24 to KG-28 |
 
