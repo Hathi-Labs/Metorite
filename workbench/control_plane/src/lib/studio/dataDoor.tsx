@@ -205,12 +205,20 @@ export function pressAction(
 }
 
 /**
+ * The words of a browser for a request that did not arrive: Chrome, Firefox and Safari
+ * (the iPhone says "Load failed"). Each one starts the message, so a rule text of an app
+ * that holds such a word in the middle gets no Retry.
+ */
+const NETWORK_FAULT = /^(?:failed to fetch|load failed|networkerror|network request failed|the network connection was lost|the internet connection appears to be offline|the request timed out|signal timed out)/i;
+
+/**
  * Can the member try the read again? The door words a wait or a network fault with
  * "Try again", and nothing else can change by a retry (a 404, a 403, a sign-in). A
- * generic fault with no sentence can be tried again.
+ * generic fault with no sentence can be tried again. A request that did not arrive
+ * keeps the words of the browser (`NETWORK_FAULT`), and a retry can pass.
  */
 export function canRetryRead(error: string | null | undefined): boolean {
-  return !error || /try again/i.test(error);
+  return !error || /try again/i.test(error) || NETWORK_FAULT.test(error);
 }
 
 /** What a bound block draws. */

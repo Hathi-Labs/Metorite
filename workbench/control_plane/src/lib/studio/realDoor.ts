@@ -79,6 +79,16 @@ export const SIGN_IN_SENTENCE = "Your session ended. Sign in again.";
  */
 export const READ_ONLY_SENTENCE = "You can read this app. Only its owner can change it.";
 
+/**
+ * What a failed read means for the member, from the sentence of `mapAnswer` (a cached read keeps
+ * the sentence only). A 401 is `sign-in`. A 403 is `forbidden`. Any other failure is `null`.
+ */
+export function refusalOf(message: string | null | undefined): "sign-in" | "forbidden" | null {
+  if (message === SIGN_IN_SENTENCE) return "sign-in";
+  if (message === NOT_OPEN_SENTENCE || message === NOT_DECLARED_SENTENCE || message === READ_ONLY_SENTENCE) return "forbidden";
+  return null;
+}
+
 /** Does `source` name a read? The only test the guard makes. */
 export function isReadSource(action: unknown): action is string {
   return typeof action === "string" && READ_SOURCE.test(action);

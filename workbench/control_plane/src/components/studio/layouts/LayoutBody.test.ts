@@ -44,8 +44,8 @@ describe("LayoutBody", () => {
     expect(draw("table_workspace", { main: [] })).toContain("no table to show");
   });
   it("says that a preset of a later slice is not drawn yet", () => {
-    const html = draw("dashboard", { kpis: ["b"] });
-    expect(html).toContain('data-layout-pending="dashboard"');
+    const html = draw("work_queue", { list: ["b"], detail: ["d"] });
+    expect(html).toContain('data-layout-pending="work_queue"');
     expect(html).not.toContain("data-view");
   });
   it("draws the main region of a board in a labelled section", () => {
@@ -74,11 +74,37 @@ describe("LayoutBody", () => {
     expect(draw("board", { main: [] })).toContain("no board to show");
   });
   it("draws only the presets that a slice built", () => {
-    expect([...DRAWN_LAYOUTS]).toEqual(["table_workspace", "board"]);
+    expect([...DRAWN_LAYOUTS]).toEqual(["table_workspace", "board", "dashboard"]);
   });
   it("adds no colour and no pixel size", () => {
     const src = readFileSync(join(__dirname, "LayoutBody.tsx"), "utf-8");
     expect(src).not.toMatch(/#[0-9a-fA-F]{3,8}\b|\b(?:bg|text|border)-(?:red|green|blue|amber|yellow|gray|slate)-|\b\d+px\b/);
+  });
+});
+
+describe("the dashboard", () => {
+  const html = draw("dashboard", { kpis: ["k1", "k2"], charts: ["c1"], worklist: ["w1"] });
+  it("draws the stats first in a 2-column grid that gets 4 columns in a wide page only", () => {
+    expect(html.indexOf("data-dashboard-kpis")).toBeLessThan(html.indexOf("data-dashboard-charts"));
+    expect(html).toMatch(/data-layout="dashboard"[^>]*@container/);
+    expect(html).toMatch(/data-dashboard-kpis[^>]*grid-cols-2[^>]*@3xl:grid-cols-4/);
+    expect(html).not.toMatch(/(?:sm|md):grid-cols-4/);
+  });
+  it("draws each tile in its own labelled section, charts in one column on a phone, then the worklist", () => {
+    for (const id of ["k1", "k2", "c1", "w1"]) expect(html).toContain(`aria-label="Title ${id}"`);
+    expect(html).toMatch(/data-dashboard-charts[^>]*grid-cols-1[^>]*lg:grid-cols-2/);
+    expect(html.indexOf("data-dashboard-charts")).toBeLessThan(html.indexOf("data-dashboard-worklist"));
+  });
+  it("gives a stat with a long value two columns", () => {
+    expect(html).toMatch(/<section[^>]*has-\[\[data-stat-wide\]\]:col-span-2/);
+  });
+  it("leaves out the chart and worklist rows when the page names none", () => {
+    const only = draw("dashboard", { kpis: ["k1"] });
+    expect(only).not.toContain("data-dashboard-charts");
+    expect(only).not.toContain("data-dashboard-worklist");
+  });
+  it("says so when there is no stat", () => {
+    expect(draw("dashboard", { charts: ["c1"] })).toContain("no stat to show");
   });
 });
 
@@ -97,5 +123,19 @@ describe("the frame", () => {
     expect(frame).toContain('shape={preset === "board" ? "board" : "rows"}');
     expect(frame).toContain("<LayoutList");
     expect(frame).toMatch(/function LayoutList[\s\S]*<StudioBlockState/);
+  });
+  it("passes retryable to the shared state and draws no list bar over a dashboard", () => {
+    expect(frame).toContain("retryable={canRetryRead(rows.error)}");
+    expect(frame).toContain('forbidden={refusal === "forbidden"} signedOut={refusal === "sign-in"}');
+    expect(frame).toContain('if (built.page.layout === "dashboard") return null;');
+  });
+  it("gives each stat and chart tile of a dashboard its own state", () => {
+    expect(frame).toContain('preset === "dashboard"');
+    expect(frame).toContain('view?.block === "stat" || view?.block === "chart"');
+    expect(frame).toMatch(/<LayoutList[^>]*tile shape="tile"/);
+  });
+  it("gives the worklist of a dashboard the same shared states and Retry", () => {
+    expect(frame).toContain('preset === "dashboard" && src && built.page.regions.worklist?.includes(id)');
+    expect(frame).toMatch(/<LayoutList[^>]*tile shape="rows"/);
   });
 });

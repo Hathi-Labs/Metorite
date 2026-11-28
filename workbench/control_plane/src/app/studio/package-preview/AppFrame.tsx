@@ -38,7 +38,7 @@ import Button from "@/components/ui/Button";
 import { useViewMode } from "@/components/ViewModeProvider";
 import SelectButton from "@/components/ui/SelectButton";
 import { StudioDataContext } from "@/lib/studio/dataContext";
-import { type Row, type StudioDataDoor, moreLine, sourceKey } from "@/lib/studio/dataDoor";
+import { type Row, type StudioDataDoor, canRetryRead, moreLine, sourceKey } from "@/lib/studio/dataDoor";
 import { floorPages, floorSubtitle, floorView, isFloor, recordFull } from "@/lib/studio/floorView";
 import { buildHref } from "@/lib/studio/packageDraft";
 import {
@@ -56,7 +56,7 @@ import { type PreviewControls, boardGroupKeys, fieldSpecs, recordTitle } from "@
 import { countSourceFor, pageObject, sourceWithMe } from "@/lib/studio/railCounts";
 import { hasRail, railFor, visibleRail } from "@/lib/studio/railModel";
 import { useRailCounts } from "@/lib/studio/useRailCounts";
-import { READ_ONLY_SENTENCE, type PackageDetail } from "@/lib/studio/realDoor";
+import { READ_ONLY_SENTENCE, type PackageDetail, refusalOf } from "@/lib/studio/realDoor";
 import { type ViewDetail, type ViewMapContext, type ViewLens, mapView } from "@/lib/studio/viewBlocks";
 import {
   closeRecord, openRecord, openedRecord, parseRecordLink, recordLinkBase, withFullPage, withRecordTab,
@@ -115,23 +115,26 @@ function FilteredList({ source, door, active, onClear, children }: {
 }
 
 /**
- * The table or the board of a page with a preset (STU-LY-2, STU-LY-4). It draws the shared states of `StudioBlockState`
+ * The table or the board of a page with a preset (STU-LY-2, STU-LY-4), or one tile or the worklist of a dashboard (STU-LY-7). It draws the shared states of `StudioBlockState`
  * (loading, error, empty and filtered-empty) and a count line, and the table itself when rows exist.
  * It reads the same cached key as the block's own read, so this adds no second read.
  */
-function LayoutList({ source, door, active, noun, shape = "rows", onClear, children }: {
+function LayoutList({ source, door, active, noun, shape = "rows", tile = false, onClear, children }: {
   source: { action: string; args?: Record<string, unknown> }; door: StudioDataDoor;
-  active: number; noun: string; shape?: "rows" | "board"; onClear: () => void; children: React.ReactNode;
+  active: number; noun: string; shape?: "rows" | "board" | "tile"; tile?: boolean; onClear: () => void; children: React.ReactNode;
 }) {
   const rows = useCachedResource<Row[]>(sourceKey(door, source), () => door.read(source));
   const n = rows.data?.length ?? 0;
   const failed = Boolean(rows.error) && rows.data === undefined;
+  const refusal = failed ? refusalOf(rows.error) : null;
   const state = (
     <StudioBlockState loading={rows.data === undefined && !rows.error} error={failed ? "read failed" : null}
-      forbidden={false} rows={n} filtersActive={active > 0} noun={noun} shape={shape}
+      forbidden={refusal === "forbidden"} signedOut={refusal === "sign-in"} retryable={canRetryRead(rows.error)} rows={n} filtersActive={active > 0} noun={noun} shape={shape}
       onClearFilters={onClear} onRetry={rows.refresh} />
   );
   if (rows.data === undefined || n === 0) return <div className={PANEL}>{state}</div>;
+  // A block of a dashboard has no count line: a tile says its own number.
+  if (tile) return <>{children}</>;
   return (
     <div className="space-y-2">
       <p role="status" className="text-xs text-muted-foreground">
@@ -164,6 +167,9 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
     [cells, detail.views, controls.actions]);
   const bar = useMemo(() => {
     const object = target ? detail.objects.find((o) => o.name === target.object) : undefined;
+    // A dashboard has no list bar: its worklist is one short table, and the bar over the KPIs would push them
+    // down (capture finding, task 3320).
+    if (built.page.layout === "dashboard") return null;
     if (!target || !object) return null;
     const fields = object.fields as unknown as BarField[];
     const lanes = boardGroupKeys(fieldSpecs(object), computedKeys(object.rules))
@@ -177,7 +183,7 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
       args: toListArgs(fields, value),
     };
     return { fields, lanes, layouts, layout, value, lens };
-  }, [target, detail.objects, state]);
+  }, [target, detail.objects, state, built.page.layout]);
   // The record page (STU-AF5). A row or a card links to its record only when the app declares the get.
   const getters = useMemo(() => new Set(detail.objects
     .filter((o) => controls.actions.some((a) => a.uses === `object:${o.name}.get`)).map((o) => o.name)),
@@ -237,6 +243,20 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
             <LayoutList source={src} door={door} active={bar ? activeCount(bar.fields, bar.value) : 0}
               noun={pluralOf(object?.label || object?.name || "")} shape={preset === "board" ? "board" : "rows"}
               onClear={() => update(clearedBar)}>{node}</LayoutList>
+          );
+        }
+        // A tile of a dashboard (STU-LY-7): its own loading, error and empty state, so one tile never blanks the page.
+        if (preset === "dashboard" && src && (view?.block === "stat" || view?.block === "chart")) {
+          return (
+            <LayoutList source={src} door={door} active={0} tile shape="tile"
+              noun={(view.title || view.id).toLowerCase()} onClear={() => update(clearedBar)}>{node}</LayoutList>
+          );
+        }
+        // The worklist of a dashboard has the same states and the same Retry as a tile.
+        if (preset === "dashboard" && src && built.page.regions.worklist?.includes(id)) {
+          return (
+            <LayoutList source={src} door={door} active={0} tile shape="rows"
+              noun={(view!.title || view!.id).toLowerCase()} onClear={() => update(clearedBar)}>{node}</LayoutList>
           );
         }
         if (!bar || id !== bar.lens.view || !src) return node;

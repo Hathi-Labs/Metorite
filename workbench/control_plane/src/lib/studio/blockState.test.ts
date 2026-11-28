@@ -54,6 +54,15 @@ describe("blockStateCopy", () => {
     expect(c.message).toBe("This visit was not found, or you cannot open it.");
     expect(c.action).toBeUndefined();
   });
+  it("offers no Retry and no try again for an error that a second try cannot change", () => {
+    const c = blockStateCopy("error", { ...w, retryable: false });
+    expect(c.action).toBeUndefined();
+    expect(c.message).toBe("The visits cannot be shown.");
+    expect(c.hint).not.toMatch(/try again/i);
+    expect(c.hint).toContain("Your data is safe");
+    expect(blockStateCopy("error", { ...w, retryable: true }).action).toBe("Retry");
+    expect(blockStateCopy("error", w).action).toBe("Retry");
+  });
   it("says who to ask for access", () => {
     expect(blockStateCopy("no-permission", { ...w, askWho: "an admin" }).hint).toBe("Ask an admin for access.");
     expect(blockStateCopy("no-permission", w).hint).toContain("owner");
