@@ -6562,9 +6562,9 @@ Fence: `tests/unit/test_cohesion_map.py` for the map. The fences of each row of 
 
 Vijay Varada ticked all three options on task 4150 on 2026-11-28, 14:01 UTC (answer `920e399b`). Owner spec: `knowledge_graph.md` §13. Epic: task 4150. Design: CI-0, task 4163.
 
-1. **D-A: typed signals on the timeline.** `kb_facts` may keep small typed signals. Each signal holds an event type from a closed list, a date, a state, and an amount only where a rule needs it. It holds no free text. Metorite rebuilds each signal from its app, keeps it for a limited time, and isolates it per org under RLS. This bends D105 for signals only, and never for content. Rows KG-24, KG-30 and LOOP-29.
+1. **D-A: typed signals on the timeline.** `kb_facts` may keep small typed signals. Each signal holds an event type from a closed list, a date and a state. It holds an amount only where a rule needs it. It holds no free text. Metorite rebuilds each signal from its app, keeps it for a limited time, and isolates it per org under RLS. This bends D105 for signals only, and never for content. Rows KG-24, KG-30 and LOOP-29.
 2. **D-B: strict visibility of what exists.** A member sees an entity only when the member can open at least one of its source records. A member sees a link only when the member can open both ends. A name, an alias or a merge reason from a hidden record never shows. Row KG-31.
-3. **D-C: writes driven by events.** A record change puts one job on the job queue or the workflow engine, and the graph is fresh within minutes. The nightly `graph.sweep` stays as the repair pass. No new bus. Rows KG-29 and LOOP-29.
+3. **D-C: writes driven by events.** A record change puts one job on the job queue or the workflow engine. The graph is then fresh within minutes. The nightly `graph.sweep` stays as the repair pass. No new bus. Rows KG-29 and LOOP-29.
 
 The binding rules of D235 stay. This decision flips no flag and opens no owner gate. Each row keeps its own risk tier and fence in `knowledge_graph.md` §9 and `proactive_loop.md`.
 
