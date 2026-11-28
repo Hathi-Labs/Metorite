@@ -1649,10 +1649,20 @@ def test_the_reply_sorts_after_its_prompt_when_the_browser_clock_is_fast(
 
     The gap was two seconds, and the mint reads the real clock after two
     database writes. A stalled CI runner took longer than that, so the mint
-    stamped past T. A minute keeps the order whatever the runner does."""
+    stamped past T. A minute keeps the order whatever the runner does.
+
+    Task 4146 (``projects_ai_chat.md`` §20.9): the save now caps each fast
+    stamp at the server's clock, so no row keeps T. The order holds, and
+    the first content still sets the time of the reply."""
     import time
 
     from gateway.routes.chat import MessageRecord, _get_messages
+
+    def _reply_stamp() -> int:
+        return _exec(
+            "SELECT timestamp_ms FROM chat_message WHERE session_id = :i "
+            "AND id = 'a1'", i=sid,
+        )[0].timestamp_ms
 
     sid = _seed_session(_ALICE, (_BOB, "member"))
     t = int(time.time() * 1000) + 60_000
@@ -1660,25 +1670,21 @@ def test_the_reply_sorts_after_its_prompt_when_the_browser_clock_is_fast(
         MessageRecord(id="q1", role="user", content="the prompt", timestamp=t),
     ])
     _mint(sid, "a1", _ALICE)
-    minted = _exec(
-        "SELECT timestamp_ms FROM chat_message WHERE session_id = :i "
-        "AND id = 'a1'", i=sid,
-    )[0].timestamp_ms
+    minted = _reply_stamp()
     assert minted < t
     _save_as(sid, _ALICE, [
         MessageRecord(id="a1", role="assistant", content="part",
                       timestamp=t + 1000),
     ])
     assert [m["id"] for m in _get_messages(sid, _BOB, organization_id=_ORG)] == ["q1", "a1"]
+    first = _reply_stamp()
+    assert minted <= first < t
     # Once the row has content, its time stays.
     _save_as(sid, _ALICE, [
         MessageRecord(id="a1", role="assistant", content="part and more",
                       timestamp=t + 9000),
     ])
-    assert _exec(
-        "SELECT timestamp_ms FROM chat_message WHERE session_id = :i "
-        "AND id = 'a1'", i=sid,
-    )[0].timestamp_ms == t + 1000
+    assert _reply_stamp() == first
 
 
 def test_a_slow_mint_does_not_hold_the_stream(monkeypatch) -> None:
