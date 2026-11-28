@@ -270,8 +270,8 @@ test is free.
 On a normal day this gate drops about nine cards in ten.
 
 **The gate in code today.** `plan.interrupt_candidates` lets only `interrupt`
-and `urgent` through rule 1. LOOP-5 adds its step down before that test
-(`proactive_loop.md` §7.3). Only the kind mute of rule 4 exists. It reaches
+and `urgent` through rule 1. Its `lowered` argument applies the step down of
+LOOP-5 before that test (`proactive_loop.md` §7.3, built 2026-11-26). Only the kind mute of rule 4 exists. It reaches
 Reach through the learned feed of LOOP-4a (`proactive_loop.md` §7.2).
 
 ### 5.2 One typed question, in a pass that already runs

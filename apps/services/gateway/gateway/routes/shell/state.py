@@ -65,9 +65,17 @@ seeing this" (``feed_why.explain``). The join itself adds no card key for it.
 **Who reads the learned join.** ``feed.feed_cards`` is the one compute, so
 the reach loop, the briefs and the chat brief read the same join as My Day
 (``reach.loop.snapshot``). A muted kind leaves them too. A muted needs card in
-Later is no interrupt and is in no brief. LOOP-5 owns the rest of the reach
-effect (``proactive_loop.md`` §7.3). The read cache keys on the flag
+Later is no interrupt and is in no brief. The read cache keys on the flag
 (``cache.features_hash``).
+
+**The lowered set** (LOOP-5, ``proactive_loop.md`` §7.3 L1, L6 and L7). The
+same count read gives ``Learned.lowered``: each kind with ``LOWER_AFTER`` or
+more "Not useful" in 30 days. It stays beside the day value, under
+``key("my_day", "lowered", <member>, <feed day>)`` with the same life. A read
+that finds the affinity and no set computes both again. A fault gives the
+empty set. ``Applied.lowered`` carries it to ``reach.loop.Snapshot``, and
+``reach.plan.interrupt_candidates`` lowers the class of each kind of the set
+by one step. The join reads none of it, so the feed answer keeps its bytes.
 
 Fences: ``tests/unit/test_my_day_state.py`` (each rule, their order, the
 POST contract, the learned join) and ``tests/unit/test_my_day_state_r8.py``
@@ -91,6 +99,7 @@ from acb_common.settings import get_settings
 from fastapi import Depends, HTTPException
 from gateway.db import tenant_session as _tenant_session
 from gateway.routes.shell import cache, feed_rank, needs
+from gateway.routes.shell.finding_contract import DEFAULT_LOWER_AFTER
 from gateway.routes.shell.needs import _instant
 from gateway.routes.shell.search import router
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -140,6 +149,10 @@ STATE_TIMEOUT_S = 1.5
 LEARN_TIMEOUT_S = 0.5
 #: The life of the day value of the affinity, in seconds (P6: 26 hours).
 AFFINITY_TTL_S = 26 * 3600
+#: The count of "Not useful" in 30 days that lowers the reach class of a kind
+#: for one member (LOOP-5, ``proactive_loop.md`` §7.3 L1). It is the default
+#: ``lower_after`` of the finding contract (§6.2), so the two never differ.
+LOWER_AFTER = DEFAULT_LOWER_AFTER
 
 
 def state_fp(signal_id: str, facts: dict[str, Any]) -> str:
@@ -448,6 +461,11 @@ class Learned:
     mutes: frozenset[str] = frozenset()
     affinity: Mapping[str, int] = field(default_factory=dict)
     ok: bool = True
+    #: The kinds that Reach lowers one class for this member (LOOP-5,
+    #: ``proactive_loop.md`` §7.3 L1 and L6): :data:`LOWER_AFTER` or more
+    #: "Not useful" in 30 days. A fault gives the empty set (L7). The join
+    #: reads none of it, so no card and no answer changes.
+    lowered: frozenset[str] = frozenset()
 
 
 def join(cards: list[dict[str, Any]], rows: dict[str, dict[str, Any]],
@@ -761,6 +779,10 @@ class Applied:
     ``MY_DAY_LEARN_ORGS`` or after a failed state read. ``acted`` holds the
     signal ids whose state row is ``acted``. The sentences of "Why am I seeing
     this" read both (LOOP-4b, ``feed_why.explain``).
+
+    ``lowered`` is ``Learned.lowered``, and empty with the org off or after a
+    fault. ``reach.loop.Snapshot.lowered`` carries it to the interrupt gate
+    (LOOP-5, ``proactive_loop.md`` §7.3 L6).
     """
 
     cards: list[dict[str, Any]]
@@ -770,6 +792,7 @@ class Applied:
     cacheable: bool = True
     taught: Learned | None = None
     acted: frozenset[str] = frozenset()
+    lowered: frozenset[str] = frozenset()
 
 
 def snooze_edge(rows: dict[str, dict[str, Any]], now: datetime) -> datetime | None:
@@ -810,6 +833,68 @@ def affinities(counts: Mapping[str, Mapping[str, Any]]) -> dict[str, int]:
         if value:
             out[str(kind)] = value
     return out
+
+
+def lowered_kinds(counts: Mapping[str, Mapping[str, Any]]) -> frozenset[str]:
+    """The kinds that Reach lowers one class for the member (LOOP-5,
+    ``proactive_loop.md`` §7.3 L1): each kind with a ``not_useful`` count of
+    :data:`LOWER_AFTER` or more in ``feed_decide._habits``. No floor of shown
+    cards applies, because each "Not useful" is an act of the member."""
+    out: set[str] = set()
+    for kind, one in counts.items():
+        value = one.get("not_useful", 0)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= LOWER_AFTER:
+            out.add(str(kind))
+    return frozenset(out)
+
+
+def lowered_key(member: str, feed_day: date) -> Any:
+    """``key("my_day", "lowered", <member>, <feed day>)`` (L6). The caller
+    binds the org with ``organization_scope``."""
+    from acb_common.tenant_redis import key
+
+    return key(cache.NAMESPACE, "lowered", member, feed_day.isoformat())
+
+
+def _stored_lowered(raw: Any) -> frozenset[str] | None:
+    """A stored set, or None when it is not one."""
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(value, list) or not all(isinstance(k, str) for k in value):
+        return None
+    return frozenset(value)
+
+
+async def _day_lowered(org: str, member: str, feed_day: date) -> tuple[frozenset[str] | None, bool]:
+    """The stored set of the day, and whether Redis answered. A miss is
+    ``(None, True)``. A Redis fault is ``(None, False)`` (L6, L7)."""
+    from acb_common.tenant_redis import get_tenant_redis, organization_scope
+
+    try:
+        with organization_scope(org):
+            raw = await get_tenant_redis().get(lowered_key(member, feed_day))
+    except Exception as exc:
+        logger.warning("shell.feed lowered read failed", extra={"error": type(exc).__name__})
+        return None, False
+    return (_stored_lowered(raw) if raw else None), True
+
+
+async def _keep_day_lowered(org: str, member: str, feed_day: date,
+                            value: frozenset[str]) -> bool:
+    """Store the set of the day with the life of the affinity. False on a
+    Redis fault."""
+    from acb_common.tenant_redis import get_tenant_redis, organization_scope
+
+    try:
+        with organization_scope(org):
+            await get_tenant_redis().set(lowered_key(member, feed_day),
+                                         json.dumps(sorted(value)), ex=AFFINITY_TTL_S)
+    except Exception as exc:
+        logger.warning("shell.feed lowered store failed", extra={"error": type(exc).__name__})
+        return False
+    return True
 
 
 def affinity_key(member: str, feed_day: date) -> Any:
@@ -886,18 +971,25 @@ async def _learn(user: UserContext, now: datetime, day: Day) -> Learned:
     org = str(user.organization_id or "")
     feed_day = day.feed_day(now)
     stored, redis_ok = await _day_affinity(org, member, feed_day)
-    mutes, counts = await _learn_read(member, counts=redis_ok and stored is None)
-    if stored is not None:
-        value: dict[str, int] = stored
-    elif not redis_ok:
-        value = {}  # P6: a Redis fault gives 0
-    else:
-        # The first read of the member's day computes the day value.
-        value = affinities(counts or {})
-        redis_ok = await _keep_day_affinity(org, member, feed_day, value)
-        if not redis_ok:
-            value = {}
-    return Learned(frozenset(mutes), value, ok=redis_ok)
+    # L6: the lowered set lives beside the day value. A read that finds the
+    # affinity and no set computes both again.
+    kept, kept_ok = await _day_lowered(org, member, feed_day) if redis_ok else (None, False)
+    fresh = redis_ok and kept_ok and (stored is None or kept is None)
+    mutes, counts = await _learn_read(member, counts=fresh)
+    if not fresh:
+        # A hit of both, or a Redis fault. P6: a fault gives the affinity 0,
+        # and L7: a fault gives the empty set.
+        value: dict[str, int] = stored if stored is not None else {}
+        return Learned(frozenset(mutes), value, ok=redis_ok and kept_ok,
+                       lowered=kept if kept is not None else frozenset())
+    # The first read of the member's day computes the day value and the set.
+    value = affinities(counts or {})
+    low = lowered_kinds(counts or {})
+    ok = await _keep_day_affinity(org, member, feed_day, value)
+    ok = await _keep_day_lowered(org, member, feed_day, low) and ok
+    if not ok:
+        value, low = {}, frozenset()
+    return Learned(frozenset(mutes), value, ok=ok, lowered=low)
 
 
 async def learned(user: UserContext, now: datetime, day: Day) -> Learned | None:
@@ -956,7 +1048,7 @@ async def apply_state(user: UserContext, cards: list[dict[str, Any]],
         return Applied(join(cards, rows, Context(now, day)), snooze_edge(rows, now), day,
                        acted=acted)
     return Applied(join(cards, rows, Context(now, day), taught), snooze_edge(rows, now), day,
-                   cacheable=taught.ok, taught=taught, acted=acted)
+                   cacheable=taught.ok, taught=taught, acted=acted, lowered=taught.lowered)
 
 
 async def write_state(user: UserContext, items: list[StateItem], now: datetime) -> int:

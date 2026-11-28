@@ -428,3 +428,63 @@ class TestEachActionOnARealDatabase:
             alone = await shell.shell_needs(limit=shell.DEFAULT_LIMIT, user=_a())
         assert answer["needs"] == alone
         assert sid in [i["id"] for i in alone["items"]]
+
+
+class TestTheLearnerLowersForOneMember:
+    """LOOP-5 (``proactive_loop.md`` §7.3 L1 and L6), on the real rows. A
+    marked three ``approval`` cards "Not useful" in org B, and B marked two.
+    A marked three ``deal_quiet`` cards in org A, which must never count in
+    org B. So Reach lowers ``approval`` for A only. Mutations, each killed
+    here: the org predicate taken out of ``_HABITS_SQL``, a threshold of 2,
+    and a set read for the wrong member."""
+
+    _CARD = (
+        "INSERT INTO my_day_card_state (organization_id, member_email, signal_id, kind, "
+        "state, last_seen_at, not_useful_at) VALUES (CAST(:o AS uuid), :m, :s, :k, "
+        "'seen', now() - interval '2 days', now() - interval '2 days')")
+
+    @pytest.fixture
+    def marked(self, promoted, seeded):  # noqa: F811
+        p = promoted
+        rows = [(p.org_b, A, f"approvals:a{i}", "approval") for i in range(3)]
+        rows += [(p.org_b, B, f"approvals:b{i}", "approval") for i in range(2)]
+        rows += [(p.org_a, A, f"crm:q{i}", "deal_quiet") for i in range(3)]
+        with p.admin_engine.begin() as c:
+            for org, member, sid, kind in rows:
+                c.execute(text(self._CARD), {"o": org, "m": member, "s": sid, "k": kind})
+
+    async def test_the_kind_is_lowered_for_one_member_only(
+            self, promoted, seeded, marked, monkeypatch):  # noqa: F811
+        from acb_common import tenant_redis
+        from acb_common.settings import get_settings
+        from acb_common.tenant_redis import TenantRedis
+        from gateway.reach import plan
+
+        from tests.unit.test_feed_decide import FakeRedis
+
+        p = promoted
+        fake = FakeRedis()
+        monkeypatch.setattr(tenant_redis, "get_tenant_redis", lambda **_: TenantRedis(fake))
+        monkeypatch.setattr(get_settings(), "my_day_learn_orgs", p.org_b)
+        monkeypatch.setattr(state, "LEARN_TIMEOUT_S", 30.0)  # room for a cold database
+        day = state.Day(ZoneInfo("UTC"))
+        now = NOW
+
+        def member(email: str) -> UserContext:
+            return UserContext(email=email, role=UserRole.EMPLOYEE, organization_id=p.org_b,
+                               access=EffectiveAccess(role_granted=frozenset(
+                                   {"feature:projects"})))
+
+        async with _as_member(p, p.org_b):
+            mine = await state.learned(member(A), now, day)
+            theirs = await state.learned(member(B), now, day)
+        assert mine is not None and mine.ok and mine.lowered == {"approval"}
+        assert theirs is not None and theirs.ok and theirs.lowered == frozenset()
+        key = f"cc:{p.org_b}:my_day:lowered:{A}:{day.feed_day(now).isoformat()}"
+        assert fake.store[key] == '["approval"]'
+        # The same card: A gets no interrupt, and B gets one.
+        card = {"signal_id": "approvals:x", "app": "approvals", "kind": "approval",
+                "group": "needs_you", "score": 50, "title": "Refund", "facts": {},
+                "fingerprint": "fp000001", "state": "new", "at": None, "why": "W"}
+        assert plan.interrupt_candidates([card], set(), now, lowered=mine.lowered) == []
+        assert plan.interrupt_candidates([card], set(), now, lowered=theirs.lowered) == [card]

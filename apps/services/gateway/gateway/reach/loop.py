@@ -134,6 +134,10 @@ class Snapshot:
     #: card reads as new and a missing card reads as gone, so nothing may be
     #: planned or logged from this read (review of RE-1a, P2).
     complete: bool = True
+    #: The kinds that the member's learner lowered by one class (LOOP-5,
+    #: ``proactive_loop.md`` §7.3 L6): ``state.Applied.lowered``. Empty with
+    #: ``MY_DAY_LEARN_ORGS`` off for the org, or after a learned fault (L7).
+    lowered: frozenset[str] = frozenset()
 
     @property
     def local_date(self) -> date:
@@ -150,7 +154,8 @@ async def snapshot(org: str, user: Any, now: datetime | None = None) -> Snapshot
     working = await feed._working_day(user, day.feed_day(run.now))
     complete = bool(run.joined.ok) and not any(
         v not in ("ok", "absent") for v in run.sources.values())
-    return Snapshot(list(run.cards), run.now, day, working, complete)
+    return Snapshot(list(run.cards), run.now, day, working, complete,
+                    frozenset(run.joined.lowered))
 
 
 async def resolve(org: str, member: str) -> Any | str:
@@ -409,7 +414,8 @@ async def member_pass(org: str, member: str, now: datetime | None = None) -> str
                                    await block_notify(org, member))
     candidates = plan.interrupt_candidates(cards, logged, snap.now,
                                            rules=brief_flags.exceptions(org),
-                                           muted=await muted_rules(org, member))
+                                           muted=await muted_rules(org, member),
+                                           lowered=snap.lowered)
 
     brief, how = await _brief_step(org, member, snap, reach)
     if brief is not None:

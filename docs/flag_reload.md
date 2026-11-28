@@ -642,8 +642,14 @@ seeing this". A failed state read or learned read gives no `why_seen`.
 
 The reach loop, the briefs and the chat brief read the same learned feed. So
 a kind that the member mutes leaves them too. A muted needs card in Later is
-no interrupt, and it is in no brief. LOOP-5 owns the rest of the effect on
-reach.
+no interrupt, and it is in no brief.
+
+The flag also lowers a reach class for one member (LOOP-5,
+`proactive_loop.md` §7.3). When the member marks 3 cards of a kind "Not
+useful" in 30 days, that kind goes one class lower for that member only. So
+an `interrupt` kind waits for the brief. The member's own requests and the
+reminder kinds never move, and no path raises a class. The card stays in
+the feed and in the brief.
 
 Its one reader is `gateway.routes.shell.state.learn_allowed`, and each feed
 read asks it. The read cache keys on the flag, so a flip misses at once. A
