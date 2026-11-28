@@ -1,0 +1,32 @@
+pr	task	state	action
+1091	3231	SUPERSEDED	close candidate: HRD-22 (PR 2323, 3a140091e) is on main
+1376	378	CONFLICT 8, mig 310	LAND, HIGH, hard merge
+1400	2124	CONFLICT 15	OWNER: confirm carry_to_parent; re-cut
+1692	1655	CONFLICT 2, docs	OWNER: close or rewrite (D187, D224, D233 overtake it)
+1793	1280	CONFLICT 2, mig console 039	OWNER: base price needed (D204 point 9)
+1819	1969	CONFLICT 0, mig 498	LAND, HIGH, renumber, rerun
+1844	1617/2001	CONFLICT 4	LAND, hard (858 behind)
+1862	1881	CONFLICT 9	LAND, HIGH
+1898	791	SUPERSEDED in part	close candidate: FIND-3 built the step; KG-6 adds edges on it
+1902	792	OBSOLETE	close candidate: D-FIND-3 makes get_entity the card mode of resolve_name
+1997	2315	CONFLICT 1	LAND, STANDARD; shard 5 fix owed
+1998	1680	CONFLICT 9	LAND, LOW
+2029	2041	CONFLICT 5, mig 410	LAND, HIGH, hard
+2034	2505	CONFLICT 3	LAND, STANDARD
+2071	984	CONFLICT 6, mig 405	LAND, HIGH, hard
+2075	2541	CONFLICT 11	LAND late, HIGH; needs box env AGENT_WRITE_ROW_CAP=1000 with the merge
+2090	2532	CONFLICT 5	LAND after fixes, HIGH
+2094	349	CONFLICT 7, mig 408	OWNER: new column or the SW-94 policy store
+2163	859	CONFLICT 5, mig 424	LAND after captures and owner preview, HIGH
+2164	1045	CONFLICT 5	LAND after captures, STANDARD
+2492	3596	waits on 2491 (lane-land)	LAND after 2491
+2498	2878	CONFLICT 5, mig 453	LAND, HIGH
+2508	2879	stacked on 2498	LAND after 2498
+2546	3639	stacked on 2508	LAND after 2508
+2513	3614	stacked on 2498	LAND after 2498, HIGH
+2515	3615	stacked on 2498	OWNER: accept proactive_loop 5.3, or drop one hunk
+2518	2492	CONFLICT 1	LAND, HIGH; task 2492 reads Done but the PR is open
+2534	3640	SUPERSEDED	close candidate: main covers it
+2622	3423	CONFLICT 2	LAND after 2884, HIGH
+2653	3829	replaced	close candidate: PR 2884 holds the same code in a clean commit
+2812	962	CONFLICT 0, mig 500	LAND, HIGH, renumber
