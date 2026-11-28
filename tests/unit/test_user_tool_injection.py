@@ -96,7 +96,8 @@ async def test_flag_on_passes_the_one_hook(monkeypatch) -> None:
     finder, record = _finder()
     assert finder._on_gap is tgp.gap_hook
     answer = await _find(finder, record, fk.NEED)
-    assert answer == f"{tp.FIND_NONE}\n\n{tgp.SAY_NO_MATCH}"
+    said = tgp.SAY_NO_MATCH.format(gap_id=world.record_result)
+    assert answer == f"{tp.FIND_NONE}\n\n{said}"
     assert len(world.records) == 1
 
 
@@ -209,7 +210,8 @@ async def test_the_real_gate_lets_an_open_member_through(monkeypatch) -> None:
     monkeypatch.setattr(ti, "_studio_member_open", real)
     monkeypatch.setattr(get_settings(), "studio_orgs", fk.ORG)
     with fk.in_run():
-        assert await tgp.gap_hook(fk.NEED, []) == tgp.SAY_NO_MATCH
+        assert await tgp.gap_hook(fk.NEED, []) == tgp.SAY_NO_MATCH.format(
+            gap_id=world.record_result)
     assert len(world.records) == 1
 
 

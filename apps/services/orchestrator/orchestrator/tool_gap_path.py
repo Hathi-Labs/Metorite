@@ -32,7 +32,10 @@ g. The map of §12.1 decision 3 (:func:`decide_outcome`).
 h. ONE ``tenant_session()`` for ``studio/tool_gaps.record_gap``. A chat that
    the bound tenant cannot see gives no row and None.
 i. The log line :data:`GAP_EVENT`, with no need text.
-j. The fixed sentence of the outcome (:func:`sentence`).
+j. The fixed sentence of the outcome (:func:`sentence`). The ``no_match``
+   sentence holds the id of the new row, so the model can pass it to
+   ``build_tool`` (SBX-4b2, task 4049, §12.4 decision 12). No other sentence
+   holds it.
 
 **What the model sees** (decision 8): the need, ids and fixed sentences only.
 No text that a member wrote in a package reaches the decide context or the
@@ -44,6 +47,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -93,7 +97,7 @@ SAY_REUSE = ("A saved AI Studio app of this organization may do this ({ref}). Te
 SAY_COMPOSE = ("AI Studio actions can do this with no new tool: {ids}. Offer the member a "
                "Studio skill or workflow of these actions.")
 SAY_NO_MATCH = ("No tool, saved app or AI Studio action does this. Tell the member that no "
-                "tool does this yet.")
+                "tool does this yet. The gap id of this need is {gap_id}.")
 SAY_UNSURE = "Some tools may do this: {ids}. Try one first, or ask the member."
 SAY_UNSURE_EMPTY = "No clear match was found. Ask the member what the tool must do."
 
@@ -282,8 +286,11 @@ def candidates_of(
     return kept
 
 
-def sentence(decision: Decision, candidates: Sequence[str], rows: Sequence[str]) -> str:
-    """The fixed sentence of the outcome, filled with ids only."""
+def sentence(decision: Decision, candidates: Sequence[str], rows: Sequence[str], *,
+             gap_id: str) -> str:
+    """The fixed sentence of the outcome, filled with ids only. Only the
+    ``no_match`` sentence holds *gap_id*, the id of the row. A *gap_id* that
+    is not a UUID raises ``ValueError`` there, so no other text gets in."""
     if decision.outcome == "existing":
         return SAY_EXISTING.format(name=decision.name)
     if decision.outcome == "reuse":
@@ -291,7 +298,7 @@ def sentence(decision: Decision, candidates: Sequence[str], rows: Sequence[str])
     if decision.outcome == "compose":
         return SAY_COMPOSE.format(ids=", ".join(rows[:CANDIDATES_MAX]))
     if decision.outcome == "no_match":
-        return SAY_NO_MATCH
+        return SAY_NO_MATCH.format(gap_id=str(uuid.UUID(gap_id)))
     if candidates:
         return SAY_UNSURE.format(ids=", ".join(candidates))
     return SAY_UNSURE_EMPTY
@@ -352,5 +359,5 @@ async def gap_hook(query: str, live: Sequence[Any]) -> str | None:
     # i. The log line: no need text.
     _log.info(GAP_EVENT, org=org, member=member, run=run, category=category,
               answer=decision.answer, outcome=decision.outcome)
-    # j. The fixed sentence.
-    return sentence(decision, candidates, rows)
+    # j. The fixed sentence. Only the no_match sentence holds the gap id.
+    return sentence(decision, candidates, rows, gap_id=gap_id)

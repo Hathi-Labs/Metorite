@@ -694,6 +694,111 @@ def test_the_member_purge_deletes_run_rows(runs_world) -> None:
     assert [r.organization_id for r in _run_rows(w, BEN)] == [w.a]
 
 
+# ── SBX-4b2: the build half of the store (§12.4 decisions 12 and 14) ─────
+
+
+def _outcome_of(world: Any, gap: str) -> str:
+    with world.p.admin_engine.connect() as c:
+        return str(c.execute(text("SELECT outcome FROM tool_gaps WHERE id = CAST(:i AS uuid)"),
+                             {"i": gap}).scalar_one())
+
+
+def test_set_gap_outcome_moves_only_from_no_match(runs_world) -> None:
+    """§12.4 done-when 33, the store half, as the NOBYPASSRLS role. A row
+    moves from ``no_match`` to ``declined`` or ``build_failed`` once. A row in
+    each other outcome never moves, and a second move of a moved row changes
+    nothing.
+
+    Mutation: drop ``AND outcome = 'no_match'`` from ``_MOVE_SQL`` -> red."""
+    w = runs_world
+    others = [o for o in gaps_store.OUTCOMES if o != gaps_store.MOVE_FROM]
+
+    async def go() -> tuple[Any, ...]:
+        first = await _record(w.a, ANA, w.chat_ana)
+        second = await _record(w.a, ANA, w.chat_ana)
+        held = {o: await _record(w.a, ANA, w.chat_ana, outcome=o) for o in others}
+        refused: list[tuple[str, str, bool]] = []
+        async with tenant_session(w.a) as db:
+            for start, gap in held.items():
+                for target in gaps_store.BUILD_OUTCOMES:
+                    refused.append((start, target,
+                                    await gaps_store.set_gap_outcome(db, gap, target)))
+        async with tenant_session(w.a) as db:
+            moved = await gaps_store.set_gap_outcome(db, first, "declined")
+        async with tenant_session(w.a) as db:
+            again = await gaps_store.set_gap_outcome(db, first, "build_failed")
+        async with tenant_session(w.a) as db:
+            failed = await gaps_store.set_gap_outcome(db, second, "build_failed")
+        return first, second, held, refused, moved, again, failed
+
+    first, second, held, refused, moved, again, failed = _run(w, go)
+    assert None not in (first, second, *held.values())
+    assert [r for r in refused if r[2]] == [], "only a no_match row moves"
+    assert len(refused) == len(others) * 2
+    for start, gap in held.items():
+        assert _outcome_of(w, gap) == start
+    assert (moved, again, failed) == (True, False, True)
+    assert _outcome_of(w, first) == "declined"
+    assert _outcome_of(w, second) == "build_failed"
+
+
+def test_org_b_cannot_read_or_move_a_gap_of_org_a(runs_world) -> None:
+    """§12.4 decisions 12 and 14, as the NOBYPASSRLS role. Org B reads no
+    gap of org A and cannot move it. Org A reads its own row with the run.
+
+    Mutation: drop the policy of ``tool_gaps`` -> org B moves the row -> red."""
+    w = runs_world
+
+    async def go() -> tuple[Any, ...]:
+        gap = await _record(w.a, ANA, w.chat_ana)
+        async with tenant_session(w.b) as db:
+            seen_b = await gaps_store.read_gap(db, gap)
+            moved_b = await gaps_store.set_gap_outcome(db, gap, "declined")
+        async with tenant_session(w.a) as db:
+            seen_a = await gaps_store.read_gap(db, gap)
+        return gap, seen_b, moved_b, seen_a
+
+    gap, seen_b, moved_b, seen_a = _run(w, go)
+    assert gap is not None
+    assert seen_b is None and moved_b is False
+    assert _outcome_of(w, gap) == "no_match"
+    assert seen_a is not None
+    assert (seen_a.id, seen_a.member_email, seen_a.thread_id, seen_a.run_id) == (
+        gap, ANA, w.chat_ana, f"run-{TAG}")
+    assert (seen_a.need, seen_a.outcome) == (NEED, "no_match")
+    assert seen_a.created_at.tzinfo is not None
+
+
+def test_has_build_row_reads_the_build_row_of_the_gap_in_the_bound_org(runs_world) -> None:
+    """§12.4 decision 14, as the NOBYPASSRLS role. A ``build`` row of the gap
+    stops a second build. A ``smoke`` row, a build of another gap and the
+    same gap seen from org B do not count.
+
+    Mutation: drop ``AND phase = 'build'`` from ``_HAS_BUILD_SQL`` -> red."""
+    from gateway.studio import user_tool_runs as runs_store
+
+    w = runs_world
+
+    async def has(org: str, gap: str) -> bool:
+        async with tenant_session(org) as db:
+            return await runs_store.has_build_row(db, gap)
+
+    async def go() -> list[bool]:
+        gap = await _record(w.a, ANA, w.chat_ana)
+        other = await _record(w.a, ANA, w.chat_ana)
+        assert gap and other
+        got = [await has(w.a, gap)]
+        await _record_run(w.a, ANA, w.chat_ana, gap_id=gap)
+        got.append(await has(w.a, gap))
+        await _record_run(w.a, ANA, w.chat_ana, phase="build", gap_id=other)
+        got.append(await has(w.a, gap))
+        await _record_run(w.a, ANA, w.chat_ana, phase="build", gap_id=gap)
+        got.extend([await has(w.a, gap), await has(w.a, other), await has(w.b, gap)])
+        return got
+
+    assert _run(w, go) == [False, False, False, True, True, False]
+
+
 # ── The CI guard ──────────────────────────────────────────────────────────
 
 

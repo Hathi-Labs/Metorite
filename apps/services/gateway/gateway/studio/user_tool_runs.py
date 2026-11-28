@@ -71,6 +71,15 @@ _INSERT_SQL = (
     "RETURNING CAST(id AS text)"
 )
 
+_BOUND_ORG = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
+
+#: Is there a ``build`` row for the gap in the bound org?
+_HAS_BUILD_SQL = (
+    "SELECT EXISTS (SELECT 1 FROM user_tool_runs "
+    f"WHERE organization_id = {_BOUND_ORG} AND gap_id = CAST(:gap AS uuid) "
+    "AND phase = 'build')"
+)
+
 
 class ToolRunError(ValueError):
     """A row that the CHECKs of ``user_tool_runs`` would refuse. ``code``
@@ -169,11 +178,24 @@ async def record_run(
     return None if row is None else str(row[0])
 
 
+async def has_build_row(db: Any, gap_id: str) -> bool:
+    """True when the bound org has a ``build`` row for *gap_id*.
+
+    *db* is a session that the caller opened with ``tenant_session()``. A
+    *gap_id* that is not a UUID raises :class:`ToolRunError` before any
+    statement, so a bad id never reads as "no build"."""
+    gap = _uuid(gap_id, "gap_id") if isinstance(gap_id, str) and gap_id else None
+    if gap is None:
+        raise ToolRunError("gap_id")
+    return bool((await db.execute(text(_HAS_BUILD_SQL), {"gap": gap})).scalar())
+
+
 __all__ = [
     "BACKENDS",
     "OUTCOMES",
     "PHASES",
     "ToolRunError",
     "check_row",
+    "has_build_row",
     "record_run",
 ]
