@@ -287,6 +287,12 @@ jobs:
       - name: stop-disposition hook (blocking)
         run: node .claude/hooks/stop-disposition.test.mjs
 
+      # SW-114b (task 4136): the SubagentStart and SubagentStop hook shows each
+      # sub-agent on the Agents map, and it must never block a sub-agent.
+      # R7 — this step is the fence of that rule.
+      - name: subagent-report hook (blocking)
+        run: node --test .claude/hooks/subagent-report.test.mjs
+
       # ── The process fences (two-speed CI, 2026-10-19) ─────────────────────
       #
       # These tests read files as text and guard consistency: naming, docs,

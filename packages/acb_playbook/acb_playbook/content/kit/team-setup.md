@@ -1,6 +1,6 @@
 ---
 slug: kit/team-setup
-version: 4
+version: 5
 title: Kit: set up a team of people and agents on one board
 summary: The concrete setup for several people who each run one or more agents on one Metorite board.
 audience: both
@@ -42,6 +42,7 @@ Metorite limits what the connection can reach. It cannot limit the shell, `git p
 
 - **The coordinator** is the one session that has the connection. It holds the claim, posts the progress line and moves the status.
 - **The implementer, the verifier and the reviewer** are sub-agents of the coordinator. They need no connection to Metorite. They do not claim tasks or write on the board. The coordinator reports for them.
+- **Show the sub-agents on the map.** Add the sub-agent hooks of `kit/hooks-example`. The map then shows each implementer, verifier and reviewer under the run of its coordinator.
 - The verifier is never the implementer. A second agent, or a person, checks the work.
 - Give each sub-agent a brief (`brief-contract`). The summary that comes back is the proof, so ask for evidence and not for an opinion.
 - Start with one agent (`patterns/one-agent-first`). Add a role only for a named bottleneck.
