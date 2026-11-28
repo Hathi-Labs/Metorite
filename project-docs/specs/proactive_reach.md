@@ -119,6 +119,12 @@ and the scale plan for all of them.
   Action Broker act with its own approval.
   A post to a team channel is CH-TEAM's (`whatsapp_assistant_channel.md`
   §19), and this spec adds nothing for it.
+  **Amended 2026-11-28 (D235.2, task 4150).** A risk nudge may go to the
+  member that the router of `proactive_loop.md` LOOP-30 picks. The order is
+  the record owner, then the lead, then an admin. Each step is re-checked
+  against what that member may open. The router gives the recipient. Request input never names
+  one (R5). RE-11 builds it. A message to a customer or to any person outside
+  the org stays an Action Broker act.
 - **No marketing template.** Every template is in the utility category.
 - **No SMS and no email channel in v1.** The member already has their own
   email digest (`email/digest.py`).
@@ -347,7 +353,7 @@ with FORCE ROW LEVEL SECURITY at the `get_db()` seam (R5).
 |---|---|
 | `id` | UUID |
 | `organization_id` | The tenant. The RLS key |
-| `member_email` | The recipient. Always the member, never a third person |
+| `member_email` | The recipient. Always the member, never a third person. RE-11 (D235.2) adds a routed recipient that only the router of LOOP-30 sets |
 | `channel` | `whatsapp` or `web_push` |
 | `kind` | `brief`, `interrupt`, `day_end` or `system` (opt-in, STOP reply). RE-9b adds `reminder_due`, `reminder_check` and `reminder_unconfirmed` |
 | `signal_ids` | The cards this message carries, as text[] |
@@ -900,6 +906,7 @@ is an owner gate (MD-10, CLAUDE.md §3a rule 3).
 | **RE-8** | Scale out: the `acb-reach` unit, the spread morning, the lease shards, the bus on Redis, the tier alert, and a load test of 5,000 members | RE-4 | AGENT-SAFE to build. 🔴 A new unit on the box is a deploy act |
 | **RE-9** | Web push as a second channel. Split on 2026-10-30 into **RE-9a** (the push message and the hide setting, STANDARD) and **RE-9b** (the migration, the classes, the plan and send steps, HIGH). The rows are in `calendar_events_reminders.md` §10.1 | RE-1, PN-1 (built) | AGENT-SAFE |
 | **RE-10** | The producer guide: one page for a new app, and the fences of §4.1 in CI | RE-1 | AGENT-SAFE |
+| **RE-11** (task 4199) | A routed recipient (D235.2): `reach_requests` takes a member that the router of LOOP-30 picks, beside the member it acts for. Request input never names the recipient. Each send re-checks that the recipient may read EACH evidence record of the finding, as LOOP-30 does, and `proactive_loop.md` §8.5 wins for connection data. Fence `test_reach_routed_recipient_r8.py` (new): a request body that names a person is refused, and a recipient who cannot read one evidence record gets nothing | LOOP-30 | AGENT-SAFE, dark · HIGH (it reaches a real person) |
 | **BUD-2 to BUD-9** | The chat channel, the Chat row mark, the pop, the pause and four new kinds (D177). The rows are in §19.6 | RE-1 | AGENT-SAFE |
 
 **The first useful slice for the owner** is RE-1, RE-2 and RE-3 on the
