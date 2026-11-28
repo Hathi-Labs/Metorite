@@ -125,6 +125,7 @@
       "tests/unit/test_tenancy_boundary.py",
       "tests/unit/test_tenancy_insert_fence.py",
       "tests/unit/test_tenant_coverage.py",
+      "tests/unit/test_vps_pull_sigpipe.py",
       "tests/unit/test_worktree_remove.py"
     ],
     "process": [

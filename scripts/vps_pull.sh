@@ -256,14 +256,20 @@ if [ "$FAIL_SHA" = "$TARGET" ] && [ "$FAIL_N" -ge "$MAX_FAILS" ] && [ "$MODE" !=
   exit 11
 fi
 
+# 🔴 **`git log -n 20`, never `git log | head -20` (task 3897).** This script
+# runs under `pipefail`. `head` closes the pipe after 20 lines, and git then
+# writes into a closed pipe and dies of SIGPIPE. The pipeline exits 141, and
+# `set -e` stops the script before the apply. On 2026-11-22 a release of 37
+# commits stopped production that way. `-n 20` stops git itself, so no reader
+# closes early. Fence: tests/unit/test_vps_pull_sigpipe.py.
 if [ "$MODE" = "check" ]; then
   echo "    BEHIND — $(git rev-list --count HEAD.."origin/$RELEASE_REF") commit(s)"
-  git log --oneline HEAD.."origin/$RELEASE_REF" | head -20
+  git log -n 20 --oneline HEAD.."origin/$RELEASE_REF"
   exit 10
 fi
 
 say "Applying $(git rev-list --count HEAD.."origin/$RELEASE_REF" 2>/dev/null || echo '?') commit(s)"
-git log --oneline HEAD.."origin/$RELEASE_REF" 2>/dev/null | head -20 | sed 's/^/    /'
+git log -n 20 --oneline HEAD.."origin/$RELEASE_REF" 2>/dev/null | sed 's/^/    /'
 
 # --- Read the apply script from the TARGET, not the working tree -------------
 # The apply script's own first act is to synchronise the checkout — which
