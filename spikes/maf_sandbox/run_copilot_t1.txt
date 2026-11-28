@@ -1,0 +1,20 @@
+C:\Users\VijayRaghavVarada\Documents\Github\Metorite\.claude\worktrees\agent-ab617bcee46c6f7db\spikes\maf_sandbox\copilot_t1.py:107: DeprecationWarning: destroy() is deprecated, use disconnect() instead
+  await session.destroy()
+{"task": "t1-copilot-gemini-flash-latest", "model": "gemini-flash-latest", "byok": true, "client_start_s": 9.07, "create_session_s": 0.05, "first_turn_after_send_s": 0.58, "send_and_wait_s": 60.1, "stop_s": 2.06, "wall_s": 71.2, "turns": 11, "tool_calls": 14, "tools": {"create": 1, "glob": 1, "powershell": 6, "report_intent": 4, "view": 2}, "input_tokens": 201985, "output_tokens": 1429, "summary_md_exists": true, "error": null}
+FINAL: The sales data has been summarized by region and month, and the result is saved to `outputs/summary.md`.
+
+| Region | Month | Revenue |
+| --- | --- | --- |
+| east | 2026-01 | 725.00 |
+| east | 2026-02 | 1329.62 |
+| east | 2026-03 | 1029.00 |
+| north | 2026-01 | 1425.00 |
+| north | 2026-02 | 2502.00 |
+| north | 2026-03 | 1494.83 |
+| south | 2026-01 | 3526.40 |
+| south | 2026-02 | 1479.50 |
+| south | 2026-03 | 1501.25 |
+| west | 2026-01 | 999.65 |
+| west | 2026-02 | 1072.13 |
+| west | 2026-03 | 2852.05 |
+events: {"pending_messages.modified": 2, "user.message": 1, "assistant.turn_start": 11, "session.usage_info": 11, "assistant.usage": 11, "assistant.message": 11, "tool.execution_start": 14, "tool.execution_complete": 14, "permission.requested": 10, "permission.completed": 10, "assistant.turn_end": 11, "session.info": 1, "session.idle": 1}

@@ -1,0 +1,2 @@
+{"task": "t1-gemini-2.5-flash", "model": "gemini-2.5-flash", "wall_s": 5.9, "model_calls": 2, "model_time_s": 5.7, "tool_calls": 1, "tool_time_s": 0.1, "tools": {"file_access_list_files": 1}, "failed_execs": 0, "input_tokens_resp": 3678, "output_tokens_resp": 14, "input_tokens_sum": 3678, "output_tokens_sum": 14, "skill_script_runs": [], "approvals": [], "sandbox_cold_start_s": 0.34}
+FINAL: 

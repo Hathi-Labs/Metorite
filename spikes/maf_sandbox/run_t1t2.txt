@@ -1,0 +1,82 @@
+Traceback (most recent call last):
+  File "C:\Users\VijayRaghavVarada\Documents\Github\Metorite\.claude\worktrees\agent-ab617bcee46c6f7db\spikes\maf_sandbox\.venv\Lib\site-packages\agent_framework_openai\_chat_completion_client.py", line 555, in _get_response
+    await client.chat.completions.create(stream=False, **options_dict), options
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\VijayRaghavVarada\Documents\Github\Metorite\.claude\worktrees\agent-ab617bcee46c6f7db\spikes\maf_sandbox\.venv\Lib\site-packages\openai\resources\chat\completions\completions.py", line 2907, in create
+    return await self._post(
+           ^^^^^^^^^^^^^^^^^
+    ...<55 lines>...
+    )
+    ^
+  File "C:\Users\VijayRaghavVarada\Documents\Github\Metorite\.claude\worktrees\agent-ab617bcee46c6f7db\spikes\maf_sandbox\.venv\Lib\site-packages\openai\_base_client.py", line 1992, in post
+    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\VijayRaghavVarada\Documents\Github\Metorite\.claude\worktrees\agent-ab617bcee46c6f7db\spikes\maf_sandbox\.venv\Lib\site-packages\openai\_base_client.py", line 1777, in request
+    raise self._make_status_error_from_response(err.response) from None
+openai.APIStatusError: Error code: 402 - {'error': {'message': "This request requires more credits, or fewer max_tokens. You requested up to 8000 tokens, but can only afford 573. To increase, visit https://openrouter.ai/workspaces/default/keys/a2234d46f7bb8c07765ee6711cde672b8f9c871948396932187e0edf82362819 and adjust the key's monthly limit", 'code': 402, 'metadata': {'limit_source': 'openrouter_credits', 'remedy_hint': 'Add credits at https://openrouter.ai/settings/credits, or lower max_tokens / prompt size to fit your remaining balance.', 'provider_name': None, 'previous_errors': [{'code': 402, 'message': "This request requires more credits, or fewer max_tokens. You requested up to 8000 tokens, but can only afford 573. To increase, visit https://openrouter.ai/workspaces/default/keys/a2234d46f7bb8c07765ee6711cde672b8f9c871948396932187e0edf82362819 and adjust the key's monthly limit"}]}}, 'user_id': 'user_3DUqQZlveEqDaVaGZBXuhl7rerX'}
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\VijayRaghavVarada\Documents\Github\Metorite\.claude\worktrees\agent-ab617bcee46c6f7db\spikes\maf_sandbox\agent_run.py", line 499, in <module>
+    asyncio.run(main())
+    ~~~~~~~~~~~^^^^^^^^
+  File "C:\Users\VijayRaghavVarada\AppData\Local\Programs\Python\Python313\Lib\asyncio\runners.py", line 195, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "C:\Users\VijayRaghavVarada\AppData\Local\Programs\Python\Python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "C:\Users\VijayRaghavVarada\AppData\Local\Programs\Python\Python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\VijayRaghavVarada\Documents\Github\Metorite\.claude\worktrees\agent-ab617bcee46c6f7db\spikes\maf_sandbox\agent_run.py", line 441, in main
+    resp = await run_turn(agent, session, prompt, stats, auto_approve=False)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\VijayRaghavVarada\Documents\Github\Metorite\.claude\worktrees\agent-ab617bcee46c6f7db\spikes\maf_sandbox\agent_run.py", line 295, in run_turn
+    response = await agent.run(prompt, session=session)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\VijayRaghavVarada\Documents\Github\Metorite\.claude\worktrees\agent-ab617bcee46c6f7db\spikes\maf_sandbox\.venv\Lib\site-packages\agent_framework\observability.py", line 1854, in _run
+    response: AgentResponse[Any] = await execute()
+                                   ^^^^^^^^^^^^^^^
+  File "C:\Users\VijayRaghavVarada\Documents\Github\Metorite\.claude\worktrees\agent-ab617bcee46c6f7db\spikes\maf_sandbox\.venv\Lib\site-packages\agent_framework\_agents.py", line 964, in _run_non_streaming
+    response = await self._call_chat_client(ctx, stream=False)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\VijayRaghavVarada\Documents\Github\Metorite\.claude\worktrees\agent-ab617bcee46c6f7db\spikes\maf_sandbox\.venv\Lib\site-packages\agent_framework\_tools.py", line 2442, in _get_response
+    await super_get_response(
+    ^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    ),
+    ^
+  File "C:\Users\VijayRaghavVarada\Documents\Github\Metorite\.claude\worktrees\agent-ab617bcee46c6f7db\spikes\maf_sandbox\.venv\Lib\site-packages\agent_framework\_middleware.py", line 1215, in _execute
+    return await pipeline.execute(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+    )
+    ^
+  File "C:\Users\VijayRaghavVarada\Documents\Github\Metorite\.claude\worktrees\agent-ab617bcee46c6f7db\spikes\maf_sandbox\.venv\Lib\site-packages\agent_framework\_middleware.py", line 1087, in execute
+    await first_handler()
+  File "C:\Users\VijayRaghavVarada\Documents\Github\Metorite\.claude\worktrees\agent-ab617bcee46c6f7db\spikes\maf_sandbox\.venv\Lib\site-packages\agent_framework\_middleware.py", line 1081, in current_handler
+    await self._middleware[index].process(context, create_next_handler(index + 1))
+  File "C:\Users\VijayRaghavVarada\Documents\Github\Metorite\.claude\worktrees\agent-ab617bcee46c6f7db\spikes\maf_sandbox\.venv\Lib\site-packages\agent_framework\_middleware.py", line 795, in process
+    await self.func(context, call_next)
+  File "C:\Users\VijayRaghavVarada\Documents\Github\Metorite\.claude\worktrees\agent-ab617bcee46c6f7db\spikes\maf_sandbox\agent_run.py", line 251, in count_model_calls
+    await call_next()
+  File "C:\Users\VijayRaghavVarada\Documents\Github\Metorite\.claude\worktrees\agent-ab617bcee46c6f7db\spikes\maf_sandbox\.venv\Lib\site-packages\agent_framework\_middleware.py", line 1081, in current_handler
+    await self._middleware[index].process(context, create_next_handler(index + 1))
+  File "C:\Users\VijayRaghavVarada\Documents\Github\Metorite\.claude\worktrees\agent-ab617bcee46c6f7db\spikes\maf_sandbox\.venv\Lib\site-packages\agent_framework\_sessions.py", line 722, in process
+    await call_next()
+  File "C:\Users\VijayRaghavVarada\Documents\Github\Metorite\.claude\worktrees\agent-ab617bcee46c6f7db\spikes\maf_sandbox\.venv\Lib\site-packages\agent_framework\_middleware.py", line 1075, in final_wrapper
+    context.result = await context.result
+                     ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\VijayRaghavVarada\Documents\Github\Metorite\.claude\worktrees\agent-ab617bcee46c6f7db\spikes\maf_sandbox\.venv\Lib\site-packages\agent_framework\observability.py", line 1583, in _get_response
+    await super_get_response(
+    ^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<7 lines>...
+    ),
+    ^
+  File "C:\Users\VijayRaghavVarada\Documents\Github\Metorite\.claude\worktrees\agent-ab617bcee46c6f7db\spikes\maf_sandbox\.venv\Lib\site-packages\agent_framework_openai\_chat_completion_client.py", line 571, in _get_response
+    raise ChatClientException(
+    ...<5 lines>...
+    ) from ex
+agent_framework.exceptions.ChatClientException: ('<class \'agent_framework_openai._chat_completion_client.OpenAIChatCompletionClient\'> service failed to complete the prompt: Error code: 402 - {\'error\': {\'message\': "This request requires more credits, or fewer max_tokens. You requested up to 8000 tokens, but can only afford 573. To increase, visit https://openrouter.ai/workspaces/default/keys/a2234d46f7bb8c07765ee6711cde672b8f9c871948396932187e0edf82362819 and adjust the key\'s monthly limit", \'code\': 402, \'metadata\': {\'limit_source\': \'openrouter_credits\', \'remedy_hint\': \'Add credits at https://openrouter.ai/settings/credits, or lower max_tokens / prompt size to fit your remaining balance.\', \'provider_name\': None, \'previous_errors\': [{\'code\': 402, \'message\': "This request requires more credits, or fewer max_tokens. You requested up to 8000 tokens, but can only afford 573. To increase, visit https://openrouter.ai/workspaces/default/keys/a2234d46f7bb8c07765ee6711cde672b8f9c871948396932187e0edf82362819 and adjust the key\'s monthly limit"}]}}, \'user_id\': \'user_3DUqQZlveEqDaVaGZBXuhl7rerX\'}', APIStatusError('Error code: 402 - {\'error\': {\'message\': "This request requires more credits, or fewer max_tokens. You requested up to 8000 tokens, but can only afford 573. To increase, visit https://openrouter.ai/workspaces/default/keys/a2234d46f7bb8c07765ee6711cde672b8f9c871948396932187e0edf82362819 and adjust the key\'s monthly limit", \'code\': 402, \'metadata\': {\'limit_source\': \'openrouter_credits\', \'remedy_hint\': \'Add credits at https://openrouter.ai/settings/credits, or lower max_tokens / prompt size to fit your remaining balance.\', \'provider_name\': None, \'previous_errors\': [{\'code\': 402, \'message\': "This request requires more credits, or fewer max_tokens. You requested up to 8000 tokens, but can only afford 573. To increase, visit https://openrouter.ai/workspaces/default/keys/a2234d46f7bb8c07765ee6711cde672b8f9c871948396932187e0edf82362819 and adjust the key\'s monthly limit"}]}}, \'user_id\': \'user_3DUqQZlveEqDaVaGZBXuhl7rerX\'}'))

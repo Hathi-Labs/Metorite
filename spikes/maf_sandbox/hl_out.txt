@@ -1,0 +1,159 @@
+C:\Users\VijayRaghavVarada\Documents\Github\Metorite\.claude\worktrees\agent-ab617bcee46c6f7db\spikes\maf_sandbox\.venv\Lib\site-packages\agent_framework\_skills.py:121: ExperimentalWarning: [SKILLS] SkillResource is experimental and may change or be removed in future versions without notice.
+C:\Users\VijayRaghavVarada\Documents\Github\Metorite\.claude\worktrees\agent-ab617bcee46c6f7db\spikes\maf_sandbox\.venv\Lib\site-packages\agent_framework\_harness\_memory.py:651: ExperimentalWarning: [HARNESS] MemoryStore is experimental and may change or be removed in future versions without notice.
+construct: 0.000s
+--- trivial: 10.426s
+2
+
+--- stdlib: 0.115s
+ERROR: Execution error :: ModuleNotFoundError: No module named 'csv'
+
+--- read_input: 0.106s
+region,revenue
+north,10
+south,20
+
+
+--- write_output: 0.477s
+wrote
+
+FILE /output/out.txt (31 uri chars)
+--- list_root: 0.053s
+ERROR: Execution error :: FileNotFoundError: [Errno 44] No such file or directory: '/'
+
+--- host_escape: 0.050s
+ERROR: Execution error :: FileNotFoundError: [Errno 44] No such file or directory: 'C:/Windows/win.ini'
+
+--- etc_passwd: 0.056s
+ERROR: Execution error :: FileNotFoundError: [Errno 44] No such file or directory: '/etc/passwd'
+
+--- subprocess: 0.060s
+ERROR: Execution error :: ModuleNotFoundError: No module named 'subprocess'
+
+--- socket: 0.059s
+ERROR: Execution error :: ModuleNotFoundError: No module named 'socket'
+
+--- urllib: 0.063s
+ERROR: Execution error :: ModuleNotFoundError: No module named 'urllib'
+
+--- pandas: 0.059s
+ERROR: Execution error :: ModuleNotFoundError: No module named 'pandas'
+
+--- pip: 0.058s
+ERROR: Execution error :: ModuleNotFoundError: No module named 'pip'
+
+--- state_leak_set: 0.059s
+set
+
+--- state_leak_get: 0.067s
+gone
+
+--- cpu_loop: 2.754s
+4499998500000
+
+--- allowlist example.com (first call incl. build): 22.977s
+ERROR: Execution error :: ModuleNotFoundError: No module named 'urllib'
+
+Traceback (most recent call last):
+  File "C:\Users\VijayRaghavVarada\AppData\Local\Programs\Python\Python313\Lib\shutil.py", line 631, in _rmtree_unsafe
+    os.rmdir(path)
+    ~~~~~~~~^^^^^^
+PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: 'C:\\Users\\VIJAYR~1\\AppData\\Local\\Temp\\tmpgb2u50yr'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\VijayRaghavVarada\AppData\Local\Programs\Python\Python313\Lib\tempfile.py", line 905, in onexc
+    _os.unlink(path)
+    ~~~~~~~~~~^^^^^^
+PermissionError: [WinError 5] Access is denied: 'C:\\Users\\VIJAYR~1\\AppData\\Local\\Temp\\tmpgb2u50yr'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\VijayRaghavVarada\AppData\Local\Programs\Python\Python313\Lib\weakref.py", line 666, in _exitfunc
+    f()
+    ~^^
+  File "C:\Users\VijayRaghavVarada\AppData\Local\Programs\Python\Python313\Lib\weakref.py", line 590, in __call__
+    return info.func(*info.args, **(info.kwargs or {}))
+           ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\VijayRaghavVarada\AppData\Local\Programs\Python\Python313\Lib\tempfile.py", line 935, in _cleanup
+    cls._rmtree(name, ignore_errors=ignore_errors)
+    ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\VijayRaghavVarada\AppData\Local\Programs\Python\Python313\Lib\tempfile.py", line 930, in _rmtree
+    _shutil.rmtree(name, onexc=onexc)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\VijayRaghavVarada\AppData\Local\Programs\Python\Python313\Lib\shutil.py", line 790, in rmtree
+    return _rmtree_unsafe(path, onexc)
+  File "C:\Users\VijayRaghavVarada\AppData\Local\Programs\Python\Python313\Lib\shutil.py", line 635, in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\VijayRaghavVarada\AppData\Local\Programs\Python\Python313\Lib\tempfile.py", line 920, in onexc
+    cls._rmtree(path, ignore_errors=ignore_errors,
+    ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                repeated=(path == name))
+                ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\VijayRaghavVarada\AppData\Local\Programs\Python\Python313\Lib\tempfile.py", line 930, in _rmtree
+    _shutil.rmtree(name, onexc=onexc)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\VijayRaghavVarada\AppData\Local\Programs\Python\Python313\Lib\shutil.py", line 790, in rmtree
+    return _rmtree_unsafe(path, onexc)
+  File "C:\Users\VijayRaghavVarada\AppData\Local\Programs\Python\Python313\Lib\shutil.py", line 635, in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\VijayRaghavVarada\AppData\Local\Programs\Python\Python313\Lib\shutil.py", line 631, in _rmtree_unsafe
+    os.rmdir(path)
+    ~~~~~~~~^^^^^^
+PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: 'C:\\Users\\VIJAYR~1\\AppData\\Local\\Temp\\tmpgb2u50yr'
+Traceback (most recent call last):
+  File "C:\Users\VijayRaghavVarada\AppData\Local\Programs\Python\Python313\Lib\shutil.py", line 631, in _rmtree_unsafe
+    os.rmdir(path)
+    ~~~~~~~~^^^^^^
+PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: 'C:\\Users\\VIJAYR~1\\AppData\\Local\\Temp\\tmpq2wmn2ur'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\VijayRaghavVarada\AppData\Local\Programs\Python\Python313\Lib\tempfile.py", line 905, in onexc
+    _os.unlink(path)
+    ~~~~~~~~~~^^^^^^
+PermissionError: [WinError 5] Access is denied: 'C:\\Users\\VIJAYR~1\\AppData\\Local\\Temp\\tmpq2wmn2ur'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\VijayRaghavVarada\AppData\Local\Programs\Python\Python313\Lib\weakref.py", line 666, in _exitfunc
+    f()
+    ~^^
+  File "C:\Users\VijayRaghavVarada\AppData\Local\Programs\Python\Python313\Lib\weakref.py", line 590, in __call__
+    return info.func(*info.args, **(info.kwargs or {}))
+           ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\VijayRaghavVarada\AppData\Local\Programs\Python\Python313\Lib\tempfile.py", line 935, in _cleanup
+    cls._rmtree(name, ignore_errors=ignore_errors)
+    ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\VijayRaghavVarada\AppData\Local\Programs\Python\Python313\Lib\tempfile.py", line 930, in _rmtree
+    _shutil.rmtree(name, onexc=onexc)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\VijayRaghavVarada\AppData\Local\Programs\Python\Python313\Lib\shutil.py", line 790, in rmtree
+    return _rmtree_unsafe(path, onexc)
+  File "C:\Users\VijayRaghavVarada\AppData\Local\Programs\Python\Python313\Lib\shutil.py", line 635, in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\VijayRaghavVarada\AppData\Local\Programs\Python\Python313\Lib\tempfile.py", line 920, in onexc
+    cls._rmtree(path, ignore_errors=ignore_errors,
+    ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                repeated=(path == name))
+                ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\VijayRaghavVarada\AppData\Local\Programs\Python\Python313\Lib\tempfile.py", line 930, in _rmtree
+    _shutil.rmtree(name, onexc=onexc)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\VijayRaghavVarada\AppData\Local\Programs\Python\Python313\Lib\shutil.py", line 790, in rmtree
+    return _rmtree_unsafe(path, onexc)
+  File "C:\Users\VijayRaghavVarada\AppData\Local\Programs\Python\Python313\Lib\shutil.py", line 635, in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\VijayRaghavVarada\AppData\Local\Programs\Python\Python313\Lib\shutil.py", line 631, in _rmtree_unsafe
+    os.rmdir(path)
+    ~~~~~~~~^^^^^^
+PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: 'C:\\Users\\VIJAYR~1\\AppData\\Local\\Temp\\tmpq2wmn2ur'
+RuntimeError: _native_wasm::WasmSandbox is unsendable, but is being dropped on another thread
+RuntimeError: _native_wasm::WasmSandbox is unsendable, but is being dropped on another thread

@@ -1,0 +1,28 @@
+{
+  "task": "t2b-flash-latest",
+  "model": "gemini-flash-latest",
+  "wall_s": 12.4,
+  "model_calls": 6,
+  "model_time_s": 11.8,
+  "tool_calls": 10,
+  "tool_time_s": 0.5,
+  "tools": {
+    "todos_add": 1,
+    "load_skill": 1,
+    "todos_complete": 4,
+    "file_access_read_file": 2,
+    "run_skill_script": 1,
+    "todos_get_remaining": 1
+  },
+  "failed_execs": 0,
+  "input_tokens_resp": 34751,
+  "output_tokens_resp": 681,
+  "input_tokens_sum": 34751,
+  "output_tokens_sum": 681,
+  "skill_script_runs": [
+    "python /workspace/skills/csv-summary/scripts/summarize.py orders_q3.csv outputs/q3_summary.md"
+  ],
+  "approvals": [],
+  "sandbox_cold_start_s": 0.34,
+  "final_text": "The revenue summary by region and month for `orders_q3.csv` has been generated and saved to `outputs/q3_summary.md`.\n\n### Summary of Results\n\n| Region | Month | Revenue |\n| :--- | :--- | ---: |\n| amer | 2026-07 | 5655.00 |\n| amer | 2026-08 | 3371.47 |\n| amer | 2026-09 | 4401.22 |\n| apac | 2026-07 | 1485.46 |\n| apac | 2026-08 | 5144.09 |\n| apac | 2026-09 | 4750.40 |\n| emea | 2026-07 | 4120.35 |\n| emea | 2026-08 | 5526.26 |\n| emea | 2026-09 | 2901.08 |"
+}

@@ -1,0 +1,22 @@
+C:\Users\VijayRaghavVarada\Documents\Github\Metorite\.claude\worktrees\agent-ab617bcee46c6f7db\spikes\maf_sandbox\.venv\Lib\site-packages\agent_framework\_skills.py:121: ExperimentalWarning: [SKILLS] SkillResource is experimental and may change or be removed in future versions without notice.
+C:\Users\VijayRaghavVarada\Documents\Github\Metorite\.claude\worktrees\agent-ab617bcee46c6f7db\spikes\maf_sandbox\.venv\Lib\site-packages\agent_framework\_harness\_memory.py:651: ExperimentalWarning: [HARNESS] MemoryStore is experimental and may change or be removed in future versions without notice.
+--- survey (cold): 6.000s
+version 3.14.0 (0e13686:0e13686, Feb 12 2026, 21:31:17) [Clang 21.1.4-wasi-sdk (https://github.com/llvm/llvm-project 222fc11f2b8f25f6a0f
+platform wasi
+path ['/python', '/world', '/0', '/1', '/bundled', '/python/lib/python314.zip', '/python/lib/python3.14', '/python/lib/python3.14/lib-dynload']
+n_entries 0
+builtin ['_abc', '_ast', '_asyncio', '_bisect', '_blake2', '_codecs', '_codecs_cn', '_codecs_hk', '_codecs_iso2022', '_codecs_jp', '_codecs_kr', '_codecs_tw', '_collections', '_contextvars', '_csv', '_datetime', '_decimal', '_elementtree', '_functools', '_heapq', '_hmac', '_imp', '_io', '_json', '_locale', '_lsprof', '_md5', '_multibytecodec', '_opcode', '_operator', '_pickle', '_queue', '_random', '_sha1', '_sha2', '_sha3', '_signal', '_socket', '_sqlite3', '_sre', '_stat', '_statistics', '_string', '_struct', '_suggestions', '_symtable', '_sysconfig', '_thread', '_tokenize', '_tracemalloc', '_types', '_typing', '_warnings', '_weakref', '_zoneinfo', 'array', 'atexit', 'binascii', 'builtins', 'cmath', 'componentize_py_runtime', 'errno', 'faulthandler', 'gc', 'itertools', 'marshal', 'math', 'posix', 'pyexpat', 'select', 'sys', 'time', 'unicodedata', 'zlib']
+ok ['json', 're', 'collections', 'math', 'io', 'itertools', 'functools', 'typing', 'dataclasses']
+missing ['csv:ModuleNotFoundError', 'datetime:ModuleNotFoundError', 'statistics:ModuleNotFoundError', 'sqlite3:ModuleNotFoundError', 'zipfile:ModuleNotFoundError', 'http:ModuleNotFoundError', 'urllib:ModuleNotFoundError', 'ssl:ModuleNotFoundError', 'socket:ModuleNotFoundError', 'subprocess:ModuleNotFoundError', 'threading:ModuleNotFoundError', 'decimal:ModuleNotFoundError', 'pathlib:ModuleNotFoundError', 'tempfile:ModuleNotFoundError', 'shutil:ModuleNotFoundError', 'glob:ModuleNotFoundError', 'textwrap:ModuleNotFoundError', 'string:ModuleNotFoundError']
+globals ['clear', 'copy', 'fromkeys', 'get', 'items', 'keys', 'pop', 'popitem', 'setdefault', 'update', 'values']
+has call_tool True
+
+--- warm: 0.016s warm
+
+--- after workspace change: 4.778s ERROR: Execution error :: FileNotFoundError: [Errno 44] No such file or directory: '/input'
+
+--- output persistence: ERROR: Execution error :: FileNotFoundError: [Errno 44] No such file or directory: '/input'
+
+--- write /input: ERROR: Execution error :: PermissionError: [Errno 63] Operation not permitted: '/input/new.txt'
+ ; host sees new.txt: False
+--- infinite loop: no internal timeout, host wait_for fired after 153.4s

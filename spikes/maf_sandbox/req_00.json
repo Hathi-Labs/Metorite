@@ -1,0 +1,320 @@
+{
+ "messages": [
+  {
+   "role": "system",
+   "content": "You are a helpful AI assistant that uses tools to complete tasks.\n\n## General guidelines\n\n- Think through the task before acting. Break complex work into clear steps.\n- Use the tools available to you to gather information, perform actions, and verify results.\n- Explain your reasoning and thought process as you work through tasks.\n- Explain what you learned and what you are going to do next between tool calls, so the user can follow along with your thought process.\n- Avoid making more than 4 tool calls in a row without explaining what you are doing.\n- If a tool call fails or returns unexpected results, adapt your approach rather than repeating the same call.\n- When you have completed the task, present a clear and concise summary of what you did and what you found.\n\n\nYou are a coding agent that works inside an isolated Linux sandbox.\n\n- The workspace is /workspace inside the sandbox. The file_access_* tools work on the\n  same workspace with paths RELATIVE to it (for example \"outputs/summary.md\").\n- sandbox_exec runs a shell command (POSIX sh) in /workspace as a non-root user.\n  Python 3.12 is installed. There is no network unless it has been granted.\n  Each command has a 60 s default timeout; output is capped.\n- Work in a loop: write code to a file, run it, read the error, fix it, run again,\n  and check the output before you say you are done.\n- Reusable skills live in skills/<skill-name>/SKILL.md. SKILL.md starts with YAML\n  front matter between --- lines: `name:` (lowercase, hyphens only, same as the\n  folder) and `description:` (what it does and when to use it). The body holds\n  usage instructions. Scripts go in skills/<skill-name>/scripts/*.py and take CLI\n  arguments. A skill you create is listed for you from the next turn on, and you\n  run its scripts with run_skill_script.\n- Before you write new code, check whether a listed skill already does the job,\n  and use it if so.\n- If something cannot be done (for example, it needs the network and there is\n  none), say so plainly. Never fake a result.\n## Todo Items\n\nYou have access to a todo list for tracking work items.\nWhile planning, make sure that you break down complex tasks into manageable todo items and add them to the list.\nAsk questions from the user where clarification is needed to create effective todos.\nIf the user provides feedback on your plan, adjust your todos accordingly by adding new items or removing irrelevant ones.\nDuring execution, use the todo list to keep track of what needs to be done, mark items as complete when finished, and remove any items that are no longer needed.\nWhen a user changes the topic or changes their mind, ensure that you update the todo list accordingly by removing irrelevant items or adding new ones as needed.\n\nUse these tools to manage your tasks:\n- Use todos_add to break down complex work into trackable items (supports adding one or many at once).\n- Use todos_complete to mark items as done when finished (supports one or many at once). Include a reason describing how the items were completed.\n- Use todos_get_remaining to check what work is still pending.\n- Use todos_get_all to review the full list including completed items.\n- Use todos_remove to remove items that are no longer needed (supports one or many at once).\n## File Access\nYou have access to a shared file storage area via the `file_access_*` tools for reading, writing, and managing files.\nThese files persist beyond the current session and may be shared across sessions or agents.\nUse these tools to read input data provided by the user, write output artifacts, and manage any files the user has asked you to work with.\n\n- Never delete or overwrite existing files unless the user has explicitly asked you to do so."
+  },
+  {
+   "role": "user",
+   "content": "### Current todo list\n- none yet"
+  },
+  {
+   "role": "user",
+   "content": "Here is sales.csv in the workspace. Write a Python script that summarises revenue by region and month, run it, and save the result as a markdown table to outputs/summary.md. Show me the table when done."
+  }
+ ],
+ "model": "gemini-2.5-flash",
+ "max_completion_tokens": 8000,
+ "stream": false,
+ "tool_choice": "auto",
+ "tools": [
+  {
+   "type": "function",
+   "function": {
+    "name": "sandbox_exec",
+    "description": "Run a shell command (POSIX sh) inside the sandbox, in /workspace. Returns exit code and combined stdout/stderr (capped). timeout_s max 300.",
+    "parameters": {
+     "properties": {
+      "command": {
+       "title": "Command",
+       "type": "string"
+      },
+      "timeout_s": {
+       "default": 60,
+       "title": "Timeout S",
+       "type": "integer"
+      }
+     },
+     "required": [
+      "command"
+     ],
+     "title": "sandbox_exec_input",
+     "type": "object"
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "todos_add",
+    "description": "Add one or more todo items for the current session.",
+    "parameters": {
+     "$defs": {
+      "_TodoAddItemSchema": {
+       "description": "Schema for a single todo item in the todos_add tool.",
+       "properties": {
+        "title": {
+         "title": "Title",
+         "type": "string"
+        },
+        "description": {
+         "title": "Description",
+         "type": "string"
+        }
+       },
+       "required": [
+        "title"
+       ],
+       "title": "_TodoAddItemSchema",
+       "type": "object"
+      }
+     },
+     "properties": {
+      "todos": {
+       "items": {
+        "$ref": "#/$defs/_TodoAddItemSchema"
+       },
+       "title": "Todos",
+       "type": "array"
+      }
+     },
+     "required": [
+      "todos"
+     ],
+     "title": "todos_add_input",
+     "type": "object"
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "todos_complete",
+    "description": "Mark one or more todo items as complete.\n\nEach entry has an id (int) and a reason (string) describing how/why the item was completed.\n",
+    "parameters": {
+     "$defs": {
+      "_TodoCompleteItemSchema": {
+       "description": "Schema for a single item in the todos_complete tool.",
+       "properties": {
+        "id": {
+         "title": "Id",
+         "type": "integer"
+        },
+        "reason": {
+         "title": "Reason",
+         "type": "string"
+        }
+       },
+       "required": [
+        "id",
+        "reason"
+       ],
+       "title": "_TodoCompleteItemSchema",
+       "type": "object"
+      }
+     },
+     "properties": {
+      "items": {
+       "items": {
+        "$ref": "#/$defs/_TodoCompleteItemSchema"
+       },
+       "title": "Items",
+       "type": "array"
+      }
+     },
+     "required": [
+      "items"
+     ],
+     "title": "todos_complete_input",
+     "type": "object"
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "todos_remove",
+    "description": "Remove one or more todo items by ID.",
+    "parameters": {
+     "properties": {
+      "ids": {
+       "items": {
+        "type": "integer"
+       },
+       "title": "Ids",
+       "type": "array"
+      }
+     },
+     "required": [
+      "ids"
+     ],
+     "title": "todos_remove_input",
+     "type": "object"
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "todos_get_remaining",
+    "description": "Retrieve only incomplete todo items for the current session.",
+    "parameters": {
+     "properties": {},
+     "title": "todos_get_remaining_input",
+     "type": "object"
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "todos_get_all",
+    "description": "Retrieve all todo items for the current session.",
+    "parameters": {
+     "properties": {},
+     "title": "todos_get_all_input",
+     "type": "object"
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "file_access_save_file",
+    "description": "Save a file with the given name and content. By default, does not overwrite an existing file unless overwrite is set to true.",
+    "parameters": {
+     "properties": {
+      "file_name": {
+       "title": "File Name",
+       "type": "string"
+      },
+      "content": {
+       "title": "Content",
+       "type": "string"
+      },
+      "overwrite": {
+       "default": false,
+       "title": "Overwrite",
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "file_name",
+      "content"
+     ],
+     "title": "file_access_save_file_input",
+     "type": "object"
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "file_access_read_file",
+    "description": "Read the content of a file by name. Returns the file content or a message indicating the file could not be read.",
+    "parameters": {
+     "properties": {
+      "file_name": {
+       "title": "File Name",
+       "type": "string"
+      }
+     },
+     "required": [
+      "file_name"
+     ],
+     "title": "file_access_read_file_input",
+     "type": "object"
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "file_access_delete_file",
+    "description": "Delete a file by name.",
+    "parameters": {
+     "properties": {
+      "file_name": {
+       "title": "File Name",
+       "type": "string"
+      }
+     },
+     "required": [
+      "file_name"
+     ],
+     "title": "file_access_delete_file_input",
+     "type": "object"
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "file_access_list_files",
+    "description": "List the direct child file names of a directory. Omit ``directory`` (or pass an empty string) to list the root. To enumerate files in a subdirectory, pass its relative path, for example ``\"reports\"`` or ``\"reports/2024\"``.",
+    "parameters": {
+     "properties": {
+      "directory": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "title": "Directory"
+      }
+     },
+     "title": "file_access_list_files_input",
+     "type": "object"
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "file_access_search_files",
+    "description": "Search file contents using a regular expression pattern (case-insensitive). Optionally filter which files to search using a glob pattern (e.g., \"*.md\", \"research*\"). Optionally scope the search to a subdirectory by passing its relative path; omit ``directory`` (or pass an empty string) to search the root. Returns matching file names, snippets, and matching lines with line numbers. The regex_pattern must be 256 characters or fewer.",
+    "parameters": {
+     "properties": {
+      "regex_pattern": {
+       "title": "Regex Pattern",
+       "type": "string"
+      },
+      "file_pattern": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "title": "File Pattern"
+      },
+      "directory": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "title": "Directory"
+      }
+     },
+     "required": [
+      "regex_pattern"
+     ],
+     "title": "file_access_search_files_input",
+     "type": "object"
+    }
+   }
+  }
+ ]
+}

@@ -1,0 +1,77 @@
+--- memory limit
+[exit_code=0 0.57s]
+Killed
+exit=137
+--- output cap
+[exit_code=0 output truncated, 5000000 bytes total 0.14s]
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+0123456789
+012
+--- capabilities
+[exit_code=0 0.11s]
+CapInh:	0000000000000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	0000000000000000
+CapAmb:	0000000000000000
+NoNewPrivs:	1
+--- pip with net none
+[exit_code=0 9.24s]
+ERROR: Could not find a version that satisfies the requirement tabulate (from versions: none)
+ERROR: No matching distribution found for tabulate
+--- fork bomb leaves orphans
+[exit_code=0 0.18s]
+stopped 250 [Errno 11] Resource temporarily unavailable
+--- next exec right after
+[exit_code=-1 0.32s]
+OCI runtime exec failed: exec failed: unable to start container process: procReady not received
+--- next exec 9s later
+[exit_code=0 0.13s]
+alive

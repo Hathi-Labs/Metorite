@@ -1,0 +1,97 @@
+new volume create + chown: median 365 ms, min 355, max 372 (n=3)
+cold start (run -d + first exec): median 350 ms, min 338, max 354 (n=3)
+cold start on an existing volume: 0.35s
+warm exec `true`: median 116 ms, min 113, max 138 (n=10)
+warm exec `python -c pass`: median 130 ms, min 120, max 133 (n=10)
+warm exec `python hello.py`: median 130 ms, min 122, max 142 (n=5)
+--- identity
+[exit_code=0 0.11s]
+uid=1000 gid=1000 groups=1000
+/workspace
+total 12
+drwxr-xr-x 2 1000 1000 4096 Oct  3 05:14 .
+drwxr-xr-x 1 root root 4096 Oct  3 05:14 ..
+-rw-r--r-- 1 1000 1000   28 Oct  3 05:14 hello.py
+--- root fs read-only
+[exit_code=0 0.11s]
+touch: cannot touch '/usr/x': Read-only file system
+touch: cannot touch '/etc/x': Read-only file system
+done
+--- tmp writable, capped
+[exit_code=0 0.29s]
+tmpfs           256M     0  256M   0% /tmp
+-rw-r--r-- 1 1000 1000 268431360 Oct  3 05:14 /tmp/big
+--- host files invisible
+[exit_code=0 0.12s]
+ls: cannot access '/c': No such file or directory
+ls: cannot access '/host': No such file or directory
+ls: cannot access '/run/desktop': No such file or directory
+/mnt:
+cat: /workspace/../../.env: No such file or directory
+bin
+boot
+dev
+etc
+home
+lib
+lib64
+media
+mnt
+opt
+proc
+root
+run
+sbin
+srv
+sys
+tmp
+usr
+var
+workspace
+overlay on / type overlay (ro,relatime,lowerdir=/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/1628/fs:/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/901/fs:/var/lib/desktop-containerd/dae
+--- network none
+[exit_code=0 0.45s]
+urllib.error.URLError: <urlopen error [Errno -3] Temporary failure in name resolution>
+--- dns none
+[exit_code=0 0.12s]
+no dns
+--- timeout kill
+[exit_code=137 TIMED OUT (killed) 3.20s]
+start
+Killed
+--- pids limit (fork bomb, bounded)
+[exit_code=0 0.19s]
+fork stopped at 250 [Errno 11] Resource temporarily unavailable
+--- memory limit
+[exit_code=-1 0.32s]
+OCI runtime exec failed: exec failed: unable to start container process: procReady not received
+--- output cap
+[exit_code=-1 0.32s]
+OCI runtime exec failed: exec failed: unable to start container process: procReady not received
+--- capabilities
+[exit_code=-1 0.32s]
+OCI runtime exec failed: exec failed: unable to start container process: procReady not received
+--- pip with net none
+[exit_code=-1 0.34s]
+OCI runtime exec failed: exec failed: unable to start container process: procReady not received
+proxy start: 0.70s
+allowlist sandbox cold start: 0.45s
+--- allowlist: pip install tabulate
+[exit_code=0 2.58s]
+0.10.0
+--- allowlist: example.com denied
+[exit_code=0 0.39s]
+urllib.error.URLError: <urlopen error Tunnel connection failed: 403 Forbidden>
+--- allowlist: direct (no proxy) denied
+[exit_code=0 0.39s]
+urllib.error.URLError: <urlopen error [Errno -3] Temporary failure in name resolution>
+--- allowlist: raw socket to 1.1.1.1:443
+[exit_code=0 0.20s]
+OSError: [Errno 101] Network is unreachable
+--- proxy log
+egress proxy on :3128, allow=['pypi.org', 'pythonhosted.org']
+ALLOW CONNECT pypi.org:443
+ALLOW CONNECT files.pythonhosted.org:443
+DENY  CONNECT example.com:443
+
+cleanup: ['ddffa86c8220', 'maf-spike-ws-allow', 'maf-spike-ws-cold0', 'maf-spike-ws-cold1', 'maf-spike-ws-cold2', 'maf-spike-ws-main', '888f4d5c68d9']

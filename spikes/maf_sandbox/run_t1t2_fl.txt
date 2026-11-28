@@ -1,0 +1,110 @@
+{"task": "t1-flash-latest", "model": "gemini-flash-latest", "wall_s": 87.0, "model_calls": 20, "model_time_s": 84.0, "tool_calls": 19, "tool_time_s": 2.8, "tools": {"todos_add": 1, "file_access_read_file": 2, "sandbox_exec": 9, "todos_complete": 4, "file_access_list_files": 1, "file_access_save_file": 1, "todos_get_remaining": 1}, "failed_execs": 2, "input_tokens_resp": 271587, "output_tokens_resp": 2047, "input_tokens_sum": 271587, "output_tokens_sum": 2047, "skill_script_runs": [], "approvals": [], "sandbox_cold_start_s": 0.35}
+FINAL: I have created and executed the Python script `summarise.py` to aggregate revenue by region and month from `sales.csv` and saved the result to `outputs/summary.md`.
+
+### Python Script (`summarise.py`)
+
+```python
+import csv
+from collections import defaultdict
+from decimal import Decimal
+from pathlib import Path
+
+
+def summarize_sales(input_csv_path: str, output_md_path: str) -> str:
+    revenue_by_region_month = defaultdict(Decimal)
+
+    with open(input_csv_path, mode="r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            month = row["date"][:7]
+            region = row["region"]
+            revenue = Decimal(row["revenue"])
+            revenue_by_region_month[(region, month)] += revenue
+
+    # Build markdown table
+    lines = [
+        "| Region | Month | Revenue |",
+        "| :--- | :--- | ---: |",
+    ]
+
+    for (region, month), revenue in sorted(revenue_by_region_month.items()):
+        lines.append(f"| {region} | {month} | {revenue:.2f} |")
+
+    table_content = "\n".join(lines) + "\n"
+
+    # Save to output file
+    output_path = Path(output_md_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(table_content, encoding="utf-8")
+
+    return table_content
+
+
+if __name__ == "__main__":
+    table = summarize_sales("sales.csv", "outputs/summary.md")
+    print(table)
+```
+
+---
+
+### Revenue Summary Table (`outputs/summary.md`)
+
+| Region | Month | Revenue |
+| :--- | :--- | ---: |
+| eas
+{"task": "t2a-flash-latest", "model": "gemini-flash-latest", "wall_s": 39.5, "model_calls": 12, "model_time_s": 38.4, "tool_calls": 11, "tool_time_s": 1.1, "tools": {"todos_add": 1, "file_access_save_file": 2, "todos_complete": 3, "sandbox_exec": 2, "file_access_read_file": 1, "file_access_delete_file": 1, "todos_get_remaining": 1}, "failed_execs": 0, "input_tokens_resp": 373933, "output_tokens_resp": 3748, "input_tokens_sum": 373933, "output_tokens_sum": 3748, "skill_script_runs": [], "approvals": [], "sandbox_cold_start_s": 0.35}
+FINAL: [Tool results: todos_complete: {"completed": 1}][Tool results: file_access_save_file: File 'skills/csv-summary/SKILL.md' saved.][Tool results: todos_complete: {"completed": 1}][Tool results: sandbox_exec: [exit_code=0 0.15s]
+| Region | Month | Revenue |
+| :--- | :--- | ---: |
+| east | 2026-01 | 725.00 |
+| east | 2026-02 | 1329.62 |
+| east | 2026-03 | 1029.00 |
+| north | 2026-01 | 1425.00 |
+| north | 2026-02 | 2502.00 |
+| north | 2026-03 | 1494.83 |
+| south | 2026-01 | 3526.40 |
+| south | 2026-02 | 1479.50 |
+| south | 2026-03 | 1501.25 |
+| west | 2026-01 | 999.65 |
+| west | 2026-02 | 1072.13 |
+| west | 2026-03 | 2852.05 |][Tool results: file_access_read_file: | Region | Month | Revenue |
+| :--- | :--- | ---: |
+| east | 2026-01 | 725.00 |
+| east | 2026-02 | 1329.62 |
+| east | 2026-03 | 1029.00 |
+| north | 2026-01 | 1425.00 |
+| north | 2026-02 | 2502.00 |
+| north | 2026-03 | 1494.83 |
+| south | 2026-01 | 3526.40 |
+| south | 2026-02 | 1479.50 |
+| south | 2026-03 | 1501.25 |
+| west | 2026-01 | 999.65 |
+| west | 2026-02 | 1072.13 |
+| west | 2026-03 | 2852.05 |][Tool results: file_access_delete_file: File 'outputs/test_summary.md' deleted.][Tool results: sandbox_exec: [exit_code=0 0.15s]
+| Region | Month | Revenue |
+| :--- | :--- | ---: |
+| east | 2026-01 | 725.00 |
+| east | 2026-02 | 1329.62 |
+| east | 2026-03 | 1029.00 |
+| north | 2026-01 | 1425.00 |
+| north | 2026-02 | 2502.00 |
+| north | 2026-03 | 1494.83 |
+| south | 2026-01 | 3526.40 |
+| south | 2026-02 | 1479.50 |
+| south | 20
+{"task": "t2b-flash-latest", "model": "gemini-flash-latest", "wall_s": 12.4, "model_calls": 6, "model_time_s": 11.8, "tool_calls": 10, "tool_time_s": 0.5, "tools": {"todos_add": 1, "load_skill": 1, "todos_complete": 4, "file_access_read_file": 2, "run_skill_script": 1, "todos_get_remaining": 1}, "failed_execs": 0, "input_tokens_resp": 34751, "output_tokens_resp": 681, "input_tokens_sum": 34751, "output_tokens_sum": 681, "skill_script_runs": ["python /workspace/skills/csv-summary/scripts/summarize.py orders_q3.csv outputs/q3_summary.md"], "approvals": [], "sandbox_cold_start_s": 0.34}
+FINAL: The revenue summary by region and month for `orders_q3.csv` has been generated and saved to `outputs/q3_summary.md`.
+
+### Summary of Results
+
+| Region | Month | Revenue |
+| :--- | :--- | ---: |
+| amer | 2026-07 | 5655.00 |
+| amer | 2026-08 | 3371.47 |
+| amer | 2026-09 | 4401.22 |
+| apac | 2026-07 | 1485.46 |
+| apac | 2026-08 | 5144.09 |
+| apac | 2026-09 | 4750.40 |
+| emea | 2026-07 | 4120.35 |
+| emea | 2026-08 | 5526.26 |
+| emea | 2026-09 | 2901.08 |

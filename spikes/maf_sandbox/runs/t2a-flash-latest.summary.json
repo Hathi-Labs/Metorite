@@ -1,0 +1,27 @@
+{
+  "task": "t2a-flash-latest",
+  "model": "gemini-flash-latest",
+  "wall_s": 39.5,
+  "model_calls": 12,
+  "model_time_s": 38.4,
+  "tool_calls": 11,
+  "tool_time_s": 1.1,
+  "tools": {
+    "todos_add": 1,
+    "file_access_save_file": 2,
+    "todos_complete": 3,
+    "sandbox_exec": 2,
+    "file_access_read_file": 1,
+    "file_access_delete_file": 1,
+    "todos_get_remaining": 1
+  },
+  "failed_execs": 0,
+  "input_tokens_resp": 373933,
+  "output_tokens_resp": 3748,
+  "input_tokens_sum": 373933,
+  "output_tokens_sum": 3748,
+  "skill_script_runs": [],
+  "approvals": [],
+  "sandbox_cold_start_s": 0.35,
+  "final_text": "[Tool results: todos_complete: {\"completed\": 1}][Tool results: file_access_save_file: File 'skills/csv-summary/SKILL.md' saved.][Tool results: todos_complete: {\"completed\": 1}][Tool results: sandbox_exec: [exit_code=0 0.15s]\n| Region | Month | Revenue |\n| :--- | :--- | ---: |\n| east | 2026-01 | 725.00 |\n| east | 2026-02 | 1329.62 |\n| east | 2026-03 | 1029.00 |\n| north | 2026-01 | 1425.00 |\n| north | 2026-02 | 2502.00 |\n| north | 2026-03 | 1494.83 |\n| south | 2026-01 | 3526.40 |\n| south | 2026-02 | 1479.50 |\n| south | 2026-03 | 1501.25 |\n| west | 2026-01 | 999.65 |\n| west | 2026-02 | 1072.13 |\n| west | 2026-03 | 2852.05 |][Tool results: file_access_read_file: | Region | Month | Revenue |\n| :--- | :--- | ---: |\n| east | 2026-01 | 725.00 |\n| east | 2026-02 | 1329.62 |\n| east | 2026-03 | 1029.00 |\n| north | 2026-01 | 1425.00 |\n| north | 2026-02 | 2502.00 |\n| north | 2026-03 | 1494.83 |\n| south | 2026-01 | 3526.40 |\n| south | 2026-02 | 1479.50 |\n| south | 2026-03 | 1501.25 |\n| west | 2026-01 | 999.65 |\n| west | 2026-02 | 1072.13 |\n| west | 2026-03 | 2852.05 |][Tool results: file_access_delete_file: File 'outputs/test_summary.md' deleted.][Tool results: sandbox_exec: [exit_code=0 0.15s]\n| Region | Month | Revenue |\n| :--- | :--- | ---: |\n| east | 2026-01 | 725.00 |\n| east | 2026-02 | 1329.62 |\n| east | 2026-03 | 1029.00 |\n| north | 2026-01 | 1425.00 |\n| north | 2026-02 | 2502.00 |\n| north | 2026-03 | 1494.83 |\n| south | 2026-01 | 3526.40 |\n| south | 2026-02 | 1479.50 |\n| south | 2026-03 | 1501.25 |\n| west | 2026-01 | 999.65 |\n| west | 2026-02 | 1072.13 |\n| west | 2026-03 | 2852.05 |][Tool results: todos_complete: {\"completed\": 1}][Tool results: todos_get_remaining: []]I have created the reusable skill **`csv-summary`** with both documentation and the executable script, and verified it by running a test.\n\n### Skill Structure\n\n- **`skills/csv-summary/SKILL.md`**: Contains metadata and usage instructions.\n- **`skills/csv-summary/scripts/summarize.py`**: CLI script supporting input/output file paths as positional arguments, plus optional flags for configuring the group column, date column, and value column.\n\n---\n\n### `skills/csv-summary/SKILL.md`\n\n```markdown\n---\nname: csv-summary\ndescription: Summarises CSV revenue or numeric metrics by grouping category and month, saving the result as a markdown table.\n---\n\n# csv-summary\n\nSummarises numeric values (such as revenue) in a CSV file grouped by a categorical column (such as region, department, or product) and month (extracted from a date column), outputting a formatted markdown table.\n\n## Script Location\n\n`skills/csv-summary/scripts/summarize.py`\n\n## Usage\n\n```bash\npython3 skills/csv-summary/scripts/summarize.py <input_csv_path> <output_md_path> [options]\n```\n\n### Positional Arguments\n\n- `input_csv_path`: Path to the source CSV file (e.g., `sales.csv`).\n- `output_md_path`: Path where the output markdown summary table should be saved (e.g., `outputs/summary.md`). Any missing parent directories are created automatically.\n\n### Optional Arguments\n\n- `--group-col`: Name of the column to group by. Default is `region`.\n- `--date-col`: Name of the date column to extract year-month (`YYYY-MM`) from. Default is `date`.\n- `--value-col`: Name of the numeric column to aggregate. Default is `revenue`.\n```\n\n---\n\n### Verification Test\n\nThe skill script was tested with:\n```bash\npython3 skills/csv-summary/scripts/summarize.py sales.csv outputs/summary.md\n```\n\n**Output produced in `outputs/summary.md`:**\n\n| Region | Month | Revenue |\n| :--- | :--- | ---: |\n| east | 2026-01 | 725.00 |\n| east | 2026-02 | 1329.62 |\n| east | 2026-03 | 1029.00 |\n| north | 2026-01 | 1425.00 |\n| north | 2026-02 | 2502.00 |\n| north | 2026-03 | 1494.83 |\n| south | 2026-01 | 3526.40 |\n| south | 2026-02 | 1479.50 |\n| south | 2026-03 | 1501.25 |\n| west | 2026-01 | 999.65 |\n| west | 2026-02 | 1072.13 |\n| west | 2026-03 | 2852.05 |"
+}
