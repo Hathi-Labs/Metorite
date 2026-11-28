@@ -170,7 +170,30 @@ def test_the_copilot_fan_out_names_no_crm_agent() -> None:
 
 def test_pack_is_cached_and_forgettable() -> None:
     mid = "ctx-cache"
-    cc._CACHE[mid] = cc.ContextPack(brief="cached")
+    # Task 3966: the key holds the bound tenant. No tenant is bound here.
+    cc._CACHE[("", mid)] = (cc.ContextPack(brief="cached"), False)
     assert asyncio.run(cc.get(mid)).brief == "cached"
     cc.forget(mid)
-    assert mid not in cc._CACHE
+    assert ("", mid) not in cc._CACHE
+
+
+def test_an_unbound_pack_never_answers_or_replaces_a_bound_read(monkeypatch) -> None:
+    """Task 3966 (F6): the copilot task builds on an unbound session, which
+    reads nothing under FORCE RLS. A later bound GET /context must not get
+    that empty pack, and an unbound build must not replace a bound one."""
+    mid = "ctx-bound"
+    built: list[bool] = []
+
+    async def build(meeting_id, *, deep=False, db=None):
+        built.append(db is not None)
+        return cc.ContextPack(brief="bound" if db is not None else "")
+
+    monkeypatch.setattr(cc, "build", build)
+    monkeypatch.setattr(cc, "_CACHE", {})
+    session = object()
+    assert asyncio.run(cc.get(mid)).brief == ""            # the copilot task
+    assert asyncio.run(cc.get(mid, db=session)).brief == "bound"  # the route
+    assert asyncio.run(cc.get(mid)).brief == "bound"       # the task reuses it
+    assert asyncio.run(cc.get(mid, db=session)).brief == "bound"
+    assert built == [False, True]
+    assert cc._CACHE[("", mid)][1] is True

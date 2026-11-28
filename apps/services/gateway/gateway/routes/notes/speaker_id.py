@@ -28,8 +28,14 @@ import os
 import re
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends, HTTPException
-from gateway.routes.notes.core import _get_db, _log, _tenant_session, router
+from fastapi import Depends
+from gateway.routes.notes.core import (
+    _get_db,
+    _log,
+    _tenant_session,
+    load_owned_meeting,
+    router,
+)
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -174,36 +180,56 @@ async def _call_llm(sample: str, labels: list[str]) -> dict[str, str]:
     return out
 
 
+async def _read_inputs(db, meeting_id: str) -> tuple[dict, list] | None:
+    """The stored names and the segments of one meeting, or None."""
+    m = (
+        await db.execute(
+            text("SELECT speaker_names FROM meeting WHERE id = :id"),
+            {"id": meeting_id},
+        )
+    ).fetchone()
+    if m is None:
+        return None
+    existing = m.speaker_names if isinstance(m.speaker_names, dict) else {}
+    segs = (
+        await db.execute(
+            text(
+                "SELECT idx, text, speaker_label FROM transcript_segment "
+                "WHERE meeting_id = :id ORDER BY idx"
+            ),
+            {"id": meeting_id},
+        )
+    ).fetchall()
+    return existing, segs
+
+
+_WRITE_NAMES_SQL = "UPDATE meeting SET speaker_names = CAST(:n AS JSONB) WHERE id = :id"
+
+
 async def infer_speaker_names(
-    meeting_id: str, *, overwrite: bool = False
+    meeting_id: str, *, overwrite: bool = False, bound: bool = False
 ) -> dict[str, str]:
     """Detect self-introductions and merge names into ``meeting.speaker_names``.
 
     Returns the full merged map. Never raises: on any problem the existing map
-    is returned unchanged."""
-    # H4: shared helper also consumed by the background transcription pipeline
-    # (`pipeline.run_transcription`, a spawned task) — no ambient tenant
-    # there; derive it from the meeting row.
+    is returned unchanged.
+
+    ``bound=True`` is the request route, which already checked the owner: it
+    reads and writes in the tenant of the request (task 3966). The pipeline
+    job passes nothing and reads as before."""
     try:
-        async with await _get_db() as db:
-            m = (
-                await db.execute(
-                    text("SELECT speaker_names FROM meeting WHERE id = :id"),
-                    {"id": meeting_id},
-                )
-            ).fetchone()
-            if m is None:
-                return {}
-            existing = m.speaker_names if isinstance(m.speaker_names, dict) else {}
-            segs = (
-                await db.execute(
-                    text(
-                        "SELECT idx, text, speaker_label FROM transcript_segment "
-                        "WHERE meeting_id = :id ORDER BY idx"
-                    ),
-                    {"id": meeting_id},
-                )
-            ).fetchall()
+        if bound:
+            async with _tenant_session() as db:
+                found = await _read_inputs(db, meeting_id)
+        else:
+            # H4: shared helper also consumed by the background transcription
+            # pipeline (`pipeline.run_transcription`, a spawned task) — no
+            # ambient tenant there; derive it from the meeting row.
+            async with await _get_db() as db:
+                found = await _read_inputs(db, meeting_id)
+        if found is None:
+            return {}
+        existing, segs = found
 
         labels = distinct_labels(segs)
         # Needs ≥2 diarized speakers to be meaningful; a single label is just
@@ -220,16 +246,15 @@ async def infer_speaker_names(
         if not applied:
             return merged
 
-        # H4: see above — same background pipeline reach.
-        async with await _get_db() as db:
-            await db.execute(
-                text(
-                    "UPDATE meeting SET speaker_names = CAST(:n AS JSONB) "
-                    "WHERE id = :id"
-                ),
-                {"n": json.dumps(merged), "id": meeting_id},
-            )
-            await db.commit()
+        names = {"n": json.dumps(merged), "id": meeting_id}
+        if bound:
+            async with _tenant_session() as db:
+                await db.execute(text(_WRITE_NAMES_SQL), names)
+        else:
+            # H4: see above — same background pipeline reach.
+            async with await _get_db() as db:
+                await db.execute(text(_WRITE_NAMES_SQL), names)
+                await db.commit()
         _log.info(
             "notes.speaker_id_done",
             meeting_id=meeting_id,
@@ -256,22 +281,20 @@ class IdentifySpeakersResponse(BaseModel):
 @router.post("/meetings/{meeting_id}/identify-speakers")
 async def identify_speakers(
     meeting_id: str,
-    _user: UserContext = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ) -> IdentifySpeakersResponse:
     """Auto-detect speaker names from self-introductions in the transcript.
 
     Non-destructive: names already set (by the user or a prior run) are kept;
-    only still-anonymous speakers can be filled."""
+    only still-anonymous speakers can be filled.
+
+    Owner only, BEFORE the model call (task 3966): the call reads the
+    transcript and writes the speaker names."""
     async with _tenant_session() as db:
-        m = (
-            await db.execute(
-                text("SELECT speaker_names FROM meeting WHERE id = :id"),
-                {"id": meeting_id},
-            )
-        ).fetchone()
-    if m is None:
-        raise HTTPException(status_code=404, detail="meeting not found")
+        m = await load_owned_meeting(
+            db, meeting_id, user.email, columns="m.speaker_names"
+        )
     before = m.speaker_names if isinstance(m.speaker_names, dict) else {}
-    merged = await infer_speaker_names(meeting_id, overwrite=False)
+    merged = await infer_speaker_names(meeting_id, overwrite=False, bound=True)
     detected = {k: v for k, v in merged.items() if before.get(k, "").strip() != v}
     return IdentifySpeakersResponse(names=merged, detected=detected)

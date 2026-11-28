@@ -20,7 +20,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { relativeTime } from "@/lib/taskCard";
 
 import { type TaskRow, projectsApi } from "../lib/api";
-import { type BlockKey, blockOf, blockSentence, blockWord } from "../lib/agentGraph";
+import { ROOT_ID } from "../lib/agentGraph";
 import {
   DISPATCHED_BY_LABEL,
   DISPATCHED_LABEL,
@@ -50,24 +50,21 @@ import { AgentRunPanel } from "./AgentRunPanel";
 import { STATE_PILL, StatePill, pressKeys } from "./AgentSessionCard";
 import { AgentSubagents } from "./AgentSubagents";
 
+export const EVERYONE = "Everyone";
+
 /** What the dock or the sheet shows. */
 export type LensSelection =
   | { kind: "session"; id: string }
   | { kind: "person"; person: string }
-  | { kind: "block"; block: BlockKey };
+  /** The root of the map: one person, or everyone with "". */
+  | { kind: "root"; person: string };
 
 /** The node of the graph that a selection lights. */
 export function selectionNodeId(selection: LensSelection | null): string | null {
   if (!selection) return null;
   if (selection.kind === "session") return `s:${selection.id}`;
-  return selection.kind === "person" ? `p:${selection.person}` : `b:${selection.block}`;
-}
-
-/** The sessions that a "waits on" selection lists, the longest wait first. */
-export function blockSessions(model: LensModel, block: BlockKey): LensSession[] {
-  return model.sessions
-    .filter((s) => blockOf(s) === block)
-    .sort((a, b) => (a.lastAt ?? "").localeCompare(b.lastAt ?? ""));
+  if (selection.kind === "root") return ROOT_ID;
+  return `p:${selection.person}`;
 }
 
 /** The title of a selection, or `null` when it left the map. */
@@ -80,7 +77,8 @@ export function selectionTitle(
   if (selection.kind === "person") {
     return model.people.some((p) => p.person === selection.person) ? nameOf(selection.person) : null;
   }
-  return blockSessions(model, selection.block).length > 0 ? blockWord(selection.block) : null;
+  if (!selection.person) return model.sessions.length > 0 ? EVERYONE : null;
+  return model.people.some((p) => p.person === selection.person) ? nameOf(selection.person) : null;
 }
 
 export interface DetailsProps {
@@ -351,17 +349,13 @@ function SessionDetails({ session, ...props }: DetailsProps & { session: LensSes
   );
 }
 
-function PersonDetails({ person, ...props }: DetailsProps & { person: LensPerson }) {
-  const sessions = personSessions(person);
+/** The counts, the machines and the questions of a set of sessions. */
+function CountDetails({ sessions, ...props }: DetailsProps & { sessions: readonly LensSession[] }) {
   const counts = countStates(sessions);
   const machines = [...new Set(sessions.filter((s) => s.state !== "idle" && s.host).map((s) => s.host as string))];
   const asks = sessions.filter((s) => s.state === "you");
   return (
-    <div className="flex flex-col gap-3" data-agent-details="person">
-      <div className="flex items-center gap-2">
-        <PersonAvatar email={person.person} displayName={props.nameOf(person.person)} size={28} />
-        <span className="truncate text-xs text-muted-foreground">{person.person}</span>
-      </div>
+    <>
       <dl className="flex flex-col gap-1.5">
         {LENS_STATES.map((state) => (
           <Fact key={state} term={lensWord(state)}>
@@ -376,12 +370,24 @@ function PersonDetails({ person, ...props }: DetailsProps & { person: LensPerson
           <SessionList sessions={asks} nowMs={props.nowMs} onSelect={props.onSelect} />
         </section>
       ) : null}
+    </>
+  );
+}
+
+function PersonDetails({ person, ...props }: DetailsProps & { person: LensPerson }) {
+  return (
+    <div className="flex flex-col gap-3" data-agent-details="person">
+      <div className="flex items-center gap-2">
+        <PersonAvatar email={person.person} displayName={props.nameOf(person.person)} size={28} />
+        <span className="truncate text-xs text-muted-foreground">{person.person}</span>
+      </div>
+      <CountDetails {...props} sessions={personSessions(person)} />
     </div>
   );
 }
 
 export function AgentDetails(props: DetailsProps) {
-  const { model, selection, nowMs, onSelect } = props;
+  const { model, selection } = props;
   if (selection.kind === "session") {
     const session = model.byId.get(selection.id);
     return session ? <SessionDetails key={session.id} {...props} session={session} /> : null;
@@ -390,13 +396,10 @@ export function AgentDetails(props: DetailsProps) {
     const person = model.people.find((p) => p.person === selection.person);
     return person ? <PersonDetails {...props} person={person} /> : null;
   }
-  const sessions = blockSessions(model, selection.block);
+  const sessions = selection.person ? model.sessions.filter((s) => s.person === selection.person) : model.sessions;
   return (
-    <div className="flex flex-col gap-3" data-agent-details="block">
-      <p className="text-xs text-muted-foreground">
-        {blockSentence(selection.block, sessions.length)}. The longest wait comes first.
-      </p>
-      <SessionList sessions={sessions} nowMs={nowMs} onSelect={onSelect} />
+    <div className="flex flex-col gap-3" data-agent-details="root">
+      <CountDetails {...props} sessions={sessions} />
     </div>
   );
 }

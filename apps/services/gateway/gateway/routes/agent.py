@@ -1801,7 +1801,45 @@ async def _private_repo_refusal(slug: str) -> HTTPException | None:
     )
 
 
-@router.get("/config", summary="Fetch config.json from a GitHub agent repo or local path")
+def _registry_orgs() -> frozenset[str]:
+    # The one parse of AGENT_REGISTRY_ORGS. The chat push gate of the executor
+    # reads the same rule (``acb_auth.agent_operator``).
+    from acb_auth.agent_operator import registry_operator_orgs  # noqa: PLC0415
+
+    return registry_operator_orgs(str(get_settings().agent_registry_orgs or ""))
+
+
+async def _require_registry_operator(
+    user: UserContext = Depends(get_current_user),
+) -> None:
+    """Only the platform operator changes the agent registry.
+
+    ``agents:manage`` alone is not enough: every org's owner and admin hold
+    it. The registry is deployment-wide, a register clones a repo with the
+    operator's ``GITHUB_TOKEN`` (or reads a path on the server), and the code
+    runs inside the shared gateway. ``AGENT_REGISTRY_ORGS`` names the orgs
+    that may do it. Empty means none (fail closed). The org comes from the
+    server-side ``UserContext``, never from the request.
+    """
+    org = str(user.organization_id or "").strip().lower()
+    allowed = _registry_orgs()
+    if org and ("*" in allowed or org in allowed):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Only the platform operator can change the agent registry.",
+    )
+
+
+@router.get(
+    "/config",
+    summary="Fetch config.json from a GitHub agent repo or local path",
+    # Task 4110: the same two checks as POST /agent. The read takes an
+    # absolute server path or a GitHub fetch with the org token, so a member
+    # who may not register an agent must not reach it. Fence:
+    # ``tests/unit/test_agent_observability_route_gate.py``.
+    dependencies=[require_permission("agents:manage"), Depends(_require_registry_operator)],
+)
 async def get_agent_config(
     repo: str,
     user: UserContext = Depends(get_current_user),
@@ -2033,38 +2071,22 @@ async def list_agents(
     # choice that would 403 on use.
     if not user.has_permission("agents:manage"):
         merged = [a for a in merged if user.can_run_agent(a["name"])]
+        # Task 4110: a server path and the install health of each agent are
+        # for an agent manager only. The trim makes a NEW dict for each
+        # entry, at the end, so it covers the static, dynamic and cached
+        # entries alike, and it never writes a shared registry dict.
+        merged = [
+            {k: v for k, v in a.items() if k not in MANAGER_ONLY_AGENT_KEYS}
+            for a in merged
+        ]
 
     return merged
 
 
-def _registry_orgs() -> frozenset[str]:
-    # The one parse of AGENT_REGISTRY_ORGS. The chat push gate of the executor
-    # reads the same rule (``acb_auth.agent_operator``).
-    from acb_auth.agent_operator import registry_operator_orgs  # noqa: PLC0415
-
-    return registry_operator_orgs(str(get_settings().agent_registry_orgs or ""))
-
-
-async def _require_registry_operator(
-    user: UserContext = Depends(get_current_user),
-) -> None:
-    """Only the platform operator changes the agent registry.
-
-    ``agents:manage`` alone is not enough: every org's owner and admin hold
-    it. The registry is deployment-wide, a register clones a repo with the
-    operator's ``GITHUB_TOKEN`` (or reads a path on the server), and the code
-    runs inside the shared gateway. ``AGENT_REGISTRY_ORGS`` names the orgs
-    that may do it. Empty means none (fail closed). The org comes from the
-    server-side ``UserContext``, never from the request.
-    """
-    org = str(user.organization_id or "").strip().lower()
-    allowed = _registry_orgs()
-    if org and ("*" in allowed or org in allowed):
-        return
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail="Only the platform operator can change the agent registry.",
-    )
+#: The keys of a GET /agent item that only a holder of ``agents:manage``
+#: reads (task 4110). ``local_path`` is a path on the server, and
+#: ``dep_status`` is the install health of the agent workspace.
+MANAGER_ONLY_AGENT_KEYS: frozenset[str] = frozenset({"local_path", "dep_status"})
 
 
 #: The 403 detail of the self-mutation queue, for an org that may not review.
@@ -2702,6 +2724,7 @@ def _mint_run_row(
     from gateway.routes.chat import (
         MessageRecord,
         _ensure_session,
+        _newest_stamp,
         _upsert_messages,
     )
 
@@ -2722,7 +2745,11 @@ def _mint_run_row(
             error=str(exc)[:200],
         )
         return
+    # Task 4146: the turn goes after every row of the chat. The read shares
+    # this call's time budget, and a failed read gives None.
+    newest = _newest_stamp(thread_id, organization_id=organization_id)
     if prompt is not None:
+        prompt = _prompt_after(prompt, newest)
         _write_prompt_row(
             thread_id, prompt, member=member, agent_name=agent_name,
             organization_id=organization_id,
@@ -2732,7 +2759,7 @@ def _mint_run_row(
             thread_id,
             [MessageRecord(
                 id=message_id, role="assistant", content="",
-                timestamp=int(time.time() * 1000),
+                timestamp=_mint_stamp(int(time.time() * 1000), prompt, newest),
                 author_email=agent_name, author_kind="agent",
             )],
             actor_email=run_member, agent_name=agent_name,
@@ -2812,6 +2839,38 @@ class PromptToSave(BaseModel):
     member_typed: bool = False
 
 
+def _mint_stamp(
+    now_ms: int, prompt: PromptToSave | None, newest: int | None = None,
+) -> int:
+    """The stamp of a run's agent row (task 4146).
+
+    It is the server's clock, and one millisecond after the run's prompt at
+    least. The prompt is stamped first, in the same worker call, so the two
+    can share one millisecond. The gateway then sorts by ``id``, and a random
+    id puts the reply above its prompt. *newest* is the newest stamp of the
+    chat (``chat._newest_stamp``), and the row goes after it too.
+    """
+    stamp = now_ms
+    if prompt is not None:
+        stamp = max(stamp, prompt.timestamp_ms + 1)
+    if newest is not None:
+        stamp = max(stamp, newest + 1)
+    return stamp
+
+
+def _prompt_after(prompt: PromptToSave, newest: int | None) -> PromptToSave:
+    """*prompt*, stamped after every row of its chat (task 4146).
+
+    *newest* is the newest stamp of the chat, read before the write
+    (``chat._newest_stamp``). A slow browser clock, or a row that code from
+    before task 4146 saved with a fast stamp, would otherwise sort the new
+    turn above the reply before it. With no read, the stamp stays.
+    """
+    if newest is None or prompt.timestamp_ms > newest:
+        return prompt
+    return prompt.model_copy(update={"timestamp_ms": newest + 1})
+
+
 def prompt_to_save(
     *, thread_id: str | None, message_id: str, text: str, timestamp: Any,
     actor: str, room: Any, supersedes: str = "", card_answer: Any = None,
@@ -2835,6 +2894,11 @@ def prompt_to_save(
     could sort this turn above the reply before it. With no stamp, the server
     clock is used.
 
+    Task 4146: the stamp is never after the server's clock. The reply carries
+    the server's clock (the mint, the chat proxy's checkpoint), so a fast
+    browser clock sorted the reply above its prompt for every later read. A
+    slow browser clock keeps its own stamp, as before.
+
     *typed* is the request's mark (WS-63 D-PZ-37): True only when the member
     typed the turn in the message box. A card answer is never typed, so the
     mark of a card answer is False.
@@ -2851,9 +2915,11 @@ def prompt_to_save(
         return None
     if not getattr(room, "can_send", False):
         return None
+    now = int(time.time() * 1000)
     ts = timestamp if isinstance(timestamp, int) and not isinstance(timestamp, bool) else 0
     if not 0 < ts < 2**53:
-        ts = int(time.time() * 1000)
+        ts = now
+    ts = min(ts, now)
     # An edit keeps its "Edited" marker after a reload, as the browser's own
     # save writes it (lib/chatEdit.ts `editedMarker`).
     marker = [{"name": "edited", "value": {"supersedes": supersedes}}] if supersedes else []
@@ -2929,7 +2995,7 @@ def _save_steered_prompt(
     the answer to a steer. A steer starts no run, so no mint shares this
     call. The chat row is made first when it is missing.
     """
-    from gateway.routes.chat import _ensure_session
+    from gateway.routes.chat import _ensure_session, _newest_stamp
 
     try:
         _ensure_session(
@@ -2943,9 +3009,11 @@ def _save_steered_prompt(
             error=str(exc)[:200],
         )
         return False
+    # Task 4146: the steer goes after every row of the chat.
+    newest = _newest_stamp(thread_id, organization_id=organization_id)
     return _write_prompt_row(
-        thread_id, prompt, member=member, agent_name=agent_name,
-        organization_id=organization_id,
+        thread_id, _prompt_after(prompt, newest), member=member,
+        agent_name=agent_name, organization_id=organization_id,
     )
 
 
@@ -4189,15 +4257,50 @@ def _plain_409() -> HTTPException:
 ANSWERED_ONCE = "answered_once"
 
 
-def _answered_once_409() -> HTTPException:
-    """The 409 of a repeat answer or decline that a run already took."""
-    return HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail={
-            "error": ANSWERED_ONCE,
-            "message": "Someone already answered this card.",
-        },
-    )
+def _answered_once_409(by_you: bool | None = None) -> HTTPException:
+    """The 409 of a repeat answer or decline that a run already took.
+
+    Task 4036: ``by_you`` is True when the session's member gave the answer
+    that the run took, and False when another member did. The browser keeps
+    the words out of the composer unless it reads False, so a member whose
+    phone lost the first response never sends the same answer twice. With
+    no responder in the mark or the session, the detail has no ``by_you``.
+    """
+    detail: dict[str, Any] = {
+        "error": ANSWERED_ONCE,
+        "message": (
+            "You already answered this card." if by_you
+            else "Someone already answered this card."
+        ),
+    }
+    if by_you is not None:
+        detail["by_you"] = by_you
+    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
+
+
+#: Task 4036: how long the route waits for a run on another event loop to say
+#: whether it took the answer. That callback runs in a few milliseconds. On a
+#: timeout the route counts the answer as taken, as it did before.
+_TAKE_WAIT_SECONDS = 2.0
+
+
+async def _cross_loop_take(delivered: bool, taken: Any) -> bool:
+    """*delivered*, read again for a run on another event loop.
+
+    ``executor.resolve_user_input`` sets *taken* running only for such a run.
+    A pending *taken* means the run is on this loop, so *delivered* is final.
+    A Future that ``pending_ask.park`` popped first takes nothing (False).
+    Then the route sets no mark, and the answer goes on to the late path.
+    """
+    import asyncio  # noqa: PLC0415
+
+    if not delivered or not (taken.running() or taken.done()):
+        return delivered
+    try:
+        return bool(await asyncio.wait_for(asyncio.wrap_future(taken), _TAKE_WAIT_SECONDS))
+    except Exception:  # noqa: BLE001 — a slow loop keeps the old answer
+        _log.warning("agent.user_input_take_unknown")
+        return True
 
 
 async def _resumable_row(
@@ -4760,6 +4863,7 @@ async def respond_user_input(
     queued as a separate chat message.
     """
     import asyncio  # noqa: PLC0415
+    import concurrent.futures  # noqa: PLC0415
 
     from orchestrator.executor import resolve_user_input  # noqa: PLC0415
 
@@ -4791,10 +4895,15 @@ async def respond_user_input(
     _responder = (getattr(user, "email", None) or "").strip().lower() or None
     # A decline ("Not now", owner request 2026-10-18) resolves it too, so
     # the run RESUMES and reads the decline as its tool result.
+    # Task 4036: a run on another event loop says later whether it took the
+    # answer. One that the park ended first took nothing, so the route sets
+    # no mark, and the answer goes on to the late path.
+    _taken: concurrent.futures.Future[bool] = concurrent.futures.Future()
     delivered = resolve_user_input(
         req.request_id, req.answer, req.was_freeform, thread_id=req.thread_id,
-        responder=_responder, declined=req.declined,
+        responder=_responder, declined=req.declined, taken=_taken,
     )
+    delivered = await _cross_loop_take(delivered, _taken)
     # Cross-worker (P1-2): the run may be parked on another worker.  Relay the
     # answer over the control bus so the owning worker resolves its own Future.
     _command: dict[str, Any] = {
@@ -4814,9 +4923,10 @@ async def respond_user_input(
     _org_id = getattr(user, "organization_id", None)
     if delivered:
         # HRD-16: a run took this answer. A repeat of it acts on nothing.
+        # Task 4036: the mark names the session's member, never the body's.
         from orchestrator.answer_once import mark_answered  # noqa: PLC0415
 
-        await mark_answered(_org_id, req.thread_id, req.request_id)
+        await mark_answered(_org_id, req.thread_id, req.request_id, responder=_responder)
     if delivered and not req.declined:
         # EM-CR (email_app_master_plan.md §18, review of #1191): the record of
         # a reply card's answer, only AFTER the thread that owns the card took
@@ -4834,15 +4944,20 @@ async def respond_user_input(
         # HRD-16: a double tap or a retry of an answer or a decline that a run
         # already took. It starts nothing (no resume, no resend), so it acts
         # once. The check comes BEFORE the late-decline resume below.
-        from orchestrator.answer_once import was_answered  # noqa: PLC0415
+        from orchestrator.answer_once import answered_by, same_responder  # noqa: PLC0415
 
-        if await was_answered(_org_id, req.thread_id, req.request_id):
-            _log.info("agent.user_input_repeat", request_id=req.request_id[:12])
+        _marked = await answered_by(_org_id, req.thread_id, req.request_id)
+        if _marked is not None:
+            _by_you = same_responder(_marked, _responder)
+            _log.info(
+                "agent.user_input_repeat", request_id=req.request_id[:12], by_you=_by_you,
+            )
             # A 409 that names the repeat, so the second device reads "someone
             # answered it" and never a false success (chat_run_continuity.md
             # scenario 6). The browser sends nothing again on it, and the route
-            # skips the restart path, so nothing acts twice.
-            raise _answered_once_409()
+            # skips the restart path, so nothing acts twice. Task 4036: it says
+            # when the same member answered, so the words stay out of the box.
+            raise _answered_once_409(_by_you)
     if not delivered and req.declined:
         # RESUME-4a-2 (D-RES-9): a late decline of a parked plain card with a
         # stored call starts a short continuation that runs no tool, so the

@@ -36,10 +36,15 @@ import {
 } from "../lib/agentLenses";
 import { PHONE_MORE, PHONE_PAGE, WINDOW_ABOVE, allSessionsOf, attention, rankSessions, subTotals } from "../lib/agentScale";
 import { useWindowedList } from "../lib/windowedList";
-import { NO_MATCH_COPY, NO_ORCHESTRATOR } from "./AgentBoardList";
-import { TileCounts } from "./AgentOverview";
 import { SessionCard, pressKeys } from "./AgentSessionCard";
-import { Squares, SubBar } from "./AgentSquares";
+import {
+  NO_MATCH_COPY,
+  STARTED_DIRECTLY,
+  STARTED_DIRECTLY_TIP,
+  Squares,
+  SubBar,
+  TileCounts,
+} from "./AgentSquares";
 import { QuestionsView } from "./QuestionsView";
 
 /** One level of the phone view. An empty path is the first screen. */
@@ -187,7 +192,7 @@ export function AgentsPhone(props: AgentsPhoneProps) {
 
   const person = step && "person" in step ? model.people.find((p) => p.person === step.person) : undefined;
   const group = step && "key" in step ? person?.groups.find((g) => g.key === step.key) : undefined;
-  const groupName = (g: { orch: LensSession | null }) => g.orch?.name ?? NO_ORCHESTRATOR;
+  const groupName = (g: { orch: LensSession | null }) => g.orch?.name ?? STARTED_DIRECTLY;
 
   const stepWord = (s: PhoneStep | undefined): string => {
     if (!s) return "Agents";
@@ -324,7 +329,7 @@ export function AgentsPhone(props: AgentsPhoneProps) {
           return (
             <Row
               key={g.key}
-              label={`${g.orch ? `Orchestrator ${g.orch.name}` : NO_ORCHESTRATOR}. ${countLabel(c)}.`}
+              label={`${g.orch ? `Orchestrator ${g.orch.name}` : STARTED_DIRECTLY}. ${countLabel(c)}.`}
               onOpen={() => go({ kind: "group", person: person.person, key: g.key })}
               head={
                 <>
@@ -332,7 +337,9 @@ export function AgentsPhone(props: AgentsPhoneProps) {
                     <Icon name="Bot" size={16} aria-hidden />
                   </span>
                   <span className="flex min-w-0 flex-col">
-                    <span className="truncate text-sm font-semibold text-foreground">{groupName(g)}</span>
+                    <span className="truncate text-sm font-semibold text-foreground" title={g.orch ? undefined : STARTED_DIRECTLY_TIP}>
+                      {groupName(g)}
+                    </span>
                     <TileCounts counts={c} />
                   </span>
                 </>

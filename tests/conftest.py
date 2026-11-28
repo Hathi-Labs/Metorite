@@ -234,7 +234,8 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
 # 2026-09-20, when a full `tests/unit/` run in another checkout was writing to
 # the same database. Two runs already share `tier_catalog` and
 # `provider_credential`, so they were never isolated -- give a second run its
-# own database with `METORITE_SCRATCH_CONSOLE_PORT`.
+# own databases with `METORITE_SCRATCH_SLOT` (task 4105). A port variable alone
+# does not: `dev_db.sh` reuses a running container by its name.
 #
 # Set `METORITE_KEEP_SCRATCH=1` to inspect a run's rows afterwards.
 

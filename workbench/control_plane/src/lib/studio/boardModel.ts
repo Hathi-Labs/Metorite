@@ -33,6 +33,8 @@ export interface BoardConfig {
   maxCards: number;
   /** The start of the record link of a card, or null for a card with no link (STU-AF5). */
   openBase: string | null;
+  /** `switch`: on a phone one lane shows at a time, with a lane switcher (STU-LY-4b). Absent: the lanes stack. */
+  phone?: "switch";
 }
 
 export type ParsedBoard = { ok: true; config: BoardConfig } | { ok: false; reason: string };
@@ -63,7 +65,8 @@ export function parseBoard(data: unknown): ParsedBoard {
   return {
     ok: true,
     config: { fields, group, titleField, cardFields: cardFields.slice(0, MAX_CARD_FIELDS), update, maxCards: max,
-      openBase: typeof d.openBase === "string" && d.openBase ? d.openBase : null },
+      openBase: typeof d.openBase === "string" && d.openBase ? d.openBase : null,
+      ...(d.phone === "switch" ? { phone: "switch" as const } : {}) },
   };
 }
 

@@ -1,7 +1,7 @@
 """Per-agent skill toggles — WS-23 S2 (specs/skills_registry.md §3, §4).
 
 GET /agent/{name}/skills
-    The stored ``agent_skill_setting`` rows for one agent (agent-wide
+    Gated ``feature:agents`` (task 4110). The stored ``agent_skill_setting`` rows for one agent (agent-wide
     ``instance = ''``), plus the derived disabled-family list and which
     families are not toggleable and why.
 
@@ -31,7 +31,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from acb_auth import UserContext, get_current_user, require_permission
+from acb_auth import UserContext, get_current_user, require_feature, require_permission
 from acb_common import get_logger
 from fastapi import APIRouter, Depends, HTTPException
 from gateway.db import tenant_session as _tenant_session
@@ -158,7 +158,9 @@ def _require_known_agent(name: str) -> None:
 
 # ── Endpoints ───────────────────────────────────────────────────────────────
 
-@router.get("/{name}/skills", summary="Per-agent skill-family settings")
+# Task 4110: the read takes ``feature:agents``, the gate of the Agents pane.
+@router.get("/{name}/skills", summary="Per-agent skill-family settings",
+            dependencies=[require_feature("agents")])
 async def get_agent_skills(
     name: str,
     user: UserContext = Depends(get_current_user),

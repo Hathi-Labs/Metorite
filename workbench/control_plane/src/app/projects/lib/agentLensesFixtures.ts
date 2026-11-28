@@ -67,7 +67,7 @@ export function bigFleet(size = 500, subsEach = 4): AgentMap {
   const lines: Array<{ from: string; to: string }> = [];
   for (let i = 0; i < size - orchs.length; i += 1) {
     const orch = orchs[i % orchs.length];
-    // The last orchestrator holds idle sessions only, so one tile is quiet.
+    // The last orchestrator holds idle sessions only.
     const state = orch.id === "o14" ? "quiet" : states[(i * 7) % states.length];
     const id = `s${i}`;
     sessions.push(
@@ -84,4 +84,42 @@ export function bigFleet(size = 500, subsEach = 4): AgentMap {
   }
   if (size <= 15) lines.length = 0;
   return mapOf(sessions, runs, lines);
+}
+
+/**
+ * The fleet of AMR-5, 64 sessions of two people. Ana holds 4 active agents and
+ * 43 idle or done ones. Ben holds 17 idle or done ones, so nothing of Ben is
+ * active. Ana's orchestrator `boss` dispatched three of the active ones.
+ */
+export function splitFleet(): AgentMap {
+  const quiet = (id: string, i: number, over: Record<string, unknown> = {}) =>
+    session(id, { state: i % 2 ? "done" : "quiet", ...over });
+  return mapOf(
+    [
+      session("boss"),
+      session("lane-1"),
+      session("lane-2", { state: "waiting" }),
+      session("lane-3", { state: "failed" }),
+      ...Array.from({ length: 43 }, (_, i) => quiet(`a${i}`, i)),
+      ...Array.from({ length: 17 }, (_, i) => quiet(`b${i}`, i, { person: "ben@x.test" })),
+    ],
+    [
+      run("rb", "boss"),
+      run("r1", "lane-1"),
+      run("r2", "lane-2", { state: "waiting", waiting_on: "ci", waiting_until: "2026-11-26T12:04:00Z" }),
+    ],
+    [1, 2, 3].map((n) => ({ from: "boss", to: `lane-${n}` })),
+  );
+}
+
+/** `size` working sessions of three people, ten to an orchestrator. */
+export function workingFleet(size = 500): AgentMap {
+  const people = ["ana@x.test", "ben@x.test", "cy@x.test"];
+  const lines: Array<{ from: string; to: string }> = [];
+  const sessions = Array.from({ length: size }, (_, i) => {
+    const head = i - (i % 10);
+    if (i !== head) lines.push({ from: `w${head}`, to: `w${i}` });
+    return session(`w${i}`, { person: people[(head / 10) % 3] });
+  });
+  return mapOf(sessions, sessions.map((s) => run(`r-${s.id}`, s.id)), lines);
 }

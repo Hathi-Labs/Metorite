@@ -25,6 +25,7 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import contextvars
 import dataclasses
@@ -3183,6 +3184,7 @@ _USER_INPUT_TIMEOUT = int(os.environ.get("ASK_USER_TIMEOUT", "3600"))
 def resolve_user_input(
     request_id: str, answer: str, was_freeform: bool = True,
     *, thread_id: str | None, responder: str | None = None, declined: bool = False,
+    taken: concurrent.futures.Future[bool] | None = None,
 ) -> bool:
     """Resolve a pending ``ask_user`` request with the user's answer.
 
@@ -3201,6 +3203,14 @@ def resolve_user_input(
 
     AUTO-7a: a run with no person present answers no card and no question,
     of its own run or of a live chat, so it resolves nothing.
+
+    *taken* (task 4036): a Future that the caller may pass. A run on another
+    event loop takes the answer later, in a callback on its own loop. Then
+    this sets *taken* running, returns True, and the callback sets it to
+    whether the answer reached the Future. A Future that ``pending_ask.park``
+    popped first takes nothing, so the caller must not mark the answer as
+    taken. On the same loop this leaves *taken* pending, because the bool
+    is final.
     """
     if no_person_present():
         _log.warning("executor.user_input_no_person", request_id=request_id[:12])
@@ -3240,9 +3250,21 @@ def resolve_user_input(
         # ``call_soon`` read as "no answer", and the run was parked over it.
         fut.set_result(payload)
         return True
-    loop.call_soon_threadsafe(
-        lambda: (not fut.done()) and fut.set_result(payload)
-    )
+    def _apply_on_run_loop() -> None:
+        # The same rule as the check above, read again on the run's loop: a
+        # Future that left ``_pending_user_input`` has no waiter. The park pops
+        # it with no await after its last check, so an answer either reaches
+        # the run, or it reaches nothing and the caller takes the late path.
+        took = not fut.done() and _pending_user_input.get(request_id) is fut
+        if took:
+            fut.set_result(payload)
+        if taken is not None:
+            with contextlib.suppress(Exception):
+                taken.set_result(took)
+
+    if taken is not None:
+        taken.set_running_or_notify_cancel()
+    loop.call_soon_threadsafe(_apply_on_run_loop)
     return True
 
 

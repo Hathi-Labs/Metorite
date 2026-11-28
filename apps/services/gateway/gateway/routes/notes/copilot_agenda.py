@@ -32,7 +32,14 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from acb_llm.voice import voice_prompt
 from fastapi import Depends, HTTPException
-from gateway.routes.notes.core import _get_db, _log, _tenant_session, router
+from gateway.routes.notes.core import (
+    OWNED_MEETING_PREDICATE,
+    _get_db,
+    _log,
+    _tenant_session,
+    load_owned_meeting,
+    router,
+)
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -237,6 +244,13 @@ async def instructions_for_meeting(meeting_id: str) -> str:
 
 # ── API ─────────────────────────────────────────────────────────────────────
 
+#: The agenda write of the two routes, with the owner rule bound in.
+_WRITE_AGENDA_SQL = (
+    "UPDATE meeting AS m SET agenda = CAST(:a AS JSONB) "
+    f"WHERE m.id = CAST(:id AS UUID) AND {OWNED_MEETING_PREDICATE}"
+)
+
+
 class AgendaRequest(BaseModel):
     agenda: list[dict] = []
 
@@ -252,26 +266,28 @@ class InstructionsRequest(BaseModel):
 @router.get("/meetings/{meeting_id}/agenda")
 async def read_agenda(
     meeting_id: str,
-    _user: UserContext = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ) -> dict:
-    return {"agenda": await get_agenda(meeting_id)}
+    """The agenda of the meeting. Owner only, read in the bound tenant
+    (task 3966). ``get_agenda`` stays for the copilot task."""
+    async with _tenant_session() as db:
+        row = await load_owned_meeting(db, meeting_id, user.email, columns="m.agenda")
+    return {"agenda": normalize_agenda(row.agenda)}
 
 
 @router.put("/meetings/{meeting_id}/agenda")
 async def write_agenda(
     meeting_id: str,
     body: AgendaRequest,
-    _user: UserContext = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ) -> dict:
-    """Set the agenda directly (hand-edited, or accepted from the chat)."""
+    """Set the agenda directly (hand-edited, or accepted from the chat).
+    Owner only: the rule is bound INTO the write (task 3966)."""
     items = normalize_agenda(body.agenda)
     async with _tenant_session() as db:
         res = await db.execute(
-            text(
-                "UPDATE meeting SET agenda = CAST(:a AS JSONB) "
-                "WHERE id = CAST(:id AS UUID)"
-            ),
-            {"a": json.dumps(items), "id": meeting_id},
+            text(_WRITE_AGENDA_SQL),
+            {"a": json.dumps(items), "id": meeting_id, "owner": user.email or ""},
         )
         if res.rowcount == 0:
             raise HTTPException(status_code=404, detail="meeting not found")
@@ -295,18 +311,12 @@ async def chat_agenda(
     if not message:
         raise HTTPException(status_code=400, detail="empty message")
 
+    # Owner only, BEFORE the model call (task 3966): a colleague's id must
+    # not spend tokens or read the brief.
     async with _tenant_session() as db:
-        row = (
-            await db.execute(
-                text(
-                    "SELECT agenda, copilot_brief FROM meeting "
-                    "WHERE id = CAST(:id AS UUID)"
-                ),
-                {"id": meeting_id},
-            )
-        ).fetchone()
-    if row is None:
-        raise HTTPException(status_code=404, detail="meeting not found")
+        row = await load_owned_meeting(
+            db, meeting_id, user.email, columns="m.agenda, m.copilot_brief"
+        )
 
     reply, agenda = await draft_agenda(
         message,
@@ -316,11 +326,8 @@ async def chat_agenda(
     )
     async with _tenant_session() as db:
         await db.execute(
-            text(
-                "UPDATE meeting SET agenda = CAST(:a AS JSONB) "
-                "WHERE id = CAST(:id AS UUID)"
-            ),
-            {"a": json.dumps(agenda), "id": meeting_id},
+            text(_WRITE_AGENDA_SQL),
+            {"a": json.dumps(agenda), "id": meeting_id, "owner": user.email or ""},
         )
     from gateway.routes.notes import copilot_context
 

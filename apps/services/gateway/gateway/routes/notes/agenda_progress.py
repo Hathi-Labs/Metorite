@@ -28,9 +28,9 @@ import time
 from collections import deque
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends
-from gateway.routes.notes.copilot_agenda import get_agenda, item_covered
-from gateway.routes.notes.core import _log, _tenant_session, router
+from fastapi import Depends, HTTPException
+from gateway.routes.notes.copilot_agenda import item_covered, normalize_agenda
+from gateway.routes.notes.core import _log, _tenant_session, load_owned_meeting, router
 from sqlalchemy import text
 
 #: Words of recent speech kept per meeting. ~2000 words is roughly fifteen
@@ -105,48 +105,51 @@ def reset(meeting_id: str) -> None:
         store.pop(meeting_id, None)
 
 
-async def _stored_transcript(meeting_id: str) -> str:
+async def _stored_transcript(db, meeting_id: str) -> str:
     """The finished meeting's transcript — the fallback source of coverage once
-    the live state is gone."""
-    try:
-        async with _tenant_session() as db:
-            row = (
-                await db.execute(
-                    text(
-                        "SELECT transcript FROM meeting WHERE id = CAST(:id AS UUID)"
-                    ),
-                    {"id": meeting_id},
-                )
-            ).fetchone()
-        return (getattr(row, "transcript", "") or "") if row is not None else ""
-    except Exception as exc:
-        _log.warning("notes.agenda_transcript_read_failed", error=str(exc)[:200])
-        return ""
+    the live state is gone. ``db`` is the bound session of the route, which
+    already checked the owner."""
+    row = (
+        await db.execute(
+            text("SELECT transcript FROM meeting WHERE id = CAST(:id AS UUID)"),
+            {"id": meeting_id},
+        )
+    ).fetchone()
+    return (getattr(row, "transcript", "") or "") if row is not None else ""
 
 
 @router.get("/meetings/{meeting_id}/agenda/progress")
 async def read_progress(
     meeting_id: str,
-    _user: UserContext = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ) -> dict:
     """Per-item coverage for the live console, and for the post-meeting recap.
 
-    Cheap enough to poll: one agenda read plus token overlap. Never raises — a
-    coverage read must not be able to disturb a meeting in progress.
+    Cheap enough to poll: one agenda read plus token overlap. A database
+    error never raises — a coverage read must not be able to disturb a
+    meeting in progress. It answers an empty agenda.
 
     Two sources, because the live state is in-memory and deliberately dropped
     when a meeting ends. Reading only that would make the post-meeting recap
     report every item as missed on every finished meeting — the transcript is
-    the honest source once the call is over."""
+    the honest source once the call is over.
+
+    Owner only, checked before the live state is read (task 3966). The 404
+    of the detail route is the only error it raises. The reads run in the
+    bound session of this request. A database error gives the empty answer
+    for every id, so it is no oracle."""
     try:
-        agenda = await get_agenda(meeting_id)
+        async with _tenant_session() as db:
+            row = await load_owned_meeting(db, meeting_id, user.email, columns="m.agenda")
+            agenda = normalize_agenda(row.agenda)
+            tracking = is_tracking(meeting_id)
+            said = "" if tracking else await _stored_transcript(db, meeting_id)
+    except HTTPException:
+        raise
     except Exception as exc:
         _log.warning("notes.agenda_progress_failed", error=str(exc)[:200])
-        agenda = []
-    if is_tracking(meeting_id):
-        covered = mark(meeting_id, agenda)
-    else:
-        covered = coverage_for(agenda, await _stored_transcript(meeting_id))
+        return {"items": [], "covered_count": 0, "total": 0, "elapsed_s": 0.0}
+    covered = mark(meeting_id, agenda) if tracking else coverage_for(agenda, said)
     return {
         "items": [
             {

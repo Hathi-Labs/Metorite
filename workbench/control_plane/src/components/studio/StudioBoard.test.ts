@@ -7,6 +7,7 @@
  * `keyStep` into the same store, as the view does.
  */
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -431,5 +432,21 @@ describe("the source", () => {
     for (const f of ["boardModel.ts", "boardMove.ts"]) {
       expect(read("../../lib/studio/" + f), f).not.toMatch(/from "react/);
     }
+  });
+});
+
+describe("the lane switcher on a phone (STU-LY-4b)", () => {
+  const src = readFileSync(join(__dirname, "StudioBoard.tsx"), "utf-8");
+  it("shows the lane tabs only on a phone, and hides or tucks away lanes only on a phone", () => {
+    expect(src).toContain('className="sm:hidden" data-lane-switcher=""');
+    expect(src).toContain("max-sm:[&>[data-lane-off]]:hidden");
+    // The lane of a held card must not be display:none: the card would lose focus.
+    expect(src).toContain("max-sm:[&>[data-lane-held]]:sr-only");
+    expect(src).toContain('data-lane-off={mark === "off" ? "" : undefined}');
+    expect(src).toContain('data-lane-held={mark === "held" ? "" : undefined}');
+  });
+  it("draws neither the tabs nor the marks for a board with no phone switch", () => {
+    expect(src).toContain('const switcher = config.phone === "switch";');
+    expect(src).toContain('const mark = switcher ? laneMark(lane.id, shown, hold) : "shown";');
   });
 });
