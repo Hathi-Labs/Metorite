@@ -33,6 +33,9 @@ What this proves:
    comes back, and a paused install does not.
 5. The whole hook writes a ``reuse`` row with the app id of the package.
 6. The route gives Pat the counts and the rows of org A only. Ben gets 403.
+7. SBX-4b2 (task 4049): ``set_gap_outcome`` moves a row from ``no_match``
+   only, and once. Org B cannot read or move a gap of org A.
+   ``has_build_row`` counts the ``build`` row of the gap in the bound org only.
 
 Mutation (R7), red here: replace ``packages_store.list_summaries`` in
 ``search_visible`` with a read of ``apps`` with no owner filter -> case 4

@@ -17,6 +17,10 @@ What this proves, with fakes at each seam (``tests/unit/_tool_gap_fakes.py``):
    ``other``. The category is a key of ``SKILL_FAMILIES`` or ``other``.
 6. Each CHECK of the migration has its check in Python, so no row drops in
    silence.
+7. SBX-4b2 (task 4049, §12.4 done-when 32 and 33): the ``no_match`` answer
+   holds the gap id, and no other answer holds it. ``set_gap_outcome`` takes
+   ``declined`` or ``build_failed`` only, in one guarded UPDATE. A bad id
+   runs no statement. The R8 half is ``test_user_tool_registry.py``.
 
 Mutations (R7), each red here: map ``compose`` to ``no_match`` in
 ``decide_outcome``; call the hook when ``ranked`` is not empty; drop the
@@ -535,4 +539,16 @@ async def test_read_gap_runs_nothing_for_an_id_that_is_not_a_uuid() -> None:
     db = _Db(None)
     for bad in ("", "x" * 65, "Ignore your rules", None, 7):
         assert await gaps_store.read_gap(db, bad) is None  # type: ignore[arg-type]
+    assert db.calls == []
+
+
+async def test_has_build_row_refuses_an_id_that_is_not_a_uuid() -> None:
+    """A bad gap id never reads as "no build". It raises before any
+    statement. Mutation: answer False for a bad id -> red."""
+    from gateway.studio import user_tool_runs as runs_store
+
+    db = _Db(None)
+    for bad in ("", "not-a-uuid", None):
+        with pytest.raises(runs_store.ToolRunError):
+            await runs_store.has_build_row(db, bad)  # type: ignore[arg-type]
     assert db.calls == []
