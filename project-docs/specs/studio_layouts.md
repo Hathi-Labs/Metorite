@@ -2,7 +2,7 @@
 
 **Status: DRAFT (2026-11-14, task 3312). The owner answered the three questions of §9 on 2026-11-14, and the spec is not yet ACTIVE. LY-0 is BUILT, dark (2026-11-15, task 3313, PR 2354): the model, the validator and the TS twin, with no renderer.** Board: WS-STU, Metorite task 3312, slices 3313 to 3322. Parent spec: `ai_studio.md` (§5.5 is the app frame, D219). Research note: the lane file `studio_layouts.md` of 2026-11-14. This spec holds the result, and the note is not a source of record.
 
-**§11 status.** §11, the look of an app (LOOK-0, task 3358), is added on 2026-11-26. The owner answered its three questions on 2026-11-15 (§11.8).
+**§11 status.** §11, the look of an app (LOOK-0, task 3358), is added on 2026-11-26. The owner answered its three questions on 2026-11-15 (§11.8). LOOK-2 slice 1 is BUILT, dark (task 3362, PR 2401): the icon on a stat view.
 
 **Bottom line.** Studio ships 12 page presets and 2 patterns (record 360 and form wizard). A page preset is one enum value plus named regions. The author and Mira pick a preset, and the app draws it. A page with no preset keeps today's grid, so stored manifests stay valid. Build six first: table workspace, record 360, board, form wizard, work queue with approval, and dashboard. Record 360 and form wizard build as the record page and a Form mode (§6).
 
@@ -252,12 +252,12 @@ Each layout slice has four parts: the preset component built on `StudioPage` and
 | LY-1 | 3314 | Shared states component | Every preset uses it. A test refuses a local copy. |
 | LY-2 | 3315 | Table workspace: the layout, the shared states, the count line, and a table that keeps 40rem and scrolls in its own strip | The layout and states of the L2 bar. The column hide and the bulk bar are in LY-2b (task 3356), by the LY-2 audit on task 3315 (2026-11-15). The active-filter chips, the phone card list and the tablet panel overlay have no slice yet. **Status: BUILT, dark behind `NEXT_PUBLIC_STUDIO_APP_FRAME` (PR 2363).** |
 | LY-2b | 3356 | Table workspace: column hide, kept in the URL | A member hides columns. The first column never hides, and one column stays. **Status: BUILT, dark behind `NEXT_PUBLIC_STUDIO_APP_FRAME` (PR 2386): the column hide.** The bulk bar is not built. The owner chose "Only a bulk action that the app declares" (task 3356, answer `5e83e927`, 2026-11-15). |
-| LY-3 | 3316 | Record 360, as the AF-5 record page | Meets the L6 bar. Needs `record` (task 3254). |
-| LY-4 | 3317 | Board | Shared filters with L2, phone stage switcher. |
+| LY-3 | 3316 | Record 360, as the AF-5 record page | Meets the L6 bar. Needs `record` (task 3254). **Status: PARTLY BUILT, dark behind `NEXT_PUBLIC_STUDIO_APP_FRAME` (PR 2364): the key facts in the header, the Files count and the not-found sentence.** Left: the main action in the header, the cap of 4 related lists and their counts, the Activity tab (D22), the side panel and the draft keep. |
+| LY-4 | 3317 | Board | Shared filters with L2, phone stage switcher. **Status: PARTLY BUILT, dark behind `NEXT_PUBLIC_STUDIO_APP_FRAME` (PR 2365): the board preset with the shared states, the count line and the sideways-scroll cue.** Left: the phone stage switcher (LY-4b, task 3354), filters shared between a table page and a board page, the tablet column rules and the drop hint of an empty column. |
 | LY-5 | 3318 | Form wizard, as a step mode of Form | Steps, progress, review step, draft keep. |
 | LY-6 | 3319 | Work queue and approval | Next item, decision bar, success empty state. |
 | LY-7 | 3320 | Dashboard | Tile states, caps, tile-to-list link. |
-| LY-8 | 3321 | Mira and IDE | `studio_describe` knows the presets. The Pages tab has a picker. Eval passes. **Status: BUILT (PR 2372): `studio_describe` and the eval of 14 prompts on `layout_hint`.** The Pages-tab picker is LY-8b (task 3352, PR 2381). |
+| LY-8 | 3321 | Mira and IDE | `studio_describe` knows the presets. The Pages tab has a picker. Eval passes. **Status: BUILT (PR 2372): `studio_describe` and the eval of 14 prompts on `layout_hint`.** The Pages-tab picker is LY-8b (task 3352). **LY-8b status: BUILT, dark behind `NEXT_PUBLIC_STUDIO_APP_FRAME` (PR 2381): the picker, the region rows and the note for left-out views.** |
 | LY-9 to LY-15 | 3322 | Calendar, list and detail, gallery, map, timeline, checklist, document and settings | One slice each, after its block. |
 
 ## 9. Owner decisions (2026-11-14, task 3312)
@@ -345,7 +345,7 @@ D12 forbids a colour key and a size key. It does not forbid a choice of presenta
 |---|---|---|---|
 | Card list | `emphasis: "card"` on a table view | Each row as a card: a title, two fields, and an optional cover, avatar or icon | The board card parts, `ValueElement` for a person, `Badge` |
 | Cover | `cover: <file field key>` with `emphasis: "card"` | An image at the top of a card. A failed image shows a plain plate with the icon | An `attachments` image, never a raw id |
-| Icon | `icon: <name of NAV_ICONS>` on a stat or card view | A small icon before the title | `Icon`, the 42 names of the icon list |
+| Icon | `icon: <name of NAV_ICONS>` on a stat or card view | A small icon before the title. The stat view is BUILT (PR 2401), and the card view is still to come. | `Icon`, the 42 names of the icon list |
 | Stat with trend | exists (D4) | The number and the change against the last period | `StudioStat` |
 | Progress | `target: <number>` on a stat view | A bar for the share of the target | `ProgressBar` |
 | Hero header | `hero: true` on the page `header` (after AF-7) | A larger title, the sentence, and an optional cover | `PageHeader` |

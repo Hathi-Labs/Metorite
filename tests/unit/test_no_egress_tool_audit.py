@@ -85,6 +85,9 @@ EXPECTED_WITHHELD: dict[str, frozenset[str]] = {
         # RX-1 (D169): the four record writes stay, each behind its own card.
         "web_search", "fetch_page", "run_workflow",
         "save_memory", "save_note",
+        # Task 3953: the approve of a mapping plan is class C and approves the
+        # field map of the whole org. No owner decision keeps it in a held run.
+        "crm_approve_mapping_plan",
     }),
     "projects-assistant": frozenset({
         "web_search", "fetch_page", "save_memory", "save_note",
@@ -116,6 +119,12 @@ EXPECTED_WITHHELD: dict[str, frozenset[str]] = {
         # D129 (task 808): an open run no longer holds code_task or run_script.
         "web_search", "fetch_page", "run_workflow",
         "save_memory", "save_note",
+        # P-4b (task 3961): each card write of the inbox is off in a held run,
+        # by ``egress.HELD_OFF_OWN_WRITES``. The reads and the drafts stay.
+        "capture_whatsapp_task", "create_whatsapp_saved_reply",
+        "delete_whatsapp_saved_reply", "seed_whatsapp_categories",
+        "snooze_whatsapp_chat", "unsnooze_whatsapp_chat",
+        "update_whatsapp_category",
     }),
     "task-manager": frozenset({
         # (B) an assigned agent starts a run of its own, with no hold

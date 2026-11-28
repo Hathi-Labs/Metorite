@@ -18,6 +18,11 @@ describe("blockStateKind", () => {
     expect(blockStateKind({ ...all, forbidden: false, error: null })).toBe("loading");
     expect(blockStateKind({ ...all, forbidden: false, error: null, loading: false })).toBe("empty");
   });
+  it("draws not-found for a missing record, under no-permission and over error", () => {
+    expect(blockStateKind({ ...base, rows: 0, missing: true })).toBe("not-found");
+    expect(blockStateKind({ ...base, rows: 0, missing: true, error: "x" })).toBe("not-found");
+    expect(blockStateKind({ ...base, rows: 0, missing: true, forbidden: true })).toBe("no-permission");
+  });
   it("tells a filtered empty from a true empty", () => {
     expect(blockStateKind({ ...base, rows: 0, filtersActive: true })).toBe("filtered");
     expect(blockStateKind({ ...base, rows: 0 })).toBe("empty");
@@ -43,6 +48,11 @@ describe("blockStateCopy", () => {
     expect(c.message).toBe("The visits did not load.");
     expect(c.hint).toContain("data is safe");
     expect(c.action).toBe("Retry");
+  });
+  it("says one sentence for a record that is gone and one the viewer may not read", () => {
+    const c = blockStateCopy("not-found", { noun: "visit" });
+    expect(c.message).toBe("This visit was not found, or you cannot open it.");
+    expect(c.action).toBeUndefined();
   });
   it("says who to ask for access", () => {
     expect(blockStateCopy("no-permission", { ...w, askWho: "an admin" }).hint).toBe("Ask an admin for access.");

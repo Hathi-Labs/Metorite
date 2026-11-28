@@ -44,12 +44,37 @@ describe("LayoutBody", () => {
     expect(draw("table_workspace", { main: [] })).toContain("no table to show");
   });
   it("says that a preset of a later slice is not drawn yet", () => {
-    const html = draw("board", { main: ["b"] });
-    expect(html).toContain('data-layout-pending="board"');
+    const html = draw("dashboard", { kpis: ["b"] });
+    expect(html).toContain('data-layout-pending="dashboard"');
     expect(html).not.toContain("data-view");
   });
+  it("draws the main region of a board in a labelled section", () => {
+    const html = draw("board", { main: ["pipeline"] });
+    expect(html).toContain('data-layout="board"');
+    expect(html).toContain('data-view="pipeline"');
+    expect(html).not.toContain("data-layout-pending");
+  });
+  it("wraps a board in the sideways-scroll cue, which draws nothing until a lane hides", () => {
+    const html = draw("board", { main: ["pipeline"] });
+    expect(html).toContain('data-scroll-cue="none"');
+    expect(html).not.toContain("More columns");
+    expect(html.indexOf("data-scroll-cue")).toBeLessThan(html.indexOf('data-view="pipeline"'));
+    expect(draw("table_workspace", { main: ["t"] })).not.toContain("data-scroll-cue");
+  });
+  it("points the cue at the element that scrolls: the board, not the page", () => {
+    const read = (p: string) => readFileSync(join(process.cwd(), "src", p), "utf8");
+    const cue = read("components/studio/layouts/ScrollCue.tsx");
+    expect(cue).toContain(`BOARD_SCROLLER = '[aria-label="Board"]'`);
+    expect(cue).toContain("querySelector<HTMLElement>(BOARD_SCROLLER)");
+    expect(cue).not.toContain("data-page-scroller");
+    expect(read("components/studio/StudioBoard.tsx")).toContain('aria-label="Board"');
+    expect(read("components/board/Board.tsx")).toContain("overflow-x-auto");
+  });
+  it("names a board, not a table, when the board region is empty", () => {
+    expect(draw("board", { main: [] })).toContain("no board to show");
+  });
   it("draws only the presets that a slice built", () => {
-    expect([...DRAWN_LAYOUTS]).toEqual(["table_workspace"]);
+    expect([...DRAWN_LAYOUTS]).toEqual(["table_workspace", "board"]);
   });
   it("adds no colour and no pixel size", () => {
     const src = readFileSync(join(__dirname, "LayoutBody.tsx"), "utf-8");
@@ -65,7 +90,8 @@ describe("the frame", () => {
     expect(frame).toContain("toggleHidden(s, k, tableColumns)");
   });
   it("wraps the main table of a table workspace in LayoutList, which draws StudioBlockState", () => {
-    expect(frame).toContain('built.page.layout === "table_workspace"');
+    expect(frame).toContain('preset === "table_workspace" || preset === "board"');
+    expect(frame).toContain('shape={preset === "board" ? "board" : "rows"}');
     expect(frame).toContain("<LayoutList");
     expect(frame).toMatch(/function LayoutList[\s\S]*<StudioBlockState/);
   });

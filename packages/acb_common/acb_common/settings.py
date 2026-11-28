@@ -138,6 +138,20 @@ class Settings(FlagRegistry):
     # `enforcement-flip`. Fence: tests/unit/test_tenant_session_aborted_r8.py.
     tenant_session_abort_mode: str = "log"
 
+    # Task 574 (WS-2d, BO-8): what a service does at start when a secret that
+    # it needs is empty or public (`docs/secrets_drop.md` §6). `shadow` (the
+    # default) logs `secrets.unusable` with the setting NAME and starts.
+    # `enforce` refuses to start. Any other value reads as `shadow`, and
+    # `ACB_ENV=dev` checks nothing. The one reader is
+    # `secret_startup_check_mode` below, and the one check is
+    # `acb_auth.secret_check.check_startup_secrets`. It is read at start only,
+    # so a change needs a restart of each unit (`docs/flag_reload.md`). A flip
+    # to `enforce` on a box is the grant `enforcement-flip`, and only after
+    # that unit's shadow line reads `unusable=0`.
+    # Fence: tests/unit/test_secret_startup_check.py. In that file,
+    # `test_the_mode_has_one_reader` fails when another module reads the mode.
+    secret_startup_check: str = "shadow"
+
     # The pool of the sync `acb_graph` engine. It counts against the SAME
     # pooler budget as the async pool above (see the note there).
     db_sync_pool_size: int = 2
@@ -1465,6 +1479,15 @@ class Settings(FlagRegistry):
     sandbox_max_total: int = 4
     compute_max_per_org: int = 1
     compute_max_total: int = 1
+    # SBX-4b1 (agent_sandbox.md §5.6 and §12.4 decisions 1 and 8). The caps of
+    # the `tools` target: one container for each org, and one on the box. A
+    # `tools` container also counts against the two caps above. At a cap the
+    # build gets "busy". The whole build of one user tool has
+    # `user_tool_step_seconds_build` seconds: the session, the installs and
+    # the smoke rounds. Fence: tests/unit/test_user_tool_build.py.
+    user_tool_max_per_org: int = 1
+    user_tool_max_total: int = 1
+    user_tool_step_seconds_build: int = 600
     # Disk checks of §7.1 rule 10. The floor is the free space of the file
     # system that holds state_root(). The owner sizes it at WS43-G3.
     sandbox_min_free_disk_mb: int = 5120
@@ -1946,7 +1969,16 @@ class Settings(FlagRegistry):
     # `acb-agent-edge` (`docs/flag_reload.md`). `acb_auth.agent_oauth.write_cap`
     # and `write_window_s` are the one readers. 🔴 A change on a box is gate
     # `enforcement-flip`.
+    # MCP-G28a (D209): the cap has two counters, per connection, both in the
+    # window of `agent_write_window_s`. `agent_write_cap` counts CALLS: one
+    # for each single write, and one for each call of `update_tasks` (one
+    # more for each further 50 rows of one call). `agent_write_row_cap`
+    # counts ROWS: one for each signed write. So a batch of 50 rows costs 1
+    # call and 50 rows, and a single write costs 1 call and 1 row. The row
+    # cap default is 5000. `acb_auth.agent_oauth.write_row_cap` is its one
+    # reader. The same restart and the same gate apply.
     agent_write_cap: int = 120
+    agent_write_row_cap: int = 5000
     agent_write_window_s: int = 600
     agent_access_token_ttl_s: int = 3600
     agent_refresh_token_ttl_s: int = 30 * 24 * 3600
@@ -2173,6 +2205,25 @@ def tenant_session_abort_mode() -> str:
         return "log"
     mode = raw.strip().lower()
     return mode if mode in TENANT_SESSION_ABORT_MODES else "log"
+
+
+#: The modes of ``SECRET_STARTUP_CHECK`` (task 574).
+SECRET_STARTUP_CHECK_MODES: tuple[str, ...] = ("shadow", "enforce")
+
+
+def secret_startup_check_mode(settings: Settings | None = None) -> str:
+    """The ONE reader of ``SECRET_STARTUP_CHECK``: ``shadow`` or ``enforce``.
+
+    Any other value, and a settings load that fails, read as ``shadow``, so a
+    typo never takes a unit down. ``acb_auth.secret_check`` reads it at start.
+    """
+    try:
+        source = settings if settings is not None else get_settings()
+        raw = str(getattr(source, "secret_startup_check", "shadow") or "shadow")
+    except Exception:  # a broken settings load never turns the refusal on
+        return "shadow"
+    mode = raw.strip().lower()
+    return mode if mode in SECRET_STARTUP_CHECK_MODES else "shadow"
 
 
 #: The modes of ``TOOL_RESULT_SPILL`` (CTX-1).

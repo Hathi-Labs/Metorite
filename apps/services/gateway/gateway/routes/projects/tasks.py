@@ -83,6 +83,8 @@ from gateway.routes.projects.core import (
     archive_note,
     assert_assignable_here,
     assert_epic_has_no_parent,
+    assert_goal_keeps_type,
+    assert_goal_link,
     assert_holds_tasks,
     assert_move_keeps_privacy,
     assert_no_task_cycle,
@@ -93,8 +95,10 @@ from gateway.routes.projects.core import (
     clean_payload,
     count_where,
     diff_changes,
+    drop_lost_goal,
     emit,
     from_jsonb,
+    goal_link_lost,
     insert_assignees,
     insert_row,
     lift_subtasks_to_grandparent,
@@ -113,6 +117,7 @@ from gateway.routes.projects.core import (
     remap_one_status,
     remap_one_type,
     require_exact_version,
+    require_goals,
     require_precondition,
     require_row,
     require_status_in_project,
@@ -175,6 +180,7 @@ from gateway.routes.projects.relations import (
     insert_task_link,
 )
 from gateway.routes.projects.tags import apply_task_tags
+from gateway.routes.projects.team_scope import TeamScope, resolve_team_scope
 from gateway.routes.projects.text_links import link_from_text, saved_texts
 from gateway.routes.projects.watchers import ensure_watchers
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
@@ -482,7 +488,16 @@ class MoveTask(BaseModel):
 
 
 class AssigneesIn(BaseModel):
+    """The body of ``PUT /tasks/{task_id}/assignees``.
+
+    LBB-2c (``engineering_practice.md`` §7b.10): an agent may send
+    ``agent_label``, the display name of its session, as ``ClaimIn`` takes it.
+    The claim gate of a self-add reads it. A person's body that names one is
+    422 (``agent_runs.agent_label_of``). The model ignores other keys, as
+    before."""
+
     assignees: list[str]
+    agent_label: str | None = Field(default=None, max_length=200)
 
 
 class TaskCreateIn(TaskIn):
@@ -506,6 +521,10 @@ class TaskCreateIn(TaskIn):
     #: PATCH field on ``TaskPatchIn``, never on ``TaskIn``, which other
     #: doors share. 422 while ``agent_task_checks_enabled`` is off.
     check_text: str | None = None
+    #: WS-39 WM-5. The Goal of the new epic (``core.assert_goal_link``). A
+    #: create field here and a PATCH field on ``TaskPatchIn``. 422 while
+    #: ``PROJECTS_GOALS_ORGS`` does not hold the org.
+    goal_task_id: str | None = None
 
 
 class LinkIn(BaseModel):
@@ -660,6 +679,7 @@ async def _task_scope(
     mine: bool, include_triage: bool, unheld: bool,
     agent_clauses: list[str], agent_params: dict[str, Any],
     filters: dict[str, Any],
+    team: TeamScope | None = None,
 ) -> tuple[str, str, str, dict[str, Any]]:
     """``(walk_cte, walk_join, where, params)`` of one task read.
 
@@ -667,10 +687,16 @@ async def _task_scope(
     org, group grants, connection pins) to the project scope and the filters.
     ``GET /projects/tasks`` and ``GET /projects/tasks/stats`` both call it, so
     a count and a list read the same set. The fence is
-    ``tests/unit/test_board_stats_r8.py``.
+    ``tests/unit/test_board_stats_r8.py``. ``GET /projects/teams`` counts the
+    tasks of a team through it too (T-1).
     """
     clauses: list[str] = [task_visibility_clause(vis)]
     params: dict[str, Any] = dict(vis.params)
+    if team is not None:
+        # WS-39 T-1. ANDed beside the visibility clause, so a team scope
+        # narrows the read and never widens it (§14.9 rule 5).
+        clauses.append(team.project_clause("t.project_id"))
+        params.update(team.params)
     if mine:
         # ANDed beside the visibility clause, so "mine" narrows the
         # board and never widens it (WS-64 OP-11).
@@ -834,6 +860,9 @@ async def list_tasks(
     # backlog of the Backlog canvas (`cycle_filter_clauses`). Dark behind
     # `PROJECTS_SPRINTS_ORGS`, like the cycle routes.
     cycle: str | None = None,
+    # WS-39 T-1. A team slug or `all` (`team_scope.py`). A slug narrows the
+    # read to the projects of one team of the caller. Dark behind TEAMS_ORGS.
+    team: str | None = None,
 ) -> TaskListResponse:
     """The one task-list endpoint every surface reads through.
 
@@ -918,6 +947,7 @@ async def list_tasks(
                 title_prefix=title_prefix, type_id=type_id, type_name=type_name,
                 task_number=task_number,
             ),
+            team=await resolve_team_scope(db, user, vis, team),
         )
         total = (await db.execute(
             text(f"{walk_cte}SELECT count(*) FROM pm_tasks t{walk_join}{where}"),
@@ -1053,6 +1083,9 @@ async def task_stats(
     updated_after: str | None = None,
     created_after: str | None = None,
     title_prefix: str | None = None,
+    # WS-39 T-1. The team scope of `GET /projects/tasks`, so a count and the
+    # list read the same set under a team too.
+    team: str | None = None,
 ) -> dict:
     """Counts of the tasks this caller can see (MCP-G19a).
 
@@ -1091,6 +1124,7 @@ async def task_stats(
                 updated_after=updated_after, created_after=created_after,
                 title_prefix=title_prefix,
             ),
+            team=await resolve_team_scope(db, user, vis, team),
         )
         total = (await db.execute(
             text(f"{walk_cte}SELECT count(*) FROM pm_tasks t{walk_join}{where}"),
@@ -1214,9 +1248,13 @@ async def get_task(
         # SP-9 — an epic rolls up EVERY descendant the reader can see. The key
         # is absent for any other task. `subtasks` (direct children) is not
         # touched. The one home of the rule is `rollup.py`.
-        from gateway.routes.projects.rollup import epic_rollup
+        from gateway.routes.projects.rollup import epic_rollup, goal_rollup
 
         rollup = await epic_rollup(db, vis, row)
+        if rollup is None:
+            # WM-5 — a Goal rolls up its linked epics, in any project. No key
+            # while PROJECTS_GOALS_ORGS does not hold the org.
+            rollup = await goal_rollup(db, vis, row)
         if rollup is not None:
             result["rollup"] = rollup
         # WS-39 SP-5a — the open cycle of the task, for the MCP `get_task`. The
@@ -1354,6 +1392,13 @@ def check_task_values(
         values["check_text"] = clean_check_text(values["check_text"])
         if values["check_text"] is None:
             values.pop("check_text")
+    if "goal_task_id" in values:
+        # WM-5. 422 while the Goal flag is off. A null is no Goal, so it
+        # passes with the flag off too, as before the column.
+        if values["goal_task_id"] is None:
+            values.pop("goal_task_id")
+        else:
+            require_goals(getattr(user, "organization_id", None))
     if getattr(user, "agent", None) is not None:
         # The task source of an agent comes from branch 0's signed context,
         # never from the body (the narrowing above refuses a body `source`).
@@ -1429,6 +1474,10 @@ async def create_task_in(
     _refuse_agent_parent(user, parent, str(project_id))
     await _refuse_agent_type(db, user, values.get("type_id"), str(root))
     await assert_epic_has_no_parent(db, values.get("type_id"), parent_id)
+    # WM-5. Only an epic carries a Goal, and the writer sees the Goal.
+    await assert_goal_link(
+        db, vis, values.get("type_id"), values.get("goal_task_id"),
+    )
 
     # A stated status always wins. A new step with no stated status takes
     # its parent's lane through the ONE seam (D-PM-38, D79), so the
@@ -1486,6 +1535,33 @@ async def create_task_in(
     if align and not getattr(target, "personal_owner", None):
         await enqueue_check(db, task_id, current_tenant(), row=row, known_team=True)
     return CreatedTask(row=row, assigned=assigned)
+
+
+async def _check_goal_patch(
+    db: Any, vis: Any, before: Any, values: dict[str, Any],
+) -> None:
+    """WM-5. The Goal rules of a PATCH, before any write.
+
+    A body that sends a Goal in ``goal_task_id`` gets 422 while the flag is
+    off. A null clears the link with the flag on or off, because a clear is
+    the way out of a stale link. Only an epic carries a Goal. A new link
+    names a Goal that the writer sees, and it replaces the old one, because
+    the link is one column. A new type that is not an epic clears the link in
+    the same write (:func:`core.goal_link_lost`). A Goal that epics point at
+    keeps a Goal type (:func:`core.assert_goal_keeps_type`, 409), the rule
+    that a move to another root keeps too.
+    """
+    type_after = (
+        values["type_id"] if "type_id" in values else getattr(before, "type_id", None)
+    )
+    if "goal_task_id" in values:
+        if values["goal_task_id"] is not None:
+            require_goals(vis.organization_id)
+            await assert_goal_link(db, vis, type_after, values["goal_task_id"])
+    elif "type_id" in values and await goal_link_lost(db, before, type_after):
+        values["goal_task_id"] = None
+    if "type_id" in values:
+        await assert_goal_keeps_type(db, vis.organization_id, before, type_after)
 
 
 async def _bump_closed_runs(user: UserContext, recipients: list[str]) -> None:
@@ -1564,6 +1640,8 @@ async def patch_task(
         require_precondition(before, if_match, row_to_dict(before, TaskModel))
         # SW-23. A new Check text clears its last result, in this same write.
         check_patch_values(before, values)
+        # WM-5. The Goal of an epic, after the visibility load, before a write.
+        await _check_goal_patch(db, vis, before, values)
 
         # WS-27l. Merged against the definitions on the task's OWN root, not the
         # caller's current project: a task opened from My work can belong to a
@@ -1730,6 +1808,10 @@ async def _cross_root_values(
         values["type_id"] = await remap_one_type(
             db, type_id=str(task.type_id), root_id=new_root,
         )
+    # WS-39 WM-5. Only an epic carries a Goal. A type that lands as no type or
+    # as a type that is not an epic clears the link in this same write, and
+    # the timeline keeps the old Goal.
+    await drop_lost_goal(db, task, values, dropped)
     # The number belongs to the old root's sequence and would collide in the
     # new one, so it is reallocated rather than carried. The old number is
     # recorded on the timeline by the caller — a task's human id changing
@@ -2801,8 +2883,18 @@ async def set_assignees(
     has ``warning`` and ``outside_apps``. Mode ``refuse`` answers 403
     ``outside_apps`` and writes nothing. Only a task that already holds the
     session member is not checked. Another assignee is not a pass.
+
+    LBB-2c (``engineering_practice.md`` §7b.10). An agent may send
+    ``agent_label``, and the claim gate of a self-add checks the PRs of that
+    label. With no label, the gate checks the PRs bound to no label, as
+    before. A person's body that names a label is 422, before any read.
     """
+    from gateway.routes.projects import agent_runs
+
     agent_call = getattr(user, "agent", None) is not None
+    # LBB-2c: the display label of the agent's session, as `claim_task` reads
+    # it. A person's is 422.
+    label = agent_runs.agent_label_of(user, payload.agent_label)
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
@@ -2846,10 +2938,10 @@ async def set_assignees(
             else None
         )
         # LBB-2 (engineering_practice.md §7b.2): the claim gate, right after
-        # the scope check and before any write. The PUT carries no label, so
-        # a self-add is checked against the PRs bound to no label.
+        # the scope check and before any write. LBB-2c (§7b.10): the label of
+        # the PUT picks the bucket. With none, the PRs bound to no label.
         if self_add:
-            await check_claim_gate(db, user, task_id, vis, None)
+            await check_claim_gate(db, user, task_id, vis, label)
         assigned = await _write_assignees(
             db, user, task_id=task_id, project_id=str(task.project_id),
             wanted=wanted, current=current,

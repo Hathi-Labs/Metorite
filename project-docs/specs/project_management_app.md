@@ -13,6 +13,12 @@
 
 > **Product:** Metorite · **Feature:** Projects (the primary work-management
 > module, sliced into every other Center) · **Created:** 2026-08-05 · **Updated: 2026-11-11**
+> 🟢 **WS-39 WM-5 BUILT 2026-11-11, not merged** (§13.6a, migration 516, task 984). The Goal type
+> (`pm_task_types.is_goal`) and the Goal of an epic (`pm_tasks.goal_task_id`). `GET /projects/tasks/{id}` rolls a Goal
+> up over its linked epics. Dark behind `PROJECTS_GOALS_ORGS`. No UI. The chat and MCP tool fields are gap G27.
+> 🟢 **WS-39 T-1 BUILT 2026-11-11, not merged** (§14.9, task 2532). `GET /projects/teams` gives the teams of
+> the member and the spaces of each. A `team` value narrows the tree, the node list, the task list, the count and
+> the search. Dark behind `TEAMS_ORGS`. No table, no migration, no UI and no chat tool. Fence: `test_teams_read_model_r8.py`.
 > 🟢 **SP-8a BUILT 2026-11-08, not merged** (§13.3, §13.6 row SP-8, migration 402, branch
 > `mt-1cb9f2de-sp8-epic-contract`). An epic has a contract: the store, the routes, `epic_contract`
 > in `get_task` and `get_task_context`, the MCP block and the chat tool `set_epic_contract`.
@@ -9240,7 +9246,7 @@ A Goal is a task type with a rank. It has an owner and a target date. A Goal is 
 
 | Row | Task | Scope | Done when | Risk | Depends on |
 |---|---|---|---|---|---|
-| **WM-5** | 984 | The Goal type, as the paragraph above defines it. The Goal has an owner and a target date. The chat and the MCP make and read a Goal through the one manifest (D136). Progress and health come from the roll-up of SP-9 over the linked epics | A Goal with 2 epics from 2 projects shows the progress of both. A hidden epic is counted in `hidden` and never named. `tests/unit/test_goal_rollup_r8.py` (new) passes | STANDARD | SP-8, SP-9, SW-21 |
+| **WM-5** | 984 | **BUILT 2026-11-11, not merged (migration 516). The chat and MCP tool fields are gap G27 of `projects_agent_parity.md`. Fence: `tests/unit/test_goal_rollup_r8.py`.** The Goal type. A migration adds `pm_task_types.is_goal` (the pattern of `is_epic`, migration 168) and `pm_tasks.goal_task_id`, a nullable self reference with ON DELETE SET NULL. In this spec "the parent of epics" means this link for a Goal. The link works across projects, because `parent_task_id` stays the in-project tree. One column makes one Goal for each epic (D199.6). Rules in `core.py` beside `assert_epic_has_no_parent`: only an epic carries `goal_task_id`, and the target is a Goal task of the same organization that the writer can see. `goal_rollup` in `rollup.py` sums `epic_rollup` over the linked epics. `GET /projects/tasks/{id}` returns it for a Goal, and `skill_projects/manifest.py` gets a parity row. Dark behind `PROJECTS_GOALS_ORGS`, default empty. **Out:** the rank (RM-1), the Goal as agent context (SW-21, owner gate) and the UI. Code: `rollup.py` `epic_rollup`, `core.py` `is_epic_type`, `tasks.py` `get_task` | A Goal with 2 epics from 2 projects shows the progress of both. A hidden epic is counted in `hidden` and never named. A second link on one epic replaces the first. No read crosses an organization. `tests/unit/test_goal_rollup_r8.py` (new) passes. Run `eval "$(bash scripts/dev_db.sh --export)"` then `timeout 900 uv run pytest tests/unit/test_goal_rollup_r8.py tests/unit/test_epic_rollup_r8.py -rs` with no skip | HIGH (a migration and access). AGENT-SAFE | SP-8, SP-9, D204.4 |
 | **RM-1** | 2528 | The Roadmap view (D199.3 and D199.5). It lists the Goals of a space in rank order, with live progress from epics in any project. A Goal has a rank field. The view adds no initiative record and no milestone record | The Roadmap shows 3 Goals in rank order. A change of rank moves the Goal and writes one `pm_activities` row. `tests/unit/test_goal_rank_r8.py` (new) passes | HIGH if the rank field needs a column, else STANDARD. Gate: the R8 test and the full loop | WM-5, SW-21 |
 
 Proposed, owner review in this pull request: the plan id RM-1 for task 2528. The rank is a whole number, and a lower number ranks first.
@@ -10027,7 +10033,7 @@ Fence: `tests/unit/test_team_scope_isolation_r8.py` (T-7, task 2538) binds rules
 | Row | Task | Scope | Done when | Fence | Risk | Flag (default OFF) | Depends on |
 |---|---|---|---|---|---|---|---|
 | **T-0** | 2531 | This section | The section and the D204 record are merged | `tests/unit/test_doc_names_resolve.py` | LOW | none | none |
-| **T-1** | 2532 | The read model. One tenant-safe read returns the teams of the member and the spaces of each team | A member of 2 teams gets 2 lists. A space shared with no team of the member is absent | R8 tests | STANDARD | `TEAMS_ORGS` | T-0 |
+| **T-1** | 2532 | The read model. One tenant-safe read returns the teams of the member and the spaces of each team. **Built 2026-11-11, not merged:** `GET /projects/teams` and the `team` value of `gateway/routes/projects/team_scope.py` | A member of 2 teams gets 2 lists. A space shared with no team of the member is absent | `tests/unit/test_teams_read_model_r8.py` (R8) | STANDARD | `TEAMS_ORGS` | T-0 |
 | **T-2** | 2533 | The team chip on the Projects board. It folds in PX-2 (task 967) | The chip filters the board to the spaces of one team. "All my teams" shows every space the member may open | Component test and the R8 test of T-1 | STANDARD | `TEAMS_ORGS` | T-1 |
 | **T-3** | 2534 | Share a space with a team. Check the existing grants route first and build only the gap | A lead shares a space with a group. The space shows in that team's view | R8 test of the grant | STANDARD | `TEAMS_ORGS` | T-1 |
 | **T-4** | 2535 | The team scope in the shell. One contract of one value: a team slug or "all" (`navigation_shell.md` §4.2a) | The shell holds one scope value, and every app reads it | `src/lib/shell/teamScope.test.ts` (new) | STANDARD | `TEAMS_ORGS` | T-2, T-3, T-7 |
@@ -10036,7 +10042,16 @@ Fence: `tests/unit/test_team_scope_isolation_r8.py` (T-7, task 2538) binds rules
 | **T-7** | 2538 | The isolation fence: two teams, three spaces and the surfaces that the fence lists. **Built 2026-11-11 for those surfaces, not merged.** The reads that its docstring names as not driven are follow-up | Each listed surface of rule 4 passes with a hidden space. `tests/unit/test_team_scope_isolation_r8.py` | R8, full loop | HIGH | none | T-1 |
 | **T-8** | 3758 | The access panel of a space or a project: who can see it, and a change to everyone, one or more teams, or named people. It uses the grants routes and D-OP-11, and it warns before the last grant goes (owner ask, 2026-11-18, `one_projects_app.md` §9d.2) | Later. A lead changes who sees a space from the panel, and the change shows in the team view | R8 test of the grant | STANDARD | `TEAMS_ORGS` | T-3 |
 
-**Order.** T-0, then T-1. Then T-2, T-3 and T-7. Then T-4, then T-5. T-6 follows T-3 and the MCP-G24 decision. The flag name `TEAMS_ORGS` is a proposal, and the build task confirms it.
+**Order.** T-0, then T-1. Then T-2, T-3 and T-7. Then T-4, then T-5. T-6 follows T-3 and the MCP-G24 decision. T-1 confirmed the flag name `TEAMS_ORGS`.
+
+**The T-1 read (built 2026-11-11).** `gateway/routes/projects/team_scope.py` holds the value, the reach and the flag. `teams.py` holds the read.
+
+* `GET /projects/teams` gives one row for each group of the member, a group with no space too. A row names the team and its spaces, and counts the tasks of each space. `?team=<slug>` gives one row.
+* A space of a team is a top of the team view: a node whose parent the team does not hold. A grant of a project below a space makes that project a top, and its `level` says `project`. The space above it is not named.
+* The `team` value is a slug or `all`, as `navigation_shell.md` §4.2a says. `all` narrows nothing. `GET /projects/tree`, `/projects/nodes`, `/projects/tasks`, `/projects/tasks/stats` and `/projects/search` take it. The tree keeps `personal` as it is, because the own tree of the member is no team.
+* The one subject grammar checks the slug. A malformed value is 422. A slug that names no group of the member is 404, with the body of a slug that names no group.
+* Each read ANDs the team clause beside its own visibility clause, so the clause only narrows (rule 5). The count of a team comes from `tasks._task_scope`, the scope of the list and of the count read, so the three agree.
+* While `TEAMS_ORGS` does not hold the org, `GET /projects/teams` is 404, and so is each read that sends a `team` value.
 
 ## Board record (2026-08-09) — moved from work_plan.md §2
 

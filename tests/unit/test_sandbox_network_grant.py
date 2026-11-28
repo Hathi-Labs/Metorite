@@ -538,7 +538,7 @@ async def test_every_exit_path_removes_the_grants_network(
 
         monkeypatch.setattr(broker, "_revoke_for_run", no_revoke)
         monkeypatch.setattr(sb, "_remove_run_data", lambda _rel: True)
-        broker._run_data[(handle.workspace, handle.binding.thread)] = "run-data"
+        broker._run_data[(handle.workspace, handle.binding.thread)] = {"run-data"}
         with bound_run(ORG, member=MEMBER, thread="ta"):
             await broker.end_run()
     else:  # a held container that no longer fits is replaced

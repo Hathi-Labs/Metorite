@@ -64,6 +64,7 @@ import {
   tabLabel,
   taskHref,
   whyTag,
+  agentName,
 } from "../lib/agentQuestions";
 import { ProjectsApiError, agentRunsApi, questionsApi } from "../lib/api";
 import { AgentQuestionCard } from "./AgentQuestionCard";
@@ -492,7 +493,7 @@ export function QuestionsView({
                       retryToken={attempts[row.activity_id] ?? 0}
                       elicitation={questionActivity(row)}
                       run={{ member_email: "" }}
-                      clientLabel={row.agent_name || "The agent"}
+                      clientLabel={agentName(row) || "The agent"}
                       answer={done}
                       open
                       canAnswer={row.can_answer}

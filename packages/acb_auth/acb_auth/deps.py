@@ -441,7 +441,7 @@ def _one_header(request: Request, name: str) -> str | None:
 #: write refusals of EA-6a, "method" and "nonce", come before the signature.
 _UNSIGNED_REFUSALS = frozenset({
     "disabled", "no_key", "headers", "connection_header", "body", "query",
-    "signature", "method", "nonce", "session", "approval",
+    "signature", "method", "nonce", "session", "approval", "batch",
 })
 
 
@@ -454,10 +454,10 @@ def _refuse_agent(reason: str, **ids: str) -> UserContext:
 
 def _verify_signed_request(
     request: Request, keys: dict[str, str], body: bytes | None, nonce: str | None,
-) -> tuple[str, str, str, str | None, str | None] | str:
+) -> tuple[str, str, str, str | None, str | None, str | None] | str:
     """Step 2 of branch 0: ``(organization, connection, actor stamp,
-    session key, approval)`` of a well-signed, fresh request, or the reason
-    to refuse it.
+    session key, approval, batch key)`` of a well-signed, fresh request, or
+    the reason to refuse it.
 
     SW-7 (spec §12.5): ``X-Agent-Session`` is optional. Once and in its
     shape, it is a line of the signed string. Twice, or in another
@@ -468,6 +468,13 @@ def _verify_signed_request(
     may carry it. Once and in the shape of a request id, it is the line
     after the session line. Twice, in another shape, or on a GET, it is a
     refusal. The request id comes ONLY from this signed header.
+
+    MCP-G28a (D209): ``X-Agent-Batch`` is optional too, and only a write
+    may carry it. Once and in its shape, it is the last line of the signed
+    string, after the approval line. Twice, in another shape, or on a GET,
+    it is a refusal. The batch key comes ONLY from this signed header. It
+    only lowers the CALL count of a bulk call. Each write still counts one
+    row (:func:`_claim_write`).
 
     A GET passes ``b""`` and no *nonce*. A write (EA-6a) passes the body that
     ``_signed_body`` read and the nonce it checked, and both are signed.
@@ -498,6 +505,12 @@ def _verify_signed_request(
         nonce is None or not agent_signing.approval_is_well_formed(approval)
     )):
         return "approval"
+    batches = request.headers.getlist(agent_signing.HEADER_BATCH)
+    batch = batches[0] if batches else None
+    if len(batches) > 1 or (batch is not None and (
+        nonce is None or not agent_signing.batch_key_is_well_formed(batch)
+    )):
+        return "batch"
     # A GET has no nonce and a write has one. Anything else never signs.
     if (request.method.upper() == "GET") != (nonce is None):
         return "nonce"
@@ -529,12 +542,13 @@ def _verify_signed_request(
         nonce=nonce,
         session=session,
         approval=approval,
+        batch=batch,
     )
     if not agent_signing.verify(signature, canonical, keys):
         return "signature"
     if not agent_signing.timestamp_is_fresh(timestamp):
         return "timestamp"
-    return organization_id, connection_id, actor_via, session, approval
+    return organization_id, connection_id, actor_via, session, approval, batch
 
 
 async def _read_connection(
@@ -564,8 +578,10 @@ async def _read_connection(
 #: The detail of the 503 of a Redis outage on a write (EA3-28).
 WRITES_UNAVAILABLE_DETAIL = "Metorite could not check this change. Try again."
 
-#: The detail of the 429 of the cap (EA3-30).
-WRITE_CAP_DETAIL = "Too many changes from this connection. Wait a few minutes."
+#: The details of the two 429 answers of the cap (EA3-30, MCP-G28a). The
+#: edge reads them from ``agent_oauth`` to name the counter that refused.
+WRITE_CAP_DETAIL = agent_oauth.WRITE_CAP_DETAIL
+WRITE_ROW_CAP_DETAIL = agent_oauth.WRITE_ROW_CAP_DETAIL
 
 
 def _writes_disabled() -> HTTPException:
@@ -579,8 +595,47 @@ def _writes_disabled() -> HTTPException:
     return HTTPException(status_code=403, detail=agent_oauth.WRITES_DISABLED_CODE)
 
 
+async def _count_write(client: tenant_redis.TenantRedis, counter: tenant_redis.TenantKey,
+                       cap: int, window: int) -> int | None:
+    """One ``INCR`` of one counter of the cap (EA3-30, MCP-G28a). The
+    seconds left in the window when the count is over *cap*, else ``None``.
+
+    The counter's life starts at its first count of the window. A counter
+    whose expire was lost gets one again, so it never pins a connection for
+    good. The caller binds the organization of the ROW first.
+    """
+    count = int(await client.incr(counter))
+    if count == 1:
+        await client.expire(counter, window)
+    if count <= cap:
+        return None
+    left = int(await client.ttl(counter))
+    if left < 0:
+        await client.expire(counter, window)
+        left = window
+    return max(left, 1)
+
+
+async def _drop_unpaid_batch(client: tenant_redis.TenantRedis, organization_id: str,
+                             connection_id: str, batch_key: tenant_redis.TenantKey) -> None:
+    """MCP-G28a fix round 1. Best effort: delete a batch key that may hold a
+    row whose call was not charged, because the store failed between the
+    ``INCR`` of the key and the charge. Then the next row of the key pays
+    the call again. The organization of the ROW is bound again, because the
+    failure ended the scope of :func:`_claim_write`. A second failure leaves
+    the key, logs, and the caller still answers the 503.
+    """
+    try:
+        with tenant_redis.organization_scope(organization_id):
+            await client.delete(batch_key)
+    except Exception as exc:
+        _log.warning("auth.agent_write_batch_kept", error=type(exc).__name__,
+                     connection_id=connection_id)
+
+
 async def _claim_write(
     connection: agent_tokens.LiveConnection, nonce: str, scope: str,
+    batch: str | None = None,
 ) -> str | None:
     """Steps 5b to 5d of branch 0, for a write (EA-6a, EA3-28 to EA3-30).
 
@@ -588,22 +643,41 @@ async def _claim_write(
     scope is ``projects:write`` for a pair of ``MCP_WRITE_ROUTES``, and the
     write scope of the pair's app for a door pair (MCP-P1a, AD-4). Then, in
     the tenant Redis wrapper bound to the ROW's
-    organization: 5c ``SET NX EX`` of the nonce, and 5d ``INCR`` of the
-    connection's counter. Returns ``"replay"`` when the key already holds
+    organization: 5c ``SET NX EX`` of the nonce, and 5d the two counters of
+    the connection. Returns ``"replay"`` when the key already holds
     the nonce. Each string is a refusal (401). Returns ``None`` when the
     write may go on.
 
+    MCP-G28a (D209): 5d has two counters, both per connection and both with
+    the window of ``agent_oauth.write_window_s``.
+
+    * The CALL counter (``write_cap``) counts 1 for a write with no *batch*.
+      A write with the signed batch key *batch* counts its row in the batch
+      key first. Only the first row of the key, and then each
+      ``WRITE_ROWS_PER_CALL`` rows more, count a call. So a bulk call of 50
+      rows is 1 call, and a key used again never escapes the counter. When
+      the call counter refuses, the batch key goes, so the next row of that
+      key counts a call again and gets no free pass.
+    * Fix round 1: a failure of the store between the ``INCR`` of the batch
+      key and the charge of a call that the row was due also drops the key
+      (:func:`_drop_unpaid_batch`), before the 503. So the next row of that
+      key pays the call again, and a lost ``EXPIRE`` or a lost call ``INCR``
+      gives no free rows.
+    * The ROW counter (``write_row_cap``) counts 1 for each write that the
+      call counter let through, with or without a batch key.
+
     Raises the 503 of a Redis outage or of a client that cannot be built
-    (``Retry-After: 2``), never a 401 or a 500, and
-    the 429 of the cap with the seconds left in the window. The counter's
-    life starts at the first write of the window. A counter whose expire
-    was lost gets one again, so it never pins a connection for good.
+    (``Retry-After: 2``), never a 401 or a 500, and the 429 of the counter
+    that refused, with its own detail and the seconds left in its window.
     """
     if scope not in connection.scopes:
         return "write_scope"
     organization_id = connection.organization_id
     connection_id = connection.connection_id
     over: int | None = None
+    detail = WRITE_CAP_DETAIL
+    # The batch key while it holds a row whose call is not charged yet.
+    unpaid: tenant_redis.TenantKey | None = None
     try:
         # Inside the `try` (fix round 1): a client that cannot be built, such
         # as one with a malformed `redis_url`, is the 503, never a 500.
@@ -615,23 +689,41 @@ async def _claim_write(
             )
             if not fresh:
                 return "replay"
-            # MCP-G20: the live cap and window, read at each write
-            # (`AGENT_WRITE_CAP`, `AGENT_WRITE_WINDOW_S`). Each signed write
-            # counts once, so each item of `update_tasks` counts once too.
-            cap, window = agent_oauth.write_cap(), agent_oauth.write_window_s()
-            counter = tenant_redis.key(agent_oauth.WRITE_CAP_NAMESPACE, connection_id)
-            count = int(await client.incr(counter))
-            if count == 1:
-                await client.expire(counter, window)
-            if count > cap:
-                left = int(await client.ttl(counter))
-                if left < 0:
-                    await client.expire(counter, window)
-                    left = window
-                over = max(left, 1)
+            # MCP-G20: the live caps and window, read at each write
+            # (`AGENT_WRITE_CAP`, `AGENT_WRITE_ROW_CAP`, `AGENT_WRITE_WINDOW_S`).
+            window = agent_oauth.write_window_s()
+            charge_call = True
+            if batch is not None:
+                batch_key = tenant_redis.key(
+                    agent_oauth.WRITE_BATCH_NAMESPACE, connection_id, batch)
+                # Fix round 1: from here until the charge, the key may hold a
+                # row that has not paid its call. The `except` drops it.
+                unpaid = batch_key
+                rows_of_call = int(await client.incr(batch_key))
+                if rows_of_call == 1:
+                    await client.expire(batch_key, window)
+                charge_call = (rows_of_call - 1) % agent_oauth.WRITE_ROWS_PER_CALL == 0
+                if not charge_call:
+                    unpaid = None
+            if charge_call:
+                over = await _count_write(
+                    client, tenant_redis.key(agent_oauth.WRITE_CAP_NAMESPACE, connection_id),
+                    agent_oauth.write_cap(), window)
+                if over is not None and unpaid is not None:
+                    await client.delete(unpaid)
+                unpaid = None
+            if over is None:
+                over = await _count_write(
+                    client, tenant_redis.key(agent_oauth.WRITE_ROW_CAP_NAMESPACE, connection_id),
+                    agent_oauth.write_row_cap(), window)
+                if over is not None:
+                    detail = WRITE_ROW_CAP_DETAIL
     except Exception as exc:
         # Every failure of the store fails closed as the 503: an outage
         # (`tenant_redis.OUTAGE_ERRORS`), and a client that cannot be built.
+        # Fix round 1: a batch row that did not pay its call drops its key.
+        if unpaid is not None:
+            await _drop_unpaid_batch(client, organization_id, connection_id, unpaid)
         _log.warning("auth.agent_write_redis_unavailable", error=type(exc).__name__,
                      connection_id=connection_id)
         raise HTTPException(
@@ -639,9 +731,10 @@ async def _claim_write(
             headers={"Retry-After": "2"},
         ) from exc
     if over is not None:
-        _log.warning("auth.agent_write_cap", connection_id=connection_id)
+        _log.warning("auth.agent_write_cap", connection_id=connection_id,
+                     counter="rows" if detail == WRITE_ROW_CAP_DETAIL else "calls")
         raise HTTPException(
-            status_code=429, detail=WRITE_CAP_DETAIL,
+            status_code=429, detail=detail,
             headers={"Retry-After": str(over)},
         )
     return None
@@ -731,7 +824,7 @@ async def _claim_door_read(connection: agent_tokens.LiveConnection) -> int | Non
 async def _claim_call(
     connection: agent_tokens.LiveConnection, door: app_manifests.DoorOp | None,
     nonce: str | None, via: str, pair: tuple[str, str | None],
-    *, approval: tuple[str, str | None] | None = None,
+    *, approval: tuple[str, str | None] | None = None, batch: str | None = None,
 ) -> str | None:
     """Steps 5a to 5e of branch 0: :func:`_door_gate` for a door pair, else
     :func:`_claim_write` for a write of ``MCP_WRITE_ROUTES``. A read of
@@ -745,7 +838,11 @@ async def _claim_call(
     MCP-P1b-2 (AD-6): only a door write that waits for the member may carry
     an *approval*, and only one whose digest :func:`_approval_of` could
     form. Any other approval is ``"approval"``, with its audit row for a door
-    pair, so no approval reaches a route that does not spend it."""
+    pair, so no approval reaches a route that does not spend it.
+
+    MCP-G28a (D209): only a write of ``MCP_WRITE_ROUTES`` passes the signed
+    batch key on. A door write never takes one, so it always counts 1 call
+    and 1 row, the stricter count."""
     if approval is not None and (door is None or door.asks == "never"
                                  or approval[1] is None):
         _audit_door(connection, door, via, "approval", approval[0])
@@ -758,7 +855,7 @@ async def _claim_call(
             scope = agent_oauth.request_write_scope(connection.scopes)
         if scope is None:
             return "write_scope"
-        return await _claim_write(connection, nonce, scope)
+        return await _claim_write(connection, nonce, scope, batch)
     return None
 
 
@@ -1038,7 +1135,7 @@ async def _agent_user(request: Request) -> UserContext:
     signed = _verify_signed_request(request, keys, body, nonce)
     if isinstance(signed, str):
         return _refuse_agent(signed)
-    organization_id, connection_id, actor_via, session, approval_id = signed
+    organization_id, connection_id, actor_via, session, approval_id, batch = signed
 
     # 3. The matched route template is in MCP_ROUTES, or it is a door pair.
     if pair not in agent_oauth.MCP_ROUTES and door is None:
@@ -1100,9 +1197,11 @@ async def _agent_user(request: Request) -> UserContext:
     # caps and, last, the spend of an approval (MCP-P1b-2), in `_door_gate`.
     # 5b to 5d, a write of MCP_WRITE_ROUTES: its write scope (EA3-29), a
     # fresh nonce (EA3-28) and room under the cap (EA3-30). They run before
-    # the resolve, so a refused call binds no tenant.
+    # the resolve, so a refused call binds no tenant. MCP-G28a: the signed
+    # batch key of a bulk call counts the call once, and each write still
+    # counts its row.
     refused = await _claim_call(connection, door, nonce, expected_via, pair,
-                                 approval=approval)
+                                 approval=approval, batch=batch)
     if refused is not None:
         return _refuse_agent(refused, **ids)
 

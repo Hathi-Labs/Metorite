@@ -16,7 +16,7 @@ import { FLAG_HUE, displayValue, labelOf, quantityReading, safeHref } from "@/li
 import type { FieldSpec } from "@/lib/studio/fieldCheck";
 import { fileLabel } from "@/lib/studio/recordPageModel";
 
-function Value({ field, value }: { field: FieldSpec; value: unknown }) {
+export function Value({ field, value }: { field: FieldSpec; value: unknown }) {
   // A file holds an attachment id. The sheet says that a file is there, and never shows the id (STU-AF5).
   const text = field.type === "file" ? fileLabel(value) : displayValue(field, value);
   if (text === "") return <span className="text-muted-foreground">—</span>;

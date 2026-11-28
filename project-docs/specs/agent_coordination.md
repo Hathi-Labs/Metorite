@@ -16,6 +16,8 @@
 
 **AMR-1 to AMR-3 (the lenses and the phone view of the Agents view, §3.12.8) are built and dark, 2026-11-26, behind `AGENT_LENSES_ORGS`.** **AMR-4 (the Agents view at scale, §3.12.9) is built and dark behind the same flag, 2026-11-26.** **AMR-5a (task 4098, only the cards that draw count toward the overview) is built, 2026-11-27, and AMR-5 replaces it.** **AMR-5 (one Agents map, owner 2026-11-27) replaces the three lenses and the overview.**
 
+**SW-48 (the app lead may Release and Resume a teammate's run) is built and dark, behind `APP_LEAD_RUNS_ORGS` (task 1881).**
+
 **SW-104 (the machine and the model on each run) is built, 2026-11-21 (task 3625). migration 470.**
 
 **SW-106 (the map shows the machine and the model) is built and dark, 2026-11-22 (task 3627). The visual review and the owner preview are open.**
@@ -1601,7 +1603,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 | Slice | What | Waits on | Gate |
 |---|---|---|---|
 | SW-20 | Cost for each agent, task and request. A self-reported `usage` first | H-42, the rate card. Parked 2026-11-09 (Later epic, task 2543) | OWNER-GATE |
-| SW-21 | Goals linked to projects, given to agents as context | A product-shape call. Q4 of §8 | OWNER-GATE |
+| SW-21 | Goals linked to projects, given to agents as context | The link half is decided by D204.4 and built by WM-5 (task 984, BUILT 2026-11-11, not merged). The agent-context half is a product-shape call, Q4 of §8 | OWNER-GATE for the agent context |
 | SW-22 | A watchdog: a verifier agent for a finished subtree | P3 live, then SW-10, SW-15 and SW-16. Parked 2026-11-09 (Later epic, task 2543) | OWNER-GATE |
 
 ### 5.10 P9 — many people, each with their own agents
@@ -1672,6 +1674,7 @@ They keep their own gates.
 - **Done when.** R8: the lead of the app gets 200 on Release and Resume. A member who is not the run's member and not the lead gets 403. A lead of another app gets 403. `can_act` on Needs attention agrees with the route.
 - **Fence.** `test_agent_runs_r8.py`, `test_agent_run_exclusive.py` and `test_needs_attention_r8.py`.
 - **Risk.** HIGH (a write authority rule). **Gate.** AGENT-SAFE. **Depends on.** SW-44. Q5 and Q9.
+- **Built.** 2026-11-07, dark (branch `mt-23faedbe-sw48-lead-release-resume`). `authority.LED_SUBTREE_SQL` is the public walk, and `person_may_end_sql` embeds it behind `:lead_runs`. The flag `APP_LEAD_RUNS_ORGS` is empty by default, so the rule stays as it was. `RELEASE_ADMIN_PERMISSION` did not change, and the lead does not answer. The seam fence `test_app_ownership_seam.py` of SW-45 holds the embed, and it refuses a copy of the walk in `agent_runs.py` and `needs_attention.py`. The flip is an `enforcement-flip`.
 
 #### SW-49 · Review capacity
 
