@@ -226,7 +226,7 @@ def test_the_flag_has_one_reader_in_the_tree() -> None:
                 readers.append(path.relative_to(_ROOT).as_posix())
     assert sorted(readers) == [
         "apps/services/gateway/gateway/routes/projects/updates.py",
-        "packages/acb_common/acb_common/settings.py",
+        "packages/acb_common/acb_common/flag_registry.py",
     ], readers
 
 

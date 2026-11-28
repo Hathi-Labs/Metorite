@@ -65,8 +65,10 @@ the boundaries are these:
   with no cache, so a skill written in one turn lists on the next. A skill
   script runs in the sandbox, through its ``/workspace`` path.
 
-``request_network_access`` is a stub that answers "network access is off on
-this platform" (§7.3, WS-43g). The Projects track never attaches it.
+``request_network_access`` asks the member for network access on a card
+(§7.3, WS-43g2b). With ``sandbox_egress_enabled`` off it answers "network
+access is off on this platform". Only the ``code_task`` session holds it, and
+the Projects track never attaches it.
 
 Fences: ``tests/unit/test_run_command_tool.py`` (WS43-F6),
 ``tests/unit/test_projects_sandbox_tools.py`` (WS43-F21) and
@@ -170,8 +172,13 @@ def _broker_module() -> Any:
     return sandbox_broker
 
 
-def _audit_decision(tool_name: str, command: str) -> tuple[bool, str]:
+def _audit_decision(
+    tool_name: str, command: str, arguments: dict[str, Any] | None = None,
+) -> tuple[bool, str]:
     """``decide()`` with the whole command, for the audit line (§7.4 step 2).
+
+    *arguments* replaces ``{"command": command}`` for a tool with other
+    arguments (``request_network_access``, §7.3 step 2).
 
     It refuses a denylisted command in ``enforce`` mode only. In ``audit``
     mode it approves everything, so no boundary of this module depends on it.
@@ -179,14 +186,21 @@ def _audit_decision(tool_name: str, command: str) -> tuple[bool, str]:
     try:
         from acb_skills.permission_policy import build_tool_call_context, decide
 
-        approved, code, _detail = decide(build_tool_call_context(tool_name, {"command": command}))
+        approved, code, _detail = decide(build_tool_call_context(
+            tool_name, arguments if arguments is not None else {"command": command},
+        ))
     except Exception:  # a policy bug must not open or brick the tool
         return True, "decide_error"
     mode = os.environ.get("AGENT_PERMISSION_MODE", "enforce").strip().lower()
     enforced = (not approved) and mode == "enforce"
+    #: The network tool names each host on the audit line (§7.3 step 2).
+    #: ``build_tool_call_context`` maps no field for it, so the line says it.
+    extra: dict[str, Any] = {}
+    if arguments is not None and "hosts" in arguments:
+        extra["hosts"] = list(arguments["hosts"])
     _log.info(
         "permission.decision", mode=mode, tool=tool_name, approved=not enforced,
-        would_deny=not approved, reason=code, surface="sandbox_tool",
+        would_deny=not approved, reason=code, surface="sandbox_tool", **extra,
     )
     return not enforced, code
 
@@ -467,18 +481,183 @@ async def run_command(command: str, timeout_s: int = _DEFAULT_TIMEOUT_SECONDS) -
     )
 
 
+#: The name of the network tool in each answer and each log line.
+_NETWORK_TOOL = "request_network_access"
+#: The longest reason that the card shows. The model writes the reason.
+_REASON_MAX = 300
+#: The limits of the card text in ``request_confirmation``. It cuts a longer
+#: field, so the tool refuses a card that would not show each host whole.
+_CARD_TITLE_MAX, _CARD_DETAIL_MAX, _CARD_CONTEXT_MAX = 120, 500, 4000
+#: The runs with an open network card, by (org, agent, thread). One at a time
+#: (review P3-3): a second grant removes the network of the first.
+_OPEN_NETWORK_CARDS: set[tuple[str, str, str]] = set()
+#: The answer when no member approved (§7.3 step 4).
+NETWORK_NOT_APPROVED = (
+    "Network access was not approved ({why}). The sandbox has no network. "
+    "Do the task without the network, or say what it needs."
+)
+
+
+def _network_card(reason: str, hosts: tuple[str, ...]) -> tuple[str, str, str]:
+    """The title, the detail and the context of the network card (§7.3).
+
+    The model writes the reason and the hosts, so each one is fenced with
+    ``tool_refusals.data``, and the card passes ``fenced=True``. *hosts* is
+    the tuple that ``check_grant_hosts`` gave, and the grant gets the same one.
+    """
+    from acb_common.tool_refusals import data
+
+    def line(host: str) -> str:
+        # A leading dot is an allowlist entry for each name under it.
+        if host.startswith("."):
+            return f"- {data(host)} and every name under it"
+        return f"- {data(host)}"
+
+    title = "Let this coding task reach the network?"
+    detail = f"{len(hosts)} host(s). The card lists each one."
+    context = (
+        f"Reason: {data(reason[:_REASON_MAX])}\n"
+        "Hosts:\n" + "\n".join(line(h) for h in hosts) + "\n"
+        "The sandbox of this coding task can then reach only these hosts, "
+        "through the platform proxy, until the run ends or the grant time ends, "
+        "whichever comes first. Nothing else changes."
+    )
+    return title, detail, context
+
+
+def _card_fits(title: str, detail: str, context: str) -> bool:
+    """True when ``request_confirmation`` shows each field whole (review P2-1)."""
+    return (len(title.strip()) <= _CARD_TITLE_MAX and len(detail.strip()) <= _CARD_DETAIL_MAX
+            and len(context.strip()) <= _CARD_CONTEXT_MAX)
+
+
 async def request_network_access(reason: str, hosts: list[str]) -> str:
-    """Ask for network access for the sandbox. It is off on this platform.
+    """Ask the member for network access for this sandbox, to named hosts.
+
+    A member of the chat must approve it on a card. Ask only when the task
+    cannot be done without the network, for example to ``pip install`` a
+    package. Name each host exactly, for example ``["pypi.org",
+    "files.pythonhosted.org"]``. Only hosts of the platform allowlist can open.
 
     Args:
-        reason: Why the sandbox needs the network.
+        reason: Why the sandbox needs the network. The member reads it.
         hosts: The exact hosts it needs.
 
     Returns:
-        Always that network access is off on this platform (WS-43g builds it).
+        Whether the network is open, and to which hosts.
     """
-    del reason, hosts
-    return NETWORK_OFF
+    # §7.3 steps 1 to 5 (WS-43g2b). Step 1: off is off, and nothing else runs.
+    try:
+        sb = _broker_module()
+    except ImportError:
+        return NETWORK_OFF
+    from acb_common import get_settings
+
+    settings = get_settings()
+    if not sb.egress_enabled(settings):
+        return NETWORK_OFF
+    # Step 2: the checks before any card. The org and the member come from
+    # the run binding, never from input (R5, WS-63 PZ-32).
+    ctx = artifact_context()
+    if not ctx.get("workspace_root") or not ctx.get("session_id"):
+        return f"{_NETWORK_TOOL} refused: no run is bound. The network stays off."
+    binding, refusal = _code_task_binding(sb, _NETWORK_TOOL)
+    if refusal is not None:
+        return refusal
+    member = str(ctx.get("member") or "").strip().lower()
+    if not member:
+        return (
+            f"{_NETWORK_TOOL} refused: no member is bound to this run, so no one "
+            "can approve. The network stays off."
+        )
+    try:
+        remote = sb.sandbox_backend(settings) == sb.BACKEND_REMOTE
+    except sb.SandboxError as exc:
+        return f"{_NETWORK_TOOL} refused: {exc} No card was shown. The network stays off."
+    if remote:
+        # grant_egress refuses there, so no member is asked for nothing (P3-1).
+        return (
+            f"{_NETWORK_TOOL} refused: the docker-remote sandbox has no network "
+            "access yet. No card was shown. The network stays off."
+        )
+    try:
+        names = sb.check_grant_hosts(hosts, settings)
+    except sb.SandboxRefused as exc:
+        return f"{_NETWORK_TOOL} refused: {exc} No card was shown. The network stays off."
+    why = " ".join(str(reason or "").split())
+    allowed, code = _audit_decision(
+        # `why` is one line of text, not a list of rows (test_read_tool_paging).
+        _NETWORK_TOOL, "", {"reason": str(why)[:_REASON_MAX], "hosts": list(names)},
+    )
+    if not allowed:
+        return f"[blocked by permission policy: {code}]"
+    # Step 3: the card. A fresh request id: no late approval of an older card
+    # opens a grant, and only the member of the run can answer it.
+    title, detail, context = _network_card(why, names)
+    if not _card_fits(title, detail, context):
+        return (
+            f"{_NETWORK_TOOL} refused: the card cannot show each host whole. Ask "
+            "for fewer hosts. No card was shown. The network stays off."
+        )
+    run_key = (binding.org, binding.agent, binding.thread)
+    if run_key in _OPEN_NETWORK_CARDS:
+        return (
+            f"{_NETWORK_TOOL} refused: a network card of this run is still open. "
+            "Wait for its answer. No card was shown."
+        )
+    _OPEN_NETWORK_CARDS.add(run_key)
+    try:
+        return await _ask_and_grant(
+            sb, settings, binding, member, why, names, (title, detail, context),
+        )
+    finally:
+        _OPEN_NETWORK_CARDS.discard(run_key)
+
+
+async def _ask_and_grant(
+    sb: Any, settings: Any, binding: Any, member: str, why: str,
+    names: tuple[str, ...], card: tuple[str, str, str],
+) -> str:
+    """§7.3 steps 3 to 5: the card, then the grant of the SAME tuple."""
+    import uuid
+
+    from acb_skills.ask_tools import last_card_outcome, request_confirmation
+
+    title, detail, context = card
+    approved = await request_confirmation(
+        title, detail, context,
+        non_interactive_default="deny",
+        fenced=True,
+        request_id=uuid.uuid4().hex,
+        responder=member,
+        timeout_s=settings.sandbox_approval_timeout_seconds,
+    )
+    # Step 4: a decline, a timeout, another member or no channel.
+    if approved is not True:
+        outcome = last_card_outcome() or "no card"
+        _log.info(
+            "sandbox_tools.network_not_approved", org=binding.org, agent=binding.agent,
+            hosts=list(names), outcome=outcome,
+        )
+        return NETWORK_NOT_APPROVED.format(why=outcome)
+    # Step 5: the grant, on the bound run's own container, with the SAME tuple.
+    broker = sb.get_broker()
+    try:
+        handle = await broker.acquire()
+    except sb.SandboxError as exc:
+        return f"{_NETWORK_TOOL} failed: {exc} The network stays off."
+    try:
+        # `why` is one line of text, not a list of rows (test_read_tool_paging).
+        grant = await broker.grant_egress(handle, str(why)[:_REASON_MAX], names)
+    except sb.SandboxError as exc:
+        return f"{_NETWORK_TOOL} failed: {exc} The network stays off."
+    finally:
+        await broker.release(handle)
+    return (
+        "Network access is open to: " + ", ".join(grant.hosts) + ". Each request "
+        "goes through the platform proxy. The access ends when this run ends, "
+        "or after the grant time, whichever comes first."
+    )
 
 
 # H-236: the sandbox tools are the platform's own, trusted by identity.
@@ -924,7 +1103,7 @@ async def _add_tools(
     store = TenantFileStore(
         workspace=binding.workspace, outputs_rel=binding.outputs_rel,
         run_data=binding.run_data, guard=guard, member=member,
-        inputs_rel=binding.inputs_rel,
+        inputs_rel=binding.inputs_rel, instance=binding.instance,
     )
     files = FileAccessProvider(
         store,
@@ -1039,8 +1218,10 @@ def code_task_session_parts(binding: Any) -> tuple[Any, Any, list[Any]]:
     dir that the container mounts. The skills live under
     ``agent-data/skills/``, list with no cache, and run their scripts in the
     container (:func:`run_code_task_command`). The tools are the session's
-    ``run_command`` and the ``request_network_access`` stub, with no approval
-    prompt, because no person sits in a one-shot session.
+    ``run_command`` and ``request_network_access``. Neither takes MAF's own
+    approval prompt. ``request_network_access`` asks the member of the chat
+    on its own card (§7.3), because ``code_task`` runs inside the tool call
+    of the chat turn. With no chat, the card fails closed.
     """
     from acb_skills.tenant_file_store import WorkspaceFileStore
 
@@ -1048,7 +1229,9 @@ def code_task_session_parts(binding: Any) -> tuple[Any, Any, list[Any]]:
     broker = sb.get_broker()
     member = str(artifact_context().get("member") or "")
     guard = _WorkspaceGuard(broker, binding.workspace)
-    store = WorkspaceFileStore(workspace=binding.workspace, guard=guard, member=member)
+    store = WorkspaceFileStore(
+        workspace=binding.workspace, guard=guard, member=member, instance=binding.instance,
+    )
     skills = SkillsProvider(
         LockedSkillsSource(binding.workspace, guard, member, run=run_code_task_command),
         source_id=f"{SOURCE_ID}-code-task-skills",
@@ -1116,8 +1299,19 @@ async def _sweep_app_links(binding: Any, *, since: float) -> list[str]:
     from acb_skills import safe_open
 
     del since
-    links = await asyncio.to_thread(safe_open.remove_links, binding.workspace)
-    repos = await asyncio.to_thread(safe_open.remove_nested_git, binding.workspace)
+
+    def _remove_both(workspace: Any) -> tuple[list[str], list[str]]:
+        # ONE thread call for both removals (task 2465). A thread cannot be
+        # cancelled. When the 30 s timeout of `_sweep_after` cancels the await,
+        # this function still ends, so a nested `.git` is never left behind
+        # because the link sweep was slow. Two `to_thread` calls would let the
+        # cancel land between them, and the second would never start.
+        return (
+            safe_open.remove_links(workspace),
+            safe_open.remove_nested_git(workspace),
+        )
+
+    links, repos = await asyncio.to_thread(_remove_both, binding.workspace)
     if links or repos:
         _log.warning(
             "sandbox_tools.app_dir_swept", links=len(links), nested_git=len(repos),

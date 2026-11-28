@@ -148,8 +148,14 @@ class _Client:
         return self.gw.request(method, url, headers or {}, json)
 
 
+#: WS-24c slice 2: an empty internal token sends no ``Authorization`` header.
+#: The fake gateway fixture sets one, and the tests check the exact bearer.
+_INTERNAL = "test-internal-token"
+
+
 @pytest.fixture
 def gw(monkeypatch) -> Gateway:
+    monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", _INTERNAL)
     g = Gateway()
     monkeypatch.setattr(st, "_current_user_email", lambda: MEMBER)
     monkeypatch.setattr(st.httpx, "AsyncClient", lambda **_kw: _Client(g))
@@ -221,6 +227,7 @@ async def test_each_call_sends_the_member_of_the_run_and_no_org(gw: Gateway) -> 
         ("GET", "/workflows"), ("GET", f"/workflows/{wid}")]
     for call in gw.calls:
         assert set(call["headers"]) == {"Authorization", "Content-Type", "X-User-Email"}
+        assert call["headers"]["Authorization"] == f"Bearer {_INTERNAL}"
         assert call["headers"]["X-User-Email"] == MEMBER
         assert "?" not in call["url"] and call["body"] is None
 
@@ -562,7 +569,8 @@ def test_the_parity_rows_name_the_two_tools() -> None:
     assert cp.COVERED["GET /api/workflows/{}"] == "studio_workflow_read"
     assert "GET /api/workflows" not in cp.DEBT and "GET /api/workflows/{}" not in cp.DEBT
     # STB-6b paid the four live routes (22 to 18): test_studio_workflow_write_tools.py.
-    assert cp.DEBT_CEILING["workflows"] == 18
+    # PAR-8a paid the other 18 (18 to 0): test_studio_workflow_acts.py.
+    assert cp.DEBT_CEILING["workflows"] == 0
 
 
 # -- 10. A blank id lists, and a cut says so -----------------------------------

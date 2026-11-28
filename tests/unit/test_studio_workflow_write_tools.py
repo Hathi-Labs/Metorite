@@ -262,8 +262,14 @@ def mark(monkeypatch) -> Mark:
     return fake
 
 
+#: WS-24c slice 2: an empty internal token sends no ``Authorization`` header.
+#: The fake gateway fixture sets one, and the tests check the exact bearer.
+_INTERNAL = "test-internal-token"
+
+
 @pytest.fixture
 def gw(monkeypatch, mark) -> Gateway:
+    monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", _INTERNAL)
     g = Gateway()
     monkeypatch.setattr(st, "_current_user_email", lambda: MEMBER)
     monkeypatch.setattr(st.httpx, "AsyncClient", lambda **_kw: _Client(g))
@@ -363,6 +369,7 @@ async def test_each_call_sends_the_member_of_the_run_and_no_org(
     assert out["ok"], out
     for c in gw.calls:
         assert set(c["headers"]) == {"Authorization", "Content-Type", "X-User-Email"}
+        assert c["headers"]["Authorization"] == f"Bearer {_INTERNAL}"
         assert c["headers"]["X-User-Email"] == MEMBER
         assert "?" not in c["url"] and c["body"] is None
 
@@ -832,12 +839,25 @@ async def test_no_result_holds_a_hook_field_or_a_secret(gw: Gateway, card: Card)
 def test_the_pack_holds_the_two_writes_of_the_studio_owner() -> None:
     fam = sf.SKILL_FAMILIES[PACK]
     assert fam["owner"] == STUDIO and sf.is_pack(PACK) and fam["core"] is False
-    assert tuple(fam["tools"]) == ("studio_workflow_publish", "studio_workflow_live")
+    # PAR-8a: the seven other Workflows acts join the pack after the two writes.
+    assert tuple(fam["tools"]) == (
+        "studio_workflow_publish", "studio_workflow_live",
+        *(fn.__name__ for fn in st.STUDIO_WORKFLOW_ACT_TOOLS))
     # WS-67 TS-1b: studio-more sits between the core and this pack. This pack
     # does not join studio-more, and it stays out of FOLLOWS.
-    assert sf.pack_slugs()[-3:] == ("studio", "studio-more", PACK), (
+    # WS-STU J2d: the share pack comes after this one, and the cap drops it first.
+    # TOF-3a F12c: the repair pack sits between this pack and the share pack.
+    # PAR-2a: the org-admin pack of another owner comes after them. P-5b-1 (task
+    # 3114): the people pack of that owner comes next. P-1c (task 3923): the
+    # calendar-connections pack of that owner comes after it. Task 3963: the
+    # notes pack of that owner comes last of all.
+    # PAR-9: the Custom Apps pack of the studio owner comes before the share pack.
+    # PAR-11 part a (task 4012): the chat-threads pack of org-admin comes last of all.
+    assert sf.pack_slugs()[-11:-5] == ("studio", "studio-more", PACK, "studio-repair",
+                                      "studio-apps", "studio-share"), (
         "after studio, so the cap drops it first")
-    assert tp.owner_packs(STUDIO) == ("studio", "studio-more", PACK)
+    assert tp.owner_packs(STUDIO) == ("studio", "studio-more", PACK, "studio-repair",
+                                      "studio-apps", "studio-share")
     assert not set(fam["tools"]) & set(sf.SKILL_FAMILIES["studio-more"]["tools"])
     found = tp.PACKS[PACK]
     assert found.owner == STUDIO and found.delegation_refusal and not found.surface_slugs
@@ -916,8 +936,8 @@ def test_a_studio_turn_with_the_pack_stays_within_the_request_cap(
     monkeypatch, held: str,
 ) -> None:
     """A turn on the Studio surface whose words ask to publish a workflow, at
-    the production base (56) with the load tool (+1): 56 + 1 + 10 + 13 + 2 = 82
-    tools, under ``MAX_REQUEST_TOOLS``. WS-67 TS-1b: the two Studio packs and
+    the production base (56) with the load tool (+1): 56 + 1 + 10 + 13 + 9 = 89
+    tools, under ``MAX_REQUEST_TOOLS`` (82 before the seven tools of PAR-8a). WS-67 TS-1b: the two Studio packs and
     this pack are the three places of ``MAX_PACKS``. Mutation: grow the pack
     past the room -> red."""
     from acb_common import get_settings
@@ -937,11 +957,11 @@ def test_a_studio_turn_with_the_pack_stays_within_the_request_cap(
 
 def test_with_the_email_pack_the_three_packs_do_not_fit() -> None:
     """The room limit of STB-6a: email, the Studio tools and this pack would
-    send 112 tools. The cap drops the pack that came by the surface alone first
+    send 119 tools (112 before the seven tools of PAR-8a). The cap drops the pack that came by the surface alone first
     (task 1573), so the member's words keep the email and the workflow writes.
     WS-67 TS-1b: the last pack that came by the surface alone is studio-more,
-    so the core now stays (99 tools). This test records the limit, and it is
-    an open item of the owner."""
+    so the core now stays (106 tools with PAR-8a). This test records the limit,
+    and it is an open item of the owner."""
     from tests.unit.test_pack_turn_keeps_used_packs import PROD_BASE, SPECIALISTS
 
     turn = tp.PackTurn(ROOM_ORG, ROOM_SESSION, tp._member_part(MEMBER), 10, (),
@@ -953,13 +973,15 @@ def test_with_the_email_pack_the_three_packs_do_not_fit() -> None:
     sizes = {s: len(sf.SKILL_FAMILIES[s]["tools"])
              for s in ("email", "studio", "studio-more", PACK)}
     every = PROD_BASE + 1 + sum(sizes.values()) - SPECIALISTS["email-assistant"]
-    assert every == 112 > tp.MAX_REQUEST_TOOLS
+    assert every == 119 > tp.MAX_REQUEST_TOOLS
+    kept = every - sizes["studio-more"]
+    assert kept == 106 <= tp.MAX_REQUEST_TOOLS
 
 
 # -- 11. The parity rows -----------------------------------------------------------
 
 
-def test_the_parity_rows_name_the_two_tools_and_the_ceiling_drops_to_18() -> None:
+def test_the_parity_rows_name_the_two_tools() -> None:
     from acb_skills import chat_parity as cp
 
     rows = {"POST /api/workflows/{}/publish": "studio_workflow_publish",
@@ -968,7 +990,8 @@ def test_the_parity_rows_name_the_two_tools_and_the_ceiling_drops_to_18() -> Non
             "POST /api/workflows/{}/enable": "studio_workflow_live"}
     for key, tool in rows.items():
         assert cp.COVERED[key] == tool and key not in cp.DEBT, key
-    assert cp.DEBT_CEILING["workflows"] == 18
+    # PAR-8a paid the other 18 rows (18 to 0): test_studio_workflow_acts.py.
+    assert cp.DEBT_CEILING["workflows"] == 0
 
 
 # -- 12. The gateway field ----------------------------------------------------------

@@ -508,6 +508,8 @@ _SAMPLE: dict[str, Any] = {
     "waiting_on": "Priya",
     "waiting_since": "2026-10-05",
     "expected_by": "2026-10-09",
+    # WS-MDC CC-2: today's focus.
+    "todays_focus": "yes",
     "filters": '{"overdue": true}',
     "personal": '{"disposition": "someday", "context": "@home"}',
     # WS-66 RM-3: a reminder's time, kind, estimate, answer and list state.
@@ -524,10 +526,11 @@ _SAMPLE: dict[str, Any] = {
 _ROW_SAMPLE: dict[str, Any] = {"name": "Spike", "is_epic": "yes"}
 #: The whole call, where the base call takes another branch of the tool.
 _CALL: dict[tuple[str, str, str], dict[str, Any]] = {
-    # D-OP-10 (OP-7): the card sends the ids that the member ticked.
+    # D-OP-10 (OP-7): the card sends the ids that the member ticked. One of
+    # the three offered: since ARC-2b a full set sends the flag instead.
     ("DELETE", "/projects/tasks/{task_id}", "delete_subtask_ids"): {
         "task_id": tw.LIVE,
-        "subtasks_to_delete": "all",
+        "subtasks_to_delete": tw.SUB_B,
     },
     # The same tool, a tree above the 200-id cap: "all" sends the flag.
     ("DELETE", "/projects/tasks/{task_id}", "delete_all_subtasks"): {
@@ -816,7 +819,8 @@ def test_the_spec_tables_parse() -> None:
     # 23 since WS-55 EA-12a added G23, the agent-run routes (EA12-9). 24
     # since WS-66 RM-1 added G24, the reminder routes. 25 since WS-AP AP-8a
     # added G25, the person ask. 26 since WS-39 SP-1 added G26, the cycles.
-    assert len(_spec_gaps()) == 26
+    # 27 since WS-39 WM-5 added G27, the Goal fields.
+    assert len(_spec_gaps()) == 27
     assert {"P1", "P2", "P3"} <= _built_slices()
 
 

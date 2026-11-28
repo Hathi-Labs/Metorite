@@ -233,6 +233,13 @@ Twelve rules on top of the three above. Each one exists because somebody broke i
      A long body uses `components/ui/ShowMore.tsx`. A typed message answers
      the one waiting question. The rules are C1 to C8 in
      `projects_ai_chat.md` §24.10. Fence: `src/lib/chatCardScroll.test.ts`.
+   - **Amended 2026-11-27 (D234, `projects_ai_chat.md` §24.11).** With
+     `WAITING_DOCK_ORGS` on, a card that WAITS on the member draws in the dock
+     above the message box. It is the one card there, and only its body may
+     scroll over its height cap. The dock has its own fold beside `RollupCard`. Every other card keeps the rules above, and
+     with the flag off nothing changes. Keyboard rules K1 to K7 are in §24.11.
+     A generative-UI ask stays in the
+     thread until WD-2. The dock slice (WD-1) names the fences that change.
    - A read draws inside its step in the trail, closed, and never after the
      answer.
    - A write's receipt draws compact after the text. An answer card is one
@@ -274,7 +281,8 @@ Twelve rules on top of the three above. Each one exists because somebody broke i
    (owner, 2026-10-10). `src/lib/cardRollup.ts` holds the rules. The newest
    card stays open, unless it is a receipt (`receipt` prop, owner 2026-10-29): a
    receipt of a write that worked opens folded. A card that waits on the member never
-   folds. A toggle by hand wins. A long card folds when it is not the newest. Wrap a new flow card in it, and do
+   folds. *Amended 2026-11-27 (D234):* the waiting dock has its
+   own fold, and the member may fold a waiting card there. A toggle by hand wins. A long card folds when it is not the newest. Wrap a new flow card in it, and do
    not add a second fold. The transcript follows its bottom on each change
    of size (`src/lib/stickToBottom.ts`). Fences: `cardRollup.test.ts`,
    `stickToBottom.test.ts` and `e2e/chat-card-rollup.spec.ts`.
@@ -567,6 +575,11 @@ Twelve rules on top of the three above. Each one exists because somebody broke i
    `globals.css` has no reduced-motion answer. Put an exception in its
    `MOTION_EXEMPT`, with the reason. `DESIGN_SYSTEM.md` §4 holds the
    rules, and §9 and §10 hold the advisory rules for states and words.
+
+   **A side panel has one motion** (task 7, owner 2026-11-22). A panel that
+   docks at the right of a page opens in `components/ui/SidePanelMotion.tsx`,
+   the assistant's dock form on the panel tokens. Do not give a side panel
+   its own open or close. Fence: `src/components/ui/SidePanelMotion.test.ts`.
 14. **Every UI change passes the UI gate** (owner directive, 2026-10-27).
    State the interaction in one sentence. Pass the ratchets. Put the four
    captures on a "Visual review:" line of the PR body. The gate blocks in

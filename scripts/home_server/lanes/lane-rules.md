@@ -16,7 +16,15 @@ You are a lane on the home box `metorite-home`. You run as user `dev` in
    `unheld` true. Claim it.
    - Never take a task outside your lane.
    - Never take a task that a live session holds.
+   - Never take a task that another member holds, even when the hold went
+     quiet. Ask on the task with `ask_on_task` first. A contributor's fleet
+     works beside yours (`docs/contributor_playbook.md`).
    - Refuse OWNER-GATE work (`work_plan.md` §6).
+   - Send your place with each `claim_task`: `agent_label` is your lane name,
+     `host` is the machine, `host_kind` is `computer`, `server` or `cloud`, and
+     `model` is your model. Send a value only when you know it. While Remote
+     Control is on, build `external_link` from `CLAUDE_CODE_BRIDGE_SESSION_ID`
+     as `https://claude.ai/code/<id>`. The map of agents shows these values.
 2. **Read the whole task.** After `claim_task`, call `get_task_context`. Read
    the description and EVERY comment. When the task has more than 20
    comments, read the older ones with `get_task_timeline` (kind comments).
@@ -128,8 +136,19 @@ You are a lane on the home box `metorite-home`. You run as user `dev` in
     - Push only on a pass. Push once for each round of fixes, not once for
       each commit.
     - Do not push to "see what CI says". Run the test here.
-16. **A conflict in `ai_studio.md` section 14 (CIV-33, task 3337).** Section 14
+16. **A conflict in `ai_studio.md` section 14 (CIV-HS, task 3337).** Section 14
     holds one index line for each slice. The row text is in
     `project-docs/specs/ai_studio_rows/<id>.md`. Take main's section 14. Then
     put your row text in its row file and your index line back. Run
     `python scripts/ai_studio_rows.py check` before you push.
+17. **A new per-org flag, or a flag conflict (CIV-HS slice 3, task 3284).** A
+    `*_orgs` or `*_modes` field goes in
+    `packages/acb_common/acb_common/flag_registry.py`, at its sorted place, with its
+    comment block. It does not go in `settings.py`. On a conflict in `settings.py`,
+    keep main's side and move your field there. Add one line to the `_READERS` table
+    of `tests/unit/test_flag_reload.py` when the reader is `reader(org) -> bool`.
+    Run `tests/unit/test_flag_registry.py` before you push.
+18. **A conflict in `tests/fences.json` or `docs/flag_reload.md` (CIV-HS, task 3284).**
+    Take main's side of the file and add your entry anywhere in its list. Then run
+    `python scripts/sort_fence_lists.py`. It sorts both files in place. Do not sort by
+    hand. `--check` only reports.

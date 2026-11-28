@@ -30,6 +30,7 @@ export default function CopilotPanel({
   onUndo,
   canUndo,
   onModulesCreated,
+  fill = false,
 }: {
   workflowId: string;
   /**
@@ -44,6 +45,8 @@ export default function CopilotPanel({
   canUndo: boolean;
   /** New modules exist server-side — refresh the catalog/palette. */
   onModulesCreated: () => void;
+  /** E7a: a phone draws the Copilot alone, at the full width. A desktop keeps its fixed width. */
+  fill?: boolean;
 }) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [prompt, setPrompt] = useState("");
@@ -101,7 +104,7 @@ export default function CopilotPanel({
   /* eslint-enable react-hooks/exhaustive-deps */
 
   return (
-    <div className="w-52 sm:w-60 shrink-0 flex flex-col">
+    <div className={`${fill ? "w-full min-w-0" : "w-52 sm:w-60 shrink-0"} flex flex-col`}>
       <div className="flex-1 overflow-y-auto scrollbar-thin p-2.5 space-y-2">
         {turns.length === 0 && (
           <div className="text-[10.5px] text-muted-foreground space-y-2 px-1 pt-1">

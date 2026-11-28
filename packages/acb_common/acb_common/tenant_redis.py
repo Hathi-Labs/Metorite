@@ -98,12 +98,14 @@ from typing import Any
 
 import redis.asyncio as aioredis
 from redis.exceptions import RedisError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from acb_common.settings import get_settings
 
 __all__ = [
     "KEY_ROOT",
     "OUTAGE_ERRORS",
+    "TIMEOUT_ERRORS",
     "ConsumerGroup",
     "ScanPattern",
     "TenantKey",
@@ -131,6 +133,35 @@ KEY_ROOT = "cc"
 #: itself (the ratchet in ``tests/unit/test_tenant_redis.py``). WS-55 EA-4a
 #: answers 503 for it.
 OUTAGE_ERRORS: tuple[type[BaseException], ...] = (RedisError, OSError, TimeoutError)
+
+#: The errors that mean "Redis did not answer IN TIME": the builtin
+#: ``TimeoutError`` (``asyncio.wait_for``) and the ``TimeoutError`` of
+#: redis-py, which is NOT the builtin one. A caller that must tell a stall
+#: from a refusal catches this tuple (``orchestrator.send_once``, HRD-17a).
+TIMEOUT_ERRORS: tuple[type[BaseException], ...] = (TimeoutError, RedisTimeoutError)
+
+#: The one script of :meth:`TenantRedis.delete_unless`: delete ``KEYS[1]``
+#: unless it holds ``ARGV[1]``. Redis runs a script as one step. It names no
+#: key of its own, so the key discipline of the wrapper holds.
+_DELETE_UNLESS_LUA = (
+    "if redis.call('GET', KEYS[1]) == ARGV[1] then return 0 end "
+    "return redis.call('DEL', KEYS[1])"
+)
+
+#: The one script of :meth:`TenantRedis.delete_if`: delete ``KEYS[1]`` only
+#: when it holds ``ARGV[1]`` (HRD-17a). It names no key of its own.
+_DELETE_IF_LUA = (
+    "if redis.call('GET', KEYS[1]) == ARGV[1] then "
+    "return redis.call('DEL', KEYS[1]) end return 0"
+)
+
+#: The one script of :meth:`TenantRedis.replace_if`: set ``KEYS[1]`` to
+#: ``ARGV[2]`` with a TTL of ``ARGV[3]`` seconds, only when it holds
+#: ``ARGV[1]`` (HRD-17a). It names no key of its own.
+_REPLACE_IF_LUA = (
+    "if redis.call('GET', KEYS[1]) == ARGV[1] then "
+    "redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3]) return 1 end return 0"
+)
 
 
 # ── Errors ───────────────────────────────────────────────────────────────────
@@ -508,6 +539,42 @@ class TenantRedis:
         """
         return await self._client.getdel(self._raw(k))
 
+    async def delete_unless(self, k: TenantKey, value: str) -> Any:
+        """Delete *k* unless it holds *value*, in ONE atomic step.
+
+        The step is the fixed Lua script :data:`_DELETE_UNLESS_LUA`. It
+        touches ``KEYS[1]`` only, and a caller gives no script, so it can
+        reach no key of another tenant. Gives 1 when it deleted the key, and
+        0 when the key held *value* or did not exist. A GET and then a DELETE
+        can remove a value that another writer set between the two
+        (``acb_skills.late_approve.drop_offer``, the SPENT mark of RESUME-2a).
+        """
+        return await self._client.eval(_DELETE_UNLESS_LUA, 1, self._raw(k), value)
+
+    async def delete_if(self, k: TenantKey, value: str) -> Any:
+        """Delete *k* only when it holds *value*, in ONE atomic step.
+
+        The inverse of :meth:`delete_unless`, and a fixed script too
+        (:data:`_DELETE_IF_LUA`). Gives 1 when it deleted the key, and 0 when
+        the key held another value or did not exist. A one-use claim needs
+        it: a holder removes its own claim and never a claim that another
+        request made since (``orchestrator.send_once``, HRD-17a).
+        """
+        return await self._client.eval(_DELETE_IF_LUA, 1, self._raw(k), value)
+
+    async def replace_if(self, k: TenantKey, expected: str, value: str, seconds: int) -> Any:
+        """Set *k* to *value* with a TTL of *seconds*, only when it holds
+        *expected*, in ONE atomic step (:data:`_REPLACE_IF_LUA`).
+
+        Gives 1 when it wrote, and 0 when the key held another value or did
+        not exist. A claim that a holder moves to its next state needs it, so
+        that two holders can never both move one claim
+        (``orchestrator.send_once``, HRD-17a).
+        """
+        return await self._client.eval(
+            _REPLACE_IF_LUA, 1, self._raw(k), expected, value, int(seconds),
+        )
+
     async def mget(self, keys: Sequence[TenantKey]) -> list[Any]:
         """Read many keys in ONE round trip. Each key goes through
         :meth:`_raw`, so one ``str`` or one key of another tenant refuses the
@@ -720,6 +787,17 @@ class TenantPipeline:
 
     def expire(self, k: TenantKey, seconds: int) -> TenantPipeline:
         self._pipe.expire(TenantRedis._raw(k), seconds)
+        return self
+
+    def incr(self, k: TenantKey, amount: int = 1) -> TenantPipeline:
+        self._pipe.incr(TenantRedis._raw(k), amount)
+        return self
+
+    def expireat(self, k: TenantKey, when: int) -> TenantPipeline:
+        """Set the key to end at the Unix time *when*. A counter of a fixed
+        period (API-3, the daily budget) sets one end each time, in the
+        same MULTI block as its INCR, so no key lives without an end."""
+        self._pipe.expireat(TenantRedis._raw(k), when)
         return self
 
     async def execute(self) -> Any:

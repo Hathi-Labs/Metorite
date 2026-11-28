@@ -16,6 +16,8 @@
  * The button opens the dialog of `ConnectionsView`, which starts the consent.
  */
 
+import { useState } from "react";
+
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
@@ -24,6 +26,9 @@ import { useViewMode } from "@/components/ViewModeProvider";
 import {
   APP_LABEL,
   CONNECT_LABEL,
+  DESCRIPTION_HINT,
+  MCP_DESCRIPTION_MAX,
+  mcpDescription,
   detailRows,
   errorMessage,
   lastSyncLabel,
@@ -35,8 +40,67 @@ import {
   type Connection,
   type McpSwitches,
 } from "../lib/connections";
+import { Textarea } from "@/components/ui/Input";
+
+import { usedBy } from "../lib/apiConnect";
+
 import { AlwaysConfirmField, ReadOnlyKeyField } from "./AddMcpModal";
+import { UsedBySection } from "./ApiConnect";
 import { ConnectionState } from "./ConnectionList";
+
+/**
+ * CSY-7: the description of an MCP server, edited in place. The chat reads
+ * it. A member who cannot manage sees the text and no field. The parent
+ * keys it by the saved text, so a save or a fresh read resets the draft.
+ */
+export function DescriptionEditor({
+  saved,
+  canEdit,
+  saving,
+  onSave,
+}: {
+  saved: string;
+  canEdit: boolean;
+  saving?: boolean;
+  onSave?: (text: string) => void;
+}) {
+  const [draft, setDraft] = useState(saved);
+  if (!canEdit) {
+    return saved ? (
+      <div className="flex flex-col gap-1" data-mcp-description="">
+        <span className="text-xs text-muted-foreground">Description</span>
+        <p className="break-words text-sm text-foreground">{saved}</p>
+      </div>
+    ) : null;
+  }
+  const dirty = draft.trim() !== saved.trim();
+  return (
+    <div className="flex flex-col gap-1" data-mcp-description="">
+      <label className="flex flex-col gap-1">
+        <span className="text-xs text-muted-foreground">Description</span>
+        <Textarea
+          rows={3}
+          value={draft}
+          maxLength={MCP_DESCRIPTION_MAX}
+          disabled={saving}
+          onChange={(e) => setDraft(e.target.value)}
+        />
+        <span className="text-[11px] text-muted-foreground">{DESCRIPTION_HINT}</span>
+      </label>
+      <div>
+        <Button
+          variant="secondary"
+          size="sm"
+          loading={saving}
+          disabled={!dirty || !onSave}
+          onClick={() => onSave?.(draft.trim())}
+        >
+          Save description
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 export interface SheetBodyProps {
   row: Connection;
@@ -60,6 +124,10 @@ export interface SheetBodyProps {
    * (`heldSwitches`). A tick builds from it. Absent, the row's own pair.
    */
   switches?: McpSwitches | null;
+  /** CSY-7: the admin saves the description of an MCP server. */
+  onDescription?: (text: string) => void;
+  /** True while the description is on its way. */
+  savingDescription?: boolean;
   /** IN-8c: the admin asks to connect or reconnect an OAuth MCP server. */
   onConnect?: () => void;
   /** True while the consent starts, before the browser leaves. */
@@ -78,6 +146,8 @@ export function SheetBody({
   onSwitches,
   savingSwitches,
   switches: heldPair,
+  onDescription,
+  savingDescription,
   onConnect,
   connecting,
 }: SheetBodyProps) {
@@ -85,6 +155,8 @@ export function SheetBody({
   const switches = row.kind === "mcp" && heldPair ? heldPair : mcpSwitches(row);
   const switchLocked = !onSwitches || savingSwitches;
   const error = errorMessage(row.last_error);
+  // API-5 (IN-10): an API connection lists what uses it.
+  const uses = usedBy(row);
   const fields = [
     { label: "App", value: APP_LABEL[row.owning_app] },
     { label: "Scope", value: scopeLabel(row) },
@@ -116,6 +188,16 @@ export function SheetBody({
           </div>
         ))}
       </dl>
+      {uses ? <UsedBySection usedBy={uses} /> : null}
+      {row.kind === "mcp" ? (
+        <DescriptionEditor
+          key={`${row.id}:${mcpDescription(row)}`}
+          saved={mcpDescription(row)}
+          canEdit={canManage && Boolean(onDescription)}
+          saving={savingDescription}
+          onSave={onDescription}
+        />
+      ) : null}
       {plan.alwaysConfirm && switches ? (
         <AlwaysConfirmField
           checked={switches.always_confirm}

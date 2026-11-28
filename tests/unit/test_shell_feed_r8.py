@@ -25,6 +25,10 @@ Three members of ONE organization:
 Each source the member holds must read ``ok``. A provider that FAILED also
 gives no card, so an empty answer alone would pass on a broken build.
 
+LOOP-4a: a mute that the member saves changes the next answer, with the
+learned path on, and the needs view stays the same
+(``TestAMuteChangesTheFeedAndNotTheBell``).
+
 ⚠️ It SKIPS without ``TENANT_LADDER_DATABASE_URL``, and a skip is not a pass.
 """
 
@@ -76,7 +80,7 @@ def _one_instant(monkeypatch):
 #: The sources of a member with Projects, Email and the Calendar pane.
 #: WS-66 RM-2b: `reminders` is a needs source, absent while the flag is off.
 SOURCES = {"tasks": "ok", "projects": "ok", "email": "ok", "reminders": "absent", "studio": "absent",
-           "approvals": "absent", "calendar": "ok"}
+           "providers": "absent", "approvals": "absent", "calendar": "ok"}
 
 
 def _member(email: str) -> UserContext:
@@ -255,4 +259,86 @@ class TestTheFeedOnARealDatabase:
             alone = await shell.shell_needs(limit=shell.DEFAULT_LIMIT, user=_member(ME))
         assert answer["needs"] == alone
         assert set(alone["sources"]) == {"tasks", "projects", "email", "studio", "reminders",
-                                      "approvals"}
+                                      "approvals", "providers"}
+
+
+def _in_org(email: str, org: str) -> UserContext:
+    """A member whose session names the org, as the gateway's session does."""
+    return UserContext(
+        email=email, role=UserRole.EMPLOYEE, organization_id=org,
+        access=EffectiveAccess(role_granted=frozenset(
+            {"feature:projects", "feature:email", "feature:tasks"})),
+    )
+
+
+class TestAMuteChangesTheFeedAndNotTheBell:
+    """WS-58 LOOP-4a done-when (``proactive_loop.md`` §7.2 P3 to P5, §10). The
+    member saves a mute through ``PUT /shell/feed/prefs``, with its real SQL.
+    The next feed read, with ``MY_DAY_LEARN_ORGS`` naming the org, reads the
+    mute and the counts through their real SQL as the app role. A kind that
+    is not a needs kind leaves the feed. A muted needs kind goes to Later.
+    The needs view does not change by one item.
+
+    Mutations, each killed here: a join that ignores the stored mutes, a
+    muted needs card that leaves, and a mute that reaches the needs view."""
+
+    @pytest.fixture
+    def learning(self, promoted, seeded, monkeypatch):  # noqa: F811
+        from acb_common import tenant_redis
+        from acb_common.settings import get_settings
+        from acb_common.tenant_redis import TenantRedis
+        from gateway.routes.shell import state
+
+        from tests.unit.test_feed_decide import FakeRedis
+
+        p = promoted
+        monkeypatch.setattr(tenant_redis, "get_tenant_redis",
+                            lambda **_: TenantRedis(FakeRedis()))
+        monkeypatch.setattr(get_settings(), "my_day_learn_orgs", p.org_b)
+        monkeypatch.setattr(state, "LEARN_TIMEOUT_S", 30.0)  # room for a cold database
+        yield
+        with p.admin_engine.begin() as c:
+            c.execute(text(
+                "UPDATE user_settings SET my_day_prefs = NULL WHERE user_id IN (:a, :b) "
+                "AND organization_id = CAST(:o AS uuid)"), {"a": ME, "b": OTHER, "o": p.org_b})
+
+    @staticmethod
+    async def _mute(p, user: UserContext, kinds: list[str]) -> dict:
+        from gateway.routes.shell import prefs
+
+        async with _as_member(p, p.org_b):
+            return await prefs.put_feed_prefs(body={"key": "mutes", "value": kinds},
+                                              user=user)
+
+    async def test_a_muted_kind_leaves_the_feed_and_the_bell_stays(
+            self, promoted, seeded, monkeypatch, learning):  # noqa: F811
+        p = promoted
+        user = _in_org(OTHER, p.org_b)
+        day_id = f"calendar:{_today(seeded)}"
+        before = await _feed(p, monkeypatch, user)
+        assert "failed" not in before["sources"].values()
+        assert _card(before, day_id)["kind"] == "day_overbooked"  # non-vacuity
+        assert await self._mute(p, user, ["day_overbooked"]) == {"mutes": ["day_overbooked"]}
+        after = await _feed(p, monkeypatch, user)
+        assert after["sources"] == before["sources"]
+        assert day_id not in [c["signal_id"] for c in after["cards"]]
+        assert [c["signal_id"] for c in after["cards"]] == [
+            c["signal_id"] for c in before["cards"] if c["signal_id"] != day_id]
+        assert after["needs"] == before["needs"]
+
+    async def test_a_muted_needs_kind_goes_to_later_and_the_bell_stays(
+            self, promoted, seeded, monkeypatch, learning):  # noqa: F811
+        p = promoted
+        user = _in_org(ME, p.org_b)
+        late = f"tasks:{seeded['late']}"
+        before = await _feed(p, monkeypatch, user)
+        assert "failed" not in before["sources"].values()
+        assert _card(before, late)["group"] != "later"  # non-vacuity
+        await self._mute(p, user, ["overdue"])
+        after = await _feed(p, monkeypatch, user)
+        assert after["sources"] == before["sources"]
+        assert _card(after, late)["group"] == "later"
+        assert sorted(c["signal_id"] for c in after["cards"]) == sorted(
+            c["signal_id"] for c in before["cards"])
+        assert after["needs"] == before["needs"]
+        assert late in [i["id"] for i in after["needs"]["items"]]

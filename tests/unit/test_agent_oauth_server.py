@@ -546,6 +546,70 @@ class TestTheOrgAllowlist:
         assert not agent_oauth.org_allowed(_ORG_Z)
 
 
+class TestTheRefreshReuseGrace:
+    """MCP-G17f (task 4032): the one reader of the grace window and its cap.
+
+    The R8 cases of the window are ``TestTheGraceWindow`` in
+    ``test_agent_connection_tokens.py``.
+    """
+
+    def test_the_setting_defaults_to_off(self):
+        from acb_common.settings import Settings
+
+        assert Settings.model_fields["agent_refresh_reuse_grace_s"].default == 0
+        assert agent_oauth.REFRESH_REUSE_GRACE_MAX_S == 60
+
+    @pytest.mark.parametrize(("raw", "want"), [
+        (0, 0), (-5, 0), (1, 1), (30, 30), (60, 60), (61, 60),
+        (300, 60), (10_000, 60), (True, 0), ("30", 0), (None, 0), (2.5, 0),
+    ])
+    def test_the_reader_clamps_to_the_cap(self, monkeypatch, raw, want):
+        monkeypatch.setattr(get_settings(), "agent_refresh_reuse_grace_s", raw)
+        assert agent_oauth.refresh_reuse_grace_s() == want
+
+    def test_the_env_key_sets_it(self, monkeypatch):
+        from acb_common.settings import Settings
+
+        monkeypatch.setenv("AGENT_REFRESH_REUSE_GRACE_S", "45")
+        assert Settings().agent_refresh_reuse_grace_s == 45
+
+    @pytest.mark.parametrize("raw", [0, -1, True, None])
+    async def test_a_window_of_zero_runs_no_sql(self, monkeypatch, raw):
+        """F1 (R7). With the window off, ``_in_grace`` must not ask the
+        database. ``used_at > now() - 0`` can be true for a rotation that
+        started before the winner spent the token, so a query at 0 would
+        give a pair where rule 5 says revoke. A fake session fails on any
+        ``execute``. Mutation: delete the ``grace_s <= 0`` guard, and this
+        goes red."""
+        monkeypatch.setattr(get_settings(), "agent_refresh_reuse_grace_s", raw)
+
+        class _NoSql:
+            async def execute(self, *_a, **_k):
+                raise AssertionError("_in_grace ran SQL with the window off")
+
+        found = await agent_tokens._in_grace(_NoSql(), "h" * 64, CLIENT, None)
+        assert found is None
+
+    async def test_a_window_above_zero_asks_with_the_capped_value(
+            self, monkeypatch):
+        """The twin: the fake sees one query, with the capped window."""
+        monkeypatch.setattr(get_settings(), "agent_refresh_reuse_grace_s", 999)
+        seen: list[dict] = []
+
+        class _Result:
+            def one_or_none(self):
+                return None
+
+        class _Recorder:
+            async def execute(self, _stmt, params):
+                seen.append(params)
+                return _Result()
+
+        assert await agent_tokens._in_grace(_Recorder(), "h" * 64, CLIENT, None) \
+            is None
+        assert [p["grace_s"] for p in seen] == [60.0]
+
+
 class TestTheConsentRoutesCheckTheList:
     """EA-10p door 1, database-free. A refused organization gets the 403 of
     rule 11 before the client fetch, the ticket and the code."""
@@ -1299,15 +1363,20 @@ class TestTheStructuralFences:
         """The real guard behind the heuristic scan: a tool call gets the
         parsed arguments and a :class:`Context` of the caller and the key, and
         never the request object. SW-7 adds the session key, a string that
-        ``mcp.py`` verified from ``Mcp-Session-Id``, still no request."""
+        ``mcp.py`` verified from ``Mcp-Session-Id``, still no request.
+        MCP-G28a adds the batch key, a string that the edge mints itself for
+        one call of ``update_tasks`` (``gateway_client.new_batch_key``). No
+        request and no tool input sets it."""
         import dataclasses
         import inspect
 
         from agent_edge import tools
 
         fields = {f.name: f.type for f in dataclasses.fields(tools.Context)}
-        assert list(fields) == ["caller", "key", "session"]
+        assert list(fields) == ["caller", "key", "session", "batch"]
         assert fields["session"] in ("str | None", str | None)
+        assert fields["batch"] in ("str | None", str | None)
+        assert tools.Context.__dataclass_fields__["batch"].default is None
         assert list(inspect.signature(tools.call).parameters) == [
             "tool", "ctx", "arguments"]
         assert list(inspect.signature(tools.Tool).parameters).count("request") == 0

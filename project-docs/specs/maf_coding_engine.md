@@ -7,7 +7,8 @@
 PR #591) and WS-43t1 (the structured history path, PR #595) are built and
 dark (2026-10-03). The D85 interim block is built and LIVE (2026-10-03,
 §7.9): a shared agent gets no shell tool until `covers()` is true for it,
-and a guard always refuses its Copilot CLI shell. WS-43d (Projects track
+and a guard always refuses its Copilot CLI shell. D129 extends the block to
+personal agents (task 808, built 2026-11-21). WS-43d (Projects track
 step 1) is built and dark, merged in PR #603 (2026-10-04). WS-43u (Projects
 track step 2, the instructions for code) is built and dark (2026-10-04, in
 review): a run that holds `run_command` reads the sandbox section of §16.3,
@@ -31,11 +32,30 @@ true. On 2026-11-08 the owner told the team in chat to finish the removal,
 because Metorite will not use the Copilot SDK. Task 2464 is built
 (2026-11-09): the T2 build refuses an import of a file outside the app dir.
 
+**WS-43g1 (task 4009) merged, and it is dark** (`d2bffe963`, PR 2887,
+2026-11-27). It holds the egress proxy, the grant and the host firewall
+script. The owner answered on task 4009 (answer `b5dbe733`, 2026-11-27):
+"Approve the merge. Build one network per run in WS-43g2." WS-43g2a (task 4070)
+merged dark (`a95d58d09`, PR 2924). WS-43g2b
+(task 4092) is built dark on branch `mt-dba5cb25-ws43g2b` (§11, WS-43g2).
+
+**Amended 2026-11-27 (tasks 4070 and 4092).** The WS-43g2 spec. §7.3 gets
+the network of each run, the door wait and the channel of the live tool.
+§7.4, F9 of §10 and the WS-43g block of §11 follow. SBX-3a owns
+`sandbox_approval_timeout_seconds`, and SBX-3b owns the `timeout_s`
+parameter of `request_confirmation`. Both merged, and WS-43g2b uses both.
+
 **H-232 (WS-29, task 616) is built (2026-11-05).** The gate of the
 root agent also compares the member's org with the run's org (§15.4).
 **H-232b (task 1712) is built (2026-11-07).** The root-agent gate and the
 push gate of agent code read the membership and the access in the run's
 org (§15.4).
+**H-245 (task 618) is built (2026-11-22).** It closes the four P3 edges of
+the skill rule that the review of PR #635 left (§16.3), with the review
+repairs of 2026-11-22. The orphan rule and the store ask bind every shared
+dir, and each refusal has its own text. A personal dir is exempt from both,
+for a read and for a write. Three gaps stay open in a team dir, and task 3892
+carries them (§16.3). No team-instanced agent ships today.
 
 Owner decisions, 2026-10-03. The owner kept delegation in a covered run on
 2026-10-03, so §16.3 no longer says that no data leaves the platform. The
@@ -291,8 +311,8 @@ address, the Docker bridge addresses included.
 
 ### 4.7 Other facts
 
-- `request_confirmation` waits a fixed 3600 s (`ask_tools.py:393`). It has no
-  timeout parameter.
+- `request_confirmation` waits 3600 s by default. SBX-3b added the `timeout_s`
+  parameter (`ask_tools.py:3033`, `card_wait_s` at `ask_tools.py:2800`).
 - A dynamic agent's clone carried the GitHub token in its remote URL
   until H-363 (2026-10-20). Now the URL holds no token.
   `acb_common/git_credentials.py` gives the credential to one gateway git
@@ -504,8 +524,9 @@ broker for a container and for an exec, and never calls `docker` itself.
 `acb_common/settings.py`. Its value is a comma list of `<target>:<org>`
 entries. A target is `code_task`, `app_builder`, `mutation`, `metorite` or
 `projects` (D86, §16.3). WS-43x1 adds the target `email` for email-assistant
-(§16.4). The code holds `code_task`, `app_builder` and `projects` today
-(`MAF_CODING_TARGETS`, `sandbox_broker.py:100`).
+(§16.4). The code holds `code_task`, `app_builder`, `projects`, `compute`
+(SBX-18) and `tools` today (`MAF_CODING_TARGETS`, `sandbox_broker.py:135`).
+SBX-4a adds `tools` inert: `acquire()` refuses it until `build_tool` (SBX-4b).
 
 An org is one organization id, or `*` for every organization. The targets
 `mutation` and `metorite` take `*` only, because they change platform code and
@@ -570,6 +591,8 @@ for one organization. An empty value turns every target off.
 8. **Caps and eviction.**
    - At most `sandbox_max_per_org` containers live for one organization
      (default 2). That is the organization's fair share.
+   - A start refuses when `sandbox_max_per_org` is above `sandbox_max_total`
+     (SBX-15).
    - At most `sandbox_max_total` containers live on the box (default 4).
    - An organization at its share stops its own oldest idle container first.
    - At the box cap, the broker stops the oldest idle container of ANY
@@ -736,26 +759,104 @@ coding tasks need no network. WS43-E4 showed that the model then says the
 task failed, and does not fake a result.
 
 **The door is one tool, and a person opens it.** `request_network_access`
-(WS-43g) runs these steps:
+(WS-43g2b, task 4092) runs these steps:
 
-1. Read `sandbox_egress_enabled`. If it is off, answer "network access is off
-   on this platform" and stop.
-2. Call `decide()` with a network request that names each host, so the
-   permission log records it.
-3. Call `request_confirmation` with the reason, each host by name, and
-   `non_interactive_default="deny"`.
-4. On a refusal, or with no person to ask, answer "not approved" and stop.
-5. On approval, call `broker.grant_egress()`.
+1. Read `sandbox_egress_enabled` through `sandbox_broker.egress_enabled`. If
+   it is off, answer "network access is off on this platform" and stop.
+2. Do these checks before any card. Each failure gives a refusal text, and
+   no card shows.
+   - `_code_task_binding` reads the run binding. The run must be a
+     `code_task` run, and `MAF_CODING_SCOPE` must name `code_task` for the
+     org of the run.
+   - The run must have a member (`artifact_context()["member"]`). A run with
+     no member gets a refusal, because no one can approve.
+   - The tool calls `check_grant_hosts` ONCE. A host off the allowlist, a
+     door name with no upstream, or a list with no host gets a refusal. The
+     tool keeps the normalized tuple that the call gives.
+   - The tool calls `decide()` with the reason and each host of the tuple,
+     for the audit line, as `_audit_decision` does.
+3. Call `request_confirmation` with the reason and the tuple,
+   `non_interactive_default="deny"`, `fenced=True`,
+   `responder=<the member of the run>` and
+   `timeout_s=sandbox_approval_timeout_seconds`. The member comes from the
+   run binding and never from input (WS-63 PZ-32), as
+   `sandbox_held.py:174` does.
+4. On a decline, a timeout, an answer of another member, or no channel,
+   answer "not approved" and stop.
+5. On approval, get the handle with `broker.acquire()`. Call
+   `broker.grant_egress(handle, reason, hosts)` with the SAME tuple that the
+   card showed, then `broker.release(handle)`. A `SandboxError` gives a
+   refusal text, and the network stays off.
 
 A run with no chat, such as a workflow or a background job, can never open the
-network. `request_confirmation` (`ask_tools.py:345`) already fails closed
-there.
+network. `request_confirmation` (`ask_tools.py:3033`) fails closed there. A
+run with no person present (AUTO-7a) and a run inside `refuse_cards` get a
+denial before any card. Its no-channel path (`ask_tools.py:3532`) answers
+"not approved" when `non_interactive_default` is `"deny"`.
 
-**The card timeout.** `request_confirmation` waits a fixed 3600 s today
-(§4.7). WS-43g adds a `timeout_s` parameter with a default of 3600, and
-replaces the fixed value at `ask_tools.py:393`. `request_network_access` then
-passes `sandbox_approval_timeout_seconds` (default 300). After that time, the
-card counts as a refusal.
+**The channel of the live tool (WS-43g2b, task 4092).**
+
+- Only the `code_task` MAF session holds `request_network_access`
+  (`sandbox_tools.py:1242`, in `code_task_session_parts`).
+- The claim: `code_task` runs inside the tool call of a chat turn, through
+  `_maf_code_task` (`code_tools.py:407`). `code_session.py` runs the agent
+  under `asyncio.wait_for` (lines 167 and 499). That makes a task, and a
+  task copies the context variables of the turn. So the tool reads the
+  emitter and the relay thread of the turn (`resolve_relay_thread_id()`,
+  `executor.py:2880`), and the card reaches the member of that chat.
+- Done-when 14 proves this path. If the card does not reach the chat, the
+  tool fails closed through the no-channel path. The slice then stops for a
+  spec change, and it does not build a second channel.
+- The card wait (up to 300 s) counts against the session limit,
+  `CODE_SESSION_TIMEOUT_SECONDS = 600.0` (`code_session.py:45`).
+- A `code_task` with no chat, such as a workflow or a background job, has no
+  channel. The tool answers "not approved", and the container stays on
+  `--network none`.
+- app-builder does not get the tool in WS-43g2b.
+- A `no_egress` run never reaches the tool. `code_task` is an `open_world`
+  tool (`tool_annotations.py:98`), so H-236 takes it from that run (§16.3).
+
+**The card timeout.** SBX-3b (task 4084, `agent_sandbox.md` §12.5 done-when
+22) merged. `request_confirmation` takes a `timeout_s` parameter, and it waits
+`wait_user_future(_fut, _wait_s)` (`ask_tools.py:3399`). The default stays
+3600 s (`card_wait_s`, `ask_tools.py:2800`).
+
+- `request_network_access` passes `sandbox_approval_timeout_seconds`
+  (default 300) as `timeout_s`. SBX-3a (task 3802, `agent_sandbox.md` §12.5
+  decision 6) owns that setting.
+- The setting has three readers: `gateway.sandbox_batch.batch_wait_s`,
+  `sandbox_broker.door_read_timeout` and `request_network_access`. The
+  comment in `settings.py` names only the first.
+- After that time, the card counts as a refusal.
+
+**The card text (WS-43g2b).** The hosts and the reason come from the model,
+so the card treats each one as untrusted text.
+
+- `check_grant_hosts` runs before the card, so the card names only hosts of
+  the allowlist. A tuple that `check_grant_hosts` refuses opens no card.
+- The card shows only the normalized tuple, and `grant_egress` gets the same
+  tuple.
+- The card shows each host whole, one line for each host, in the card
+  context. `request_confirmation` cuts the detail at 500 characters and the
+  context at 4,000. If the card text is longer than a limit, the tool refuses
+  before the card. So no card shows a part of the hosts that a grant opens
+  (review P2-1).
+- An allowlist entry with a leading dot, such as `.example.com`, matches each
+  name under it. The card line of that entry says so: «.example.com» and
+  every name under it.
+- The tool refuses before the card on the `docker-remote` backend, because
+  `grant_egress` refuses there.
+- One run has one open network card at a time. A second call of the tool
+  while a card of the same run is open gets a refusal. A second grant would
+  remove the network of the first (WS-43g2a). The first answer would then
+  say that hosts are open when they are not.
+- The `permission.decision` log line names each host of the tuple.
+- The tool fences the reason and each host with
+  `acb_common.tool_refusals.data`, and it passes `fenced=True`.
+- An answer counts only when it comes from the member of the run, on the card
+  of its own request id. The tool passes a fresh request id, so no late
+  approval of an older card opens a grant. An answer of another member is a
+  refusal, and it opens no grant.
 
 **The grant.**
 
@@ -764,19 +865,71 @@ card counts as a refusal.
 - The approver is the member bound to the run (`artifact_context()["member"]`),
   because only that member's chat shows the card.
 - The expiry is the end of the run or 30 minutes, whichever comes first.
-- The broker RECREATES the container on the organization's own `--internal`
-  network, `mtr-egress-` plus a hash of the organization. A change of network
-  mode is not a `docker restart`. The new container gets every mount of §7.1
-  rule 5 again, the empty read-only cover on `/workspace/.git` included.
+- The broker RECREATES the container on the `--internal` network of that
+  one grant ("The network of each run", below). A change of network mode is
+  not a `docker restart`. The new container gets every mount of §7.1 rule 5
+  again, the empty read-only cover on `/workspace/.git` included.
 - The workspace stays, because it is a bind mount. `/tmp` is cleared. WS43-E5
   measured the recreate at 1.27 s.
 - `HTTP_PROXY` and `HTTPS_PROXY` in the container point at the proxy and carry
   the grant token.
-- Two organizations never share an egress network. So one tenant's container
-  cannot reach another tenant's container.
+- The broker writes these settings to a file of mode 0600 in a folder of mode
+  0700, and passes it with `docker run --env-file`. It removes the file when
+  the run starts. So the token never shows in a process list.
+- Two runs never share an egress network, in one org or across orgs. So the
+  container of one run cannot reach the container of another run.
 - At the run's end, `revoke_egress()` removes the grant and recreates the
   container on `--network none`, with every mount of §7.1 rule 5 again. An
   expired grant does the same at the next exec.
+
+**The network of each run (WS-43g2a, task 4070).** The owner answered on
+task 4009 (answer `b5dbe733`, 2026-11-27): "Approve the merge. Build one network per run in WS-43g2."
+WS-43g1 made one network for each organization. WS-43g2a replaces it.
+
+- Each grant gets its own network. Its name is `mtr-egress-` and a digest of
+  the org, the container name and the grant key. The grant key is the
+  SHA-256 of the token (`EgressGrant.key`), so the name holds no token.
+- The network has three labels: `metorite.egress=1`, `metorite.org=<org>`
+  and `metorite.egress.run=<run>`.
+- `_ensure_egress_network` refuses a found network that is not `--internal`,
+  or whose org label or run label differs. Then no grant opens.
+- The bridge name is `mtr-eg-` and 8 hex digits of the same digest. That is
+  15 characters, the Linux limit of an interface name (`IFNAMSIZ` less the
+  end byte). `host_firewall.sh` still matches `mtr-eg-+`.
+- If two live grants get the same 8 hex digits, `network create` fails. Then
+  the grant fails closed, and the container stays on `--network none`.
+- A revoke disconnects the proxy from the network of that grant, and removes
+  that network. It does this on each revoke, and it does not look at the
+  other grants of the org.
+- A fresh proxy joins the network of each live grant again. `_ensure_proxy`
+  reads `g.network` of each grant already (`sandbox_broker.py:3948`).
+- `sweep()` and `_sweep_egress` keep the filter `label=metorite.egress=1`.
+  They do not change.
+- `egress_network_name(org)` (`sandbox_broker.py:1311`) changes its
+  signature. It takes the org, the container name and the grant key.
+  `grant_egress` mints the token before it names the network, and
+  `EgressGrant.network` comes from the new name. `egress_bridge_name`
+  changes the same way.
+- `_release_network(org)` (`sandbox_broker.py:3960`) takes the network of
+  the grant in place of the org. Both callers change: `_revoke_locked`
+  (line 4077, under `revoke_egress`) and the failure path of `grant_egress`
+  after a failed recreate (line 4046).
+- `_check_run_inputs` (`sandbox_broker.py:1458`) compares `egress.network`
+  with the network name of the org today. WS-43g2a compares it with the
+  network of the grant, and keeps the org check.
+
+**The address pools.** Each egress network takes one subnet from the default
+address pools of Docker.
+
+- The default pools give about 31 bridge networks on the box. The compose
+  networks on the box use the same pools.
+- The live egress networks are never more than the live granted containers.
+  That is `sandbox_max_total` (default 4), plus the `tools` containers of
+  SBX-4a.
+- If `network create` fails because no pool is free, the grant refuses with
+  `SandboxUnavailable`. The container stays on `--network none`.
+- A change of `default-address-pools` on the box is an owner act, in the
+  class of WS43-G1.
 
 **The host firewall.** An `--internal` network still gives the host an
 address on its bridge, and the gateway listens on every host address (§4.5).
@@ -784,17 +937,34 @@ So the host needs a rule that drops every packet from a sandbox bridge to a
 host address. WS-43g writes the rule as
 `apps/services/orchestrator/sandbox/host_firewall.sh`, with a test. To install
 it on the box is WS43-G1. Until the rule is on the box, `sandbox_egress_enabled`
-stays off there.
+stays off there. `host_firewall.sh --check` also refuses a Docker daemon that
+CVE-2024-29018 affects. Before 26.0.0, 25.0.5 and 23.0.11, the embedded DNS
+of an `--internal` network sends outside names out. The 24.x line has no fix.
 
 **The proxy.**
 
 - One container, `mtr-egress-proxy`, from the pinned image. It runs
   `apps/services/orchestrator/sandbox/egress_proxy.py`, as uid 65534, with
   `--read-only`, `--cap-drop ALL`, 128 MiB and 64 pids (the spike's flags).
-- It is on the default bridge and on each organization's egress network. It
-  holds no credential.
+- It is on the default bridge and on the egress network of each live grant.
+  It holds no credential.
 - It reads the grants from a file that only the broker writes. The file lies
   outside every sandbox mount, and the proxy mounts it read-only.
+- It runs with `net.ipv4.ip_forward=0` and `net.ipv6.conf.all.forwarding=0`,
+  so it never routes a packet between its networks.
+- Its limits (review round 1, 2026-11-26):
+  - The whole request head must arrive in 10 s (`HEAD_DEADLINE_S`).
+  - One peer address holds at most 4 connections that have not passed the
+    token check (`MAX_PREAUTH_PER_PEER`). The proxy checks this before it
+    takes a slot of `MAX_CLIENTS`. A fifth gets 503 and one log line.
+  - One grant token holds at most 8 requests at a time (`MAX_PER_GRANT`).
+    The proxy holds at most 32 in all (`MAX_CLIENTS`).
+  - A tunnel closes after 300 s with no byte (`TUNNEL_IDLE_S`).
+  - A tunnel closes after 1800 s in any case (`TUNNEL_MAX_S`). That is the
+    longest grant.
+- It refuses a request head with a control byte other than tab, a C1 byte
+  (`0x80` to `0x9f`), or a CR outside a CRLF. So one header line cannot
+  hide a second header.
 
 **What the proxy refuses:**
 
@@ -806,7 +976,8 @@ stays off there.
 3. A port other than 80 and 443.
 4. A host with any resolved address for which Python's `ipaddress` gives
    `is_global == False`. The proxy also refuses `64:ff9b::/96` (NAT64),
-   `2002::/16` (6to4) and the IPv4-mapped forms. Each of them carries an
+   `2002::/16` (6to4), the IPv4-mapped forms, the IPv4-compatible
+   `::/96` and the IPv4-translated `::ffff:0:0:0/96`. Each of them carries an
    IPv4 address inside.
 5. A second DNS answer. The proxy resolves once, checks the addresses, and
    connects to the address it checked. A DNS rebind cannot change the target.
@@ -825,6 +996,55 @@ method field reads `CONNECT`.
 `pypi.org,files.pythonhosted.org`. These two exact hosts serve `pip install`.
 `upload.pypi.org` is not on the list. The production list reaches third
 parties, so the owner sets it (WS43-G4).
+
+**The door forward (WS-43g1, task 4009).** The door client of
+`agent_sandbox.md` §12.3 calls `http://metorite-api.sandbox`. The proxy
+forwards that one name to the gateway.
+
+- The door name is a host on the grant's list, like any other host. Rules 1,
+  2 and 3 apply to it.
+- The proxy forwards a plain HTTP request for the exact name
+  `metorite-api.sandbox`, on port 80, to the address in
+  `sandbox_egress_door_upstream`. That value is an IP address and a port.
+- The proxy does no DNS lookup for the door. So rules 4 and 5 do not apply to
+  it. Only the broker sets its private address, and no request can name one.
+- The proxy refuses the door when the setting is empty or holds a name, for a
+  `CONNECT`, and for a request with no `X-Sandbox-Capability` header.
+- The proxy adds no header and holds no key. It removes
+  `Proxy-Authorization` and the hop-by-hop headers. It sets
+  `Connection: close`, so each connection carries one request.
+
+**The door wait (WS-43g2a, task 4070).** A held batch of `agent_sandbox.md`
+§12.5 keeps the door request open until the member answers the card. The
+proxy reads with `FORWARD_TIMEOUT_S = 60.0` (`egress_proxy.py:110`), so it
+cuts that wait today.
+
+- The proxy is a separate script in its own container. It cannot read the
+  settings.
+- `build_proxy_argv` passes `--door-read-timeout <seconds>`. The value is
+  `sandbox_approval_timeout_seconds` plus 30.
+- The proxy uses that value only for the upstream read of `DOOR_HOST`.
+  `FORWARD_TIMEOUT_S` stays 60 for every other host.
+- The proxy refuses to start when the value is less than 90. So a setting
+  less than 60 stops the proxy, and every grant fails closed.
+- `_ensure_proxy` reads the argv of the running proxy. If its value is not
+  the value of the setting, the broker removes the proxy and starts a fresh
+  one. The fresh proxy joins the network of each live grant again. The
+  restart cuts each open connection of the old proxy.
+- WS-43g2a reads the setting with
+  `getattr(settings, "sandbox_approval_timeout_seconds", 300)`. So WS-43g2a
+  does not wait for SBX-3a, and it does not add the setting. SBX-3a (task
+  3802) adds it with the same default.
+
+**The settings.** Each default keeps egress off.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `sandbox_egress_enabled` | `False` | Off: the broker refuses each grant, and makes no proxy and no egress network |
+| `sandbox_egress_allow_hosts` | `pypi.org,files.pythonhosted.org` | The hosts that a grant may name. A grant names an entry exactly |
+| `sandbox_egress_door_upstream` | empty | The IP address and port of the door upstream. Empty refuses the door |
+| `sandbox_egress_grant_ttl_seconds` | 1800 | The longest life of a grant. The run's end revokes it first |
+| `sandbox_approval_timeout_seconds` | 300 | The wait of a card. Owned by SBX-3a (task 3802). The network card waits this long, and the door read of the proxy waits this plus 30 s |
 
 ### 7.4 The tools
 
@@ -879,8 +1099,17 @@ T2.
   front matter, and scripts under `<name>/scripts/`. Spike T2a and T2b proved
   the format.
 
-**`request_network_access(reason, hosts)`.** §7.3. WS-43d ships a stub that
-answers "network access is off on this platform". WS-43g makes it live.
+**`request_network_access(reason, hosts)`.** §7.3. WS-43d shipped a stub that
+answered "network access is off on this platform". WS-43g2b (task 4092)
+makes it live, behind `sandbox_egress_enabled`. With the flag off, it still
+gives that answer.
+
+- Only the `code_task` MAF session holds it (`sandbox_tools.py:1242`).
+- The card reaches the member because `code_task` runs inside the tool call
+  of the chat turn, through `_maf_code_task`. §7.3, "The channel of the live
+  tool", gives the path.
+- A `code_task` with no chat fails closed. app-builder does not get the
+  tool in WS-43g2b. A `no_egress` run never reaches it.
 
 ### 7.5 Host safety around a mounted dir
 
@@ -1055,8 +1284,9 @@ agent, and never an unsandboxed MAF agent.
 
 ### 7.9 The interim block on shared agents (D85) ✅ BUILT 2026-10-03
 
-**The rule.** A shared agent runs no shell on the host. D85 has two halves,
-and each half has its own flag and its own way out:
+**The rule.** An agent that a member reaches runs no shell on the host
+(D85, D129). D85 has two halves, and each half has its own flag and its own
+way out:
 
 | Half | What it blocks | Flag in the run | What lifts it |
 |---|---|---|---|
@@ -1073,15 +1303,16 @@ the host. The verifier set this rule in fix round 1.
 **Who is in scope.** `_tool_injection._d85_leaves_alone` answers it for both
 halves:
 
-- A `personal` agent is out of scope. The owner left personal agents out
-  (H-225).
+- D129 extends D85 to personal agents (task 808, 2026-11-21). A `personal`
+  agent is in scope for both halves. Fence:
+  `test_shared_agent_shell_tools.py` (sections 2 and 7j).
 - The root `metorite` dev agent is out of scope (`_D85_OWNER_PENDING`). It
   edits platform code and runs the tests through its CLI shell. The owner
   decided on 2026-10-03 that only an admin of the first-party organization may
   run it, through any path. `executor._assert_may_run_agent` enforces that at
   every run boundary (§15.4), and that is what makes the exemption safe.
 - Every other agent is in scope: `shared` (the default when a config has no
-  `sharing` block), `team`, a config that does not parse, and
+  `sharing` block), `team`, `personal`, a config that does not parse, and
   `agent_config=None`.
 
 **The tool half.** `_withheld_shell_tools(agent_name, agent_config)`.
@@ -1170,8 +1401,8 @@ reason codes.
   block, so it is shared. Its own tools run their scripts through Python
   `subprocess`. The SDK sends those calls as `custom-tool`, and the guard
   passes them on, so they still work.
-- email-assistant and whatsapp-assistant are personal, and they keep their
-  tools.
+- email-assistant and whatsapp-assistant are personal. Since D129 they get
+  no shell tool, and a delegation to them gets none either.
 
 **`_sandbox_covers` asks `sandbox_broker.lifts_shell_block`.** WS-43d
 pointed it there after the merge of PR #598, so it never asks `covers()`
@@ -1208,9 +1439,6 @@ owner kept delegation (§16.3).
   not describe the coding skill.
 - The skills catalog (`GET /integrations/skills`) resolves a scope with no
   withheld names, so it still shows the coding family for apis-config.
-- Personal agents (H-225). A shared agent can still delegate to one with
-  `call_agent`, and the personal agent keeps its shell tools. That run works
-  in the dir of the acting member, and H-225 closes it.
 - A tool that an agent ships itself under one of these names. The seam
   controls injected tools only, and no in-repo agent ships one.
 
@@ -1754,7 +1982,7 @@ a full disk. The reaper stops idle containers.
 | WS43-F6 | `tests/unit/test_run_command_tool.py` | `run_command` skips `decide()`, shows up in `_collect_injectable_platform_tools()` or in the output of `_inject_agent_tools` for an agent with no `tool_scope`, or leaves `SHELL_TOOLS` |
 | WS43-F7 | `tests/unit/test_maf_code_session.py` | The scope switch fails, a broker failure falls back to Copilot or to the host, the report uses `response.text`, the empty-answer retry goes, or a write or delete skips the blob store |
 | WS43-F8 | `tests/unit/test_maf_harness_contract.py` | An `agent-framework-core` upgrade renames a file tool or a `create_harness_agent` parameter that WS-43 uses, or the session drops `disable_file_memory=True` or `allow_concurrent_invocation=False` |
-| WS43-F9 | `tests/unit/test_sandbox_network_grant.py` | A run with no chat opens the network, a refusal opens it, an approval does not move the container to its own organization's network, the run's end leaves a grant, or a sandbox reaches the bridge gateway address on port 8080. Or the empty read-only cover on `/workspace/.git` is missing after a grant or after a revoke |
+| WS43-F9 | `tests/unit/test_sandbox_network_grant.py` | A run with no chat opens the network, a refusal opens it, an approval does not move the container to the network of its own grant, the run's end leaves a grant, or a sandbox reaches the bridge gateway address on port 8080. Or the empty read-only cover on `/workspace/.git` is missing after a grant or after a revoke. WS-43g2a: two runs share an egress network, in one org or across orgs. A revoke removes the network of another run. A grant opens with no free address pool. The proxy argv lacks the door read timeout |
 | WS43-F10 | `tests/unit/test_coding_sandbox_image.py` | The base image loses its digest, a requirement loses its hash, Node loses its version pin or SHA-256, or the broker accepts a mutable tag |
 | WS43-F25 | `tests/unit/test_coding_sandbox_packages.py` | §7.2, the packages. `requirements.in`, the lock and `_SANDBOX_MODULES` name different packages. The lock pins a browser engine, a GPU or ML-scale library, or a package that needs a binary the image does not hold. The sandbox section names a library that is not in the list. An eval script, or a script or `python` block of a prebuilt agent skill, imports a package that the image does not hold. Its `sandbox_docker` half fails when a listed module does not import, or the image cannot make a PNG, `.docx`, `.pptx`, `.xlsx` and PDF as uid 1000 with no network |
 | WS43-F11 | `tests/unit/test_coding_eval_checkers.py` | An eval checker passes a wrong output or fails a right one |
@@ -1813,7 +2041,7 @@ until its PR merges.
 | WS-43d | `run_command`, the file store, the safe opener, skills. ▶ Projects track step 1 (D86). Built, dark, merged in PR #603 | WS-43c, D85 (PR #598) for `covers()` | AGENT-SAFE |
 | WS-43e | `code_task` on a MAF harness session, and no host git. Built 2026-10-08, dark, in review | WS-43d | AGENT-SAFE |
 | WS-43f | `run_script` and `install_dependency` in the broker | WS-43e | AGENT-SAFE |
-| WS-43g | Egress proxy, the approved grant, the host firewall script | WS-43c, WS-43d | AGENT-SAFE. The flip and the firewall install are owner acts |
+| WS-43g | Egress proxy, the approved grant, the host firewall script. WS-43g1 merged dark (`d2bffe963`). WS-43g2a merged dark (task 4070, `a95d58d09`, PR 2924). WS-43g2b is spec only | WS-43c, WS-43d. WS-43g2b also needs SBX-3a and SBX-3b | AGENT-SAFE. The flip and the firewall install are owner acts |
 | WS-43h | app-builder on the MAF harness. Built 2026-11-08, dark (task 2280) | WS-43d, WS-43e | AGENT-SAFE |
 | WS-43i | Parity eval through the broker | WS-43f, WS-43h | AGENT-SAFE on a local stack. The flips are owner acts |
 | WS-43j | Retire the Copilot `code_task` path | WS-43i, 14 days on production | **OWNER-GATE** to merge (WS43-G7). ⏸ Parked by D86 |
@@ -1841,6 +2069,10 @@ until its PR merges.
 | WS-43y4a | 📝 The provenance check | WS-43x1 | AGENT-SAFE |
 | WS-43y4b | 📝 The light eval of the Email track | WS-43y4a | AGENT-SAFE on a local stack |
 | WS-43x2 | 📝 Email track step 2: the owner flip | WS-43w, WS-43x1, WS-43y1b, WS-43y4b, EM-T13, and an owner answer to WS43-Q7 | **OWNER-GATE** (WS43-G2, WS43-G3) |
+
+**Rung (R10).** This table has no rung column. WS-43g2a and WS-43g2b are on
+rung 6b of `agent_sandbox.md` §0c, on the path of SBX-4b1. The step engine
+of SBX-4b1 waits for WS-43g2a (`agent_sandbox.md` §12.4 decision 3).
 
 ### WS-43a — Eval harness and the first sweep 🔲
 
@@ -2387,11 +2619,70 @@ These facts change or add to the text above:
   another member runs it. And the container cannot write a shared folder,
   so a script has no place to put another member's data where its author
   can read it.
-- **Skill privacy holds while the org is covered** (a named residual for the
-  switch-on). A covered run does not hold `recall_notes` or `save_note`, and
-  those tools check no skill owner. So if `MAF_CODING_SCOPE` stops covering
-  an org, a run of that org can read another member's skill with
-  `recall_notes`. This stays open until HANDOFF H-245 step 3 closes.
+- **H-245 closed the four P3 edges of the skill rule** (task 618,
+  2026-11-22). It made four changes:
+  - In a shared dir, the file store of a covered run hides a skill folder
+    that holds files and no marker. A rehydrate that fails part way can bring
+    back a member's files with no marker. No run reads that folder, the
+    author's run too, because `claim_skill` lets no member take it.
+  - The orphan rule and the store ask bind every shared dir: a tenant dir
+    (`o:<org>`) and a team dir (`t:<team>`). A personal dir (`u:<email>`)
+    is exempt from both, for a read and for a write (task 618 review, F1).
+    The Files routes save a skill in a personal dir with no marker. So there
+    the member's run reads that folder, and its first write claims the
+    folder and writes the member's marker. `agent_paths.is_shared_instance`
+    tells the two kinds apart.
+    The store reads the dir kind from the broker's binding, never from the
+    `.cc-instance` marker.
+  - In a shared dir, `claim_skill` asks the blob store before it takes a
+    name. A row under the folder in the store refuses the claim, so a later
+    rehydrate never puts one member's files in a folder that another member
+    owns. The ask reads the keys that a rehydrate of the dir restores
+    (`agent_paths.store_ask_instances`). A tenant dir reads its own key and
+    the older shared rows (`instance=''`). A team dir reads its own key
+    only. A route passes the key `o:<org>` from the session. The file store
+    passes the key of the broker's binding. `claim_skill` takes the key as
+    a required keyword, so a caller that leaves it out fails at once (F3).
+    When the store cannot answer, the claim is refused.
+  - Each refusal of `claim_skill` carries a reason
+    (`agent_paths.SkillClaimRefusal`), and each reason has its own text
+    (`SKILL_REFUSAL_TEXT`). The Files routes answer with these statuses:
+
+    | Reason | Status | Text |
+    |---|---|---|
+    | Another member's marker, or a lost race | 403 | That skill belongs to another member. |
+    | Files and no marker, or rows in the store | 409 | That skill name is in use. Pick another name. |
+    | The store does not answer | 503 | This server cannot check that skill name right now, so nothing was saved. Try again in a minute. |
+
+    The 409 tells the member that another name works. The 503 tells the
+    member to try again. The file store gives the same text to the model,
+    after `Refused:`.
+  - In a shared agent's tenant dir, `recall_notes` and `save_note` refuse
+    each skill folder that is not the member's own. In every other dir, the
+    two tools work as before. The file store writes a marker in every dir,
+    so a personal dir can hold a marker too.
+  - The tree of the Files routes leaves out each path that
+    `_odd_name_form` refuses, so the tree never names a file that GET
+    answers 404 for.
+- **Three gaps of the skill rule stay open in a team dir.** Task 3892 carries
+  the fix of each. No team-instanced agent ships today.
+  - The file-store rules bind a team dir. But a `code_task` container
+    mounts the whole dir read-write. `code_session.py` refuses only a tenant
+    key, and `_build_mounts` gives `code_task` no skill cover. So
+    `run_command` can still read the skill of another member there.
+  - The Files routes save a skill in a team dir with no marker. The file
+    store then hides that folder from every run, the author's run too. This
+    fails closed.
+  - `recall_notes` and `save_note` check the skill owner in a tenant dir
+    only (`note_tools.py` gates on `is_tenant_instance`). In a team dir they
+    can read the skill of another member.
+- **The residual of the skill rule, named.** The disk can lose a skill
+  folder while the store still holds it. Until the marker comes back, a
+  covered run of the author cannot write into that folder. The rehydrate at
+  the next agent load brings the marker back. So does the author's next GET
+  of a file of the folder. When the store holds files of the folder and no
+  marker row, no member can take that name again. Nothing leaks, because
+  each lock fails closed.
 - **The partition marker is read-only in the container.** The `projects`
   target covers `.cc-instance` with a read-only mount of itself, because the
   gateway's write-through and fault-in read it. The route rule never reads
@@ -2546,15 +2837,15 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
 
 **Gate.** AGENT-SAFE. It ships dark.
 
-### WS-43g — Egress: the proxy, the approved grant and the host firewall 🔲
+### WS-43g — Egress: the proxy, the approved grant and the host firewall 🔲 · ✅ **WS-43g1 merged 2026-11-27, dark (`d2bffe963`, PR 2887, task 4009)** · 🔨 **WS-43g2a merged 2026-11-27, dark (`a95d58d09`, PR 2924, task 4070)** · 🔨 **WS-43g2b built 2026-11-27, dark (task 4092, branch `mt-dba5cb25-ws43g2b`), not merged**
 
 **Scope.**
 
 - `sandbox/egress_proxy.py` and `sandbox/host_firewall.sh`.
-- `broker.grant_egress()`, `broker.revoke_egress()`, the per-organization
-  networks and the grants file.
-- The `timeout_s` parameter of `request_confirmation`, and the live
-  `request_network_access`.
+- `broker.grant_egress()`, `broker.revoke_egress()`, the network of each
+  run and the grants file.
+- The live `request_network_access` and its card. It uses the `timeout_s`
+  parameter that SBX-3b (task 4084) adds to `request_confirmation`.
 - The egress settings, and fences WS43-F5 and WS43-F9.
 
 **Done when:**
@@ -2564,22 +2855,214 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
    and the approver.
 3. With `sandbox_egress_enabled` off, the tool answers "off", and no proxy
    container or egress network exists.
+   `test_run_command_tool.py::test_the_live_tool_with_egress_off_answers_off`
+   replaces `test_request_network_access_says_the_network_is_off` (line 203).
 4. A run with no chat channel is refused, and its container stays on
    `--network none`.
-5. An approval moves the container to its own organization's network, and
-   pip installs a package through the proxy. A refusal changes nothing.
+   `test_run_command_tool.py::test_the_live_tool_with_no_chat_answers_not_approved`.
+5. An approval moves the container to the network of its own grant. A
+   refusal changes nothing.
+   `test_sandbox_network_grant.py::test_a_grant_recreates_the_container_on_its_own_run_network`,
+   `test_run_command_tool.py::test_an_approval_opens_the_grant_with_the_card_hosts`
+   and `test_run_command_tool.py::test_a_refusal_changes_nothing`.
+   An answer of another member is a refusal, and it opens no grant:
+   `test_run_command_tool.py::test_an_answer_of_another_member_opens_no_grant`.
+   The pip half (pip installs a package through the proxy) moved to WS-43g3,
+   because it needs Docker with outbound network.
 6. The card names each host, and it times out after
    `sandbox_approval_timeout_seconds`.
+   `test_run_command_tool.py::test_the_card_names_each_host`,
+   `::test_the_card_times_out_after_the_setting` and
+   `::test_the_card_fences_the_reason_and_names_only_allowed_hosts`.
 7. At the run's end, `revoke_egress()` leaves no grant, and the container is
    back on `--network none`.
+   `test_sandbox_network_grant.py::test_the_runs_end_leaves_no_grant`.
+   - The card half: a grant that an approved card opened ends with the run.
+     `test_run_command_tool.py::test_a_grant_from_an_approved_card_ends_with_the_run`
+     proves it on the egress fake Docker of WS43-F9.
 8. With the firewall script applied in CI, a sandbox cannot connect to the
    bridge gateway address on port 8080.
+9. The proxy forwards only the exact name `metorite-api.sandbox`, to the
+   address in `sandbox_egress_door_upstream`. It does no DNS lookup for it,
+   and it adds no header. With the setting empty, it refuses that name.
+10. Two runs of one org get two networks. Neither container can connect to
+    the other.
+    `test_sandbox_network_grant.py::test_two_runs_of_one_org_get_two_networks`
+    and `::test_docker_two_runs_of_one_org_cannot_reach_each_other`
+    (`sandbox_docker`).
+11. A revoke removes only the network of its own run. Another run of the
+    org keeps its grant and its network.
+    `test_sandbox_network_grant.py::test_a_revoke_removes_only_its_own_runs_network`.
+12. With no free address pool, the grant refuses with `SandboxUnavailable`,
+    and the container stays on `--network none`.
+    `test_sandbox_network_grant.py::test_no_free_address_pool_refuses_the_grant`.
+    A collision of two bridge names fails closed the same way.
+    `test_sandbox_network_grant.py::test_a_bridge_name_collision_fails_closed`.
+13. The door read waits `sandbox_approval_timeout_seconds` plus 30 s. Every
+    other host keeps the read of 60 s. The proxy refuses a value less than
+    90, and the broker restarts a proxy whose value is not the setting.
+    - `test_sandbox_egress_proxy.py::test_the_door_read_waits_the_approval_wait_plus_30`
+    - `test_sandbox_egress_proxy.py::test_other_hosts_keep_the_60_second_read`
+    - `test_sandbox_egress_proxy.py::test_a_door_read_timeout_under_90_refuses_to_start`
+    - `test_sandbox_network_grant.py::test_the_proxy_argv_carries_the_door_read_timeout`
+    - `test_sandbox_network_grant.py::test_a_changed_door_read_timeout_restarts_the_proxy`
+14. A `code_task` in a chat turn raises the network card through the
+    emitter of that turn. A `no_egress` run never reaches the tool.
+    `test_maf_code_session.py::test_code_task_in_a_chat_turn_raises_the_network_card`
+    (a fake emitter) and
+    `test_delegation_no_egress.py::test_a_no_egress_run_never_reaches_request_network_access`.
+
+**WS-43g1, the first slice (task 4009).** The audit of 2026-11-26 narrowed
+WS-43g to an agent-safe first slice. It ships dark.
+
+- In:
+  - `sandbox/egress_proxy.py`, with the five rules of §7.3, the door forward
+    and one JSON log line per request.
+  - The proxy container. It runs as uid 65534, with `--cap-drop ALL` and no
+    `-p`.
+  - A per-organization `--internal` network, and the grants file under
+    `sandbox_state_dir`.
+  - `grant_egress()` and `revoke_egress()`. Each recreates the container
+    through `mount_list`. The run's end revokes. `sweep()` removes the proxy
+    and the networks.
+  - The four settings of §7.3. Each default keeps egress off.
+  - `sandbox/host_firewall.sh`, written and tested. Nothing applies it.
+  - `grant_egress()` refuses on `docker-remote`.
+- Out:
+  - WS-43g2: the network of each run, the live `request_network_access`
+    and the approval card (done-when 4 to 6, and 10 to 14).
+  - WS-43g3: the firewall script applied in CI (done-when 8).
+  - The proxy baked into the image, and egress on `docker-remote`.
+  - Each flag flip and each act on a box.
+- Fences: WS43-F5 and WS43-F9 are new. WS43-F2 gains the egress flags.
+- Done-when 1, 2, 3 and 9 hold for WS-43g1. Done-when 7 holds for the grant
+  and the network. WS-43g2b holds its card half.
+
+**The owner answer (closed 2026-11-27).** Task 4009, answer `b5dbe733`,
+2026-11-27: "Approve the merge. Build one network per run in WS-43g2." Review round
+1 (2026-11-26) found that two members of one org shared one egress bridge.
+So the container of one member could reach the container of the other.
+
+- Option 1, a network for each run, is the answer. WS-43g2a builds it.
+- The owner did not choose option 2, an iptables rule on `mtr-eg-+` that
+  allows only the traffic between a sandbox and the proxy. No slice builds
+  it.
+- WS-43g1 merged with one network for each organization.
+  `sandbox_egress_enabled` is off by default, and no flip comes before
+  WS-43g2a merges.
+
+**Status, 2026-11-27.** WS-43g1 merged, and it is dark (`d2bffe963`, PR 2887,
+task 4009). WS-43g2a merged dark (`a95d58d09`, PR 2924,
+task 4070). Its tests for done-when 10 to 13 and the network
+half of 5 pass. `sandbox_egress_enabled` stays off.
+
+WS-43g2b is built dark (task 4092, branch `mt-dba5cb25-ws43g2b`), and it is
+not merged. WS-43g3 is not built.
+
+**WS-43g2, the second slice (tasks 4070 and 4092).** HIGH. Two PRs. Each
+ships dark behind `sandbox_egress_enabled`. The rung is 6b of
+`agent_sandbox.md` §0c, on the path of SBX-4b1 (R10).
+
+**WS-43g2a (task 4070): the network of each run and the door read
+timeout.** The broker and the proxy only. No card, and no change to a tool.
+
+- In:
+  - The network of each grant (§7.3, "The network of each run"): the name,
+    the three labels, the check in `_ensure_egress_network`, the bridge
+    name and the closed failure on a collision.
+  - A revoke removes the network of its own grant, on each revoke.
+  - `_check_run_inputs` checks the network of the grant.
+  - The refusal when no address pool is free (§7.3, "The address pools").
+  - `--door-read-timeout` in `build_proxy_argv` and in `egress_proxy.py`,
+    and the restart of a proxy whose value is not the setting (§7.3, "The
+    door wait").
+- Out:
+  - The live tool and the card. WS-43g2b holds them.
+  - The setting `sandbox_approval_timeout_seconds`. SBX-3a owns it.
+    WS-43g2a reads it with `getattr` and a default of 300.
+  - A change of `default-address-pools` on a box. That is an owner act.
+  - The firewall script in CI. WS-43g3 holds it.
+- Files (re-verify at dispatch):
+  - `apps/services/orchestrator/orchestrator/sandbox_broker.py`:
+    `egress_network_name` (line 1311), `egress_bridge_name` (line 1316),
+    `EgressGrant`, `build_proxy_argv` (line 1409), `_check_run_inputs`
+    (line 1444), `_ensure_egress_network` (line 3896), `_ensure_proxy` (line
+    3924), `_release_network`, `grant_egress` (line 3998) and
+    `_revoke_locked`.
+  - `apps/services/orchestrator/sandbox/egress_proxy.py`: `main` (line
+    925) and the upstream read of the door in `_forward` (line 843).
+  - Tests: `tests/unit/test_sandbox_network_grant.py` and
+    `tests/unit/test_sandbox_egress_proxy.py`.
+- Done when: the network half of 5, and 10 to 13.
+- Depends on: WS-43g1 (merged). It does not wait for SBX-3a.
+
+**The tests that change in WS-43g2a** (`test_sandbox_network_grant.py`):
+
+- `test_a_grant_recreates_the_container_on_its_own_org_network` (line 216)
+  becomes `test_a_grant_recreates_the_container_on_its_own_run_network`. It
+  checks the name and the three labels.
+- `test_a_second_grant_reuses_the_proxy_and_the_network` (line 299) becomes
+  `test_a_second_grant_reuses_the_proxy_and_makes_its_own_network`.
+- `test_two_orgs_never_share_an_egress_network` (line 312) stays. It also
+  checks one network for each grant.
+- `test_a_network_of_another_org_or_not_internal_is_refused` (line 327) also
+  refuses a found network with another run label.
+- `test_a_fresh_proxy_joins_the_network_of_every_live_grant` (line 841)
+  checks one join for each grant, with two grants of one org.
+
+**WS-43g2b (task 4092): the live tool and the card.** 🔨 Built dark,
+2026-11-27, on branch `mt-dba5cb25-ws43g2b`. Not merged.
+
+- In:
+  - The live `request_network_access` of §7.3, steps 1 to 5, in
+    `sandbox_tools.py` (line 534). It replaces the stub.
+  - The checks before the card (§7.3 step 2): `_code_task_binding`, the
+    member of the run, ONE call of `check_grant_hosts`, and `decide()`.
+  - The card names each host of the normalized tuple, fenced with
+    `tool_refusals.data`. It passes `fenced=True`, `responder=<the member
+    of the run>` and `timeout_s=sandbox_approval_timeout_seconds`.
+  - `broker.acquire()`, then `grant_egress()` with the same tuple, then
+    `broker.release()`.
+  - The channel of §7.3: only the `code_task` session holds the tool.
+- Out:
+  - The `timeout_s` parameter (SBX-3b) and the setting (SBX-3a).
+  - The tool for app-builder.
+  - Each flag flip.
+  - WS-43g3, and the pip test through the proxy in Docker.
+- Files (re-verify at dispatch):
+  - `packages/acb_skills/acb_skills/sandbox_tools.py`:
+    `request_network_access` (line 534) and `code_task_session_parts` (line
+    1211).
+  - `apps/services/orchestrator/orchestrator/code_session.py` (line 237),
+    if the session text changes.
+  - Tests: `tests/unit/test_run_command_tool.py`,
+    `tests/unit/test_maf_code_session.py` and
+    `tests/unit/test_delegation_no_egress.py`.
+- Done when: 3 (the live tool with egress off), 4, the refusal of 5, 6, the
+  card half of 7 and 14. The answer of another member is a refusal (5).
+- The open-card marker of a run clears on each way out of the card, a raise
+  and a cancel too.
+  `test_run_command_tool.py::test_the_open_card_marker_clears_on_an_error_and_a_cancel`.
+- Depends on: WS-43g2a (merged), SBX-3a (task 3802, merged) for the setting,
+  and SBX-3b (task 4084, merged `be49e45e9`) for `timeout_s`.
+
+**WS-43g3: the firewall in CI, and the half that needs Docker with outbound
+network.** Not built.
+
+- The firewall script applied in CI (done-when 8).
+- The pip half of 5: pip installs a package through the proxy. It is a
+  `sandbox_docker` test with outbound network. SBX-4b1 proves pip through
+  the proxy against a stub index (`agent_sandbox.md` §12.4 done-when 9).
+  WS-43g3 keeps the path to the real PyPI.
 
 **Verification.**
 
 ```bash
 uv run pytest tests/unit/test_sandbox_egress_proxy.py \
-  tests/unit/test_sandbox_network_grant.py -q -rs
+  tests/unit/test_sandbox_network_grant.py \
+  tests/unit/test_run_command_tool.py tests/unit/test_maf_code_session.py \
+  tests/unit/test_confirmation_rows.py \
+  tests/unit/test_delegation_no_egress.py -q -rs
 uv run pytest tests/unit/test_sandbox_egress_proxy.py \
   tests/unit/test_sandbox_network_grant.py -q -rs -m sandbox_docker
 ```
@@ -4337,8 +4820,9 @@ text, and it holds the host shell tools.
 1. `sandbox_broker.py`: the target `email` in `MAF_CODING_TARGETS`,
    `target_for_agent`, the `covers()` branch, `lifts_shell_block` and the
    mounts of §16.4.
-2. `_tool_injection.py`: the email rule of `_withheld_shell_tools`, and
-   `target_binds_no_egress` in `_run_covered` (§16.4).
+2. `_tool_injection.py`: `target_binds_no_egress` in `_run_covered` (§16.4).
+   Since D129 `_withheld_shell_tools` needs no email rule. `lifts_shell_block`
+   answers `False` for `email` (item 1).
 3. `apps/agents/agent-email-assistant/config.json`: the six tool names join
    `tool_scope`.
 4. `apps/agents/agent-email-assistant/instructions.md`: a short section that
@@ -4354,7 +4838,8 @@ email-assistant. `attach_for_run` does not change. No eval (WS-43y4).
 
 1. With `MAF_CODING_SCOPE=email:<org A>`, a run of org A holds the six tools.
    It holds no `code_task`, `run_script` or `install_dependency`.
-2. A run of org B holds no data tool, and it keeps its shell tools.
+2. A run of org B holds no data tool. Since D129 it holds no shell tool
+   either.
 3. With the scope empty, an email run has the same tools and the same
    instructions as today.
 4. A covered email run binds `no_egress=False`, and it keeps `send_email`,
@@ -4369,15 +4854,15 @@ email-assistant. `attach_for_run` does not change. No eval (WS-43y4).
 9. Two members of one organization run email-assistant with one session id.
    Neither container sees the staged bytes of the other.
 
-**Fences (R7).** WS43-F29 (new). WS43-F23 gains the email case of the shell
-rule. WS43-F24 gains the email case of `no_egress`. WS43-F2 and WS43-F3 gain
+**Fences (R7).** WS43-F29 (new). WS43-F23 gains the case that a cover of the
+`email` target lifts no shell tool. WS43-F24 gains the email case of `no_egress`. WS43-F2 and WS43-F3 gain
 the `email` target.
 
 **R8.** None. The slice touches no Postgres.
 
 **Mutations.**
 
-- M1 drops the email rule of `_withheld_shell_tools`, and done-when 1 fails.
+- M1 makes `lifts_shell_block` answer `True` for `email`, and done-when 1 fails.
 - M2 makes `target_binds_no_egress` true for `email`, and done-when 4 fails.
 - M3 mounts `/workspace` read-write for `email`, and WS43-F2 fails.
 - M4 adds the hand-off line in an uncovered run, and done-when 8 fails.
@@ -4505,7 +4990,7 @@ An agent refuses each of these by name:
 
 | # | Act |
 |---|---|
-| WS43-G1 | Change Docker access on the box, such as adding the gateway user to the `docker` group. Or install the host firewall rule of §7.3. The broker's own unit is `box_hardening.md` BH-3 (WS-49) |
+| WS43-G1 | Change Docker access on the box, such as adding the gateway user to the `docker` group. Or install the host firewall rule of §7.3. Before egress turns on, `host_firewall.sh --check` must pass on the box. It checks the rule and a Docker daemon of 26.0.0 or later, 25.0.5 or later in 25.x, or 23.0.11 or later in 23.x (CVE-2024-29018). The broker's own unit is `box_hardening.md` BH-3 (WS-49) |
 | WS43-G2 | Build or load the sandbox image on the box, or write the deploy step under `deploy/` |
 | WS43-G3 | Set `MAF_CODING_SCOPE` on production, for any organization. First, the owner confirms that the caps of §7.1 rule 8 fit the box's memory |
 | WS43-G4 | Set `SANDBOX_EGRESS_ENABLED` on production, or set the production allowlist |
@@ -4540,11 +5025,13 @@ WS43-G3. The owner answers WS43-Q7 before WS43-G3 for the `email` target.
 ## 14. Side findings
 
 The spec work found three defects outside WS-43, and the review found one
-gap in the guard. `HANDOFF.md` carries each one with a Check:
+gap in the guard. `HANDOFF.md` carried each one with a Check. H-211 left it
+when task 560 closed its root half (2026-11-21):
 
-- **H-211.** The root `metorite` agent (`agents.py:102-122`) and the external
-  `agent-sales-assistant` set `PermissionHandler.approve_all`, so they bypass
-  the B6 policy.
+- **H-211.** The root `metorite` agent (`agents.py`) and the external
+  `agent-sales-assistant` set `PermissionHandler.approve_all`, so they
+  bypassed the B6 policy. Task 560 removed it from the root agent. The
+  external agent keeps it until WS43-G11.
 - **H-212.** `agent-sales-assistant` imports `copilot.types`, which SDK
   1.0.11 removed. Its factory raises `ImportError`.
 - **H-213.** WS-3a and WS-3b are not in the code: no
@@ -4556,8 +5043,11 @@ gap in the guard. `HANDOFF.md` carries each one with a Check:
 - **H-218.** The loader writes the GitHub token into each clone's remote URL
   (`loader.py:78`). The mutation container mounts the clone and has a network,
   so code in it can read the token (§15.3).
-- **H-211's root half** closes with WS-43m. Its external half and H-212 close
-  with the change in the sales-assistant repo (WS43-G11).
+- **H-211's root half** closed with task 560 (2026-11-21). The root factory
+  sets no permission handler, and
+  `tests/unit/test_no_first_party_approve_all.py` fails if one comes back.
+  Its external half and H-212 close with the change in the sales-assistant
+  repo (WS43-G11).
 
 ## 15. D84 — the GitHub Copilot SDK leaves the platform
 
@@ -4659,10 +5149,17 @@ H-218 is fixed.
 
 ### 15.4 The root `metorite` agent
 
-Today it is a `GitHubCopilotAgent` with `approve_all` (root
-`agents.py:102-122`), and its working dir is the platform checkout. So the
-model can run any shell command and write any file there, in every
-permission mode (H-211).
+Today it is a `GitHubCopilotAgent` (root `agents.py`). Until task 560
+(2026-11-21) its factory set `approve_all`, so the model could run any shell
+command and write any file, in every permission mode (H-211). Now the
+executor gives it the B6 handler of `AGENT_PERMISSION_MODE`. In `enforce` it
+keeps its shell. The denylist and the workspace bounds of
+`permission_policy.decide()` also apply to it.
+
+Its run workspace is the tenant state dir (H-201), so in `enforce` its CLI
+file tools do not reach the platform checkout. Its shell does, and only the
+denylist limits a shell command. That is a known limit until the target below
+or the sandbox.
 
 **The target.** A MAF harness agent with these tools only:
 
@@ -5001,6 +5498,21 @@ table. WS-43t2 adds it to the source scan of
 - **A delegated run** (`call_agent`, `delegate_to_agent`, a MAF sub-agent)
   neither loads nor saves a session. The parent's session holds the
   delegation call and its result.
+- ⚠️ **As built (RESUME-4a-1, 2026-11-16).** A continuation run on the note
+  path (`chat_run_continuity.md` §4.12.4) neither loads nor saves a session
+  (`_native_session_skip` gives `resume_note`). Its reply has no user row
+  before it, so the next load would be a `hit` that lacks the reply. So
+  `executor._resume_prologue` first calls
+  `native_session_store.mark_stale` for each session of the thread. The bound
+  values are the org of the run binding and the caller's thread. There is no
+  agent key, because the rows of every agent in the thread feed the next turn.
+  The mark is ONE bound UPDATE that writes `STALE_DIGEST` over
+  `transcript_digest`, and it makes no row. The next load then gives
+  `digest_drop` with the reason `resume_stale`, and the run uses the text
+  history. The rules of §15.9.4 and §15.9.5 for a normal run do not change.
+  RESUME-4b brings the full amendment. Fences:
+  `tests/unit/test_resume_continuation.py`,
+  `tests/unit/test_resume_native_stale_r8.py`.
 
 #### 15.9.6 The bounds and the compaction
 
@@ -5574,17 +6086,16 @@ email-assistant.
 3. The run holds no host shell tool (the next rule).
 
 **A covered email run holds no host shell tool.** email-assistant is
-`personal` (`config.json`), so D85 leaves it alone today
-(`_d85_leaves_alone`, H-225). The core floor gives it `code_task` and
-`run_script`, and they run on the host.
+`personal` (`config.json`). Since D129 the D85 seam withholds `code_task`,
+`run_script` and `install_dependency` from it, as from a shared agent.
 
-- `_withheld_shell_tools` withholds `code_task`, `run_script` and
-  `install_dependency` from a run of an agent and org that the `email` target
-  names. It checks this before the rule for a personal agent.
+- `_withheld_shell_tools` needs no rule for the `email` target.
+  `lifts_shell_block` answers `False` for it, so a cover keeps the three
+  tools withheld.
 - `_host_shell_withheld` (§16.3 condition 3) then holds for the `email`
   target too.
-- An email run of an organization outside the scope keeps its tools, as
-  today.
+- An email run of an organization outside the scope holds no shell tool
+  either (D129).
 
 **The mounts.** The `email` target takes the mounts of the `projects` target
 (`projects_mounts`, §16.3). That is `/workspace` read-only, the run data, the
@@ -5948,7 +6459,7 @@ The order is: CA-1 first. Then CA-2 and CA-3. Then the rest, as each
 - **Risk.** HIGH (code execution). The sandbox stays the boundary (D130).
   Blocked by CA-1.
 
-#### CA-4 (task 1032) — Network: egress proxy, web fetch, web search, package install. This is WS-43g.
+#### CA-4 (task 1032, live task 4009) — Network: egress proxy, web fetch, web search, package install. This is WS-43g.
 
 **Since D148, the web service has its own owner.** `web_research.md` owns the fetch guard, the readers and the search providers. CA-4 owns the coding session's egress proxy and its profiles, and its `web_fetch` and `web_search` call that one service.
 

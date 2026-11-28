@@ -244,8 +244,8 @@ Each later slice adds its own command here, in the same PR.
 |---|---|
 | A way out of the welcome never waits on the server | `e2e/shell-presets.spec.ts`, "a slow server never holds the founder's welcome open" |
 | The founder's mark leaves the address and keeps the rest | `src/lib/shell/welcomeSteps.test.ts`, "the founder's mark leaves the address" |
-| One `setup_status`, and no second status function | Advisory until OB-1a adds a source test |
-| A step is done from real state, never from a click | Advisory until OB-1a adds a test per step |
+| One `setup_status`, and no second status function | `tests/unit/test_setup_status_source.py`, "one setup_status and no second status function" |
+| A step is done from real state, never from a click | `tests/unit/test_setup_status_r8.py`, "each step is open then done after its row lands" |
 
 ## 12. The AI-led layer
 

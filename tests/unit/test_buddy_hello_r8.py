@@ -13,6 +13,8 @@ What this proves:
 * the chat is named "Welcome";
 * the stamp is taken first: a second chat (a second tab) answers 204 and gets
   no row, and several calls at the same moment make exactly one row;
+* the database decides the claim, never the clock: calls with the same
+  millisecond still make one row (task 3537);
 * ``GUIDE_ORGS`` off answers 404, writes no row and takes no stamp;
 * another member's chat answers 404 and gets no row;
 * a member with no display name gets the greeting alone, "Good morning.";
@@ -21,7 +23,9 @@ What this proves:
 **The mutation (R7).** Commit first, restore with git after. In
 ``post_buddy_hello`` post before ``_claim_hello`` and drop the ``won`` test:
 ``test_two_tabs_at_once_make_one_row`` goes red. Drop the ``_set_title``
-call: ``test_a_fresh_chat_gets_one_sealed_hello_named_welcome`` goes red.
+call: ``test_a_fresh_chat_gets_one_sealed_hello_named_welcome`` goes red. In
+``me._claim_first_mark`` drop the ``WHERE`` of the claim:
+``test_two_claims_in_one_millisecond_make_one_row`` goes red.
 
 Run::
 
@@ -298,6 +302,35 @@ async def test_two_tabs_at_once_make_one_row(graph_as_app, guide_on):
             got = await asyncio.gather(*[_post(user, sid) for sid in sids])
         assert sorted(_status(g) for g in got) == [200, 204, 204, 204]
         assert sum(len(_rows(ns, sid)) for sid in sids) == 1
+    finally:
+        _unseed(ns, email)
+
+
+async def test_two_claims_in_one_millisecond_make_one_row(graph_as_app, guide_on, monkeypatch):
+    """Task 3537: the database decides the claim, never the clock. Two claims
+    in the same millisecond carry the same time, and each one read the stored
+    time as its own: two hellos (R8 shard 2, 2026-11-16 05:30). A frozen
+    clock makes that moment certain."""
+    from gateway.routes.admin import me
+
+    frozen = "2026-11-16T05:30:00.000Z"
+    monkeypatch.setattr(me, "_server_stamp", lambda: frozen)
+    ns = graph_as_app
+    org, email = ns.org_a, _address("hal")
+    _seed(ns, email, org, "Hal")
+    sids = [f"bud1-{uuid.uuid4().hex[:12]}" for _ in range(5)]
+    user = _member(email, org)
+    try:
+        for sid in sids:
+            _new_session(sid, email, org)
+        async with tenant_engine_scope(_dsn(ns)):
+            got = await asyncio.gather(*[_post(user, sid) for sid in sids[:4]])
+            # A later visit in the same millisecond is no winner either.
+            later = await _post(user, sids[4])
+        assert sorted(_status(g) for g in got) == [200, 204, 204, 204]
+        assert _status(later) == 204
+        assert sum(len(_rows(ns, sid)) for sid in sids) == 1
+        assert _stamp(ns, email) == frozen
     finally:
         _unseed(ns, email)
 

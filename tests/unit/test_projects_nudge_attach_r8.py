@@ -269,7 +269,7 @@ async def test_r8_a_declined_nudge_writes_nothing(world, monkeypatch) -> None:
     task = world.tasks["waiting"]
     deny(monkeypatch)
     out = await _as(world, monkeypatch, ALICE, lambda: skill_projects.nudge_task(task))
-    assert out.startswith("Cancelled"), out
+    assert out.startswith("Declined:"), out  # HRD-7: the one table
     assert _notifications(world, task) == []
     assert _nudged_at(world, task) is None
 
@@ -357,7 +357,7 @@ async def test_r8_a_declined_attach_writes_nothing(world, monkeypatch, tmp_path)
     root = _put_upload(world, tmp_path, "brief.pdf", PDF)
     deny(monkeypatch)
     out = await _attach(world, monkeypatch, root, ALICE, task, "brief.pdf")
-    assert out.startswith("Cancelled"), out
+    assert out.startswith("Declined:"), out  # HRD-7: the one table
     assert _files(world, task) == []
     assert not (tmp_path / "files").exists() or not list((tmp_path / "files").iterdir())
 

@@ -164,23 +164,30 @@ def rank(question: str, guides: tuple[Guide, ...]) -> list[Guide]:
     return [g for _s, _i, g in kept[:TOP]]
 
 
-async def member_is_admin() -> bool:
-    """True when the run's verified member holds the executor's admin right.
+#: The one right of an admin PAGE: the right of the sidebar entry and of the page
+#: (``routes/admin/me.py`` ``is_admin``, ``routes/shell/intent.py``
+#: ``ADMIN_PERMISSION``). It gates opening a page, never a write. PAR-1c, task 3677.
+ADMIN_PAGE_PERMISSION = "admin:members:read"
 
-    The right is ``executor._FIRST_PARTY_ADMIN_PERMISSION``, the one admin
-    check of the orchestrator.
+
+async def member_is_admin() -> bool:
+    """True when the run's verified member holds the admin PAGE right.
+
+    The right is :data:`ADMIN_PAGE_PERMISSION`, the one the sidebar and the page
+    use. A member who sees Organisation in the sidebar can open it from chat. The
+    executor's ``admin:members:manage`` still gates every admin write.
     """
     try:
         from acb_auth import resolve_access
 
-        from orchestrator.executor import _FIRST_PARTY_ADMIN_PERMISSION, _verified_run_member
+        from orchestrator.executor import _verified_run_member
 
         member = _verified_run_member()
         if not member:
             return False
         access = await resolve_access(member)
         return bool(getattr(access, "is_active", False)
-                    and access.has(_FIRST_PARTY_ADMIN_PERMISSION))
+                    and access.has(ADMIN_PAGE_PERMISSION))
     except Exception:
         return False
 
@@ -192,7 +199,7 @@ def may_run(guide: Guide, features: frozenset[str] | None, admin: bool) -> bool:
     if guide.admin_only and not admin:
         return False
     return all(
-        _iap.refusal(step.path or "", features) is None
+        _iap.refusal(step.path or "", features, admin) is None
         for step in guide.steps
         if step.kind == "open"
     )

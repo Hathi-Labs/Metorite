@@ -205,3 +205,18 @@ describe("default pages (STU-AF1, section 5.5 rule 3)", () => {
     expect(b.cells.map((c) => c.view)).toEqual(["a"]);
   });
 });
+
+describe("a calendar cell", () => {
+  const cal: ViewDef = { id: "cal", block: "calendar" };
+  const mk = (cells: { view: string; span?: number }[]) =>
+    buildPage({ views: [cal, view("t")], pages: [{ id: "main", cols: 2, cells }] }).cells;
+  it("takes the full row when it sets no span", () => {
+    expect(mk([{ view: "cal" }])[0].span).toBe(2);
+  });
+  it("keeps an explicit span", () => {
+    expect(mk([{ view: "cal", span: 1 }])[0].span).toBe(1);
+  });
+  it("leaves a table cell at one column", () => {
+    expect(mk([{ view: "t" }])[0].span).toBe(1);
+  });
+});

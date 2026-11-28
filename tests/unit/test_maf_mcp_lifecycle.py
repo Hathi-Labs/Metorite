@@ -280,7 +280,7 @@ async def test_endless_paging_is_cut_at_the_page_cap(monkeypatch):
     assert names == [] and opened == []
     assert srv.pages == _maf_mcp.MAX_TOOL_PAGES, srv.pages
     down = [e for e in logs if e["event"] == "mcp.unreachable"]
-    assert down and down[0]["reason"] == "McpListTooLong"
+    assert down and down[0]["reason"] == "too_many_pages"
 
 
 @pytest.mark.usefixtures("fast_budgets")

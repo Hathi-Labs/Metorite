@@ -241,7 +241,16 @@ _BRANCH_ZERO = (
     # CIV-14b: the one body reader. It reads the copy that the gateway keeps
     # of a signed form, or `await request.body()`.
     "_signed_body",
+    # SBX-2 (agent_sandbox.md §12.2 decision 3): the sandbox sibling of branch
+    # 0. Its trigger and its steps see the request, so the scan, the tripwire
+    # and the one digest cover them.
+    "_is_sandbox_request", "_sandbox_user",
 )
+
+#: The functions that may loop over the header NAMES, each name used only in
+#: a prefix test (see :meth:`_InvertedScan.trigger_loop`). The sandbox sibling
+#: counts its own headers and refuses an ``X-Agent-`` header that way.
+_TRIGGER_FUNCTIONS = frozenset({"_is_agent_request", "_is_sandbox_request", "_sandbox_user"})
 
 #: The attribute chains a scan accepts from `request`, each with the ONE use
 #: it may have (see :meth:`_InvertedScan.chain_use`).
@@ -258,12 +267,29 @@ _ALLOWED_CHAINS = frozenset({
 #: cannot, and the HMAC covers its bytes.
 _SCOPE_KEYS = frozenset({"route", "app", "path", "query_string", "acb.agent_signed_body"})
 #: The four signed headers, the two that tell branch 0 to refuse a body on a
-#: GET, the nonce of a write (EA-6a, EA3-28), and the signed MCP session key
-#: (SW-7, spec §12.5).
+#: GET, the nonce of a write (EA-6a, EA3-28), the signed MCP session key
+#: (SW-7, spec §12.5), the signed approval of a door write with the ONE
+#: ``If-Match`` that the digest of its call reads (MCP-P1b-2, AD-6, AD-17),
+#: and the signed batch key of a bulk call (MCP-G28a, D209).
+#: ``If-Match`` is not signed. The digest binds it: another value is another
+#: digest, so the spend refuses it.
 _HEADERS = frozenset({
     "x-agent-connection", "x-agent-timestamp", "x-agent-signature", "x-actor-via",
     "content-length", "transfer-encoding", "x-agent-nonce", "x-agent-session",
+    "x-agent-approval", "if-match", "x-agent-batch",
 })
+#: SBX-2 (agent_sandbox.md §12.2): the sibling's own headers. The capability,
+#: and the names that it reads only to refuse a second credential. Only the
+#: functions of :data:`_SANDBOX_FUNCTIONS` may name them, so the scan still
+#: refuses such a read in ``_agent_user``. SBX-3a (agent_sandbox.md §12.5
+#: decision 4) adds ``x-sandbox-ticket``, the one-use ticket of an approved
+#: write. The sibling reads the body of that write only through the hand-off
+#: to ``_signed_body`` (:data:`_BODY_READER`), the one body reader.
+_SANDBOX_HEADERS = frozenset({
+    "x-sandbox-capability", "authorization", "x-user-email", "x-user-role",
+    "x-sandbox-ticket",
+})
+_SANDBOX_FUNCTIONS = frozenset({"_is_sandbox_request", "_sandbox_user"})
 #: EA-6a (EA3-28): the ONE function that may read the body, and only as
 #: ``await request.body()`` with no argument. It hashes the body of a write
 #: for the signature. The runtime tripwire refuses the read on a GET.
@@ -352,8 +378,9 @@ _PINNED_STORES = frozenset({
 _MATCHES_RECEIVER = "context"
 
 #: The trigger's loop variable may only be used as
-#: ``<var>.lower().startswith(<literal that starts with this>)``.
-_TRIGGER_PREFIX = "x-agent-"
+#: ``<var>.lower().startswith(<literal that starts with one of these>)``.
+#: SBX-2 adds the prefix of the sandbox sibling.
+_TRIGGER_PREFIX = ("x-agent-", "x-sandbox-")
 
 #: Scanned functions of ``agent_signing.py`` carry this prefix in the source
 #: map, so their names never collide with a branch-0 name.
@@ -500,6 +527,9 @@ class _InvertedScan:
             for child in ast.iter_child_nodes(parent)
         }
         self.protected = _protected(name)
+        #: The headers this function may name: the shared set, and the set of
+        #: the sandbox sibling for its own two functions only.
+        self.headers = _HEADERS | _SANDBOX_HEADERS if name in _SANDBOX_FUNCTIONS else _HEADERS
         self.problems: list[str] = []
 
     def flag(self, node, what: str) -> None:
@@ -521,11 +551,11 @@ class _InvertedScan:
                 self.occurrence(node)
             if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "_one_header":
                 key = node.args[1] if len(node.args) > 1 else None
-                if key is None or (_fold(key) or "\0").lower() not in _HEADERS:
+                if key is None or (_fold(key) or "\0").lower() not in self.headers:
                     self.flag(node, "_one_header without an allowed literal header")
         if self.name == "_one_header":
             self.one_header_name()
-        if self.name == "_is_agent_request":
+        if self.name in _TRIGGER_FUNCTIONS:
             self.trigger_loop()
         if self.name == "_effective_template":
             self.pinned_stores()
@@ -783,14 +813,14 @@ class _InvertedScan:
                 self.key_of(use, key)
             return
         if key == ("headers",):
-            if isinstance(use, ast.For) and use.iter is top and self.name == "_is_agent_request":
+            if isinstance(use, ast.For) and use.iter is top and self.name in _TRIGGER_FUNCTIONS:
                 return  # the trigger reads header NAMES (see `trigger_loop`)
             if isinstance(use, ast.Compare) and len(use.ops) == 1 and top in use.comparators \
                     and isinstance(use.ops[0], (ast.In, ast.NotIn)):
-                self.literal(use.left, _HEADERS, "header")
+                self.literal(use.left, self.headers, "header")
                 return
             if isinstance(use, ast.Subscript) and use.value is top:
-                self.literal(use.slice, _HEADERS, "header")
+                self.literal(use.slice, self.headers, "header")
                 return
         # EA-6a: `await request.body()`, no argument, in `_BODY_READER` only.
         if (key == ("body",) and self.name == _BODY_READER
@@ -826,7 +856,7 @@ class _InvertedScan:
             if (self.name == "_one_header" and isinstance(given, ast.Name)
                     and given.id in set(_params(self.fn)) - {"request"}):
                 return  # `one_header_name` and `run` check this parameter
-            self.literal(given, _HEADERS, "header")
+            self.literal(given, self.headers, "header")
         else:
             self.literal(given, _SCOPE_KEYS, "scope key")
 
@@ -916,6 +946,27 @@ def test_the_body_is_read_once_and_in_one_function():
                     and isinstance(node.value, ast.Name) and node.value.id == "request"):
                 found.append(name)
     assert found == [_BODY_READER]
+
+
+#: The scanned functions that may hand the request to :data:`_BODY_READER`.
+#: Branch 0 hashes the body of a signed write. SBX-3a (agent_sandbox.md §12.5
+#: decision 4): of the sandbox functions, only ``_sandbox_user`` may, for the
+#: body hash of a ticket.
+_BODY_READER_CALLERS = frozenset({"_agent_user", "_sandbox_user"})
+
+
+def test_only_branch_0_and_the_sandbox_sibling_hand_the_body_to_the_reader():
+    """SBX-3a. The body read of the sibling goes through ``_signed_body``,
+    and no other scanned function calls it."""
+    import ast
+
+    callers = set()
+    for name, source in _sources().items():
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.Call) and getattr(node.func, "id", "") == _BODY_READER:
+                callers.add(name)
+    assert callers == _BODY_READER_CALLERS
+    assert _BODY_READER_CALLERS - {"_agent_user"} <= _SANDBOX_FUNCTIONS
 
 
 def test_the_kept_body_key_is_the_one_constant():
@@ -1186,14 +1237,49 @@ def test_the_runtime_identity_check_turns_red(monkeypatch):
 #: request: the scan and the tripwire are as before. The pins before it were
 #: 3.12 ``29b8aaad…a9a2`` and 3.13 ``187571d8…21f7``. This pin needs
 #: the diff-reviewer review and the independent verification.
+#:
+#: MCP-G28a (2026-11-11, external_agent_access.md §9.2, D209, task 2541):
+#: step 2 reads the optional signed ``X-Agent-Batch`` once and in its shape,
+#: on a write only, and the canonical string ends with ``batch:<key>`` only
+#: when it is present (the pattern of SW-7). `_claim_call` passes the key to
+#: `_claim_write` for a write of ``MCP_WRITE_ROUTES``, never for a door write.
+#: `_claim_write` has two counters: the call counter (``agent_writes``) counts
+#: 1 for a write with no key and 1 for each 50 rows of one key, and the row
+#: counter (``agent_write_rows``) counts 1 for each write. The new helper
+#: `_count_write` holds the one count, and the digest covers it. The scan and
+#: the tripwire allow the one new header. The pins before it were 3.12
+#: ``f5c27b8e…cdf515c`` and 3.13 ``bbc92971…3815e8cb``. This pin needs the
+#: diff-reviewer review and the independent verification.
+#:
+#: MCP-G28a fix round 1 (2026-11-11, Opus review): a failure of the store
+#: between the ``INCR`` of the batch key and the charge of the call that the
+#: row was due now drops the key before the 503. The new helper
+#: `_drop_unpaid_batch` binds the ROW's organization again and deletes the
+#: key, best effort, and the digest covers it. Nothing new is read from the
+#: request: the scan and the tripwire are as in MCP-G28a. The pins of the
+#: first build were 3.12 ``170d9537…0b68b039`` and 3.13 ``ee79fd33…b9518580``.
+#: This pin needs the diff-reviewer review and the independent verification.
+#:
+#: MCP-P1b-2 (2026-11-11, external_agent_access.md §19.5 and AD-6, task 1722):
+#: step 2 reads the optional signed ``X-Agent-Approval`` once and in the shape
+#: of a lower-case request id, on a write only. The canonical string gains the
+#: line ``approval:<id>`` after the session line, only when it is present.
+#: Step 5a' gives `_approval_of` the signed path, query and body, the matched
+#: template and the ``If-Match`` values, and it forms the digest of AD-17 with
+#: the binding of the ROW's connection. `_claim_call` refuses an approval on a
+#: pair that is not a door write that waits for the member, or one with no
+#: digest. It checks any ``<app>:write`` for the ask route. `_door_gate`
+#: refuses a door write with no approval (AD-18, as before), and spends the
+#: approval LAST, after the scope and the caps, in `_spend_approval`. That
+#: helper opens a tenant session of the ROW's organization and calls
+#: ``acb_auth.app_requests.spend``. The audit row holds the request id. The
+#: scan and the tripwire allow ``x-agent-approval`` and ``if-match``. The pins
+#: before it were 3.12 ``f5c27b8e…cdf515c`` and 3.13 ``bbc92971…3815e8cb``.
+#: This pin needs the diff-reviewer review and the independent verification.
 _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
-    # WS-24b (2026-11-06): branches 1' and 2 of get_current_user changed (the
-    # LLM-key fallback went, and an unset token fails closed). Branch 0 did not.
-    # This pin needs the diff-reviewer review and the independent verification.
-    # BR-7b (2026-11-07): the merge of main (the EA-19b pins above) with the BR-7b
-    # change of `_audit_door`: it adds the `policy` key of the audit payload
-    # (door.scope). No step of branch 0 changed. Both digests were computed
-    # with this test's own function under 3.12 and 3.13. This pin needs the
+    # MCP-P1b-2 (2026-11-11): both digests were computed from the files with
+    # the steps of this test's own function, under CPython 3.12.12 and 3.13.2.
+    # That reader gave the pins of main exactly. This pin needs the
     # diff-reviewer review and the independent verification.
     # CIV-14b (2026-11-12, external_agent_access.md §12.9, task 1727): branch 0
     # reads the body of a write through the new scanned helper `_signed_body`,
@@ -1206,8 +1292,68 @@ _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
     # The 3.12 pin comes from this test's own function, and the 3.13 pin from
     # the same texts hashed under CPython 3.13.2. This pin needs the
     # diff-reviewer review and the independent verification.
-    (3, 12): "0733bb970aaca3c85e85be450f9f7829d180e2be08244e59ba38bdd5354f3a4a",
-    (3, 13): "74734f6e9f513eee43759f5c16ed5136ae440d066bb7fea7305aac2aa3bbda24",
+    # MCP-P1b-2 after the merge with CIV-14b (2026-11-16, task 1722): the
+    # spend of this slice and the `_signed_body` of CIV-14b, together.
+    # `_verify_signed_request` takes `bytes | None` and gives the approval.
+    # Review P2: the approval of `_claim_call` is keyword-only. The pins of
+    # CIV-14b alone were 3.12 ``0733bb97…5354f3a4a`` and 3.13
+    # ``74734f6e…aac2aa3bbda24``. The pins of this slice before the merge
+    # were 3.12 ``1bd6d959…d876ea1d`` and 3.13 ``3484cbb6…e38ba02d``. Both
+    # pins come from the same texts, hashed under CPython 3.12.3, 3.12.16
+    # and 3.13.18. This test's own function gave the 3.13 pin. This pin
+    # needs the diff-reviewer review and the independent verification.
+    # Task 3865 (PR 2740) moved both pins. The `auth.identity_domain_mismatch`
+    # warning in branch 1a is now gated by `_mismatch_due` (once per address
+    # and domain per hour). Branch 0 does not change, and the bound identity
+    # does not change. Diff-reviewer (Opus) APPROVE and an independent
+    # verification PASS. The old pins were 3.12 ``fa6f0023…6fbfe9`` and 3.13
+    # ``de650553…653174``. CPython 3.12.12 and 3.13.2 gave the new pins.
+    # SBX-2 (2026-11-26, agent_sandbox.md §12.2, task 3801): the sandbox
+    # sibling of branch 0. `_is_sandbox_request` and `_sandbox_user` join the
+    # scan, and `_refuse_sandbox`, `_read_capability`, `_sandbox_gate` and
+    # `_claim_sandbox_call` join the helpers. `get_current_user` runs the
+    # sibling first. The sibling has its own header set (`_SANDBOX_HEADERS`):
+    # `x-sandbox-capability` and the three headers that it reads only to
+    # refuse. The scan allows them in the two sibling functions only, and the
+    # tripwire only while the sibling runs (review note, 2026-11-26). The
+    # trigger prefix becomes a tuple. The tripwire wraps the sibling too. The
+    # pins before it were 3.12 ``acb6431c…aff7c0624`` and 3.13
+    # ``caf1fed0…dd681e2bfa20885a78f6e00d93a3253d1b8d1edd6``. CPython 3.12.12
+    # and 3.13.2 gave the new pins. The diff-reviewer review (Opus) gave
+    # APPROVE on 6f43f4210, and it traced the sibling before branch 0 with no
+    # fall-through. The independent verification (Opus) of e4a27a373 passed
+    # each code item of §12.2, with 4 of 4 mutants caught. The pins did not
+    # change after either one (lane-sbx, 2026-11-26).
+    # SBX-3a (2026-11-27, agent_sandbox.md §12.5 decision 4, task 3802): the
+    # writes of the sandbox door. Step 2 of `_sandbox_user` takes at most one
+    # `X-Sandbox-Ticket` in its shape beside the capability, and a GET with a
+    # ticket is 401. Step 4b reads the body through `_signed_body`, the one
+    # body reader, and takes the ticket once in the new helper
+    # `_take_sandbox_ticket` (GETDEL in the ROW's org, 403 `sandbox_ticket`, a
+    # store fault 503). `_sandbox_gate` admits the batch pair with no steps 6
+    # to 8, and with a ticket it checks `SANDBOX_WRITE_ROUTES` and the write
+    # scope. The scope carries `write_scopes`, and `stamp` only from the
+    # ticket. `x-sandbox-ticket` joins `_SANDBOX_HEADERS` and the tripwire's
+    # list. The pins before it were 3.12 ``01b17a9f…0cf06a71`` and 3.13
+    # ``46de0ff1…90246f7a``. CPython 3.12.16 and 3.13.18 gave the new pins.
+    # Reviewed: the Opus diff-reviewer APPROVE of 8f89b8ca57 ("Digest
+    # 82bea7a4... (py3.12) of deps.py (branch 0) approved by this review"),
+    # held at 44d12c5cb0. Verified (external_agent_access.md §10.1): the
+    # independent Opus ws-verifier PASS of 44d12c5cb0. Task 3802, 2026-11-27.
+    # MCP-G28a after the merge with main (2026-11-28, task 2541, D209): the
+    # batch key of MCP-G28a beside the approval of MCP-P1b-2, the signed body
+    # of CIV-14b and the sandbox sibling of SBX-2 and SBX-3a. Step 2 reads
+    # ``X-Agent-Batch`` after ``X-Agent-Approval``, and the canonical string
+    # orders the optional lines session, approval, batch. `_verify_signed_request`
+    # gives six values, and `_claim_call` takes the batch key keyword-only.
+    # The helpers `_count_write` and `_drop_unpaid_batch` join the digest. The
+    # pins of main before the merge were 3.12 ``82bea7a4…b4b467be`` and 3.13
+    # ``f781ee5f…caca75904``. The pins of the PR before the merge were 3.12
+    # ``1d1039e8…ccceacfdac`` and 3.13 ``6adc5684…24884e97d``. This test's own
+    # function gave the new pins. This pin needs the diff-reviewer review and
+    # the independent verification.
+    (3, 12): "dacf7efb175855183fd33ca7983181a336ed5f46e78d469ed89ce8a3d976135c",
+    (3, 13): "91fe1694ea459d9455f403720a81aa56de0f9d33a3cb6c12cd7af31df6da26f1",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see
@@ -1216,9 +1362,21 @@ _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
 #: digest covers them, and an edit to either one fails the digest test.
 #: MCP-P1a adds the four helpers of the app door: the claim dispatch, the door
 #: gate (the door flag, AD-18, the app scope and the caps), the door read cap
-#: and the audit row. None of them sees the request.
+#: and the audit row. None of them sees the request. MCP-P1b-2 adds the two
+#: helpers of the spend: ``_approval_of``, the digest of an approved call,
+#: and ``_spend_approval``, the one spend in a tenant session of the ROW's
+#: organization. Neither sees the request.
+#: SBX-2 adds the four helpers of the sandbox sibling: the refusal, the
+#: capability read, the gate of steps 5 to 8 and the call cap. None of them
+#: sees the request.
+#: MCP-G28a adds ``_count_write``, the one count of a counter of the write
+#: cap, and its fix round 1 adds ``_drop_unpaid_batch``, the best-effort
+#: delete of a batch key whose row did not pay its call.
 _BRANCH_ZERO_HELPERS = ("_read_connection", "_claim_write", "_claim_call", "_door_gate",
-                        "_claim_door_read", "_audit_door")
+                        "_claim_door_read", "_audit_door", "_approval_of",
+                        "_spend_approval", "_refuse_sandbox", "_read_capability",
+                        "_claim_sandbox_call", "_sandbox_gate", "_take_sandbox_ticket",
+                        "_count_write", "_drop_unpaid_batch")
 
 
 def _branch_zero_digest() -> str:
@@ -1460,6 +1618,11 @@ _BYPASSES: dict[str, tuple[str, str, list[str], dict[str, str]]] = {
     "B79 the body read with an argument": (
         "_agent_user", _A_AGENT, ["_b = await request.body(1)"], {}),
     "B80 the request stream": ("_agent_user", _A_AGENT, ["_b = request.stream()"], {}),
+    # ── SBX-2: the sibling's headers stay the sibling's ──
+    "B81 branch 0 tests for authorization": (
+        "_agent_user", _A_AGENT, ["_h = 'authorization' in request.headers"], {}),
+    "B82 branch 0 reads x-user-email": (
+        "_agent_user", _A_AGENT, ["_h = request.headers.get('x-user-email')"], {}),
 }
 
 
@@ -1492,8 +1655,9 @@ def test_the_scan_turns_red_for_each_bypass(label):
 
 
 def test_the_bypass_list_has_the_count_the_spec_names():
-    """79 until EA-6a, which added B76 to B80 for the body read."""
-    assert len(_BYPASSES) == 84
+    """79 until EA-6a, which added B76 to B80 for the body read. SBX-2 adds
+    B81 and B82: a header of the sandbox sibling read in branch 0."""
+    assert len(_BYPASSES) == 86
 
 
 # ── The runtime tripwire ─────────────────────────────────────────────────────
@@ -1539,6 +1703,11 @@ _TRIPWIRE_MUTANTS: dict[str, tuple[str, str, list[str]]] = {
          "        self.calls[0] += 1",
          "        return 'x-agent-connection' if self.calls[0] == 1 else 'host'",
          "_h = request.headers.get(_Sly('Host'))"]),
+    # ── SBX-2: a header of the sandbox sibling, read in branch 0 ──
+    "branch 0 reads authorization": (
+        "_agent_user", _A_AGENT, ["_h = request.headers.get('authorization')"]),
+    "branch 0 tests for x-sandbox-capability": (
+        "_agent_user", _A_AGENT, ["_h = 'x-sandbox-capability' in request.headers"]),
     "3b dict.get on the scope, TypeError caught": (
         "_agent_user", _A_AGENT,
         ["try:", "    _h = dict.get(request.scope, 'server')",

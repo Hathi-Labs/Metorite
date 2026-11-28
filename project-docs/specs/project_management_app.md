@@ -13,16 +13,29 @@
 
 > **Product:** Metorite · **Feature:** Projects (the primary work-management
 > module, sliced into every other Center) · **Created:** 2026-08-05 · **Updated: 2026-11-11**
+> 🟢 **WS-39 WM-5 BUILT 2026-11-11, not merged** (§13.6a, migration 516, task 984). The Goal type
+> (`pm_task_types.is_goal`) and the Goal of an epic (`pm_tasks.goal_task_id`). `GET /projects/tasks/{id}` rolls a Goal
+> up over its linked epics. Dark behind `PROJECTS_GOALS_ORGS`. No UI. The chat and MCP tool fields are gap G27.
+> 🟢 **WS-39 T-1 BUILT 2026-11-11, not merged** (§14.9, task 2532). `GET /projects/teams` gives the teams of
+> the member and the spaces of each. A `team` value narrows the tree, the node list, the task list, the count and
+> the search. Dark behind `TEAMS_ORGS`. No table, no migration, no UI and no chat tool. Fence: `test_teams_read_model_r8.py`.
 > 🟢 **SP-8a BUILT 2026-11-08, not merged** (§13.3, §13.6 row SP-8, migration 402, branch
 > `mt-1cb9f2de-sp8-epic-contract`). An epic has a contract: the store, the routes, `epic_contract`
 > in `get_task` and `get_task_context`, the MCP block and the chat tool `set_epic_contract`.
 > It ships dark behind `EPIC_CONTRACT_ORGS` (repair round 1, 2026-11-09).
 > SP-8b, the form in the app, is open.
+> 🟢 **WS-39 task 2886, part 1 BUILT 2026-11-21, not merged** (§14.9). No group may take the slug `all`.
+> `routes/admin/groups.py` refuses it with 400, and `RESERVED_GROUP_SLUGS` holds the word once. No table and no flag.
+> The T-1 team filter must import that set. Part 2, a hidden parent id in `/projects/tree` and `/projects/nodes`,
+> is task 3852. Its consumers need a decision first.
 > 🟢 **WS-39 T-7 BUILT 2026-11-11, not merged** (§14.9, task 2538). The isolation fence of teams,
 > `tests/unit/test_team_scope_isolation_r8.py`, binds rules 2 and 4 for the surfaces that it lists, on a real database.
 > It does not cover all of rule 4. Its docstring names the reads that it leaves out as follow-up. No table and no flag.
 > 🟢 **WS-39 LP-1a BUILT 2026-11-08, not merged** (§14.2a, migration 383, task 988). A member posts a project update
 > with a health that the author picks. The Overview shows the newest one. Dark behind `PROJECTS_UPDATES_ORGS`.
+> 🟢 **WS-39 SP-3a BUILT 2026-11-09, not merged** (§13.6 row SP-3a, migration 505, task 962). A node has a work
+> style, Flow or Sprints, set in "How this team works". A Sprints node shows a Backlog canvas: the planned sprints
+> over the backlog, a drag or "Move to sprint" with Undo, and "Plan a sprint". Dark behind `PROJECTS_SPRINTS_ORGS`.
 > 🟢 **WS-39 SP-5a BUILT 2026-11-09, dark, not merged** (§13.2, task 964, branch
 > `mt-555bb0d6-sp5a-cycle-chat`). Six chat tools in `skill_projects/cycles.py`: `list_cycles` and
 > `cycle_detail` (A), `create_cycle` and `plan_cycle` (B), `start_cycle` and `close_cycle` (C). They
@@ -35,11 +48,17 @@
 > Fix round 2 (2026-11-08): a task that leaves the node of its open cycle also leaves the cycle.
 > Fix round 3 (2026-11-08): a task sits in one open cycle at most, and a closed cycle is history.
 > Fix round 4 (2026-11-09): migration 364 became 372. A race of a cycle write answers 409, never 500.
+> 🟢 **WS-39 TPL-1b BUILT 2026-11-09, dark, not merged** (§14.2 row TPL-1b, §14.8, Metorite task
+> 2461, branch `mt-6d6a5c2d-tpl1b-template-screens`). The project menu has "Save as template",
+> and a row has "New from template…" with a picker (blank, or a template with its counts, and a
+> start date). Both show only while `PROJECTS_TEMPLATES_ORGS` holds the org. Frontend only, over
+> the routes of TPL-1a. Code: `projects/lib/templates.ts`, `SaveAsTemplateDialog.tsx`,
+> `NewFromTemplateDialog.tsx`. Fence: `projects/lib/templates.test.ts` (advisory).
 > 🟢 **WS-39 TPL-1a BUILT 2026-11-08, dark, not merged** (§14.2 row TPL-1a, §14.8,
 > migration 384, branch `mt-8d741fc0-tpl1a-templates`, Metorite task 18). A member saves
 > a project as an org-wide template and makes a project from it, through three routes,
 > one MCP read and three chat tools, with no web UI. `PROJECTS_TEMPLATES_ORGS` ships
-> empty. TPL-1b (the project menu and the picker) is open.
+> empty. TPL-1b (the project menu and the picker) is built, see above.
 > · **Previously updated 2026-10-25**
 > 🟢 **WS-55 MCP-G7 BUILT 2026-10-25, not merged** (§9.10.3, migration 304). A comment or a link
 > on a task no longer gives 412 to a pending write with the old `If-Match`. A field change still does.
@@ -4992,6 +5011,10 @@ while every test passed — and no behavioural test can see the read somebody ad
 > * 🔴 **`type_id` is remapped by name into the destination root's registry, and
 >   cleared when there is no match.** This is the §9.13.1 defect and it is fixed
 >   in this slice, because the move is what creates the dangling id.
+> * 🔴 **A hand-supplied `field_map` may not send two source keys to one target.**
+>   `choose_field_map` runs the caller's entries through the same `claim_target`
+>   rule that `resolve_field_map` uses, and refuses the pair with a 422 that names
+>   both keys and the target (H-129, done 2026-11-23).
 > * Every drop, every status change and every type change is one `pm_activities`
 >   row on the task, so a move is legible afterwards. The old `task_number` is
 >   already recorded; this joins it.
@@ -8958,7 +8981,7 @@ synced board shows the subtasks that Hidden folded away.
 
 ## 13. Ways of working, cycles and the plan model (D195, 2026-11-08)
 
-**Status: ACTIVE.** SP-1 is built (2026-11-08, not merged, §13.2a). This section reverses the sprint non-goal of §1 (D195). Design: `project-docs/research/agent_era_planning_2026-11.md`. Metorite: WM-0 (task 979), SP-0 (task 959), SP-11 (task 2294) and the epic SP (task 19). The epic WM is task 977. The sections below hold the style catalogue, the cycle calls, the plan model and the slice table.
+**Status: ACTIVE.** SP-1 merged on 2026-11-09 (`eed748d03`, §13.2a). SP-3a is built (2026-11-09, not merged, §13.6). This section reverses the sprint non-goal of §1 (D195). Design: `project-docs/research/agent_era_planning_2026-11.md`. Metorite: WM-0 (task 979), SP-0 (task 959), SP-11 (task 2294) and the epic SP (task 19). The epic WM is task 977. The sections below hold the style catalogue, the cycle calls, the plan model and the slice table.
 
 **The bottom line.** Projects runs five work styles as presets over one set of blocks. A cycle is a time box that people and agents share. A cycle is sized by the review hours of named people and by credits. A Goal sits above the epic, and one engine in `project_planning.md` computes the order of work.
 
@@ -8978,9 +9001,17 @@ A **block** is a part that a project can show or hide. Examples are WIP limits, 
 
 **Rules of the catalogue.**
 
-1. **One style for each project.** A project has one style at a time. A team may mix blocks by hand. The picker then shows the style as "Custom". Fence: advisory until WM-1 lands, then `tests/unit/test_project_work_style.py` (new).
-2. **A change never deletes.** A change of style hides the blocks that it no longer uses. The data stays, and a change back shows it again. Fence: `tests/unit/test_project_work_style.py` (new, WM-1).
-3. **The picker is the SP-3 setting.** "How this team works" in SP-3 (task 962) becomes the style picker. It offers the five styles, and Flow is the default. Only a Sprints or Cycles project shows the cycle UI.
+1. **One style for each project.** A project has one style at a time. A team may mix blocks by hand. The picker then shows the style as "Custom". Fence: `tests/unit/test_project_work_style.py` (SP-3a) holds one stored style for each node. "Custom" stays advisory until WM-1 lands.
+2. **A change never deletes.** A change of style hides the blocks that it no longer uses. The data stays, and a change back shows it again. Fence: `tests/unit/test_project_work_style.py` and `tests/unit/test_project_work_style_r8.py` (SP-3a).
+3. **The picker is the SP-3 setting.** "How this team works" in SP-3 (task 962) becomes the style picker. It offers the five styles, and Flow is the default. Only a Sprints or Cycles project shows the cycle UI. SP-3 owns the picker until WM-0 has a row in §13.6.
+
+**Where the style lives (SP-3a, 2026-11-09).** The picker stores `pm_projects.work_style`. Migration `infra/postgres/505_pm_projects_work_style.sql` adds it as `TEXT NOT NULL DEFAULT 'flow'`, with a CHECK of 1 to 40 characters. The build took 400. Main moved past it while the branch waited, so the number is now 505, booked on 2026-11-26 (R1, task 962). Check it again at merge.
+
+- `core.WORK_STYLES` holds the five keys in the order of the picker: `flow`, `sprints`, `shape_up`, `plan` and `personal`. The CHECK holds no value list, so a new style is a code change.
+- Two values are live: `flow` and `sprints` (`core.LIVE_WORK_STYLES`). The route refuses the other three with 422. The picker shows them disabled, with "Coming later".
+- The style sits on any node: a space, a folder or a project. A member sets it by hand, and no node inherits it.
+- The write is `PATCH /projects/nodes/{id}` with the right of that route. A miss is 404. A change writes the one column, and a `field_change` row records it.
+- `workbench/control_plane/src/app/projects/lib/workStyle.ts` holds the same keys. `tests/unit/test_project_work_style.py` holds the two lists equal.
 4. **The critical path and baselines are decided.** They are in scope. WM-3 reads the one engine of `project_planning.md` §3.4 (PJP-6) and keeps no maths of its own (§13.4). Before D195, the Timeline slice of §9 named them "a separate decision". Fence: the module tests of PJP-6 (`tests/unit/test_planning_module.py`, new).
 5. **WIP limits warn by default.** A project can set a limit as a hard stop. Fence: advisory until WM-1 lands.
 6. **Story points stay refused.** Q2 of the design sets capacity in review hours and credits, so points do not reopen P-31. Work stays sized in hours from `estimate_mins`. Fence: advisory.
@@ -9011,7 +9042,7 @@ A **cycle** and a **sprint** are one record. Copy for a Scrum team says "sprint"
 
 ### 13.2a The cycle store (SP-1, task 960)
 
-**Status: BUILT 2026-11-08, not merged. Fix rounds 2 and 3 done 2026-11-08, fix round 4 done 2026-11-09.** Migration `infra/postgres/372_pm_cycles.sql`. Check the number again at merge (R1). The routes are in `gateway/routes/projects/cycles.py`. Fence: `tests/unit/test_sprint_store_r8.py` (R8).
+**Status: BUILT 2026-11-08, merged 2026-11-09 (`eed748d03`, pull request 1996). Fix rounds 2 and 3 done 2026-11-08, fix round 4 done 2026-11-09.** Migration `infra/postgres/372_pm_cycles.sql`. The routes are in `gateway/routes/projects/cycles.py`. Fence: `tests/unit/test_sprint_store_r8.py` (R8).
 
 **The flag.** The board names the flag `PROJECTS_SPRINTS`. It is the per-org list `PROJECTS_SPRINTS_ORGS`, and the default is empty. While the list does not hold the org, each cycle route answers 404 and writes nothing. A SIGHUP reload applies a change (`docs/flag_reload.md`). The one reader is `cycles.sprints_allowed`. Only the owner flips it.
 
@@ -9173,7 +9204,7 @@ Fence: the R8 test of SP-9 (`tests/unit/test_epic_rollup_r8.py`, new) and the Ep
 
 ### 13.4 One critical-path engine (SP-11, task 2294)
 
-`project_planning.md` §3.4 (PJP-6, task 1483) owns the critical-path maths. SW-90 (task 1936) and WM-3 (task 982) read the engine. They keep no maths of their own. The model never computes a path. Code computes, and the model judges. Fence: the module tests of PJP-6 (`tests/unit/test_planning_module.py`, new). The reads of SW-90 and WM-3 add a test that they call the module and not a function of their own.
+`project_planning.md` §3.4 (PJP-6, task 1483) owns the critical-path maths. SW-90 (task 1936) and WM-3 (task 982) read the engine. They keep no maths of their own. The model never computes a path. Code computes, and the model judges. Fence: the module tests of PJP-6 (`tests/unit/test_planning_module.py`, new). The reads of SW-90 and WM-3 add a test that they call the module and not a function of their own. **2026-11-27:** the Order view (§13.9, ORD-1) reads the engine too, for a project.
 
 ### 13.5 The cycle loop, the close and the retro
 
@@ -9193,14 +9224,15 @@ Each row has one Metorite task. The rows SP-1 to SP-5 keep the scope of the boar
 |---|---|---|---|---|---|
 | **SP-1** | 960 | The cycle store (§13.2a): a cycle table, a membership table with one open cycle for each task, the committed snapshot and the capacity snapshot. Each is tenant-scoped with FORCE ROW LEVEL SECURITY (R5), and expand only (R6). Nine routes: list the cycles of a node, read one, plan, edit (`If-Match`), delete a planned cycle, add a task, remove a task, start and close. Start needs a goal and stores the committed scope and its total. Close takes a choice for each unfinished task and logs each move. The flag `PROJECTS_SPRINTS` (`PROJECTS_SPRINTS_ORGS`) is OFF by default. **BUILT 2026-11-08, not merged** (migration 372) | R8 tests prove one cycle for a task, no read across organizations, one active cycle for each node, a logged move for each carry-over, a start total that a carry-over does not change, the visible count and `hidden`, FORCE RLS on each table, and 404 on each route with the flag off. Fix round 2 adds proofs that a move out of the node frees the row, and that an archived task needs no choice. It also proves that a negative estimate starts, and that two closes cannot deadlock. Verify: `TENANT_LADDER_DATABASE_URL=<scratch> uv run pytest tests/unit/test_sprint_store_r8.py -rs` (no skip), and `uv run pytest tests/unit/test_projects_migration.py tests/unit/test_projects_chat_coverage.py tests/unit/test_tenant_coverage.py` | HIGH | SP-0 |
 | **SP-2** | 961 | The owner dropped the Story type (D199, task 961, 2026-11-11). An epic holds tasks. **SP-2a (task 2936) is built:** an Epic filter on the Board, and the epic line "2 of 5 done". Later: Timeline bars from child dates, a done-when checklist, "Suggest tasks" with Mira (nothing is written before the accept), and the Backlog epic filter after SP-3a. The progress of an epic stays with SP-9 | An epic with 5 children and 2 done shows "2 of 5 done". "Suggest tasks" creates no task before the accept. Visual review at 1440 px and 390 px | STANDARD | SP-0 |
-| **SP-3** | 962 | The style picker (§13.1) with the Sprints or Cycles style. A Backlog canvas in the tab row (OP-12, task 839): planned cycles above, the backlog below. Drag, or "Move to sprint" on the phone. Each cycle shows its count and its hours against its capacity: the review hours of named people, plus credits. Over capacity warns and never blocks | Four-capture visual review at 1440 px and 390 px. A drag and its Undo both work | STANDARD | SP-1 |
+| **SP-3a** | 962 | The style picker (§13.1) and the Backlog canvas (OP-12, task 839), split from SP-3 on 2026-11-09. A node has a work style, Flow or Sprints, set in "How this team works" on the row menu and the header menu. A Sprints node shows a Backlog tab: the planned sprints above, each with its task count, and the backlog below. The member drags a task, or picks "Move to sprint", and a toast offers Undo. "Plan a sprint" takes a name and two dates. A move between two sprints is a remove, then an add, through the SP-1 routes. Paths: migration `infra/postgres/505_pm_projects_work_style.sql`. `gateway/routes/projects/core.py` (`WORK_STYLES`, `validate_work_style`), `tree.py` (the node PATCH and the create), `tasks.py` (`cycle=none` on `GET /projects/tasks`). `app/projects/lib/workStyle.ts`, `lib/backlogCanvas.ts`, `lib/viewTabs.ts`, `components/BacklogCanvas.tsx`, `components/WorkStyleDialog.tsx`, `components/ViewTabs.tsx` and `page.tsx`. Flag: `PROJECTS_SPRINTS_ORGS`, default empty. It gates the Backlog tab and the backlog read, and a 404 of the cycle list hides the tab. AGENT-SAFE: the build, the R8 tests and the captures. OWNER-GATE: the flip of `PROJECTS_SPRINTS_ORGS` on a box. **BUILT 2026-11-09, not merged** | 1. A node has a work style: Flow (the default) or Sprints. The member sets it in a picker on the node settings. A project that was made before this change shows Flow. A change of style deletes nothing. A change back shows the data again. 2. Only a node with the style Sprints, in an org that PROJECTS_SPRINTS_ORGS holds, shows a Backlog canvas in the tab row. Other nodes show no Backlog tab and no cycle UI. 3. The Backlog canvas shows the planned cycles at the top, and each cycle shows its task count. Below them the backlog shows the open tasks that sit in no open cycle, in priority order. 4. The member drags a task from the backlog into a planned cycle, and drags it back. A toast offers Undo, and Undo puts the task where it was. The motion follows DESIGN_SYSTEM.md §4b. 5. The member selects many tasks and picks "Move to sprint". On the phone, "Move to sprint" is an action sheet and needs no drag. 6. A task is never in two open cycles. A refused move shows the reason and leaves the task where it was. 7. The four-capture visual review passes at 1440 px and 390 px, in light mode and at compact density. The PR body has the Visual review line. 8. tests/unit/test_project_work_style.py, tests/unit/test_project_work_style_r8.py, the extended viewTabs.test.ts and the backlog vitest file pass. Verify: `uv run pytest tests/unit/test_project_work_style.py`, then `TENANT_LADDER_DATABASE_URL=<scratch> uv run pytest tests/unit/test_project_work_style_r8.py tests/unit/test_sprint_store_r8.py -rs` (no skip). Then `npx vitest run src/app/projects/lib/viewTabs.test.ts src/app/projects/components/ViewTabs.test.ts src/app/projects/lib/backlogCanvas.test.ts` and `npx tsc --noEmit` in `workbench/control_plane` | HIGH (a migration) | SP-1 |
+| **SP-3b** | 962 (SP-3b needs a task of its own) | The rest of SP-3. Each sprint shows its hours against its capacity: the review hours of named people, plus credits. Over capacity warns and never blocks. The sized total of a sprint, and the filters of the Backlog canvas. SP-3 decides here where a planned cycle keeps its planned capacity (§13.2a, Capacity). The start and close dialogs stay in SP-4. AGENT-SAFE: the build and the tests. OWNER-GATE: none new, because the flag of SP-3a gates it | A sprint over its capacity shows a warning, and the move still runs. The capacity of a planned sprint saves and reads back. Four-capture visual review at 1440 px and 390 px | STANDARD, or HIGH with a migration | SP-3a |
 | **SP-4** | 963 | Start and close dialogs. The default length is one week, and the goal is required. The Board opens on the active cycle. Reports: committed, added, done and carried over. A burndown that shows each change of scope. Throughput by count and by hours, with no points | R8 tests prove the report numbers after a carry-over. Visual review on desktop and phone | STANDARD | SP-1, SP-3 |
 | **SP-5** | 964 | Cycles in the chat, on WhatsApp and over the MCP, through the one manifest (D136): list, status, create, plan, start, close and move. A bulk move and a close show the payload on one approve card (D124.2). External agents see the cycle of a task in `get_task` and `get_task_context` | The manifest fence passes with each route in its class. One chat run plans a cycle and starts it. **SP-5a BUILT 2026-11-09, dark, not merged:** the six chat tools and the MCP reads. **Deferred:** MCP writes (SP-5b, EA3-53), `update_cycle`, `delete_cycle`, the WhatsApp `ALLOWED_ACTS` line | STANDARD | SP-1 |
 | **SP-6** | 2289 | A type control on the task page and the row menu, and a command "Make it an epic". The Epic-root rule still holds: an Epic has no parent, or only a Goal parent after WM-5. Chat sets the type on one card. `update_task` takes `type_id`, with a parity row in `skill_projects/manifest.py` (**built 2026-11-08, items 3 and 4: the MCP `type_id` and the chat card. The type control in the app is open.**) | A member sets the type in the app and in chat. An agent sets it with `update_task`. A type change that breaks the Epic-root rule is refused with a reason | STANDARD | SP-0 |
 | **SP-7** | 2290 | A script moves each top-level task tagged "Epic" that has no epic type to the Epic type of its project. The tag stays. A task with a parent is skipped and listed. Each change goes in the task timeline. A dry run comes first, with a count for each organization | The dry-run counts are on the task. After the run, no top-level task tagged "Epic" lacks an epic type. Run it on HathiLabs first. A customer organization needs the owner's OK on the count | HIGH (a data write in live organizations) | SP-6 |
 | **SP-8** | 2291 | The seven fields of the epic contract (§13.3). The chat drafts the outcome and the checks. The MCP reads and writes them. A field on a task that is not an epic is refused. The builder chose a migration, so the row is HIGH (§13.3, "How SP-8a stores the contract"). **SP-8a is built (2026-11-08, migration 399, not merged): the table `pm_epic_contracts`, `GET` and `PUT /projects/tasks/{id}/epic-contract`, `epic_contract` in `get_task` and `get_task_context`, the `epic_contract` block of the MCP tools `update_task` and `create_task`, and the chat tool `set_epic_contract`. SP-8b is open: the form in the app, with the D145 owner preview** | A member fills the contract in the app and in chat. An agent reads it in `get_task_context`. SP-8a: R8 proves the 422 on a task that is not an epic, the count of 3 to 7 checks, the tier CHECK, the read over the real edge, the pin, and no read or write across tenants | HIGH (a migration) | SP-0, SP-6 |
 | **SP-9** | 2292 | One read that computes, for an epic, progress, spend and waits over every descendant that the reader can see. It leaves room for forecast, health and hill position. A hidden descendant is left out and counted in `hidden` (**built 2026-11-08: `rollup.py` adds `rollup` to `GET /projects/tasks/{id}` for an epic, the MCP `get_task` passes it, and the task panel shows one line. `spend`, `forecast`, `health` and `hill` are null until SP-8 and PJP-6. Fence: `tests/unit/test_epic_rollup_r8.py`.**) | R8: an epic with slices at depth 1, 2 and 3 counts all of them. A hidden descendant is counted in `hidden`. The direct-child count of today stays correct | STANDARD (read only) | SP-0. Spend needs SP-8 |
-| **SP-10** | 2293 | The epic page (§13.3). The graph shows the links and no path until the engine ships. On the phone the graph becomes an ordered list. The one look applies (`DESIGN_SYSTEM.md`, `statusAccent.ts`). D145 owner preview | The page renders for an epic with 3 levels of slices, in light and dark, at compact density and at phone width. The captures are on the task | STANDARD | SP-8, SP-9. The graph needs SW-16 (task 347) |
+| **SP-10** | 2293 | The epic page (§13.3). The graph shows the links and no path until the engine ships. **Amended 2026-11-27 (§13.9 rule 13):** the graph is `OrderMap`, with the epic as its root. On the phone the graph becomes an ordered list. The one look applies (`DESIGN_SYSTEM.md`, `statusAccent.ts`). D145 owner preview | The page renders for an epic with 3 levels of slices, in light and dark, at compact density and at phone width. The captures are on the task | STANDARD | SP-8, SP-9. The graph needs SW-16 (task 347) |
 | **SP-11** | 2294 | The spec merge of §13.4. This change closes it | Three rows name one owner. The two doc tests pass | LOW | SP-0 |
 | **SP-12** | 2295 | MCP tool `get_plan(root_task_id)`, class A (read). It returns the ready set, the waves, the critical path with slack, one finish date (no 50% or 85% forecast: PJP-10 adds it), the next slice, `held`, `outside_blockers`, `hidden`, and later the slices that wait on a person (SP-9 gives the waits query). **Built 2026-11-08, not merged: `finish` only, no waits yet.** The same read is a chat tool. Text from other people leaves as `untrusted_text`. A hidden slice is counted and not named. Rows in `skill_projects/manifest.py` | R8: an epic with 6 slices and 5 `blocks` links returns the right waves and path. A hidden slice is counted and not named | STANDARD | PJP-6 (task 1483), SW-16 |
 
@@ -9214,7 +9246,7 @@ A Goal is a task type with a rank. It has an owner and a target date. A Goal is 
 
 | Row | Task | Scope | Done when | Risk | Depends on |
 |---|---|---|---|---|---|
-| **WM-5** | 984 | The Goal type, as the paragraph above defines it. The Goal has an owner and a target date. The chat and the MCP make and read a Goal through the one manifest (D136). Progress and health come from the roll-up of SP-9 over the linked epics | A Goal with 2 epics from 2 projects shows the progress of both. A hidden epic is counted in `hidden` and never named. `tests/unit/test_goal_rollup_r8.py` (new) passes | STANDARD | SP-8, SP-9, SW-21 |
+| **WM-5** | 984 | **BUILT 2026-11-11, not merged (migration 516). The chat and MCP tool fields are gap G27 of `projects_agent_parity.md`. Fence: `tests/unit/test_goal_rollup_r8.py`.** The Goal type. A migration adds `pm_task_types.is_goal` (the pattern of `is_epic`, migration 168) and `pm_tasks.goal_task_id`, a nullable self reference with ON DELETE SET NULL. In this spec "the parent of epics" means this link for a Goal. The link works across projects, because `parent_task_id` stays the in-project tree. One column makes one Goal for each epic (D199.6). Rules in `core.py` beside `assert_epic_has_no_parent`: only an epic carries `goal_task_id`, and the target is a Goal task of the same organization that the writer can see. `goal_rollup` in `rollup.py` sums `epic_rollup` over the linked epics. `GET /projects/tasks/{id}` returns it for a Goal, and `skill_projects/manifest.py` gets a parity row. Dark behind `PROJECTS_GOALS_ORGS`, default empty. **Out:** the rank (RM-1), the Goal as agent context (SW-21, owner gate) and the UI. Code: `rollup.py` `epic_rollup`, `core.py` `is_epic_type`, `tasks.py` `get_task` | A Goal with 2 epics from 2 projects shows the progress of both. A hidden epic is counted in `hidden` and never named. A second link on one epic replaces the first. No read crosses an organization. `tests/unit/test_goal_rollup_r8.py` (new) passes. Run `eval "$(bash scripts/dev_db.sh --export)"` then `timeout 900 uv run pytest tests/unit/test_goal_rollup_r8.py tests/unit/test_epic_rollup_r8.py -rs` with no skip | HIGH (a migration and access). AGENT-SAFE | SP-8, SP-9, D204.4 |
 | **RM-1** | 2528 | The Roadmap view (D199.3 and D199.5). It lists the Goals of a space in rank order, with live progress from epics in any project. A Goal has a rank field. The view adds no initiative record and no milestone record | The Roadmap shows 3 Goals in rank order. A change of rank moves the Goal and writes one `pm_activities` row. `tests/unit/test_goal_rank_r8.py` (new) passes | HIGH if the rank field needs a column, else STANDARD. Gate: the R8 test and the full loop | WM-5, SW-21 |
 
 Proposed, owner review in this pull request: the plan id RM-1 for task 2528. The rank is a whole number, and a lower number ranks first.
@@ -9395,6 +9427,214 @@ The web searches ran on 2026-10-29. Each item names its source type.
 
 The research for cycles of agent teams is in §2 and §12 of `project-docs/research/agent_era_planning_2026-11.md`. That file lists its sources and its "Not verified" line.
 
+### 13.9 The Order view: the dependency map of a project (WS-ORD, epic task 4068, 2026-11-27)
+
+**Status: PLANNED, nothing built. ORD-0 (task 4069) wrote this section.** The owner asked for it on 2026-11-27, with a capture of the Timeline. The owner then added that agents must use the same order through the MCP (rule 17).
+
+#### 13.9.1 The owner's ask
+
+```text
+Could we have something like a task dependency map of sorts, which is like a
+derivative of the Gantt chart? It's like the Gantt chart without dates, but we
+can have a decent understanding of what tasks are related to what other tasks,
+what can go in parallel, what comes after what, etc. This could become a view
+within the timeline view itself [...] with the purpose of me understanding how
+the entire map of the project looks: what can be done in parallel and what can
+be done in sequence. Basically, just mapping the critical path.
+```
+
+#### 13.9.2 What already exists, and what is missing
+
+| Piece | Where | State on 2026-11-27 |
+|---|---|---|
+| The one engine: the ready set, the waves, the critical path, slack per slice, the finish | `packages/acb_common/acb_common/planning.py` (`analyze_plan`) | Built (PJP-6a) |
+| The read of one tree | `GET /projects/plan/analysis?root_task_id=` (`routes/projects/plan_analysis.py`, `compute_plan`) | Built. The root is a task, so a project has no root |
+| The plan in chat and the MCP | `get_plan` (SP-12, task 2295) | Built, with the same root |
+| `blocks` links, drawn on the Timeline, with a refusal of a loop | `TimelineView.tsx`, `assert_no_block_cycle` in `routes/projects/relations.py` | Built (WS-27t) |
+| A graph of the slices of one epic | SP-10, the epic page (task 2293) | Planned, not built |
+| The critical path on the dated Timeline | SW-90 (task 1936, parked) and WM-3 (task 982) | Planned, not built |
+| A map with no dates for a whole project | Nothing | Missing |
+
+**Four gaps stop a project map today.**
+
+1. `compute_plan` walks the tree under one task. A project is a set of trees, so it has no root.
+2. `_TREE_SQL` reads the done tasks too, and `MAX_PLAN_TASKS` is 2,000. Metorite Application had 2,513 tasks on 2026-11-27, with 1,029 done. Its read answers 422 today.
+3. The answer holds no links. It names tasks only in `labels`, and `MAX_LABELS` is 100.
+4. No canvas draws the waves.
+
+**What other products do.** A survey of 2026-11-27 read 11 products and 4 layout libraries. No product shows one map with no dates, the steps that run in parallel, the critical path, slack and grouping. Microsoft Project (Network Diagram) and OmniPlan (Network View) come nearest. They draw the critical tasks in red, and OmniPlan keeps a chain on one straight line.
+
+Jira rolls links up to the epic, as one dotted line with a count. Nx and Dagster dim all but the chain of a chosen node. GitHub Actions puts the jobs that run in parallel in one column. Wrike shows the float as a number, not only as a colour. Section 13.9.7 holds the table and the pages read.
+
+#### 13.9.3 The design
+
+**Rule 1. A switch in the Timeline, not a new tab.** The Timeline toolbar gets a switch: **Dates** or **Order**. Dates is the Timeline of today, and Order draws the same tasks and `blocks` links with no dates. The tab row of D-OP-17 does not change. The URL holds `layout=order`, so a link opens it.
+
+**Rule 2. A column is a step.** Order draws the open tasks in columns, from **Now** at the left to **Finish** at the right. Now holds the tasks that can start now, and each later column is the next wave of the engine. Tasks in one column do not wait on each other, so they can run in parallel. Finish holds the finish of the engine.
+
+**Rule 3. The critical path is one straight row on top.** The layout puts each task of the critical path in the first row of its column. So the path reads as one line from left to right, as in OmniPlan and "Critical first" in Microsoft Project. Its cards and links take the accent colour and a 2 px line. On this canvas, the accent means critical and nothing else.
+
+**Rule 4. Spare time shows as a number.** A card off the path shows its slack in words, such as "2 days spare", and a card on the path reads "Critical". The legend says that a critical task has no spare time, so a delay there moves the finish.
+
+**Rule 5. Say how long a task is.** The engine adds one hour of review (`REVIEW_WAIT_MINS`) to each estimate. A task with no estimate counts the hour only. So with no estimates, the critical path is the longest chain. The legend says this, and the summary strip counts the tasks with no estimate.
+
+**Rule 6. The summary strip answers the question first.** A line of short facts sits above the canvas, and each fact is a filter:
+
+- "12 can start now" selects the Now column.
+- "Critical path: 9 tasks, about 14 working days" dims the rest.
+- "3 wait on work outside this project" selects them.
+- "840 open tasks have no link" opens the List with that filter.
+- "6 tasks have no estimate" opens the List with that filter.
+
+**Rule 7. Focus on one chain.** A hover or a selection keeps the chain of that task: what it waits on, and what it unblocks. The rest dims. A line beside the card reads "Waits on 3 · Unblocks 7". Esc clears it.
+
+**Rule 8. A card says the few things that matter.** The status dot from `statusAccent.ts`, the number, the title on two lines, the owner, the estimate and the spare time. The engine's `next_slice` carries a "Start here" mark. A click opens the task panel of the List.
+
+**Rule 9. The states with no column.**
+
+- A **loop** stops the engine. A danger bar names it, such as "#12 blocks #15, and #15 blocks #12". The canvas draws only the loop, with "Remove one link to see an order".
+- A task **held** by open work outside the project sits in a column **Waits outside**, at the left. Its blocker shows as a faint card. A blocker that the viewer cannot see reads "1 task you cannot see".
+- **Too few links** (under 2): the empty state reads "No task here blocks another, so every open task can start now." It shows how to draw a link in Dates, and offers the chat.
+- A **hidden** task is counted and never named, by the rule of PJP-6a.
+
+**Rule 10. Order shows the work left.** Done tasks are not on the map, because a done task blocks nothing (PJP-6a). The summary strip counts them.
+
+**Rule 11. The layout is a pure function.** `layoutOrderMap` places each card from the answer alone, as `layoutAgentMap` does, and the column is the wave. Inside a column, the cards sort by the mean row of their blockers, in two sweeps, then by task number. The same answer gives the same places, and the map stores no place. A card that keeps its step keeps its place after a change.
+
+**Rule 12. No layout library now.** The engine gives the column, so a pure function only orders the cards inside a column. The elkjs library gives routed lines and groups, but it adds about 1,400 KB. Its claim of one layer for each partition is not confirmed. Add it only by a decision of its own, when a capture of 500 cards reads badly.
+
+**Rule 13. One graph, two scopes.** `OrderMap` draws a project here. The epic page of SP-10 mounts the same component with the epic as its root. No second graph is built.
+
+**Rule 14. The phone gets a list.** On a phone, Order is a list grouped by step: "Now (12)", "Step 2 (8)", and on. A critical row has its mark. A tap opens the task card. SP-10 already gives its graph the same rule.
+
+**Rule 15. The same order in chat and the MCP.** `get_plan` takes `project_id`. The chat can answer "what can run in parallel in this project", and `src/app/projects/lib/chatView.ts` can open Order.
+
+**Rule 16. Order computes nothing.** The read calls the one engine of PJP-6 (§13.4). The canvas only counts and draws. A chain for focus (rule 7) follows the links of the answer, and it is not an order of work.
+
+**Rule 17. Agents plan and work in the same order.** The owner added this ask on 2026-11-27:
+
+```text
+Agents can probably use, or orchestrators can probably use, this dependency
+graph via the MCP to understand what the sequence of tasks to be worked on is.
+```
+
+So an orchestrator reads the same answer as Order, and follows this plan loop:
+
+1. Call `get_plan` with the `project_id` of the work. For the whole application, use Metorite Application. Its subtree holds each app project, so a link between two apps is inside the scope.
+2. When `not_enough`, `missing` or `gaps` shows, propose the missing `blocks` links and estimates to the member on one card. After the approval, write them with `add_task_link` and `update_tasks`.
+3. Call `get_plan` again. A loop or a `held` slice stops the loop until a person decides.
+4. Call `get_agent_map` with the same project, and drop each slice that a session already holds.
+5. Start one lane on each free slice of the Now column, critical first, then by the least slack. Stop at the lane cap.
+6. After each merge, call `get_plan` again. The next step then opens.
+
+The Order card of a held slice shows the agent pill of its session (`src/app/projects/components/AgentPill.tsx`), from the read of SW-112. So the owner sees which agent works on the critical path.
+
+**What stays with its owner.**
+
+- The order of `my_work` stays with SW-68a, LAD-4 (task 2891) and PJP-6c (task 2508). ORD-5 gives an orchestrator the read and the steps. It does not change the queue.
+- The critical path on the **dated** Timeline stays SW-90 (task 1936) and WM-3 (task 982). When either is built, it reads the answer of ORD-1.
+- The rungs of a goal on the map stay LAD-3 (task 2890).
+- The chain by person and its buffer stay PJP-7. A 50% and an 85% finish stay PJP-10.
+
+#### 13.9.4 The slices
+
+| Slice | Task | Scope | Done when | Risk | Depends on |
+|---|---|---|---|---|---|
+| **ORD-0** | 4069 | This section, §9e of `one_projects_app.md`, the INDEX rows, and a task for each slice and demo. Docs only | The doc tests pass, and each row names its task | LOW | None |
+| **ORD-1** | 4075 | See "ORD-1 in detail" below | See below | HIGH | PJP-6a (built) |
+| **ORD-2** | 4076 | The Dates and Order switch, `OrderMap`, `layoutOrderMap`, rules 2 to 11 and 13 to 15, and the agent pill of rule 17 from the read of SW-112 (built). Dark behind `ORDER_VIEW_ORGS` | The SP-12 fixture (6 slices, 5 links) draws 3 columns with the path in row one. The same answer twice gives the same places. A loop shows its bar. A held card shows its pill. The phone shows the list. `visual-review` passes at four widths, in light mode, at compact density, under a changed accent, and beside Dates | STANDARD UI | ORD-1 |
+| **ORD-3** | 4077 | The whole project. A Display setting **Level** with Tasks and Epics. An epic is one card with its open slices and its steps, such as "Steps 2 to 5". A link between two epics is one line with a count. A click opens an epic in place. Epics is the default above 150 cards. A Display setting **Group by** with None, Epic, Person and Sub-project, as lanes. In Person lanes, two cards of one person in one column get a mark. "Critical path only" can dim or hide. The search box marks a match and moves to it | Metorite Application opens by epic, and one epic opens in place. A lane by person marks one person twice in a step. A seeded project of 1,500 open tasks draws in under one second after the read | STANDARD UI | ORD-2 |
+| **ORD-4** | 4078 | Change the order on the map. A drag from the handle of a card onto another card writes a `blocks` link through the existing link route. A selected link has Remove, and Delete removes it. `assert_no_block_cycle` refuses a loop, and the map says so at the drop. Undo restores the change. A moved card glides to its new column | A link drawn in Order shows in Dates. A loop is refused in words. Undo restores the link. A card that keeps its step does not move | STANDARD UI | ORD-2 |
+| **ORD-5** | 4082 | Rule 17, steps 1 to 6. A playbook prompt `work_in_order` in `playbook_prompts.py`, with the six steps and a `project` argument. `plan_slices` gets a last step: after the member approves, write the `blocks` links and call `get_plan` to check the order. The description of `get_plan` names `project_id`. The edge offers the prompt only where `order_view_allowed` (ORD-1) is true. A tip for a dark read reads as lost access, which is why `MAP_RULE` in `prompts.py` is held back. No new route. The agent pill on the cards is part of ORD-2 | An orchestrator on the box runs `work_in_order` on Projects/Tasks App. It names the Now slices, critical first, and drops the held ones. An org with the flag off does not list the prompt | STANDARD | ORD-1 |
+
+**ORD-1 in detail (task 4075).**
+
+- **The scope.** `GET /projects/plan/analysis` takes `project_id` as a second kind of root. A call sends exactly one of `root_task_id` and `project_id`, or it gets 422. A project that the caller cannot see answers 404 (`load_visible_project`).
+- **One fetch.** `compute_plan` takes the scope, and no second fetch function is written. For a project, its SQL reads the open tasks of the project and its sub-projects. It also reads each task above an open task. It takes the subtree text of `_SUMMARY_SQL` in `agent_summary.py`.
+- **The cap.** `MAX_PLAN_TASKS` counts the tasks read, and the parents of open tasks count too. Metorite Application had 1,484 open tasks on 2026-11-27, so it should fit. A bigger scope answers 422 with "Open a sub-project to see its order." If the read of Metorite Application gives 422 after the release, the owner decides the cap.
+- **The start date.** The optional `start` keeps its meaning for both kinds of root.
+- **Done tasks.** A link to a done task reads as an outside blocker that is done, and the engine ignores it (PJP-6a). An open parent whose children are all done reads as a slice, because closing it is the work left.
+- **A forest.** Each task with no parent in the scope is a root. If `_build` needs a change for this, `test_planning_module.py` gets a fixture with two roots.
+- **`shape=map`.** It adds four keys to the answer:
+  - `nodes`: each visible open slice that a visible link touches, and each visible parent of one. A node holds the id, number, title, status id, category, owner, estimate, parent, wave, slack and a critical mark.
+  - `links`: the visible `blocks` links inside the scope, as blocker and blocked, without the `ignored_links` of the engine. These are the links that people drew, so a link between two epics stays one link.
+  - `counts`: open, done, unlinked and no estimate.
+  - `truncated`: true past 500 nodes. The critical path comes first, then the lowest wave.
+- **Visibility.** A hidden task is counted and never named, and so is each link that touches it (PJP-6a). Each title leaves the MCP as `untrusted_text`.
+- **The flag.** `ORDER_VIEW_ORGS`, default none. Off, a call with `project_id` or `shape=map` answers 404. The read of an epic does not change. The one reader is `order_view_allowed` in `acb_auth/agent_oauth.py`, as `plan_order_allowed` is, so the gateway and the edge ask the same function.
+- **Chat and the MCP.** `get_plan` takes `project_id`. Its row in `skill_projects/manifest.py` stays class A.
+- **Done when.** R8: a project with linked tasks in two sub-projects gives the waves and the path over both. The read of one sub-project gives only its own. A hidden slice and its links are counted and not named. A scope of 2,001 open tasks gives 422 with the words. With the flag off, `project_id` gives 404.
+- **Fence.** `tests/unit/test_plan_analysis_r8.py` (extended), `tests/unit/test_planning_module.py` (only if the engine changes), `tests/unit/test_chat_parity.py`, `tests/unit/test_mcp_edge_coverage.py`, `tests/unit/test_flag_doc_sorted.py` and `tests/unit/test_flag_reload.py`.
+
+**The fences of ORD-2 to ORD-4.**
+
+| Slice | Command |
+|---|---|
+| ORD-2 | `npx vitest run src/app/projects/lib/orderMap.test.ts src/app/projects/components/TimelineView.test.ts src/app/projects/lib/chatView.test.ts src/lib/theme/conformance.test.ts` in `workbench/control_plane`, then `visual-review`. `orderMap.test.ts` is new |
+| ORD-3 | The ORD-2 command, and `uv run pytest -q -p no:cacheprovider tests/unit/test_plan_analysis_r8.py`. A rolled-up count never holds a hidden slice |
+| ORD-4 | The ORD-2 command, and `uv run pytest -q -p no:cacheprovider tests/unit/test_projects_relations.py tests/unit/test_chat_parity.py` |
+| ORD-5 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_prompts.py tests/unit/test_playbook_content.py tests/unit/test_playbook_org_neutral.py tests/unit/test_mcp_edge_coverage.py` |
+
+Each fence is advisory until its slice builds (R7).
+
+**SP-10 amended (task 2293).** The graph of the epic page is `OrderMap` with the epic as its root (rule 13). The engine is built, so that graph shows the path.
+
+#### 13.9.5 The ladder (D211)
+
+| Rung | The demo on production | Slices |
+|---|---|---|
+| **1. A clean header** (demo task 4074) | Open Metorite Application. Its title reads in full, with one plain line under it | HDR-1 (`one_projects_app.md` §9e) |
+| **2. See the order** (demo task 4079) | Open Projects/Tasks App, then Timeline, then Order. Read what can start now, the critical path in one row, and the finish | ORD-1, ORD-2 |
+| **3. Agents work in order** (demo task 4083) | An orchestrator reads the plan of Projects/Tasks App through the MCP. It starts lanes on the free Now slices, critical first, and Order shows their pills | ORD-5 |
+| **4. The whole project** (demo task 4080) | Open Metorite Application in Order. It opens by epic, and one epic opens in place | ORD-3 |
+| **5. Change the order** (demo task 4081) | Draw a link on the map, and the task moves one step. A loop is refused in words | ORD-4 |
+
+Rung 1 is the nearest demo, so it goes first. Rung 2 needs the owner's preview before the flag flips (D218). ORD-5 needs only ORD-1, so a builder can take it while ORD-2 waits on its preview. The demo of rung 3 shows the pills of ORD-2.
+
+#### 13.9.6 Later, not slices
+
+- **"What holds this task?"** A button on the task card opens Order with the chain that decides when the task can start (the "driving path" of Smartsheet).
+- **The size of a card.** A switch can make each card as wide as its estimate.
+- **elkjs.** It comes back only by rule 12.
+
+#### 13.9.7 Dependency map products and layout libraries (survey, 2026-11-27)
+
+A survey for task 4069 read the vendor pages below. A claim that no page confirmed reads "Not confirmed". Several vendor pages refused the fetch. Their facts come from search summaries, and the survey marked them so.
+
+| Product | What it shows with no dates | Critical path | What we take |
+|---|---|---|---|
+| Microsoft Project, Network Diagram | One box for each task, joined by arrows | Red boxes and lines. "Top Down, Critical First" puts the path at the top left | The path in the first row (rule 3) |
+| OmniPlan, Network View | A finish-to-start chain on one straight line. A group collapses | Shown in the view | A chain on one line. A group that opens in place (ORD-3) |
+| Jira, the Dependencies report | Tiles and arrows, read only | None. Red means a date warning | One line between two epics with a count (ORD-3) |
+| Linear | Lines on the timeline only | None | Filters for blocked, blocking and broken links |
+| Asana, ClickUp, monday.com, Smartsheet, Wrike | Only the dated Gantt | Red or yellow bars. Wrike shows the float as a number | Spare time as a number (rule 4) |
+| TeamGantt | Only the dated Gantt | Dim the rest, or hide it | Dim or hide (ORD-3) |
+| Nx project graph | A graph of projects | None | Focus on one node and its chain (rule 7) |
+| Dagster asset graph | A graph of assets | None | Select up and down a chain |
+| GitHub Actions | Jobs in columns | None | The jobs that run in parallel share a column (rule 2) |
+
+**Layout libraries.** The elkjs library gives layers, groups and routed lines, and it adds about 1,400 KB. The dagre library gives no routed lines, and its groups break with outside links. The d3-dag library gives no groups. React Flow documents dagre and elkjs. The control plane already uses `@xyflow/react`, and rule 12 records the choice.
+
+**Three traps.**
+
+- **A tangle at scale.** So Order shows only linked tasks, and ORD-3 opens a big project by epic.
+- **A layout that jumps after each change.** So the column is the wave, and a card keeps its place (rule 11).
+- **A colour with two meanings.** So the accent means critical, and the status keeps its own colours (rule 3).
+
+**Pages read.**
+
+- https://support.microsoft.com/en-us/project/create-a-network-diagram-in-project-desktop
+- https://support.omnigroup.com/documentation/omniplan/mac/3.7/en/working-in-network-view/
+- https://confluence.atlassian.com/jirasoftwareserver101/the-dependencies-report-in-advanced-roadmaps-1455426747.html
+- https://linear.app/docs/project-dependencies
+- https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/creating-issue-dependencies
+- https://nx.dev/docs/features/explore-graph
+- https://docs.github.com/en/actions/how-tos/monitor-workflows/use-the-visualization-graph
+- https://airflow.apache.org/docs/apache-airflow/stable/ui.html
+- https://eclipse.dev/elk/reference/algorithms/org-eclipse-elk-layered.html
+- https://github.com/erikbrinkman/d3-dag
+- https://reactflow.dev/learn/layouting/layouting
+
 ## 14. The Linear and Plane items (LP-0, task 987, 2026-11-08)
 
 **Status: ACTIVE. This section holds rows. §14.2a holds the design of LP-1a (built 2026-11-08, not merged), and §14.8 holds the design of TPL-1a.** It records no new decision. Epic: LP (task 978). Build order: LIN (task 2301). Reviews: `project-docs/research/linear_parity_2026-11.md` (§3, §7 and §8) and `project-docs/research/plane_pm_research_2026-08.md`. Task 956 restored the Plane file.
@@ -9436,7 +9676,7 @@ Each row has one Metorite task. The scope carries the description of the task. W
 | **LP-11** | 2215 | An Insights builder inside Reports. The member picks a measure (count, cycle time, lead time, triage time), a slice and a segment. The builder adds percentile markers and a cumulative flow chart. It stays inside Reports on the existing reads, with no second analytics seam. The MCP read `board_stats` (MCP-G19a, task 1957) counts on the same visibility path, so reuse it where it fits. First slice: one measure, one slice and the cumulative flow chart | A cumulative flow chart and a sliced measure match the numbers of the existing Reports sections | `tests/unit/test_pm_insights.py` (new) | STANDARD (read only) | `PROJECTS_INSIGHTS_ORGS` | LP-0. The row in `projects_reports.md` comes first |
 | **TPL** | 18 | Templates. A project template holds the statuses, types, custom fields and tags, the work style (WM-0), the milestones (WM-2), the starter tasks with dates relative to the project start, the intake settings and the recipes (LP-6). A task template holds a title pattern, its fields and a subtask checklist. A library per work style: an operations board (Flow), a product team (Sprints), a bet (Cycles), an installation and a customer order (Plan), customer onboarding, and hiring. "Save as template" works from any project. Mira builds a template from a short description, on one approve card. A template is org-wide by default, as task types are since migration 175. First slice: save a project as a template and make a project from it, in two rows, TPL-1a and TPL-1b. The library and the Mira path follow | A member makes a project from a template in the local stack, and the starter dates fall in place | `tests/unit/test_pm_templates_r8.py` (new) | HIGH (a migration) | `PROJECTS_TEMPLATES_ORGS` | LP-0. Milestones, recipes and intake settings join when WM-2, LP-6 and LP-8 land |
 | **TPL-1a** | 18 | **Built 2026-11-08, dark, not merged.** The store, the routes and the tools, with no web UI. Migration 384 adds `pm_templates` and `pm_template_applies`, each with FORCE RLS. `POST /projects/templates` saves a project as a template, `GET /projects/templates` lists the templates of the org or reads one by its id, and `POST /projects/templates/{template_id}/apply` makes a project from one. Chat: `list_templates` (A), `save_as_template` (C) and `create_project_from_template` (C). MCP: `list_templates` (A) only. The two MCP writes come later, with a preview and a confirm step (§14.3). §14.8 holds the design: the private-source rule, the caps, the apply, the key and the counter | R8: a round trip with a task tree of three levels and its dates, one project for one key, tenancy, the private-source rule, the caps and the date range, the settings right, a task create that waits for no apply, two applies of one moment, the flag off, and FORCE RLS | `tests/unit/test_pm_templates_r8.py`, `tests/unit/test_mcp_edge_templates.py` | HIGH (a migration) | `PROJECTS_TEMPLATES_ORGS` | LP-0 |
-| **TPL-1b** | 18 | Open. "Save as template" in the project menu, and a template picker in "New project", over the routes of TPL-1a. The picker shows the counts of each template and asks for the start date. The owner preview gates it (D145) | A member saves a project and makes a project from it in the local stack, and the starter dates fall in place | Advisory: a vitest test of the menu item and the picker, and the visual review | STANDARD (frontend only) | `PROJECTS_TEMPLATES_ORGS` | TPL-1a |
+| **TPL-1b** | 18 | BUILT 2026-11-09, dark, not merged. "Save as template" in the project menu, and a template picker in "New project", over the routes of TPL-1a. The picker shows the counts of each template and asks for the start date. The owner preview gates it (D145) | A member saves a project and makes a project from it in the local stack, and the starter dates fall in place | Advisory: a vitest test of the menu item and the picker, and the visual review | STANDARD (frontend only) | `PROJECTS_TEMPLATES_ORGS` | TPL-1a |
 | **OP-12** | 839 | The views become one tab row on desktop and tablet: the six canvases, the saved views and "+ View". No sideways scroll. Below 1280 px the canvas tabs show the icon only, with a tooltip that names the key. Tabs that do not fit fold into a "More" menu. The phone keeps one View button and a vertical sheet. `ModeSwitch` is the one switcher. Subscriptions and favorites (Linear parity row P14) are not in the task. First slice: the tab row only | At 1440, 1024 and 768 px every canvas and saved view is one click away with no scrollbar. At 390 px the sheet lists them vertically. The keys o, b, l, t, c and m still switch the canvas | Advisory: a vitest test for the tab row (new) and the visual review. Nothing tests layout (CLAUDE.md §4) | STANDARD (frontend only) | None. It is a layout, and the D145 owner preview gates it | None. SP-3 (task 962) uses the row |
 
 ### 14.2a LP-1a — the design of the first slice of LP-1 (built 2026-11-08)
@@ -9774,7 +10014,7 @@ The apply is quiet, as the file import is (§6.10 of `project_import.md`). It em
 
 **MCP and chat.** The chat has the three tools: `list_templates` is class A, and `save_as_template` and `create_project_from_template` are class C, so the chat asks one card for each. They are in the `projects-structure` pack. The MCP has `list_templates` only. The two writes stay off the MCP in TPL-1a, because rule 2 of `external_agent_access.md` §9.5 keeps a class C pair off the edge. An MCP write of a template needs a preview and a confirm step first, as `move_tasks` has (EA3-53). A later row adds them.
 
-**Not in TPL-1a.** The web UI is TPL-1b. A rename, an edit and a delete of a template, the library of work styles, the task template kind and the Mira path wait for later rows.
+**Not in TPL-1a.** The web UI is TPL-1b (built 2026-11-09). A rename, an edit and a delete of a template, the library of work styles, the task template kind and the Mira path wait for later rows.
 
 ### 14.9 Teams (epic E7, task 2530, replan 2026-11-09)
 
@@ -9786,20 +10026,32 @@ Decided 2026-11-10: the owner approved this on task 2531 (scope value, flag `TEA
 4. **A hidden space is never named and never counted.** This holds in a list, a count, a search, `board_stats`, an assistant answer and an MCP read. A direct link answers "not found".
 5. **A scope never grants.** The team scope narrows a view. It opens nothing that the member could not already open.
 
+The scope value `all` means every team of the member, so no group may take the slug `all` (task 2886). `routes/admin/groups.py` `_clean_slug` refuses it with 400. Fence: `tests/unit/test_admin_groups.py`.
+
 Fence: `tests/unit/test_team_scope_isolation_r8.py` (T-7, task 2538) binds rules 2 and 4 on a real database (R8), for the surfaces that it drives. These are the tree, the board, `board_stats`, My tasks, search, the CSV export, the delta feed, the direct link, six chat tools and six MCP tools. The MCP tools run with an OAuth token and with a box token. The fence does not cover all of rule 4. Its docstring lists each read that it does not drive, and that list is follow-up work. Rule 4 stays advisory for those reads (R7). Rules 3 and 5 stay advisory until the T-4 fence lands (R7).
 
 | Row | Task | Scope | Done when | Fence | Risk | Flag (default OFF) | Depends on |
 |---|---|---|---|---|---|---|---|
 | **T-0** | 2531 | This section | The section and the D204 record are merged | `tests/unit/test_doc_names_resolve.py` | LOW | none | none |
-| **T-1** | 2532 | The read model. One tenant-safe read returns the teams of the member and the spaces of each team | A member of 2 teams gets 2 lists. A space shared with no team of the member is absent | R8 tests | STANDARD | `TEAMS_ORGS` | T-0 |
+| **T-1** | 2532 | The read model. One tenant-safe read returns the teams of the member and the spaces of each team. **Built 2026-11-11, not merged:** `GET /projects/teams` and the `team` value of `gateway/routes/projects/team_scope.py` | A member of 2 teams gets 2 lists. A space shared with no team of the member is absent | `tests/unit/test_teams_read_model_r8.py` (R8) | STANDARD | `TEAMS_ORGS` | T-0 |
 | **T-2** | 2533 | The team chip on the Projects board. It folds in PX-2 (task 967) | The chip filters the board to the spaces of one team. "All my teams" shows every space the member may open | Component test and the R8 test of T-1 | STANDARD | `TEAMS_ORGS` | T-1 |
 | **T-3** | 2534 | Share a space with a team. Check the existing grants route first and build only the gap | A lead shares a space with a group. The space shows in that team's view | R8 test of the grant | STANDARD | `TEAMS_ORGS` | T-1 |
 | **T-4** | 2535 | The team scope in the shell. One contract of one value: a team slug or "all" (`navigation_shell.md` §4.2a) | The shell holds one scope value, and every app reads it | `src/lib/shell/teamScope.test.ts` (new) | STANDARD | `TEAMS_ORGS` | T-2, T-3, T-7 |
 | **T-5** | 2536 | Apps adopt the scope. One task for each app. Planning only | Each app has a task that names its adopt step | Advisory | LOW | none | T-4 |
 | **T-6** | 2537 | Chat and MCP through the app door. A write shows an approve card | A chat read and an MCP read of a hidden space answer "not found" | The R8 test of T-7 | STANDARD | `TEAMS_ORGS` | T-3, the MCP-G24 decision |
 | **T-7** | 2538 | The isolation fence: two teams, three spaces and the surfaces that the fence lists. **Built 2026-11-11 for those surfaces, not merged.** The reads that its docstring names as not driven are follow-up | Each listed surface of rule 4 passes with a hidden space. `tests/unit/test_team_scope_isolation_r8.py` | R8, full loop | HIGH | none | T-1 |
+| **T-8** | 3758 | The access panel of a space or a project: who can see it, and a change to everyone, one or more teams, or named people. It uses the grants routes and D-OP-11, and it warns before the last grant goes (owner ask, 2026-11-18, `one_projects_app.md` §9d.2) | Later. A lead changes who sees a space from the panel, and the change shows in the team view | R8 test of the grant | STANDARD | `TEAMS_ORGS` | T-3 |
 
-**Order.** T-0, then T-1. Then T-2, T-3 and T-7. Then T-4, then T-5. T-6 follows T-3 and the MCP-G24 decision. The flag name `TEAMS_ORGS` is a proposal, and the build task confirms it.
+**Order.** T-0, then T-1. Then T-2, T-3 and T-7. Then T-4, then T-5. T-6 follows T-3 and the MCP-G24 decision. T-1 confirmed the flag name `TEAMS_ORGS`.
+
+**The T-1 read (built 2026-11-11).** `gateway/routes/projects/team_scope.py` holds the value, the reach and the flag. `teams.py` holds the read.
+
+* `GET /projects/teams` gives one row for each group of the member, a group with no space too. A row names the team and its spaces, and counts the tasks of each space. `?team=<slug>` gives one row.
+* A space of a team is a top of the team view: a node whose parent the team does not hold. A grant of a project below a space makes that project a top, and its `level` says `project`. The space above it is not named.
+* The `team` value is a slug or `all`, as `navigation_shell.md` §4.2a says. `all` narrows nothing. `GET /projects/tree`, `/projects/nodes`, `/projects/tasks`, `/projects/tasks/stats` and `/projects/search` take it. The tree keeps `personal` as it is, because the own tree of the member is no team.
+* The one subject grammar checks the slug. A malformed value is 422. A slug that names no group of the member is 404, with the body of a slug that names no group.
+* Each read ANDs the team clause beside its own visibility clause, so the clause only narrows (rule 5). The count of a team comes from `tasks._task_scope`, the scope of the list and of the count read, so the three agree.
+* While `TEAMS_ORGS` does not hold the org, `GET /projects/teams` is 404, and so is each read that sends a `team` value.
 
 ## Board record (2026-08-09) — moved from work_plan.md §2
 

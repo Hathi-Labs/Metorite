@@ -88,7 +88,7 @@ def test_without_the_mark_the_line_is_unchanged() -> None:
 
 def test_language_fixed_is_a_stored_style_key() -> None:
     assert ap._clean_style({"language": "en", "language_fixed": True}) == {
-        "language": "en", "language_fixed": True}
+        "language": "en", "languages": ["en"], "language_fixed": True}
     for bad in (False, "yes", 1):
         with pytest.raises(ValueError):
             ap._clean_style({"language_fixed": bad})

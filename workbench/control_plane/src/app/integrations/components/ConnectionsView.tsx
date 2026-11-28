@@ -12,6 +12,13 @@
  * A 404 from the list route means the read model is not deployed yet. The
  * view then shows a line and the API keys view, so the page is never blank.
  *
+ * ACC-2 (task 3988): each MCP and API row of the organization also shows "Who
+ * can use". The control draws only when `GET /admin/integration-access`
+ * answers. For an org off the flag (404) and for a viewer with no right (403)
+ * nothing of it draws. `WhoCanUse.tsx` holds the parts. On a cold load the
+ * list keeps its skeleton until the rules answer, for `ACCESS_WAIT_MS` at
+ * most, so no row grows under the pointer.
+ *
  * WS-54 IN-8c (D98): Connect and Reconnect of an OAuth MCP server open a
  * dialog first. It says that the connection acts as this admin for the
  * agents of every member. Its confirm asks the BFF for the consent URL, and
@@ -31,6 +38,7 @@ import { useToast } from "@/components/ui/Toast";
 import { invalidate } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
 
+import { ACCESS_KEY, clearAccessRule } from "../lib/accessSave";
 import * as api from "../lib/api";
 import {
   APP_LABEL,
@@ -52,10 +60,24 @@ import {
   type McpSwitches,
   type StatusFilter,
 } from "../lib/connections";
+import {
+  ACCESS_WAIT_MS,
+  CLEAR_CHANGED,
+  RULE_GONE,
+  SAVE_FAILED,
+  clearCopy,
+  rowRule,
+  savedTitle,
+  unmatchedRules,
+  waitsForRules,
+  type AccessItem,
+} from "../lib/whoCanUse";
+import { ApiConnectReturn } from "./ApiConnect";
 import ApiKeysView from "./ApiKeysView";
 import CalendarConnectionsGroup from "./CalendarConnectionsGroup";
 import ConnectionList from "./ConnectionList";
 import ConnectionSheet from "./ConnectionSheet";
+import WhoCanUseDialog, { AccessNotice, UnmatchedRules, WhoCanUseRow } from "./WhoCanUse";
 import { viewHref } from "../lib/views";
 
 export const CONNECTIONS_KEY = "integrations:connections";
@@ -76,6 +98,7 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
   const [savingConfirm, setSavingConfirm] = useState(false);
+  const [savingDescription, setSavingDescription] = useState(false);
   // MCP-C2 review: a save of the switches that the list may not show yet.
   const [held, setHeld] = useState<HeldSwitches | null>(null);
   // The list on screen now, so a save that ends records the list it saw.
@@ -111,9 +134,31 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
     router.replace(viewHref("connections"), { scroll: false });
   }, [searchParams, router, toast, loadedRows]);
 
+  // ACC-2: the access rules. `null` for an org off the flag, and for a viewer
+  // with no right: then no control draws.
+  const rules = useCachedResource(ACCESS_KEY, api.getIntegrationAccess);
+  const [ruling, setRuling] = useState<string | null>(null);
+  const [clearing, setClearing] = useState<AccessItem | null>(null);
+  const [clearBusy, setClearBusy] = useState(false);
+  const [clearError, setClearError] = useState<string | null>(null);
+  // The bound of the wait for the rules. It starts when the list arrives.
+  const listArrived = Boolean(res.data);
+  const [waitOver, setWaitOver] = useState(false);
+  useEffect(() => {
+    if (!listArrived) return;
+    const timer = setTimeout(() => setWaitOver(true), ACCESS_WAIT_MS);
+    return () => clearTimeout(timer);
+  }, [listArrived]);
+  const holding = !waitOver && waitsForRules(res.data, rules.data, rules.error);
+
   const all = res.data ?? [];
   const rows = useMemo(() => filterConnections(all, app, status), [all, app, status]);
   const open = all.find((r) => r.id === openId) ?? null;
+  const ruled = rules.data?.services.find((i) => i.service === ruling) ?? null;
+  const ruledRow = all.find((r) => rowRule(rules.data, r)?.service === ruling) ?? null;
+  // A stored rule with no row shows under the whole list, never under a filter.
+  const unfiltered = app === "all" && status === "all";
+  const unmatched = unfiltered && !res.loading ? unmatchedRules(rules.data, all) : [];
   // The pair the panel draws while a save is not in the list yet. The hold
   // ends when the row shows the saved pair, after a newer read of a failed
   // save, or when the panel closes.
@@ -130,6 +175,8 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
         <p className="shrink-0 border-b border-border px-4 py-2 text-xs text-muted-foreground">
           The connections list is not ready yet. Your API keys are below.
         </p>
+        {/* P3 of the API-5 review: a Zoho Books return never lands in silence. */}
+        <ApiConnectReturn onConnected={invalidateConnections} />
         <ApiKeysView />
       </div>
     );
@@ -220,6 +267,30 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
     }
   }
 
+  async function saveDescription(text: string) {
+    const name = open ? mcpName(open) : null;
+    if (!open || !name) return;
+    setSavingDescription(true);
+    try {
+      await api.setMcpDescription(name, text);
+      toast.show({
+        key: "integrations-description",
+        variant: "success",
+        title: "Description saved. New chats read it.",
+      });
+    } catch (err) {
+      toast.show({
+        key: "integrations-description",
+        variant: "error",
+        title: err instanceof Error ? err.message : "The request failed.",
+      });
+    } finally {
+      // Both ways: read the list again, so the panel shows what is stored.
+      invalidateConnections();
+      setSavingDescription(false);
+    }
+  }
+
   async function startConnect() {
     const name = open ? mcpName(open) : null;
     if (!open || !name) return;
@@ -235,6 +306,38 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
     }
   }
 
+  // `lib/accessSave.ts` has already put the saved rule on screen.
+  function ruleSaved(saved: AccessItem) {
+    const label = ruledRow ? rowLabel(ruledRow) : saved.service;
+    setRuling(null);
+    toast.show({ key: "integrations-access", variant: "success", title: savedTitle(label, saved) });
+  }
+
+  async function clearRule() {
+    if (!clearing) return;
+    setClearBusy(true);
+    setClearError(null);
+    try {
+      const outcome = await clearAccessRule(clearing);
+      if (outcome.kind !== "saved") {
+        // The confirm stays. Only a Cancel and a new open can pass this.
+        setClearError(outcome.kind === "changed" ? CLEAR_CHANGED : RULE_GONE);
+        return;
+      }
+      setClearing(null);
+      toast.show({
+        key: "integrations-access",
+        variant: "success",
+        title: savedTitle(outcome.item.service, outcome.item),
+      });
+    } catch (err) {
+      setClearError(err instanceof api.IntegrationsError ? err.message : SAVE_FAILED);
+    } finally {
+      setClearBusy(false);
+    }
+  }
+
+  const clearWords = clearing ? clearCopy(clearing) : null;
   const copy = open ? disconnectCopy(open) : null;
   const connectMode = open ? mcpConnect(open, canManage) : null;
   const connectCopy =
@@ -261,6 +364,8 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
       )}
       {/* WS-54 GH-3: GitHub sends the browser back here after the install. */}
       <GitHubAppReturn onConnected={invalidateConnections} />
+      {/* API-5: Zoho sends the browser back here after the Books consent. */}
+      <ApiConnectReturn onConnected={invalidateConnections} />
       {/* CE-10c (D96.1): the calendar connections, read-only, with a link to Calendar settings. */}
       <CalendarConnectionsGroup />
       {res.error && res.data === undefined ? (
@@ -268,17 +373,71 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
           {res.error}
         </p>
       ) : null}
+      <AccessNotice list={rules.data} error={rules.error} onRetry={rules.refresh} />
       <ConnectionList
         rows={rows}
         total={all.length}
-        loading={res.loading}
+        loading={res.loading || holding}
         selectedId={openId}
         onOpen={setOpenId}
         onClearFilters={() => {
           setApp("all");
           setStatus("all");
         }}
+        rowExtra={(row) => {
+          const item = rowRule(rules.data, row);
+          return item ? (
+            <WhoCanUseRow
+              item={item}
+              listReadable={rules.data?.readable !== false}
+              label={rowLabel(row)}
+              onOpen={() => setRuling(item.service)}
+            />
+          ) : null;
+        }}
+        footer={
+          unmatched.length ? (
+            <UnmatchedRules
+              items={unmatched}
+              onChange={(item) => setRuling(item.service)}
+              onClear={(item) => {
+                setClearError(null);
+                setClearing(item);
+              }}
+            />
+          ) : undefined
+        }
       />
+      {ruled && (
+        <WhoCanUseDialog
+          key={ruled.service}
+          item={ruled}
+          label={ruledRow ? rowLabel(ruledRow) : ruled.service}
+          onClose={() => setRuling(null)}
+          onSaved={ruleSaved}
+        />
+      )}
+      {clearing && clearWords && (
+        <ConfirmDialog
+          open
+          title={clearWords.title}
+          body={clearWords.body}
+          confirmLabel={clearWords.confirmLabel}
+          confirmVariant="destructive"
+          icon="RotateCcw"
+          busy={clearBusy}
+          onConfirm={clearRule}
+          onCancel={() => {
+            if (!clearBusy) setClearing(null);
+          }}
+        >
+          {clearError ? (
+            <p role="alert" className="break-words text-xs text-destructive">
+              {clearError}
+            </p>
+          ) : null}
+        </ConfirmDialog>
+      )}
       {open && (
         <ConnectionSheet
           row={open}
@@ -295,6 +454,8 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
           onSwitches={setSwitches}
           savingSwitches={savingConfirm || Boolean(heldView?.wait)}
           switches={heldView?.switches ?? null}
+          onDescription={saveDescription}
+          savingDescription={savingDescription}
           onConnect={() => {
             setConnectError(null);
             setAskingConnect(true);

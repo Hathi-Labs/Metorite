@@ -61,6 +61,16 @@ from tests.unit._crm_agent_fakes import (
     writes,
 )
 
+#: WS-24c slice 2: an empty internal token sends no ``Authorization`` header.
+#: These tests set one, and check the exact bearer.
+_INTERNAL = "test-internal-token"
+
+
+@pytest.fixture(autouse=True)
+def _internal_token_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", _INTERNAL)
+
+
 _M = load_agent_module("crm_assistant_agent_write")
 
 _USER = "sales@fracktal.in"
@@ -100,7 +110,9 @@ _LEAD = {"id": _LEAD_ID, "lead_name": "Ravi Menon", "email": "ravi@acme.test",
 
 _WRITE_TOOLS = ["create_lead", "update_deal_status", "log_activity",
                 "convert_lead", "crm_create_pipeline", "crm_update_record",
-                "crm_update_task"]
+                "crm_update_task", "crm_edit_status", "crm_edit_lost_reason",
+                "crm_edit_field_rule", "crm_draft_mapping_plan",
+                "crm_approve_mapping_plan", "crm_restore_mapping_plan"]
 
 #: WS-CRM CRM-M3a: the pipelines and the plan that the gateway answers.
 _PIPELINE_ID = str(uuid4())
@@ -140,6 +152,73 @@ def _pipelines(call: dict) -> Any:
     raise AssertionError(f"a tool reached an unexpected route: {method} {path}")
 
 
+def _mapping(call: dict) -> Any:
+    """The suggestion and analysis routes of ``_responder`` (P-3, task 3954)."""
+    path, method = call["path"], call["method"]
+    if path == "/crm/mapping/suggestions" and method == "GET":
+        return _SUGGESTIONS
+    if path.startswith("/crm/mapping/suggestions/") and method == "POST":
+        return {"slot": "deal", "module": "Deals_X", "version": 3}
+    if path == "/crm/analysis/status" and method == "GET":
+        return {"run": None, "allowed": True}
+    if path == "/crm/analysis/rerun" and method == "POST":
+        return {"id": "a1", "state": "running", "started_at": "2026-11-25T10:00:00Z",
+                "steps": {}, "outcome": None, "started": True}
+    raise AssertionError(f"a tool reached an unexpected route: {method} {path}")
+
+
+#: CRM-M2f and CRM-M2i (task 3953): one field that goes to custom, and the
+#: plan: version 1 superseded, 2 approved, 3 a draft on 2.
+_FIELD_KEY = "Industry_Code"
+_FIELD_MAP = {
+    "entity": "deal", "profile_version": 4, "targets": [],
+    "fields": [{"key": _FIELD_KEY, "label": "Industry code", "type": "text",
+                "targets": ["next_step"]}],
+    "rules": [],
+}
+
+
+def _item(field: str, column: str = "next_step") -> dict[str, Any]:
+    return {"kind": "field", "entity": "deal", "field_api_name": field,
+            "field_type": "text", "target_column": column, "profile_version": 4}
+
+
+_PLANS: dict[str, dict[str, Any]] = {
+    "1": {"version": 1, "state": "superseded", "rules": [_item("Region")]},
+    "2": {"version": 2, "state": "approved", "based_on": 1, "rules": [_item(_FIELD_KEY)]},
+    "3": {"version": 3, "state": "draft", "based_on": 2,
+          "rules": [_item(_FIELD_KEY), _item("Segment", "description")]},
+}
+
+
+def _field_map(call: dict) -> Any:
+    """The Field map and the plan routes of ``_responder`` (task 3953)."""
+    path, method, body = call["path"], call["method"], call["json"] or {}
+    if path == "/crm/field-rules" and method == "GET":
+        return _FIELD_MAP
+    if path == "/crm/field-rules" and method == "POST":
+        return {"id": str(uuid4()), "status": "approved", **body}
+    if path == "/crm/mapping/plans" and method == "GET":
+        return {"approved": 2, "versions": list(_PLANS.values())}
+    if path == "/crm/mapping/plans" and method == "POST":
+        return {"version": 4, "state": "draft", "based_on": 2, "rules": []}
+    if method == "GET":
+        return _PLANS[path.rsplit("/", 1)[-1]]
+    if method == "POST":
+        return {"version": 4, "state": "approved", "based_on": 2, "rules": []}
+    raise AssertionError(f"a tool reached an unexpected route: {method} {path}")
+
+
+def _by_prefix(call: dict) -> Any:
+    """The pipelines (CRM-M3a), the Field map and its plan (task 3953), and
+    the suggestions and the analysis (P-3, task 3954)."""
+    if call["path"].startswith("/crm/pipelines"):
+        return _pipelines(call)
+    if call["path"].startswith(("/crm/field-rules", "/crm/mapping/plans")):
+        return _field_map(call)
+    return _mapping(call)
+
+
 def _responder(call: dict) -> Any:
     """The gateway, as far as these tools can tell.
 
@@ -151,6 +230,8 @@ def _responder(call: dict) -> Any:
         return _STATUSES
     if path == "/crm/lost-reasons" and method == "GET":
         return _REASONS
+    if path.startswith(("/crm/mapping/", "/crm/analysis/", "/crm/pipelines", "/crm/field-rules")):
+        return _by_prefix(call)
     if path == f"/crm/deals/{_DEAL_ID}":
         return {**_DEAL, **body}
     if path == f"/crm/leads/{_LEAD_ID}" and method == "GET":
@@ -173,8 +254,10 @@ def _responder(call: dict) -> Any:
         return {"id": str(uuid4()), **body}
     if path == "/crm/leads" and method == "POST":
         return {**body, "id": _NEW_LEAD_ID, "owner_email": _USER}
-    if path.startswith("/crm/pipelines"):
-        return _pipelines(call)
+    if path.startswith(("/crm/statuses/", "/crm/lost-reasons")) and method in ("POST", "PATCH"):
+        # CRM-M2e (task 3951): the set-up writes answer the row they wrote.
+        made = path.rsplit("/", 1)[-1] if method == "PATCH" else str(uuid4())
+        return {"id": made, **body}
     if method == "PATCH" and path.count("/") == 3:
         return {"id": path.rsplit("/", 1)[-1], "name": "Acme AMC",
                 "first_name": "Ravi", **body}
@@ -212,6 +295,22 @@ _CALLS: dict[str, Any] = {
         {"amount": 300000, "expected_close_date": "2026-12-31"},
     ),
     "crm_update_task": lambda: _M.crm_update_task(_TASK_ID, completed=True),
+    "crm_edit_status": lambda: _M.crm_edit_status(
+        "deal", "change", "Negotiation", new_name="Talks",
+    ),
+    "crm_edit_lost_reason": lambda: _M.crm_edit_lost_reason(
+        "change", "Price", new_label="Too expensive",
+    ),
+    # CRM-M2f and CRM-M2i (task 3953): a field rule and the mapping plan.
+    "crm_edit_field_rule": lambda: _M.crm_edit_field_rule(
+        "add", "deals", "industry code", "next_step",
+    ),
+    "crm_draft_mapping_plan": lambda: _M.crm_draft_mapping_plan(
+        [{"op": "put", "entity": "deals", "field_api_name": "Segment",
+          "target_column": "description"}],
+    ),
+    "crm_approve_mapping_plan": lambda: _M.crm_approve_mapping_plan(3),
+    "crm_restore_mapping_plan": lambda: _M.crm_restore_mapping_plan(1),
 }
 
 #: The one tool that needs nothing from the gateway before it can describe what
@@ -221,7 +320,10 @@ _CALLS: dict[str, Any] = {
 #: ``log_activity`` used to be in here and was moved out under review: its card
 #: named the note but not the record, so a wrong ``record_id`` produced a card
 #: byte-identical to the correct call.
-_NO_PRE_READ = ["create_lead"]
+#:
+#: ``crm_draft_mapping_plan`` (task 3953) joins it: a draft writes no rule,
+#: and its card shows each change as the member gave it.
+_NO_PRE_READ = ["create_lead", "crm_draft_mapping_plan"]
 
 #: What the card must NAME, per tool: the record the write lands on. Not "a
 #: card was shown" — *which record*, in words the approver can check against
@@ -234,7 +336,26 @@ _CARD_MUST_NAME: dict[str, str] = {
     "crm_create_pipeline": "AMC contracts",  # the pipeline being made
     "crm_update_record": "Acme AMC",   # the deal being edited
     "crm_update_task": "Send quote",   # the task being changed (its subject)
+    "crm_edit_status": "Negotiation",  # the stage being changed
+    "crm_edit_lost_reason": "Price",   # the lost reason being changed
+    "crm_edit_field_rule": "Industry code",      # the field being mapped
+    "crm_draft_mapping_plan": "«Segment»",       # the field of the change
+    "crm_approve_mapping_plan": "«Segment»",     # the rule the approve adds
+    "crm_restore_mapping_plan": "«Region»",      # the rule the restore brings back
 }
+
+# P-3 (task 3954): the two card writes of the suggestions of the field map and
+# the AI analysis. Each reads before its card.
+_SUGGESTIONS = {
+    "suggestions": [{"slot": "deal", "version": 2, "module": "Deals_X",
+                     "label": "Commercials", "records": 40, "targets": [], "stage": None}],
+    "overlays": [],
+}
+_WRITE_TOOLS += ["crm_decide_suggestion", "crm_rerun_analysis"]
+_CALLS["crm_decide_suggestion"] = lambda: _M.crm_decide_suggestion("approve", "deals")
+_CALLS["crm_rerun_analysis"] = lambda: _M.crm_rerun_analysis()
+_CARD_MUST_NAME["crm_decide_suggestion"] = "Commercials"  # the module being used
+_CARD_MUST_NAME["crm_rerun_analysis"] = "AI analysis"     # the act itself
 
 
 def test_the_call_table_covers_every_write_tool() -> None:
@@ -254,7 +375,8 @@ async def test_a_denied_confirmation_writes_nothing(tool: str, monkeypatch) -> N
     asked = deny(monkeypatch)
     calls = _gateway(monkeypatch)
     out = await _CALLS[tool]()
-    assert "cancelled" in out.lower(), f"{tool} did not say it was cancelled: {out}"
+    # HRD-7: the words of a declined card, from the one table.
+    assert out.startswith("Declined:"), f"{tool} did not say it was declined: {out}"
     assert writes(calls) == [], (
         f"{tool} mutated the CRM after the user declined: "
         f"{[(c['method'], c['path']) for c in writes(calls)]}"
@@ -319,7 +441,8 @@ async def test_a_non_interactive_run_writes_nothing(tool: str, monkeypatch) -> N
     """
     calls = _gateway(monkeypatch)
     out = await _CALLS[tool]()
-    assert "cancelled" in out.lower(), f"{tool} proceeded unattended: {out}"
+    # HRD-7: no card could show, in the words of the one table.
+    assert out.startswith("Not shown:"), f"{tool} proceeded unattended: {out}"
     assert writes(calls) == [], f"{tool} wrote the CRM with nobody in the loop"
 
 
@@ -847,7 +970,7 @@ async def test_the_write_itself_carries_the_acting_user(
     assert mutations, f"{tool} issued no write"
     for call in mutations:
         assert call["headers"]["X-User-Email"] == _USER
-        assert call["headers"]["Authorization"].startswith("Bearer ")
+        assert call["headers"]["Authorization"] == f"Bearer {_INTERNAL}"
 
 
 @pytest.mark.parametrize(
@@ -1265,7 +1388,7 @@ async def test_a_declined_record_edit_sends_nothing(monkeypatch) -> None:
     deny(monkeypatch)
     calls = _gateway(monkeypatch)
     out = await _M.crm_update_record(*_EDIT_ARGS)
-    assert "Cancelled" in out and writes(calls) == []
+    assert out.startswith("Declined:") and writes(calls) == []
 
 
 @pytest.mark.parametrize("entity, record, title, fields", [
@@ -1431,7 +1554,8 @@ async def test_a_card_that_errors_sends_nothing(tool: str, monkeypatch) -> None:
 @pytest.mark.parametrize("tool", ["crm_update_record", "crm_update_task"])
 async def test_a_card_that_times_out_sends_nothing(tool: str, monkeypatch) -> None:
     """The REAL ``request_confirmation``: a timeout on the wait answers False
-    (``_block_on`` maps ``TimeoutError`` to ``TIMEOUT``), so the tool cancels."""
+    (``_block_on`` maps ``TimeoutError`` to ``TIMEOUT``), so the tool writes
+    nothing. HRD-7: its answer says that the card timed out, never "no"."""
     import asyncio
 
     import orchestrator.executor as executor
@@ -1448,4 +1572,4 @@ async def test_a_card_that_times_out_sends_nothing(tool: str, monkeypatch) -> No
         out = await _CALLS[tool]()
     finally:
         executor._active_run_queue.reset(token)
-    assert "cancelled" in out.lower() and writes(calls) == []
+    assert out.startswith("Timed out:") and writes(calls) == []

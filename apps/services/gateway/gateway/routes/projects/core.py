@@ -36,7 +36,8 @@ from __future__ import annotations
 
 import functools
 import json
-from collections.abc import Awaitable, Callable, Iterable
+import re
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -44,10 +45,11 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from acb_auth import AgentScope, UserContext, require_feature_router
+from acb_auth import AgentScope, UserContext, get_current_user, require_feature_router
 from acb_auth.agent_oauth import ACTOR_VIA_PATTERN
 from acb_auth.permissions import normalize_grant_subject
-from acb_common import get_logger
+from acb_common import get_logger, get_settings
+from acb_common.tool_refusals import ARCHIVED_PROJECT_REFUSAL as _ARCHIVED_PROJECT_REFUSAL
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from gateway.db import tenant_session as _tenant_session  # noqa: F401
 
@@ -85,6 +87,7 @@ ACTOR_VIA: ContextVar[str] = ContextVar("projects_actor_via", default="")
 
 async def capture_actor_via(
     x_actor_via: str | None = Header(None, alias="X-Actor-Via"),
+    user: UserContext = Depends(get_current_user),
 ) -> None:
     """Bind the request's ``X-Actor-Via`` for :func:`record_activity`.
 
@@ -92,11 +95,22 @@ async def capture_actor_via(
     refuses: a bad value is dropped, because provenance is a courtesy on the
     row, not a gate on the act.
 
+    SBX-3a (``agent_sandbox.md`` §12.5 decision 5): a request of the sandbox
+    door (``user.sandbox`` set) binds ``user.sandbox.stamp``, the stamp of
+    its ticket, and ignores the header. The door refuses an ``X-Actor-Via``
+    header anyway. ``get_current_user`` is the cached dependency of the
+    request, so the identity step runs once.
+
     ⚠️ ``async``, and that is load-bearing. Starlette runs a SYNC dependency
     in a threadpool with a COPY of the request context, so a ContextVar set
     there never reaches the async handler. Measured 2026-09-22 by the fence
     in ``test_projects_actor_via.py``: the sync form bound nothing.
     """
+    sandbox = getattr(user, "sandbox", None)
+    if sandbox is not None:
+        stamp = sandbox.stamp
+        ACTOR_VIA.set(stamp if ACTOR_VIA_PATTERN.fullmatch(stamp) else "")
+        return
     value = x_actor_via.strip().lower() if isinstance(x_actor_via, str) else ""
     ACTOR_VIA.set(value if ACTOR_VIA_PATTERN.match(value) else "")
 
@@ -445,6 +459,54 @@ CLIENT_TASK_SOURCES: tuple[str, ...] = tuple(
 #: invariant (the migration-150 lesson).
 NODE_KINDS: tuple[str, ...] = ("project", "folder")
 
+#: WS-39 SP-3a (`project_management_app.md` §13.1, D195). The five work styles
+#: of the catalogue, in the order of the picker. `pm_projects.work_style` holds
+#: one of them. The migration CHECK holds only the length, so this tuple is the
+#: list. `workbench/.../app/projects/lib/workStyle.ts` keeps the same keys in
+#: the same order, and `tests/unit/test_project_work_style.py` holds the two
+#: equal.
+WORK_STYLES: tuple[str, ...] = ("flow", "sprints", "shape_up", "plan", "personal")
+#: The styles that a member can pick today. The other three show in the picker,
+#: disabled. A style becomes live when its blocks ship (the slices of WM).
+LIVE_WORK_STYLES: tuple[str, ...] = ("flow", "sprints")
+#: The style of a node that nobody set: the column DEFAULT of the migration.
+DEFAULT_WORK_STYLE = "flow"
+
+
+def validate_work_style(values: dict[str, Any]) -> None:
+    """422 on a work style that the picker cannot set, before any SQL runs.
+
+    A no-op when ``work_style`` is not in ``values``. ``null`` is refused: the
+    column is NOT NULL, and a node always has a style. An unknown value and a
+    style that is not live yet are refused with words that name the choices.
+    The message never echoes a long value back.
+    """
+    if "work_style" not in values:
+        return
+    style = values["work_style"]
+    if style is None:
+        raise HTTPException(
+            status_code=422,
+            detail="A node always has a work style. Pick Flow or Sprints.",
+        )
+    if not isinstance(style, str) or style not in WORK_STYLES:
+        shown = str(style)[:40]
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Unknown work style '{shown}'. One of: {list(WORK_STYLES)}."
+            ),
+        )
+    if style not in LIVE_WORK_STYLES:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"The work style '{style}' is not available yet. Pick one of: "
+                f"{list(LIVE_WORK_STYLES)}."
+            ),
+        )
+
+
 #: The depth cap on PROJECT generations: space=1, project=2, subproject=3.
 #: Folders are transparent to this count and never extend it.
 MAX_PROJECT_GENERATIONS = 3
@@ -565,6 +627,71 @@ def assert_not_archived(node: Any, *, then: str) -> None:
             detail=f"{name} is archived. {then} an active project, or "
                    f"unarchive this one first.",
         )
+
+
+#: ARC-2b (spec ``one_projects_app.md`` §9b.6 rule 2). The one sentence that a
+#: task write into an archived project answers, over HTTP 409. Chat and MCP
+#: reach the same routes and so show the same words.
+ARCHIVED_PROJECT_REFUSAL = _ARCHIVED_PROJECT_REFUSAL
+
+
+def assert_project_open_for_writes(project: Any) -> None:
+    """Refuse a task write into a project with ``archived_at`` (ARC-2b).
+
+    ``archive_node`` stamps ``archived_at`` on every project of the subtree,
+    so the project row alone decides. No ancestor walk. Call it AFTER the
+    visibility load, so a caller who cannot see the project gets 404 (R5).
+    It does not live inside ``load_visible_task`` or ``load_visible_project``,
+    because those also serve reads. A member's own overlay
+    (``pm_task_personal``) and the agent-run routes are not project work and
+    never call it. The one exception is the reopen of a closed task
+    (``personal.reopen_if_closed``), because it changes the status. The
+    subtree acts skip or refuse a subtask in an archived project
+    (``cascade.in_archived_project``).
+    """
+    if getattr(project, "archived_at", None) is not None:
+        raise HTTPException(status_code=409, detail=ARCHIVED_PROJECT_REFUSAL)
+
+
+async def project_is_archived(db: Any, project_id: str) -> bool:
+    """True when the project row carries ``archived_at`` (ARC-2b)."""
+    row = (await db.execute(
+        text(
+            "SELECT archived_at FROM pm_projects "
+            "WHERE id = CAST(:project_id AS uuid)"
+        ),
+        {"project_id": str(project_id)},
+    )).fetchone()
+    return row is not None and row.archived_at is not None
+
+
+async def assert_task_id_project_open(db: Any, task_id: str) -> None:
+    """:func:`assert_project_open_for_writes` for the project of a task id.
+
+    For a route that holds a task id and no task row, such as the edit of a
+    comment. The caller has already proved that they may see the task.
+    """
+    row = (await db.execute(
+        text(
+            "SELECT p.archived_at FROM pm_tasks t "
+            "JOIN pm_projects p ON p.id = t.project_id "
+            "WHERE t.id = CAST(:task_id AS uuid)"
+        ),
+        {"task_id": str(task_id)},
+    )).fetchone()
+    if row is not None:
+        assert_project_open_for_writes(row)
+
+
+async def assert_task_project_open(db: Any, task: Any) -> None:
+    """:func:`assert_project_open_for_writes` for the project of *task*.
+
+    *task* is a row that ``load_visible_task`` returned. One extra read of
+    ``archived_at`` on the task's own project, with no visibility clause: the
+    caller already proved they may see the task.
+    """
+    if await project_is_archived(db, str(task.project_id)):
+        raise HTTPException(status_code=409, detail=ARCHIVED_PROJECT_REFUSAL)
 
 
 def assert_holds_tasks(node: Any, *, then: str) -> None:
@@ -833,6 +960,9 @@ class ProjectModel(BaseModel):
     archive_after_months: int | None = None
     close_after_months: int | None = None
     timezone: str = "UTC"
+    #: WS-39 SP-3a (migration 505). How the team of this node works: one of
+    #: :data:`WORK_STYLES`. A row from before the column reads the default.
+    work_style: str = DEFAULT_WORK_STYLE
     created_by: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -841,6 +971,13 @@ class ProjectModel(BaseModel):
     #: when archived directly, an ancestor when swept in with its subtree. It is
     #: what makes unarchive reversible; see the migration header.
     archived_root_id: str | None = None
+
+    @field_validator("work_style", mode="before")
+    @classmethod
+    def _null_style_is_the_default(cls, value: Any) -> str:
+        # `row_to_model` reads a column a row lacks as NULL: a fake row, or a
+        # read that named its columns. The column itself is NOT NULL.
+        return value if value else DEFAULT_WORK_STYLE
 
 
 class ProjectIn(BaseModel):
@@ -862,6 +999,9 @@ class ProjectIn(BaseModel):
     archive_after_months: int | None = None
     close_after_months: int | None = None
     timezone: str | None = None
+    # WS-39 SP-3a — any node, set by hand, no inheritance. The write path
+    # checks it with `validate_work_style` before any SQL runs.
+    work_style: str | None = None
 
 
 class TaskModel(BaseModel):
@@ -955,6 +1095,9 @@ class TaskModel(BaseModel):
     #: WS-55 EA-13e (EA3-49). True when the agent-worked rule of
     #: ``agent_worked.py`` holds now. ``filters.attach_agent_worked`` fills it.
     agent_worked: bool | None = None
+    #: WS-39 WM-5 (migration 516). The Goal of this epic, across projects, or
+    #: ``None``. Only an epic carries it (:func:`assert_goal_link`).
+    goal_task_id: str | None = None
 
     @field_validator("leveraged", mode="before")
     @classmethod
@@ -997,6 +1140,11 @@ class TaskPatchIn(TaskIn):
     #: write that sends it while ``agent_task_checks_enabled`` is off gets
     #: 422. Not on ``TaskIn``, so only this PATCH and ``POST /tasks`` take it.
     check_text: str | None = None
+    #: WS-39 WM-5 (migration 516). The Goal of this epic. ``None`` clears the
+    #: link, also while the flag is off. :func:`assert_goal_link` holds the
+    #: rules, and a write that sends a Goal while ``PROJECTS_GOALS_ORGS`` does
+    #: not hold the org gets 422.
+    goal_task_id: str | None = None
 
 
 class StatusModel(BaseModel):
@@ -1026,6 +1174,9 @@ class TypeModel(BaseModel):
     #: and on the wire so a picker can tell a member WHY a type refuses a
     #: parent instead of surfacing it as an unexplained 422.
     is_epic: bool = False
+    #: WS-39 WM-5 (migration 516). A task of this type is a Goal. Read by
+    #: :func:`is_goal_type`, written through ``admin.create_type``/``patch_type``.
+    is_goal: bool = False
 
 
 class ActivityModel(BaseModel):
@@ -3122,6 +3273,84 @@ async def status_users(db: Any, owner_ids: list[str]) -> dict[str, int]:
     return {str(r.owner_id): int(r.used_by) for r in rows}
 
 
+#: The projects below one root that hold tasks: the N of a root-local tag,
+#: custom field or task type (HRD-9a, ``chat_failure_modes.md`` §6, C5).
+#:
+#: ⚠️ NOT :data:`_STATUS_USERS_SQL`. A status set stops at a node that owns
+#: its own set, and a vocabulary row does not. A root-local row is the root's
+#: (D-PM-16), so it reaches every task of the tree, a subproject that owns
+#: its statuses too. So the walk has no ``owns_statuses`` test.
+#:
+#: The walk goes THROUGH a folder, and the count leaves the folder out,
+#: because a folder holds no tasks (:func:`node_kind`). A NULL kind reads as
+#: a project (R6 expand). The root is not counted here, because a team space
+#: holds no tasks. :func:`vocabulary_reach` adds a root that holds tasks.
+#:
+#: ``depth`` bounds the walk at :data:`MAX_DEPTH`, as the climbs are bounded.
+#: Each row of the recursive arm names the root's organization, beside RLS:
+#: two independent fences, as :func:`vocabulary_scope` composes them. A
+#: project that the caller cannot see still counts, because a change of the
+#: row changes its tasks too. Fence: ``tests/unit/test_shared_vocab_reach_r8.py``.
+_TREE_PROJECTS_SQL = """
+WITH RECURSIVE tree_projects AS (
+    SELECT p.id, p.kind, p.organization_id, 0 AS depth
+      FROM pm_projects p WHERE p.id = CAST(:root AS uuid)
+    UNION ALL
+    SELECT c.id, c.kind, c.organization_id, t.depth + 1
+      FROM pm_projects c
+      JOIN tree_projects t ON c.parent_project_id = t.id
+     WHERE c.organization_id = t.organization_id AND t.depth < :max_depth
+)
+SELECT count(*) FILTER (
+           WHERE depth > 0 AND COALESCE(kind, 'project') <> 'folder'
+       ) AS below
+  FROM tree_projects
+"""
+
+
+async def vocabulary_reach(db: Any, vis: Visibility, project_id: str) -> dict:
+    """The root of ``project_id``'s tree, and N (HRD-9a).
+
+    ``projects`` is N: each project in the root's tree that holds tasks. A
+    folder and a team space do not count, and a personal root does
+    (:func:`holds_lanes`). A hidden project counts.
+
+    The node anchors the read, so a node that the caller cannot see, or a
+    node of another organization, is 404 (R5). The root comes from
+    :func:`root_project_id`, as ``tags._root_for`` finds it. ``root_name``
+    is ``None`` when the caller cannot see the root, so the answer never
+    names a hidden space (``chat_failure_modes.md`` §8, Q5). Nothing here
+    takes a tenant or an identity from the request.
+    """
+    await load_visible_project(db, vis, project_id)
+    root_id = await root_project_id(db, project_id)
+    root = (await db.execute(
+        text(
+            "SELECT id, name, kind, parent_project_id, personal_owner "
+            "  FROM pm_projects WHERE id = CAST(:root AS uuid)"
+        ),
+        {"root": root_id},
+    )).fetchone()
+    if root is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    seen = (await db.execute(
+        text(
+            "SELECT 1 FROM pm_projects "
+            f" WHERE id = CAST(:root AS uuid) AND {vis.project_clause()}"
+        ),
+        {"root": root_id, **vis.params},
+    )).fetchone()
+    below = (await db.execute(
+        text(_TREE_PROJECTS_SQL), {"root": root_id, "max_depth": MAX_DEPTH},
+    )).scalar()
+    return {
+        "root_id": root_id,
+        "root_name": root.name if seen is not None else None,
+        "root_kind": "personal" if getattr(root, "personal_owner", None) else "space",
+        "projects": int(below or 0) + (1 if holds_lanes(root) else 0),
+    }
+
+
 #: Where a task lands when its lane is not in the set it now resolves to.
 #:
 #: Name first, then the same category, then the first lane that is not triage.
@@ -3409,6 +3638,232 @@ async def assert_epic_has_no_parent(
             detail="An Epic cannot have a parent task; it is the top level.",
         )
 
+
+# ── WS-39 WM-5 — the Goal type and the Goal of an epic (migration 516) ──────
+#
+# Spec: ``project_management_app.md`` §13.6a row WM-5, D204.4, D199.6. A Goal
+# is a task whose type carries ``is_goal``. An epic points at its Goal with
+# ``pm_tasks.goal_task_id``. The link works across projects, because
+# ``parent_task_id`` stays the tree inside one project. One column gives one
+# Goal for each epic, so a second link replaces the first.
+
+#: The detail of the 422 when a write sends a Goal field while
+#: ``PROJECTS_GOALS_ORGS`` does not hold the org.
+GOALS_OFF = "goals_off"
+
+
+def goals_allowed(organization_id: str | None) -> bool:
+    """True when ``PROJECTS_GOALS_ORGS`` holds the org, or holds ``*``.
+
+    Default OFF. The org comes from the session, never from request input
+    (R5). It reads ``get_settings()`` on each call, so a flag reload needs no
+    restart (``docs/flag_reload.md``). THE one reader of the flag.
+    """
+    org = str(organization_id or "").strip().lower()
+    if not org:
+        return False
+    raw = str(getattr(get_settings(), "projects_goals_orgs", "") or "")
+    listed = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    return "*" in listed or org in listed
+
+
+def require_goals(organization_id: str | None) -> None:
+    """422 :data:`GOALS_OFF` while the flag does not hold the org."""
+    if not goals_allowed(organization_id):
+        raise HTTPException(status_code=422, detail=GOALS_OFF)
+
+
+def is_goal_type(row: Any) -> bool:
+    """Does this ``pm_task_types`` row make a task a Goal? The one reader of
+    ``is_goal``. A Goal has no seed name, so the flag is the only arm."""
+    return bool(getattr(row, "is_goal", False))
+
+
+async def assert_goal_link(
+    db: Any, vis: Any, type_id: str | None, goal_task_id: str | None,
+) -> None:
+    """The rules of ``goal_task_id`` on a task write. ``None`` clears the link.
+
+    1. Only an epic carries a Goal (:func:`is_epic_type` on *type_id*, the
+       type the task has after the write).
+    2. The Goal is a task that the writer can see. The visibility seam loads
+       it, with the tenant clause and RLS, so a task of another organization
+       is a 404, the same answer as a task that does not exist (R5).
+    3. The Goal's type is a Goal type (:func:`is_goal_type`).
+
+    A PATCH that changes the type of a task that keeps its Goal does not
+    call it. :func:`goal_link_lost` decides that case, and a type that is not
+    an epic clears the link.
+
+    The caller checks the flag first (:func:`require_goals`). An epic still
+    has no parent (:func:`assert_epic_has_no_parent`), and nothing here
+    changes that.
+    """
+    if goal_task_id is None:
+        return
+    type_row = await load_row(db, "pm_task_types", str(type_id)) if type_id else None
+    if type_row is None or not is_epic_type(type_row):
+        raise HTTPException(
+            status_code=422, detail="Only an Epic can have a Goal.",
+        )
+    goal = await load_visible_task(db, vis, str(goal_task_id))
+    goal_type = (
+        await load_row(db, "pm_task_types", str(goal.type_id))
+        if getattr(goal, "type_id", None) else None
+    )
+    if goal_type is None or not is_goal_type(goal_type):
+        raise HTTPException(
+            status_code=422, detail="The task you linked is not a Goal.",
+        )
+
+
+async def goal_link_lost(db: Any, task: Any, type_id_after: str | None) -> bool:
+    """WM-5. True when *task* carries a Goal and *type_id_after* is not an
+    epic type. A move to another root remaps the type by name, and a PATCH
+    can set a new type. Then the caller clears ``goal_task_id`` in the same
+    write, because only an epic carries a Goal. No flag check: a clear only
+    removes a link, and a stale link would block each later type change.
+    """
+    if not getattr(task, "goal_task_id", None):
+        return False
+    row = (
+        await load_row(db, "pm_task_types", str(type_id_after))
+        if type_id_after else None
+    )
+    return row is None or not is_epic_type(row)
+
+
+async def drop_lost_goal(
+    db: Any, task: Any, values: dict[str, Any], dropped: dict[str, Any],
+) -> None:
+    """WM-5. A move to another root calls it after the type remap. When
+    :func:`goal_link_lost` says so, it sets ``goal_task_id`` to NULL in
+    *values* and records the old Goal in *dropped*, so the timeline keeps it.
+    An epic that stays an epic keeps its Goal, because the link works across
+    projects. A Goal that epics point at must land as a Goal type, or the
+    move gets 409 (:func:`assert_goal_keeps_type`), the rule of a PATCH.
+    ``tasks._cross_root_values`` and ``move.move_tasks`` both call it, so the
+    two move paths cannot disagree."""
+    if "type_id" in values:
+        await assert_goal_keeps_type(
+            db, getattr(task, "organization_id", None), task, values["type_id"],
+        )
+    if await goal_link_lost(db, task, values.get("type_id")):
+        values["goal_task_id"] = None
+        dropped["goal_task_id"] = str(task.goal_task_id)
+
+
+#: WM-5. The epics that point at one Goal, in this tenant. An archived epic
+#: and an epic that the writer cannot see count too, because each keeps the
+#: link.
+_GOAL_LINKS_SQL = """
+SELECT count(*) AS n
+  FROM pm_tasks
+ WHERE goal_task_id = CAST(:goal AS uuid)
+   AND organization_id = CAST(:org AS uuid)
+"""
+
+#: WM-5. The epics that point at a Goal task of one type, in this tenant.
+_TYPE_GOAL_LINKS_SQL = """
+SELECT count(*) AS n
+  FROM pm_tasks e
+  JOIN pm_tasks g ON g.id = e.goal_task_id
+ WHERE g.type_id = CAST(:type_id AS uuid)
+   AND g.organization_id = CAST(:org AS uuid)
+   AND e.organization_id = CAST(:org AS uuid)
+"""
+
+
+async def _refuse_goal_links(
+    db: Any, sql: str, params: dict[str, Any], organization_id: str | None,
+) -> None:
+    """409 when *sql* counts one or more linked epics. No org, no rows."""
+    if not organization_id:
+        return
+    row = (await db.execute(
+        text(sql), {**params, "org": str(organization_id)},
+    )).fetchone()
+    count = int(getattr(row, "n", 0) or 0) if row is not None else 0
+    if count:
+        noun = "epic links" if count == 1 else "epics link"
+        raise HTTPException(
+            status_code=409,
+            detail=f"{count} {noun} to this Goal, so unlink them first.",
+        )
+
+
+async def assert_goal_has_no_links(
+    db: Any, organization_id: str | None, goal_task_id: str,
+) -> None:
+    """WM-5. 409 when an epic points at the task *goal_task_id*. A retype of
+    a Goal to a type that is not a Goal type calls it, so no epic keeps a
+    link to a task that is not a Goal."""
+    await _refuse_goal_links(
+        db, _GOAL_LINKS_SQL, {"goal": str(goal_task_id)}, organization_id,
+    )
+
+
+async def assert_goal_type_has_no_links(
+    db: Any, organization_id: str | None, type_id: str,
+) -> None:
+    """WM-5. 409 when an epic points at a task of the type *type_id*. A type
+    write that sets ``is_goal`` false calls it, and so does the delete of a
+    Goal type, because the delete leaves each of its tasks with no type."""
+    await _refuse_goal_links(
+        db, _TYPE_GOAL_LINKS_SQL, {"type_id": str(type_id)}, organization_id,
+    )
+
+
+async def assert_goal_keeps_type(
+    db: Any, organization_id: str | None, task: Any, type_id_after: str | None,
+) -> None:
+    """WM-5. 409 when *task* is a Goal that epics point at, and its type
+    after the write, *type_id_after*, is not a Goal type. So no epic keeps a
+    link to a task that is not a Goal.
+
+    A PATCH that sets a new type calls it (``tasks._check_goal_patch``). A
+    move to another root calls it through :func:`drop_lost_goal`, because the
+    move remaps the type by name and can land it as no type. A task with no
+    type before the write is no Goal, so it reads nothing.
+    """
+    type_before = getattr(task, "type_id", None)
+    if not type_before or str(type_id_after or "") == str(type_before):
+        return
+    old = await load_row(db, "pm_task_types", str(type_before))
+    if not is_goal_type(old):
+        return
+    new = (
+        await load_row(db, "pm_task_types", str(type_id_after))
+        if type_id_after else None
+    )
+    if not is_goal_type(new):
+        await assert_goal_has_no_links(db, organization_id, str(task.id))
+
+
+#: WM-5. The links of the tasks of one type, cleared when the type stops
+#: being an epic type. Only a row that holds a link changes.
+_CLEAR_TYPE_GOALS_SQL = """
+UPDATE pm_tasks
+   SET goal_task_id = NULL
+ WHERE type_id = CAST(:type_id AS uuid)
+   AND organization_id = CAST(:org AS uuid)
+   AND goal_task_id IS NOT NULL
+"""
+
+
+async def clear_goals_of_type(
+    db: Any, organization_id: str | None, type_id: str,
+) -> None:
+    """WM-5. Only an epic carries a Goal. A type that stops being an epic
+    type (``is_epic`` false on a PATCH, or the delete of the type) clears the
+    Goal of each of its tasks in the same transaction. No flag check: a clear
+    only removes a link, as :func:`goal_link_lost` says. No org, no rows."""
+    if not organization_id:
+        return
+    await db.execute(
+        text(_CLEAR_TYPE_GOALS_SQL),
+        {"type_id": str(type_id), "org": str(organization_id)},
+    )
 
 #: SP-8a (``project_management_app.md`` §13.3). The 422 of an epic contract
 #: on a task that is not an epic. It says what happened and the next step.
@@ -3773,6 +4228,83 @@ async def apply_status_transition(
     }
 
 
+# ── The lane of a stage (task 3648) ─────────────────────────────────────────
+
+#: The owner's four stages, as the categories a lane holds. ``lane_for_stage``
+#: picks ONE lane of the project for a stage, by the category first and then
+#: by the NAME of the lane. A board may hold several lanes in one category
+#: (task 3648): "To do" and "Ready" are both ``todo``. This is the one helper
+#: for it. ``claim_task`` picks the started lane by position with
+#: :func:`load_default_status`, and the release of an agent run picks the
+#: others here.
+LANE_STAGE_TODO = "todo"
+LANE_STAGE_REVIEW = "review"
+
+#: A ``todo`` lane named "To do", "Todo", "To-do", "Ready" or "Next".
+_TODO_LANE_NAME = re.compile(r"^\s*(?:to[\s_-]?do|ready|next)(?:\W|$)", re.IGNORECASE)
+#: An in-progress lane named "Review", "In review" or "Code review". The
+#: board has no review CATEGORY, so a review lane is a started lane by name.
+_REVIEW_LANE_NAME = re.compile(r"\breview", re.IGNORECASE)
+
+
+def pick_lane(lanes: Sequence[Any], stage: str) -> Any | None:
+    """The lane of *stage* among *lanes*, or ``None``. Pure.
+
+    *lanes* are rows of ``pm_task_statuses`` of ONE board, in lane order
+    (:func:`status_order_sql`). For ``todo``: a ``todo`` lane named like "To
+    do", "Ready" or "Next", else the first ``todo`` lane. A board with no
+    ``todo`` lane gives ``None``: the caller keeps the task where it is, and
+    never falls back to backlog. For ``review``: an in-progress lane named
+    like "Review", else ``None`` (a board with no review lane has none)."""
+    if stage == LANE_STAGE_TODO:
+        pool = [lane for lane in lanes if lane.category == "todo"]
+        named = [lane for lane in pool if _TODO_LANE_NAME.match(str(lane.name or ""))]
+        return (named or pool or [None])[0]
+    if stage == LANE_STAGE_REVIEW:
+        for lane in lanes:
+            if lane.category == STARTED_CATEGORY and _REVIEW_LANE_NAME.search(
+                str(lane.name or ""),
+            ):
+                return lane
+        return None
+    raise ValueError(f"unknown stage: {stage!r}")
+
+
+async def board_lanes(db: Any, project_id: str) -> list[Any]:
+    """The lanes of the board of *project_id* (the owner of its statuses), in
+    lane order."""
+    home = await status_owner_id(db, str(project_id))
+    return list((await db.execute(
+        text(
+            "SELECT * FROM pm_task_statuses WHERE project_id = CAST(:root AS uuid)"
+            f" ORDER BY {status_order_sql()}"
+        ),
+        {"root": home},
+    )).fetchall())
+
+
+async def lane_for_stage(db: Any, project_id: str, stage: str) -> Any | None:
+    """The lane of *stage* on the board of *project_id*, or ``None``."""
+    return pick_lane(await board_lanes(db, project_id), stage)
+
+
+def lane_like(lanes: Sequence[Any], name: str | None, category: str | None) -> Any | None:
+    """The lane that a task LEFT, found again: the lane of that name in that
+    category, else :func:`pick_lane` for a ``todo`` category, else the first
+    lane of the category. ``None`` when the category holds no lane or is
+    unknown. Never a closing or triage lane."""
+    if not category or category in CLOSING_CATEGORIES or category == TRIAGE_CATEGORY:
+        return None
+    pool = [lane for lane in lanes if lane.category == category]
+    wanted = str(name or "").strip().lower()
+    for lane in pool:
+        if wanted and str(lane.name or "").strip().lower() == wanted:
+            return lane
+    if category == "todo":
+        return pick_lane(lanes, LANE_STAGE_TODO)
+    return pool[0] if pool else None
+
+
 async def _runs_follow_the_task(
     db: Any, row: Any, old_status: Any, new_status: Any, closer: Any,
 ) -> list[str]:
@@ -3824,7 +4356,9 @@ _LOCK_TASK_SQL = (
 
 async def lock_task(db: Any, task_id: str) -> Any:
     """Lock one task row until the transaction ends, and return the row as
-    the lock read it. Four callers, each after its own visibility load, so
+    the lock read it. Task 3648: ``agent_runs._settle_task_lane`` is a fifth
+    caller, in the release of a run (a member's "Close the run" too), after
+    the run lock. Four more callers, each after its own visibility load, so
     the lock reads by id only: ``claim_task``; ``tasks.agent_delete_task``
     (WS-55 EA-6h, so the version and title checks hold until the delete);
     ``activities._load_agent_comment`` (WS-55 MCP-G9 fix round 3, so no new

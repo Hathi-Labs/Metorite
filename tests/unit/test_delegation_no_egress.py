@@ -110,10 +110,22 @@ EXPECTED_OPEN_WORLD = frozenset({
     "compose_reply",
     # crm-assistant: writes that queue for the live Zoho tenant (D-CRM-9)
     "create_lead", "update_deal_status", "log_activity", "convert_lead",
+    # crm-assistant, P-3 (task 3954): a suggestion of the field map and a new
+    # AI analysis. They never queue for Zoho, and say open_world as each CRM
+    # write does.
+    "crm_decide_suggestion", "crm_rerun_analysis",
     # crm-assistant, WS-CRM CRM-M3a: a new pipeline. It never queues for Zoho,
     # but it says open_world as each CRM write does, so a covered run holds it off.
     "crm_create_pipeline",
     "crm_update_record", "crm_update_task",
+    # crm-assistant, CRM-M2e (task 3951): the set-up writes of stages and lost
+    # reasons. They never queue for Zoho, and say open_world as each CRM write does.
+    "crm_edit_status", "crm_edit_lost_reason",
+    # crm-assistant, CRM-M2f and CRM-M2i (task 3953): a field rule and the
+    # mapping plan. They never queue for Zoho, and say open_world as each CRM
+    # write does.
+    "crm_edit_field_rule", "crm_draft_mapping_plan", "crm_approve_mapping_plan",
+    "crm_restore_mapping_plan",
     # task-manager (skill_my_tasks)
     "my_tasks_delegate",
 })
@@ -146,6 +158,8 @@ def _no_database(monkeypatch):
     # WS-VOX VOX-3: analyze_image is per org. The covered run pins the surface
     # of a lit org (the dark case is in test_attachment_analyze_image.py).
     monkeypatch.setattr(_ti_vox, "_image_withheld", lambda: frozenset())
+    # SBX-19: compute_run is per org too. The covered run pins a lit org.
+    monkeypatch.setattr(_ti_vox, "_compute_withheld", lambda: frozenset())
 
     monkeypatch.setattr(auth_access, "_tables_missing", auth_access._tables_missing)
     monkeypatch.setattr(routes_agent, "_load_dynamic_agents", lambda: [])
@@ -570,8 +584,11 @@ def _egress_in(body: dict[str, Any]) -> list[str]:
 
 def _blocked(result: str) -> bool:
     """A call that ran nothing: refused by the H-236 middleware, or not found
-    because the run does not hold the tool."""
-    return "off in this run" in result or "not found" in result
+    because the run does not hold the tool. HRD-1b (task 3230): a delegated
+    run answers a name that it does not hold with the HRD-1 text, which
+    starts "Not run". Its model never reads MAF's own "not found" text."""
+    return ("off in this run" in result or "not found" in result
+            or result.startswith("Not run"))
 
 
 def _harness(monkeypatch, sandbox, models: dict[str, _Model]) -> list[str]:  # noqa: F811
@@ -907,6 +924,47 @@ def test_the_covered_run_itself_holds_only_its_pinned_tools(sandbox, monkeypatch
     )
     assert any(_blocked(r) for r in _results(pa.bodies[1]))
     assert sent == []
+
+
+def test_a_no_egress_run_never_reaches_request_network_access(
+    sandbox, monkeypatch, _no_process,  # noqa: F811
+) -> None:
+    """Done-when 14 of WS-43g (§7.3): a ``no_egress`` run never reaches the
+    network card. ``code_task`` is an egress tool, so H-236 takes it from the
+    run, and only the ``code_task`` session holds ``request_network_access``.
+    With egress on, a call of either name runs nothing, shows no card and
+    opens no grant."""
+    import importlib
+
+    _register_every_annotation()
+    monkeypatch.setattr(sandbox.env["settings"], "sandbox_egress_enabled", True)
+    reached: list[str] = []
+
+    async def card(*_a: Any, **_k: Any) -> bool:
+        reached.append("card")
+        return True
+
+    async def grant(*_a: Any, **_k: Any) -> Any:
+        reached.append("grant")
+        raise AssertionError("a no_egress run opened a grant")
+
+    monkeypatch.setattr(importlib.import_module("acb_skills.ask_tools"),
+                        "request_confirmation", card)
+    monkeypatch.setattr(sandbox.broker, "grant_egress", grant)
+    pa = _Model([
+        _call("code_task", {"task": "pip install x"}),
+        _call("request_network_access", {"reason": "pip", "hosts": ["pypi.org"]},
+              call_id="call_2"),
+        _say("ok"),
+    ])
+    sent = _harness(monkeypatch, sandbox, {PA: pa})
+    _run_parent(ORG_A)
+    assert "run_command" in _offered(pa.bodies[0]), "the run was not covered"
+    for body in pa.bodies:
+        assert not {"code_task", "request_network_access"} & _offered(body)
+    results = [r for b in pa.bodies[1:] for r in _results(b)]
+    assert len(results) >= 2 and all(_blocked(r) for r in results), results
+    assert reached == [] and sent == [] and _no_process == []
 
 
 @pytest.mark.parametrize("tier_routing", ["", "projects-assistant"])
@@ -1463,7 +1521,8 @@ def test_a_delegated_mail_write_with_no_card_channel_answers_as_on_main(
     _run_top(PA, ORG_B, cards=False)
     assert email.bodies, "the delegation never ran"
     answer = _results(email.bodies[1])[-1]
-    assert answer.startswith("Nothing changed. This needs your approval on a card"), answer
+    # HRD-7: the email assistant's no-card answer is the one table's.
+    assert answer.startswith("Not shown: a card cannot show here"), answer
     assert "read an answer of an agent" not in answer, answer
 
 

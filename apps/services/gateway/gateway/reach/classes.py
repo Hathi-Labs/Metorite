@@ -86,6 +86,10 @@ REACH_CLASS: dict[str, str] = {
     # interrupts. The member's own request, and a rule at ``urgent``, are
     # ``urgent`` (below).
     "notify_me": "interrupt",
+    # AO-2 (customer_console.md §6A.17b): the AI vendor alert. `gateway.
+    # provider_alerts` sends its own push through the one sender, once an
+    # hour at most, so the Reach loop never sends it a second time.
+    "provider_alert": "none",
 }
 
 #: The kinds that never go on WhatsApp: no brief, no template parameter, no

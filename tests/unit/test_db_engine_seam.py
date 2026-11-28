@@ -478,7 +478,12 @@ H2_WHATSAPP_EXEMPT_SITES: dict[str, int] = {
 #: (-2). The hook door finds the org through `service._organization_ids`,
 #: which is already a discovery site, so it adds no new one. Measured: 58.
 #: `test_workflows_triggers_r8.py` fences both doors under FORCE RLS.
-H2_BASELINE_ELSEWHERE = 58
+#: 58 → 55: H2 (task 566, 2026-11-22). `routes/agent_skills.py` held three
+#: unbound sites (a helper and two request handlers). The handlers run in a
+#: member's request, so they now open the ambient `tenant_session()`. The
+#: file has no `get_db()` left. `test_agent_skills_per_org_r8.py` fences it
+#: under FORCE RLS with two orgs.
+H2_BASELINE_ELSEWHERE = 55
 
 #: routes/apps (H2 slice, 2026-08-10): the sites that STAY on the unbound
 #: seam, as file → exact remaining count. Counts rather than whole files
@@ -996,8 +1001,9 @@ _FACTORY_OPEN_ALLOW: dict[str, tuple[int, str]] = {
         "WS-55 EA-1 — the outside-agent token store. ONE helper (`_session`) "
         "that only the token acts open, and it MUST start unbound: an outside "
         "agent sends only an opaque token, so the edge finds the token BEFORE "
-        "it knows the tenant. The first read touches only `agent_token`, which "
-        "is RLS-EXEMPT (`gen_tenant_migration.EXEMPT`, external_agent_access.md "
+        "it knows the tenant. The first read touches only `agent_token`, or "
+        "`sandbox_capabilities` for the sandbox door (SBX-2), which both "
+        "are RLS-EXEMPT (`gen_tenant_migration.EXEMPT`, external_agent_access.md "
         "§10.3). Before it touches the tenant-scoped `agent_connection`, the "
         "act binds the tenant FROM THE TOKEN ROW inside the same transaction, "
         "with the seam's own `set_config(..., true)` statement (the "
