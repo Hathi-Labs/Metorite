@@ -57,6 +57,11 @@ dependencies = [
     # tests/unit/test_no_agpl_dependency.py.
     "markitdown[pdf,docx,pptx,xlsx]==0.1.9",
     "pdfplumber==0.11.10",
+    # The step engine of a user tool (SBX-4b1, agent_sandbox.md §12.4
+    # decisions 5 and 7) checks the schemas of `tool.json`, the smoke input
+    # and the smoke output with jsonschema (MIT). The lock held it as an
+    # indirect package, and this line names the direct use.
+    "jsonschema>=4.26",
 ]
 
 [build-system]
