@@ -1081,237 +1081,346 @@ def _sync_source_to_cache(source_dir: Path, cache_dir: Path) -> None:
 # Old auto-sync wrappers (task 691, HANDOFF H-281)
 # ---------------------------------------------------------------------------
 # Before WS-49 BH-1 the wrapper template in ``_sync_new_skills`` gave the
-# script the whole gateway env. A clone that holds such a wrapper keeps it
-# until it changes. So each load upgrades it, and the import refuses one that
-# it cannot upgrade. A wrapper is "generated" when its own structure says so:
-# the signature ``async def <fn>(*args: str) -> str:`` and, as the first
-# statement after the docstring, the ``import asyncio as _a`` alias line. The
-# docstring gives the skill name only, because it is the tool description and
-# a person may edit it. The banner comment is no proof, because a person can
-# add code under it.
+# script the whole gateway env. A clone keeps such a wrapper until it changes.
+# So each load upgrades the historical generated templates, and nothing else.
+#
+# A function is an old wrapper only when its AST equals one of the templates
+# below. The generated parts are holes: the function name, the docstring
+# text, the ``skills/<skill>/scripts/<stem>.py`` path, and the str-to-str
+# extras of the env dict. An edited body, an extra statement or another call
+# is not a generated wrapper, and it stays as it is, byte for byte.
+#
+# This code does not judge hand-edited code. The author of ``agents.py``
+# already runs code in the gateway process, so a judgement of that code adds
+# no control, and a wrong judgement turns off a working tool.
+#
+# The git history of loader.py holds four distinct template blocks (checked
+# on 2026-11-22 over each commit of the file): shape A, two forms of shape B,
+# and the current template. A new template must join ``_TEMPLATES``, and the
+# fence ``test_old_wrapper_upgrade.py`` fails until it does.
 
-#: The docstring that every version of the template writes. It names the skill.
+_HOLE_NAME = "__fn__"
+_HOLE_DOC = "__doc__"
+_HOLE_REL = "__rel__"
+_HOLE_EXTRA = "__extra__"
+#: The path hole: the template writes ``skills/<skill>/scripts/<stem>.py``.
+_WRAPPER_REL = re.compile(r"skills/(?P<skill>[^/\s]+)/scripts/[^/\s]+\.py")
+#: The docstring of each template. It names the skill for the hint log only.
 _WRAPPER_DOC = re.compile(r"\ARun (?P<stem>.+) \((?P<skill>.+)\)\. Pass CLI args as strings\.\Z")
-#: Shape A (b97ed0c5a to 980c04a49^): ``_env = {**_os.environ, <extra>}``.
-_OLD_ENV_LINE = re.compile(
-    r"^(?P<indent>[ \t]+)_env = \{\*\*_os\.environ, (?P<extra>[^\r\n]*)\}[ \t]*(?P<nl>\r\n|\r|\n)",
-    re.MULTILINE,
-)
-#: Shape B (ae2f1ece7, ea496f3a4): a run with no ``env=``, so the child
-#: inherits the whole env.
-_OLD_RUN_LINE = re.compile(
-    r"^(?P<indent>[ \t]+)_r = await _a\.to_thread\(_s\.run, (?P<args>[^\r\n]*), "
-    r"cwd=str\(_d\)\)[ \t]*(?P<nl>\r\n|\r|\n)",
-    re.MULTILINE,
-)
 _CHILD_ENV_IMPORT = "from acb_common.child_env import child_env as _child_env"
 _LINE_BREAK = re.compile(r"\r\n|\r|\n")
-#: Every version of the template writes this alias line.
-_WRAPPER_IMPORT = "import asyncio as _a"
 
-#: What a refused tool says when the model calls it.
-WRAPPER_REFUSED_TEXT = (
-    "This tool is off. Its wrapper in agents.py passes the whole server "
-    "environment to the script, and Metorite could not upgrade it. Edit the "
-    "wrapper to use child_env (WS-49 BH-1)."
+_T_HEAD = 'async def __fn__(*args: str) -> str:\n    """__doc__"""\n'
+_T_TAIL = (
+    "    if _r.returncode != 0:\n"
+    '        raise RuntimeError(_r.stderr[:500] or "Script exited non-zero")\n'
+    '    return _r.stdout or "(no output)"\n'
+)
+_T_PATH = "    from pathlib import Path as _P\n    _d = _P(__file__).parent.resolve()\n"
+_T_IMPORT_ENV = f"    {_CHILD_ENV_IMPORT}\n"
+#: Shape A (b97ed0c5a to 980c04a49^): the env is ``{**_os.environ, <extra>}``.
+_T_A_ENV = "    _env = {**_os.environ, **__extra__}\n"
+_T_A_UP_ENV = _T_IMPORT_ENV + "    _env = _child_env(extra={**__extra__})\n"
+_T_A = (
+    _T_HEAD
+    + "    import asyncio as _a, os as _os, subprocess as _s, sys as _sys\n"
+    + _T_PATH
+    + '    _cmd = [_sys.executable, "-X", "utf8", str(_d / __rel__)] + list(args)\n'
+    + _T_A_ENV
+    + "    _r = await _a.to_thread(\n"
+    + '        _s.run, _cmd, capture_output=True, encoding="utf-8", errors="replace",\n'
+    + "        cwd=str(_d), env=_env,\n"
+    + "    )\n"
+    + _T_TAIL
+)
+#: Shape B (ae2f1ece7 and ea496f3a4): a run with no ``env=``, so the child
+#: inherits the whole env.
+_T_B_RUN = "    _r = await _a.to_thread(_s.run, _cmd, capture_output=True, text=True, cwd=str(_d))\n"
+_T_B_UP_RUN = _T_IMPORT_ENV + _T_B_RUN.replace("cwd=str(_d))", "cwd=str(_d), env=_child_env())")
+_T_B1 = (
+    _T_HEAD
+    + "    import asyncio as _a, subprocess as _s\n"
+    + _T_PATH
+    + '    _cmd = ["python", str(_d / __rel__)] + list(args)\n'
+    + _T_B_RUN
+    + _T_TAIL
+)
+_T_B2 = (
+    _T_HEAD
+    + "    import asyncio as _a, subprocess as _s, sys as _sys\n"
+    + _T_PATH
+    + "    _cmd = [_sys.executable, str(_d / __rel__)] + list(args)\n"
+    + _T_B_RUN
+    + _T_TAIL
+)
+#: The current template (980c04a49 on). It passes the one env.
+_T_CURRENT = (
+    _T_HEAD
+    + "    import asyncio as _a, subprocess as _s, sys as _sys\n"
+    + "    from pathlib import Path as _P\n"
+    + _T_IMPORT_ENV
+    + "    _d = _P(__file__).parent.resolve()\n"
+    + '    _cmd = [_sys.executable, "-X", "utf8", str(_d / __rel__)] + list(args)\n'
+    + "    _env = _child_env(extra={**__extra__})\n"
+    + "    _r = await _a.to_thread(lambda: _s.run(\n"
+    + '        _cmd, capture_output=True, encoding="utf-8", errors="replace",\n'
+    + "        cwd=str(_d), env=_env,\n"
+    + "    ))\n"
+    + _T_TAIL
 )
 
 
-def _generated_wrappers(tree: ast.AST) -> list[tuple[ast.AsyncFunctionDef, str, ast.stmt]]:
-    """Return each generated wrapper at the top level of *tree*.
-
-    Each item is ``(function, skill, first statement after the docstring)``.
-    The skill is ``"?"`` when a person edited the docstring.
-    """
-    found: list[tuple[ast.AsyncFunctionDef, str, ast.stmt]] = []
-    for node in getattr(tree, "body", []):
-        if not isinstance(node, ast.AsyncFunctionDef):
-            continue
-        args = node.args
-        if (
-            args.args or args.posonlyargs or args.kwonlyargs or args.kwarg
-            or args.vararg is None or args.vararg.arg != "args"
-            or not isinstance(node.returns, ast.Name) or node.returns.id != "str"
-        ):
-            continue
-        doc = ast.get_docstring(node, clean=False)
-        body = node.body[1:] if doc is not None else node.body
-        if not body:
-            continue
-        first = body[0]
-        if not (
-            isinstance(first, ast.Import)
-            and any(a.name == "asyncio" and a.asname == "_a" for a in first.names)
-        ):
-            continue
-        match = _WRAPPER_DOC.match(doc or "")
-        found.append((node, match.group("skill") if match else "?", first))
-    return found
+def _template_node(source: str) -> ast.AsyncFunctionDef:
+    node = ast.parse(source).body[0]
+    assert isinstance(node, ast.AsyncFunctionDef)
+    return node
 
 
-def _is_child_env_call(node: ast.AST) -> bool:
-    """True for ``_child_env()`` or ``_child_env(extra={<str>: <str>, ...})``."""
-    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-            and node.func.id == "_child_env" and not node.args):
+#: Each shape and its template. The old shapes map to the shape of their
+#: upgrade in ``_UPGRADE_TO``. The others pass the one env.
+_TEMPLATES: dict[str, ast.AsyncFunctionDef] = {
+    "A": _template_node(_T_A),
+    "B1": _template_node(_T_B1),
+    "B2": _template_node(_T_B2),
+    "current": _template_node(_T_CURRENT),
+    "A-upgraded": _template_node(_T_A.replace(_T_A_ENV, _T_A_UP_ENV)),
+    "B1-upgraded": _template_node(_T_B1.replace(_T_B_RUN, _T_B_UP_RUN)),
+    "B2-upgraded": _template_node(_T_B2.replace(_T_B_RUN, _T_B_UP_RUN)),
+}
+_UPGRADE_TO = {"A": "A-upgraded", "B1": "B1-upgraded", "B2": "B2-upgraded"}
+#: Fields that do not change what the code does.
+_IGNORED_FIELDS = frozenset({"type_comment", "kind"})
+
+
+def _is_str(node: ast.AST | None) -> bool:
+    return isinstance(node, ast.Constant) and type(node.value) is str
+
+
+def _same(t: Any, n: Any, holes: dict[str, Any]) -> bool:
+    """True when node *n* equals template *t*, with a hole in *t* for each
+    generated part. Each hole value goes into *holes*."""
+    if isinstance(t, ast.Name) and t.id == _HOLE_REL:
+        ok = _is_str(n) and _WRAPPER_REL.fullmatch(n.value) is not None
+        if ok:
+            holes["rel"] = n
+        return ok
+    if isinstance(t, ast.Constant) and t.value == _HOLE_DOC:
+        if _is_str(n):
+            holes["doc"] = n
+            return True
         return False
-    for kw in node.keywords:
-        if kw.arg != "extra" or not isinstance(kw.value, ast.Dict):
+    if (isinstance(t, ast.Dict) and t.values and isinstance(t.values[-1], ast.Name)
+            and t.values[-1].id == _HOLE_EXTRA):
+        return _same_extra(t, n, holes)
+    if type(t) is not type(n):
+        return False
+    if isinstance(t, list):
+        return len(t) == len(n) and all(_same(a, b, holes) for a, b in zip(t, n, strict=True))
+    if not isinstance(t, ast.AST):
+        return bool(t == n)
+    for field in t._fields:
+        if field in _IGNORED_FIELDS:
+            continue
+        a, b = getattr(t, field, None), getattr(n, field, None)
+        if field == "name" and a == _HOLE_NAME and isinstance(t, ast.AsyncFunctionDef):
+            holes["name"] = b
+            continue
+        if not _same(a, b, holes):
             return False
-        for key, value in zip(kw.value.keys, kw.value.values, strict=True):
-            if not (isinstance(key, ast.Constant) and isinstance(key.value, str)
-                    and isinstance(value, ast.Constant) and isinstance(value.value, str)):
-                return False
     return True
 
 
-def _wrapper_is_safe(fn: ast.AsyncFunctionDef) -> bool:
-    """True when every spawn of the wrapper passes the ``child_env`` env.
-
-    The check fails closed. It refuses any ``environ`` reference, an ``_env``
-    that is not a ``_child_env(...)`` call, and a call that names ``_s`` (the
-    subprocess alias) with no ``env=`` from the helper.
-    """
-    env_kwargs = 0
-    for node in ast.walk(fn):
-        if isinstance(node, ast.Name) and node.id in {"environ", "environb", "subprocess"}:
+def _same_extra(t: ast.Dict, n: Any, holes: dict[str, Any]) -> bool:
+    """The extras hole: the fixed entries of *t*, then only str-to-str entries."""
+    fixed = len(t.keys) - 1
+    if not isinstance(n, ast.Dict) or len(n.keys) < fixed:
+        return False
+    for i in range(fixed):
+        if not (_same(t.keys[i], n.keys[i], holes) and _same(t.values[i], n.values[i], holes)):
             return False
-        if isinstance(node, ast.Attribute) and node.attr in {"environ", "environb", "system", "popen"}:
-            return False
-        if isinstance(node, ast.Assign | ast.AugAssign | ast.AnnAssign):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            if any(isinstance(t, ast.Name) and t.id == "_env" for t in targets) and not (
-                isinstance(node, ast.Assign) and _is_child_env_call(node.value)
-            ):
-                return False
-        if not isinstance(node, ast.Call):
-            continue
-        names_s = any(
-            isinstance(part, ast.Attribute) and isinstance(part.value, ast.Name)
-            and part.value.id == "_s"
-            for part in [node.func, *node.args]
-        )
-        env = next((kw.value for kw in node.keywords if kw.arg == "env"), None)
-        if env is not None:
-            if not ((isinstance(env, ast.Name) and env.id == "_env") or _is_child_env_call(env)):
-                return False
-            env_kwargs += 1
-        elif names_s:
-            return False
-    return env_kwargs > 0
+    pairs = list(zip(n.keys[fixed:], n.values[fixed:], strict=True))
+    if not all(_is_str(k) and _is_str(v) for k, v in pairs):
+        return False
+    holes["extra"] = pairs
+    return True
 
 
-def _upgrade_segment(segment: str) -> str | None:
-    """Upgrade the source of one old wrapper. ``None`` when no known shape fits."""
-    env_lines = list(_OLD_ENV_LINE.finditer(segment))
-    run_lines = list(_OLD_RUN_LINE.finditer(segment))
-    if len(env_lines) == 1 and not run_lines:
-        m = env_lines[0]
-        try:
-            extra = ast.literal_eval("{" + m.group("extra") + "}")
-        except (ValueError, SyntaxError):
-            return None
-        if not isinstance(extra, dict) or not all(
-            isinstance(k, str) and isinstance(v, str) for k, v in extra.items()
-        ):
-            return None
-        indent, nl = m.group("indent"), m.group("nl")
-        new = (
-            f"{indent}{_CHILD_ENV_IMPORT}{nl}"
-            f"{indent}_env = _child_env(extra={{{m.group('extra')}}}){nl}"
-        )
-        return segment[: m.start()] + new + segment[m.end():]
-    if len(run_lines) == 1 and not env_lines:
-        m = run_lines[0]
-        indent, nl = m.group("indent"), m.group("nl")
-        new = (
-            f"{indent}{_CHILD_ENV_IMPORT}{nl}"
-            f"{indent}_r = await _a.to_thread(_s.run, {m.group('args')}, "
-            f"cwd=str(_d), env=_child_env()){nl}"
-        )
-        return segment[: m.start()] + new + segment[m.end():]
+def _wrapper_shape(fn: ast.AST) -> tuple[str, dict[str, Any]] | None:
+    """The template that *fn* equals, and its holes. ``None`` for any other code."""
+    if not isinstance(fn, ast.AsyncFunctionDef):
+        return None
+    for shape, template in _TEMPLATES.items():
+        holes: dict[str, Any] = {}
+        if _same(template, fn, holes):
+            return shape, holes
     return None
 
 
-def _refused_segment(segment: str, first: ast.stmt, body_start: int) -> str:
-    """Keep the def line and the docstring, and make the body raise.
+def _looks_generated(fn: ast.AST) -> bool:
+    """The signature of the template and an ``import asyncio as _a`` line.
 
-    *first* is the first statement after the docstring. It starts at
-    *body_start* in *segment*.
+    For a hint in the log only. It never decides an upgrade.
     """
-    indent = segment[body_start: body_start + first.col_offset]
-    nl = _LINE_BREAK.search(segment)
-    newline = nl.group(0) if nl else "\n"
-    return segment[:body_start] + f"{indent}raise RuntimeError({WRAPPER_REFUSED_TEXT!r}){newline}"
+    if not isinstance(fn, ast.AsyncFunctionDef):
+        return False
+    args = fn.args
+    if (args.args or args.posonlyargs or args.kwonlyargs or args.kwarg
+            or args.vararg is None or args.vararg.arg != "args"):
+        return False
+    return any(
+        isinstance(stmt, ast.Import)
+        and any(a.name == "asyncio" and a.asname == "_a" for a in stmt.names)
+        for stmt in fn.body[:2]
+    )
+
+
+class _Source:
+    """Map an AST position (a line, and a column in UTF-8 bytes) to an index
+    in the text. Python breaks lines only at CR LF, CR and LF."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.starts = [0, *(m.end() for m in _LINE_BREAK.finditer(text))]
+
+    def line_start(self, lineno: int) -> int:
+        return self.starts[lineno - 1]
+
+    def line_end(self, lineno: int) -> int:
+        """The index after the line break of *lineno*."""
+        return self.starts[lineno] if lineno < len(self.starts) else len(self.text)
+
+    def index(self, lineno: int, col: int) -> int:
+        begin = self.line_start(lineno)
+        line = self.text[begin: self.line_end(lineno)]
+        return begin + len(line.encode("utf-8")[:col].decode("utf-8"))
+
+    def segment(self, node: ast.AST) -> str:
+        return self.text[self.index(node.lineno, node.col_offset):
+                         self.index(node.end_lineno or node.lineno, node.end_col_offset or 0)]
+
+    def newline(self, lineno: int) -> str:
+        """The line break at the end of *lineno*, or LF on the last line."""
+        found = _LINE_BREAK.search(self.text, self.line_start(lineno))
+        return found.group(0) if found else "\n"
+
+    def indent(self, stmt: ast.stmt) -> str | None:
+        """The text before *stmt* on its line, when it is only white space."""
+        begin = self.line_start(stmt.lineno)
+        head = self.text[begin: self.index(stmt.lineno, stmt.col_offset)]
+        return head if head.strip(" \t") == "" else None
+
+
+def _upgrade_edits(
+    src: _Source, fn: ast.AsyncFunctionDef, shape: str, holes: dict[str, Any]
+) -> list[tuple[int, int, str]] | None:
+    """The edits that give the upgraded shape. ``None`` when the text does not
+    allow them. Each edit is ``(begin, end, new text)`` in the whole text."""
+    stmt = fn.body[5]  # the ``_env`` line of A, the ``_r`` line of B
+    indent = src.indent(stmt)
+    if indent is None:
+        return None
+    nl = src.newline(stmt.lineno)
+    at = src.line_start(stmt.lineno)
+    edits = [(at, at, f"{indent}{_CHILD_ENV_IMPORT}{nl}")]
+    if shape == "A":
+        assert isinstance(stmt, ast.Assign)
+        pairs = ", ".join(f"{src.segment(k)}: {src.segment(v)}" for k, v in holes["extra"])
+        value = stmt.value
+        edits.append((src.index(value.lineno, value.col_offset),
+                      src.index(value.end_lineno or value.lineno, value.end_col_offset or 0),
+                      f"_child_env(extra={{{pairs}}})"))
+    else:
+        assert isinstance(stmt, ast.Assign) and isinstance(stmt.value, ast.Await)
+        call = stmt.value.value
+        assert isinstance(call, ast.Call)
+        last = call.keywords[-1].value
+        end = src.index(last.end_lineno or last.lineno, last.end_col_offset or 0)
+        edits.append((end, end, ", env=_child_env()"))
+    return edits
+
+
+def _hole_values(holes: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        holes["name"], holes["doc"].value, holes["rel"].value,
+        tuple((k.value, v.value) for k, v in holes["extra"]) if "extra" in holes else (),
+    )
 
 
 def upgrade_old_wrappers(
-    text: str, *, refuse: bool = False
-) -> tuple[str, list[tuple[str, str]], list[tuple[str, str]]]:
-    """Upgrade each generated wrapper in *text* that passes the whole env.
+    text: str,
+) -> tuple[str, list[tuple[str, str]], list[tuple[str, str, str]]]:
+    """Upgrade each historical generated template in *text* to ``child_env``.
 
-    Returns ``(new_text, upgraded, refused)``. Each list holds ``(tool,
-    skill)`` pairs. A wrapper that no known shape fits goes to ``refused``.
-    By default it stays as it is. With ``refuse=True`` its body becomes a
-    ``raise``, for the in-memory import only. Hand-written code and each byte
-    outside a changed wrapper stay the same.
+    Returns ``(new_text, upgraded, skipped)``. ``upgraded`` holds ``(tool,
+    skill)`` pairs. ``skipped`` holds ``(tool, skill, reason)`` for the log
+    only. The reason ``no_template`` marks a function that looks generated
+    but equals no template, so the upgrade leaves it as it is. The reason
+    ``edit_failed`` marks an old template whose text did not take the edit.
+
+    Only the edited statements of an upgraded wrapper change. Each other
+    byte stays the same. This does not judge hand-edited code.
     """
-    if _WRAPPER_IMPORT not in text:
-        return text, [], []  # no generated wrapper: parse nothing
+    if "asyncio" not in text:
+        return text, [], []  # no template can be in the text: parse nothing
     try:
         tree = ast.parse(text)
     except SyntaxError:
         return text, [], []
-    starts = [0, *(m.end() for m in _LINE_BREAK.finditer(text))]
+    src = _Source(text)
     upgraded: list[tuple[str, str]] = []
-    refused: list[tuple[str, str]] = []
-    edits: list[tuple[int, int, str]] = []
-    for fn, skill, first in _generated_wrappers(tree):
-        if _wrapper_is_safe(fn):
+    skipped: list[tuple[str, str, str]] = []
+    all_edits: list[tuple[int, int, str]] = []
+    for fn in tree.body:
+        found = _wrapper_shape(fn)
+        if found is None:
+            if _looks_generated(fn):
+                assert isinstance(fn, ast.AsyncFunctionDef)
+                doc = _WRAPPER_DOC.match(ast.get_docstring(fn, clean=False) or "")
+                skipped.append((fn.name, doc.group("skill") if doc else "?", "no_template"))
             continue
-        end_line = fn.end_lineno or fn.lineno
-        begin = starts[fn.lineno - 1]
-        end = starts[end_line] if end_line < len(starts) else len(text)
-        segment = text[begin:end]
-        new = _upgrade_segment(segment)
-        if new is not None:
-            try:
-                new_fns = _generated_wrappers(ast.parse(new))
-            except SyntaxError:
-                new_fns = []
-            if (len(new_fns) == 1 and new_fns[0][0].name == fn.name
-                    and _wrapper_is_safe(new_fns[0][0])):
-                edits.append((begin, end, new))
-                upgraded.append((fn.name, skill))
-                continue
-        refused.append((fn.name, skill))
-        if refuse:
-            body_start = starts[first.lineno - 1] - begin
-            edits.append((begin, end, _refused_segment(segment, first, body_start)))
-    for begin, end, new in sorted(edits, reverse=True):
+        shape, holes = found
+        if shape not in _UPGRADE_TO:
+            continue  # it passes the one env already
+        assert isinstance(fn, ast.AsyncFunctionDef)
+        skill = _WRAPPER_REL.fullmatch(holes["rel"].value).group("skill")  # type: ignore[union-attr]
+        edits = _upgrade_edits(src, fn, shape, holes)
+        if edits is None or not _upgrade_checks(src, fn, edits, shape, holes):
+            skipped.append((fn.name, skill, "edit_failed"))
+            continue
+        all_edits.extend(edits)
+        upgraded.append((fn.name, skill))
+    for begin, end, new in sorted(all_edits, key=lambda e: (e[0], e[1]), reverse=True):
         text = text[:begin] + new + text[end:]
-    return text, upgraded, refused
+    return text, upgraded, skipped
 
 
-def _log_wrappers(
-    agent: str, upgraded: list[tuple[str, str]], refused: list[tuple[str, str]], *, where: str
-) -> None:
-    """Write one line for each upgraded or refused wrapper. No env value."""
-    for tool, skill in upgraded:
-        _log.info("loader.wrapper_env_upgraded", agent=agent, skill=skill, tool=tool, where=where)
-    for tool, skill in refused:
-        _log.warning(
-            "loader.wrapper_refused", agent=agent, skill=skill, tool=tool, where=where,
-            hint="A generated wrapper passes the whole env and no known shape fits. "
-                 "The tool raises until a person edits it to use child_env.",
-        )
+def _upgrade_checks(
+    src: _Source, fn: ast.AsyncFunctionDef, edits: list[tuple[int, int, str]],
+    shape: str, holes: dict[str, Any],
+) -> bool:
+    """True when the edited function parses and equals the upgraded template,
+    with the same holes."""
+    begin = src.line_start(fn.lineno)
+    end = src.line_end(fn.end_lineno or fn.lineno)
+    segment = src.text[begin:end]
+    for e_begin, e_end, new in sorted(edits, key=lambda e: (e[0], e[1]), reverse=True):
+        segment = segment[: e_begin - begin] + new + segment[e_end - begin:]
+    try:
+        body = ast.parse(segment).body
+    except SyntaxError:
+        return False
+    if len(body) != 1:
+        return False
+    found = _wrapper_shape(body[0])
+    return (found is not None and found[0] == _UPGRADE_TO[shape]
+            and _hole_values(found[1]) == _hole_values(holes))
 
 
 def _upgrade_agents_file(agent_dir: Path) -> bool:
-    """Upgrade the old wrappers in a clone's ``agents.py`` on disk.
+    """Upgrade the old generated wrappers in a clone's ``agents.py`` on disk.
 
-    Returns True when the file changed, and the caller commits it. A refused
-    wrapper stays on disk as it is, because a person may have edited it.
-    ``LoadedAgent.build_agents`` refuses it at the import.
+    Returns True when the file changed, and the caller commits it. A function
+    that equals no template stays on disk as it is, and gets one hint line.
     """
     agents_file = agent_dir / "agents.py"
     bom = b"\xef\xbb\xbf"
@@ -1320,9 +1429,21 @@ def _upgrade_agents_file(agent_dir: Path) -> bool:
         head = bom if raw.startswith(bom) else b""
         text = raw[len(head):].decode("utf-8")
     except (OSError, UnicodeDecodeError):
-        return False  # the gate in build_agents still refuses it
-    new_text, upgraded, refused = upgrade_old_wrappers(text)
-    _log_wrappers(agent_dir.name, upgraded, refused, where="clone")
+        return False  # the gate in build_agents upgrades it in memory
+    new_text, upgraded, skipped = upgrade_old_wrappers(text)
+    for tool, skill in upgraded:
+        _log.info("loader.wrapper_env_upgraded", agent=agent_dir.name, skill=skill,
+                  tool=tool, where="clone")
+    for tool, skill, reason in skipped:
+        _log.warning(
+            "loader.wrapper_not_upgraded", agent=agent_dir.name, skill=skill, tool=tool,
+            reason=reason,
+            hint="This function looks like a generated tool wrapper but does not equal "
+                 "a generated template, so the loader did not change it."
+            if reason == "no_template" else
+            "This wrapper equals an old generated template, but the loader could not "
+            "apply the child_env edit to its text. A person must edit it.",
+        )
     if new_text == text:
         return False
     agents_file.write_bytes(head + new_text.encode("utf-8"))
@@ -1330,25 +1451,27 @@ def _upgrade_agents_file(agent_dir: Path) -> bool:
 
 
 def _safe_agents_source(agent_name: str, agents_file: Path) -> str | None:
-    """The gate before ``agents.py`` imports (task 691). It fails closed.
+    """The text that ``build_agents`` imports (task 691).
 
-    ``None`` when every generated wrapper already passes the one env, so the
-    file imports as it is. Otherwise the text to import: an old wrapper that a
-    known shape fits is upgraded in memory, and any other generated wrapper
-    raises ``WRAPPER_REFUSED_TEXT`` and starts no process. The disk upgrade
-    in ``_sync_new_skills`` can miss: the local-path load never calls it, and
-    a failed commit restores the old file.
+    It reads the file once, with the importer's own decode, and upgrades each
+    old generated template in memory. The disk upgrade in ``_sync_new_skills``
+    can miss: the local-path load never calls it, a disk write can fail, and a
+    failed commit leaves the upgrade staged but not committed. Each other byte
+    is the text on disk, so a file with no old template imports as it is.
+
+    ``None`` only when the read or the decode fails. Then the normal import
+    reads the file and raises its own error.
     """
     try:
         # The importer's own decode: a BOM and a coding line give the same
         # text here as in the import.
         text = importlib.util.decode_source(agents_file.read_bytes())
     except (OSError, SyntaxError, UnicodeDecodeError, LookupError):
-        return None  # the import reads the same bytes and fails on its own
-    new_text, upgraded, refused = upgrade_old_wrappers(text, refuse=True)
-    if new_text == text:
         return None
-    _log_wrappers(agent_name, upgraded, refused, where="import")
+    new_text, upgraded, _skipped = upgrade_old_wrappers(text)
+    for tool, skill in upgraded:
+        _log.info("loader.wrapper_env_upgraded", agent=agent_name, skill=skill,
+                  tool=tool, where="import")
     return new_text
 
 
