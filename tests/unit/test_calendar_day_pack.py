@@ -1,7 +1,7 @@
 """CAL-1a (task 1675): the ``calendar-day`` tool pack of the main chat.
 
-The pack holds the twenty-two day planner, calendar settings, day rule, day flow,
-event read, P-1a and state read tools of ``skill_my_tasks``. The Projects
+The pack holds the twenty day planner, calendar settings, day rule, day flow,
+event read and P-1a tools of ``skill_my_tasks``. The Projects
 assistant builds them in ``_agent_tools()`` only. Each case names, in its
 docstring, the mutation that turns it red (R7).
 
@@ -38,22 +38,20 @@ DAY_RULES = ("my_tasks_list_day_rules", "my_tasks_add_day_rule",
 #: CE-15 (task 3463): the read of the synced events. The pack held seventeen.
 EVENTS = ("my_tasks_list_events",)
 #: P-1a (task 3112): the connected calendars and the two task proposals. The pack
-#: held twenty.
+#: holds twenty.
 P1A = ("my_tasks_list_calendar_connections", "my_tasks_suggest_title", "my_tasks_enrich")
-#: CAL-6a (task 1680): the two reads of the saved day. The pack holds twenty-two.
-STATE_READS = ("my_tasks_get_day_state", "my_tasks_rollover_log")
-TWENTY_TWO = tuple(sorted((*EIGHT, *SETTINGS, *DAY_RULES, *FLOWS, *EVENTS, *P1A, *STATE_READS)))
+TWENTY = tuple(sorted((*EIGHT, *SETTINGS, *DAY_RULES, *FLOWS, *EVENTS, *P1A)))
 
 
-def test_the_family_is_the_twenty_two_planner_settings_day_rule_flow_event_p1a_and_state_tools() -> None:
-    """Mutation: drop a tool (the event read, a P-1a read or a state read too), add
-    the twenty-third (estimate_stats), or name one that skill_my_tasks lacks -> red."""
+def test_the_family_is_the_twenty_planner_settings_day_rule_flow_event_and_p1a_tools() -> None:
+    """Mutation: drop a tool (the event read or a P-1a read too), add the
+    twenty-first (estimate_stats), or name one that skill_my_tasks lacks -> red."""
     fam = sf.SKILL_FAMILIES[SLUG]
-    assert tuple(fam["tools"]) == TWENTY_TWO == tuple(sorted(TWENTY_TWO))
-    assert len(TWENTY_TWO) == 22
+    assert tuple(fam["tools"]) == TWENTY == tuple(sorted(TWENTY))
+    assert len(TWENTY) == 20
     assert fam["owner"] == PA and sf.is_pack(SLUG) and not fam["core"]
-    assert set(TWENTY_TWO) <= set(skill_my_tasks.__all__)
-    assert len(TWENTY_TWO) <= tp.MAX_PACK_TOOLS
+    assert set(TWENTY) <= set(skill_my_tasks.__all__)
+    assert len(TWENTY) <= tp.MAX_PACK_TOOLS
 
 
 def test_the_specialist_keeps_its_own_tool_list() -> None:
@@ -63,11 +61,11 @@ def test_the_specialist_keeps_its_own_tool_list() -> None:
     mod = ti._pack_owner_module(PA)
     own = {tool_name(t) for t in mod._own_tools()}
     assert own == set(skill_projects.__all__)
-    assert not own & set(TWENTY_TWO)
-    assert set(TWENTY_TWO) <= {tool_name(t) for t in mod._agent_tools()}
+    assert not own & set(TWENTY)
+    assert set(TWENTY) <= {tool_name(t) for t in mod._agent_tools()}
     for slug, fam in sf.SKILL_FAMILIES.items():
         if slug != SLUG and fam.get("owner") == PA:
-            assert not set(fam["tools"]) & set(TWENTY_TWO), slug
+            assert not set(fam["tools"]) & set(TWENTY), slug
 
 
 def test_the_pack_builds_the_same_functions_with_their_risk() -> None:
@@ -75,7 +73,7 @@ def test_the_pack_builds_the_same_functions_with_their_risk() -> None:
     with the risk of each. Mutation: copy the bodies, or drop the wrapper -> red."""
     mod = ti._pack_owner_module(PA)
     built = ti._owner_pack_tools(SLUG, PA, mod)
-    assert tuple(tool_name(t) for t in built) == TWENTY_TWO
+    assert tuple(tool_name(t) for t in built) == TWENTY
     for tool in built:
         name = tool_name(tool)
         assert type(tool).__name__ == "_StrictTool", name
@@ -113,7 +111,7 @@ def test_the_rules_carry_each_planner_rule() -> None:
     assert "deep_work" in flat and "energy windows" in flat
     assert "apply=False" in flat and "show the member the block list" in flat
     assert "apply=True only after the member agrees" in flat
-    for name in TWENTY_TWO:
+    for name in TWENTY:
         assert name in flat, name
     # CE-15: one short line names the event read. The planner reads no event,
     # so the line tells the model to check each proposed block before apply
@@ -149,14 +147,14 @@ def test_the_cap_drops_the_pack_before_email() -> None:
 def test_the_day_planner_pack_does_not_count_as_a_way_to_reach_the_owner() -> None:
     """The tools of this pack edit no task, so the pack must not stand in for a
     Projects work pack in the reach test of ``plan_loader``, and the core pack
-    steps aside as before. Since CAL-3 (task 1677) the pack holds 14 tools (16 since CAL-4, 17 since CE-15, 20 since P-1a, 22 since CAL-6a), more
+    steps aside as before. Since CAL-3 (task 1677) the pack holds 14 tools (16 since CAL-4, 17 since CE-15, 20 since P-1a), more
     than the 11 of ``projects-reports``, so the COUNT alone cannot keep it out.
     ``REACH_NOT_WORK`` names it. Mutation: empty ``REACH_NOT_WORK`` -> the core
     pack stays, the specialist leaves, and no work pack can load -> red."""
     from tests.unit.test_projects_packs import _BASE, _SPECIALIST, _sticky_turn
 
     assert SLUG in tp.REACH_NOT_WORK
-    assert len(TWENTY_TWO) >= tp.REACH_MIN_TOOLS, "non-vacuity: the count would let it in"
+    assert len(TWENTY) >= tp.REACH_MIN_TOOLS, "non-vacuity: the count would let it in"
     turn = _sticky_turn("archive tasks that are done", "projects",
                         tp.Sticky("projects-bulk", (19, 0), 19))
     choice = tp.choose(turn, allowed=EVERY, base_tools=_BASE, specialists=_SPECIALIST)

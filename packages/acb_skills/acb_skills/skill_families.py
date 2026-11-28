@@ -812,7 +812,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "\"I fell behind\". The pack holds the tools to propose and apply "
             "a plan of the day, to fit what is left, to roll over unfinished "
             "work, to read the digest of the day, to set the One Thing, and to "
-            "block, release and read the schedule. It also holds the tools to read and change the calendar settings: the standing instruction, the working hours, the capacity, the lunch window, the energy windows and auto rollover. It holds four tools for the day rules too: list, add, edit and delete a recurring focus window or block. Two tools read the saved day state (the One Thing and the seeded tasks) and the roll-over log. Two tools run the day flows in one reply, start my day and close my day: they propose and change nothing. Three reads list the connected calendars, propose a clearer title for a task, and propose the missing fields of a task (P-1a, task 3112): they change nothing. A plan is proposed first "
+            "block, release and read the schedule. It also holds the tools to read and change the calendar settings: the standing instruction, the working hours, the capacity, the lunch window, the energy windows and auto rollover. It holds four tools for the day rules too: list, add, edit and delete a recurring focus window or block. Two tools run the day flows in one reply, start my day and close my day: they propose and change nothing. Three reads list the connected calendars, propose a clearer title for a task, and propose the missing fields of a task (P-1a, task 3112): they change nothing. A plan is proposed first "
             "and applied after the member agrees. A run loads a pack only "
             "where tool packs are on, so until then this switch has no effect."
         ),
@@ -824,7 +824,6 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "my_tasks_edit_day_rule",
             "my_tasks_enrich",
             "my_tasks_get_calendar_settings",
-            "my_tasks_get_day_state",
             "my_tasks_list_calendar_connections",
             "my_tasks_list_day_rules",
             "my_tasks_list_events",
@@ -832,7 +831,6 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "my_tasks_plan_day",
             "my_tasks_replan_day",
             "my_tasks_rollover",
-            "my_tasks_rollover_log",
             "my_tasks_schedule",
             "my_tasks_set_one_thing",
             "my_tasks_start_my_day",
@@ -866,6 +864,33 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "tools": (
             "my_tasks_capture_from_mail",
             "my_tasks_draft_from_mail",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # CAL-6a (task 1680): the saved day and the roll-over log, for the main chat.
+    # Two My Tasks reads, built by the Projects assistant in `_agent_tools()` only.
+    # A pack of their own, so `calendar-day` keeps its size and no turn changes
+    # (owner, 2026-11-28). The pack follows `projects` (tool_packs.FOLLOWS).
+    "calendar-day-state": {
+        "label": "Calendar day state",
+        "summary": (
+            "Read the saved day (the One Thing and the seeded tasks) and the "
+            "roll-over log."
+        ),
+        "description": (
+            "A tool pack: two reads of the member's day, for the main assistant "
+            "to load when a turn says \"my day state\" or \"what did I roll "
+            "over\". One tool reads the One Thing and the seeded tasks that the "
+            "member saved for one day. One tool reads what the roll-over moved "
+            "and when. Both change nothing. A run loads a pack only where tool "
+            "packs are on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "my_tasks_get_day_state",
+            "my_tasks_rollover_log",
         ),
         "owner": "projects-assistant",
         "core": False,

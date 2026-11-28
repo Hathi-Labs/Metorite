@@ -50,7 +50,7 @@ from skill_my_tasks.core import (
 )
 
 #: Tools that only a pack of the main chat holds: `calendar-day` (CAL-2 to
-#: CAL-4, CE-15 and P-1a), `mail-tasks` (P-1b) and the dark
+#: CAL-4, CE-15 and P-1a), `mail-tasks` (P-1b), `calendar-day-state` (CAL-6a) and the dark
 #: `calendar-connections` (P-1c).
 #: They are in ``__all__`` so the pack builder, the card routing and the parity
 #: fences see them. A declarative agent (``orchestrator.declarative``) skips them,

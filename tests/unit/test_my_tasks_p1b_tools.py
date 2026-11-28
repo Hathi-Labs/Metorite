@@ -486,13 +486,13 @@ def test_the_write_is_a_task_create() -> None:
 def test_the_pack_holds_both_tools() -> None:
     """Mutation: drop a tool from the family or from the agent's build list, or
     put a tool back in ``calendar-day`` -> red."""
-    from tests.unit.test_calendar_day_pack import TWENTY_TWO
+    from tests.unit.test_calendar_day_pack import TWENTY
 
     assert tuple(sf.SKILL_FAMILIES[SLUG]["tools"]) == tuple(sorted(TOOLS))
     assert sf.SKILL_FAMILIES[SLUG]["owner"] == "projects-assistant"
     assert set(TOOLS) <= set(skill_my_tasks.__all__)
     assert not set(TOOLS) & set(sf.SKILL_FAMILIES["calendar-day"]["tools"])
-    assert len(sf.SKILL_FAMILIES["calendar-day"]["tools"]) == len(TWENTY_TWO) == 22
+    assert len(sf.SKILL_FAMILIES["calendar-day"]["tools"]) == len(TWENTY) == 20
     assert tp.FOLLOWS[SLUG] == "projects"
 
 

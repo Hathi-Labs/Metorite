@@ -113,3 +113,69 @@ async def test_rollover_log_passes_a_gateway_error_on(monkeypatch) -> None:
 def test_both_reads_are_read_only() -> None:
     for fn in (core.my_tasks_get_day_state, core.my_tasks_rollover_log):
         assert fn.__tool_risk__["read_only"] is True
+
+
+# ── The pack of its own (owner, 2026-11-28) ──────────────────────────────────
+#
+# In ``calendar-day`` the two reads took that pack from 20 tools to 22, and the
+# turn "block two hours on my calendar for the task" then lost the core
+# ``projects`` pack (and ``set_my_overlay``). So they sit in ``calendar-day-state``.
+
+SLUG = "calendar-day-state"
+TOOLS = ("my_tasks_get_day_state", "my_tasks_rollover_log")
+
+
+def test_the_pack_holds_both_reads_and_calendar_day_keeps_twenty() -> None:
+    """Mutation: drop a read from the family or from the agent's build list, or
+    put one back in ``calendar-day`` -> red."""
+    import skill_my_tasks
+    from acb_skills import skill_families as sf
+    from acb_skills import tool_packs as tp
+    from acb_skills.tool_guard import tool_name
+    from orchestrator import _tool_injection as ti
+
+    from tests.unit.test_calendar_day_pack import TWENTY
+
+    fam = sf.SKILL_FAMILIES[SLUG]
+    assert tuple(fam["tools"]) == TOOLS == tuple(sorted(TOOLS))
+    assert fam["owner"] == "projects-assistant" and sf.is_pack(SLUG) and not fam["core"]
+    assert set(TOOLS) <= set(skill_my_tasks.__all__)
+    assert set(TOOLS) <= set(skill_my_tasks.PACK_ONLY_TOOLS)
+    assert not set(TOOLS) & set(sf.SKILL_FAMILIES["calendar-day"]["tools"])
+    assert len(sf.SKILL_FAMILIES["calendar-day"]["tools"]) == len(TWENTY) == 20
+    assert tp.FOLLOWS[SLUG] == "projects"
+    mod = ti._pack_owner_module(fam["owner"])
+    built = ti._owner_pack_tools(SLUG, fam["owner"], mod)
+    assert tuple(tool_name(t) for t in built) == TOOLS
+
+
+def test_the_rules_name_both_reads() -> None:
+    """Mutation: drop a tool name from the rules, or leave it in the rules of
+    ``calendar-day`` -> red."""
+    from acb_skills import tool_packs as tp
+
+    for name in TOOLS:
+        assert name in tp.PACKS[SLUG].rules, name
+        assert name not in tp.PACKS["calendar-day"].rules, name
+
+
+@pytest.mark.parametrize("words", [
+    "show my day state", "what did I roll over last week?", "show the rollover log",
+    "what is my one thing today?",
+])
+def test_the_words_load_the_pack(words: str) -> None:
+    """Mutation: drop a phrase from ``_CALENDAR_DAY_STATE_WORDS`` -> red."""
+    from tests.unit.test_pack_requests import _chosen
+
+    assert SLUG in _chosen(words), words
+
+
+@pytest.mark.parametrize("words", [
+    "block two hours on my calendar for the task", "rebuild my day",
+    "show the log of this mail", "what state is the deal in",
+])
+def test_other_turns_do_not_load_the_pack(words: str) -> None:
+    """A bare "log", "state" or "day" is no phrase. Mutation: add one -> red."""
+    from tests.unit.test_pack_requests import _chosen
+
+    assert SLUG not in _chosen(words), words
