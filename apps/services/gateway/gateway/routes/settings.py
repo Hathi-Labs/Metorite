@@ -281,7 +281,7 @@ _PROVIDER_ENV_MAP: dict[str, str] = {
 #: provider key as a platform name. A BYOK key save goes to the store of the
 #: caller's organization only. Fences: ``test_integrations_env_hardening.py``
 #: (the pinned set) and ``test_llm_call_credentials.py`` (``TestTheSaveDoor``).
-_MODELS_PAGE_ENV_KEYS: frozenset[str] = frozenset({"COPILOT_CHAT_MODEL"})
+_MODELS_PAGE_ENV_KEYS: frozenset[str] = frozenset({"COPILOT_CHAT_MODEL"}) | frozenset(v for v in _PROVIDER_ENV_MAP.values() if v and v != "VLLM_BASE_URL")  # MUTATION
 
 #: The env names of the provider keys that ``POST /settings/llm/key`` saves.
 #: The save checks each value with layers A and B against this set, and then
