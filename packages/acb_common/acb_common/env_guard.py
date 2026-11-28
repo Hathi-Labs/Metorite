@@ -482,6 +482,11 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # token is a read-only box token. A tenant must never save these.
     "METORITE_WATCHER_TOKEN", "METORITE_WATCHER_STATE", "METORITE_REPO",
     "METORITE_MCP_URL", "WATCHER_CLAUDE_CMD", "METORITE_WATCHER_HELPER", "METORITE_WATCHER_BOX_ENV",
+    # IDLE-1 (task 4216): the idle-work finder of a dev machine
+    # (scripts/idle_work.py) and its test seams. A tenant must never save these.
+    "IDLE_WORK_CLAUDE", "IDLE_WORK_GH", "IDLE_WORK_KEEP", "IDLE_WORK_MACHINE",
+    "IDLE_WORK_MODE", "IDLE_WORK_NOW", "IDLE_WORK_PERSON", "IDLE_WORK_PROJECTS",
+    "IDLE_WORK_REPO", "IDLE_WORK_REPORT",
     # Task 4062: the host name of the box lanes, for the answered route.
     "METORITE_BOX_HOST",
     # Task 4086: the guarded flag flip (scripts/flag_flip.py) on the box, and
