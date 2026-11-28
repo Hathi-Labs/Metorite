@@ -169,9 +169,10 @@ column. KG-5 writes aliases (`kb_entities.aliases`) through a function of
 
 ### 4.1 The relations
 
-`RELATIONS` in `gateway/kb_entities/graph.py` (new at KG-4) is the list.
-The list is closed, and the database holds no CHECK on `relation`. A test
-pins `RELATIONS` to the table below (§9, KG-4). The left side holds the
+`RELATIONS` in `acb_common/edge_vocabulary.py` is the list (CI-R1a, §9.1).
+`gateway/kb_entities/graph.py` reads it. The same module holds the node kinds
+and the edge codes of find. The list is closed, and the database holds no CHECK
+on `relation`. A test pins `RELATIONS` to the table below (§9, KG-4). The left side holds the
 evidence (§4.3).
 
 | Relation | From → to | Read from | Slice | Provenance |
@@ -452,6 +453,21 @@ here in the same pull request (R4).
 
 A test file marked "new" does not exist yet. The slice that names it writes
 it, red first (R8).
+
+### 9.1 CI-R1: ask about a customer and see every app (task 4164)
+
+Owner, 2026-11-28: make the AI intelligence over company data usable soon.
+Production writes the edges of §4.1 and runs rung 4 of `find_engine.md`, but
+no code reads the `kb_links` edges. These rows build that read into the FIND-3
+step. The KG-6 pull request 1898 was closed on 2026-11-28. So no second
+related step exists. KG-7 (task 792) and KG-8 (task 793) follow as written in
+the table above, on the same read.
+
+| Slice | Scope | Done when | Fences | Tier |
+|---|---|---|---|---|
+| **CI-R1a** (task 4170) | Built. One edge vocabulary in `acb_common/edge_vocabulary.py`: node kinds, relations, the edge codes of find and their words | `graph.py`, `find.py` and the chat tool hold no list of their own. Each end of each relation has an edge code. The answers do not change | `test_edge_vocabulary.py`, `test_kg_links_writer.py`, `test_find_related.py` | STANDARD |
+| **CI-R1b** (task 4171) | Open. The FIND-3 step adds the `kb_links` neighbours to the live joins, behind a flag | No AMBIGUOUS edge, no removed edge and no INFERRED edge under 0.5. The owning app opens each neighbour as the member. A private record never shows. With the flag off, the answer is byte-identical | An R8 test on a real database, written by this slice | HIGH |
+| **CI-R1c** (task 4172) | Open. An expand migration adds the node kinds project, calendar event, Drive document and outside-connection record | R6, and the number is checked again at merge. A kind with no `open` reader never shows | An R8 test, written by this slice | HIGH |
 
 ---
 
