@@ -1984,7 +1984,7 @@ machine is one host: the PC, the box, or one cloud box.
 | S1 | A worktree with uncommitted files, idle more than 6 h | `git status --porcelain`, file mtimes | Save to a rescue ref (7b.11.3) | IDLE-2 |
 | S2 | A worktree with commits that no remote holds, idle more than 6 h | `git rev-list HEAD --not --remotes` | Push those commits to a rescue ref | IDLE-2 |
 | S3 | A pushed branch with no PR, its last commit older than 24 h | `git ls-remote`, `gh pr list --head` | A draft PR, linked to its task | IDLE-3 |
-| S4 | A session idle more than 12 h, with S1 to S3 empty for its worktree | `claude agents --json`, its transcript | Stop the session, and release its runs with a handoff | IDLE-4 |
+| S4 | A session idle more than 12 h, with S1 to S3 empty for its worktree | `claude agents --json`, its transcript | Stop the session, and release its runs with a handoff. On a person's own machine (the PC), only report it, until the owner gives a dated "yes" for that machine | IDLE-4 |
 | S5 | A run of this machine past its lease, whose session is gone | `list_agent_runs` (box token or the lane's login), `claude agents` | Release it with a handoff (the SW-62 path) | IDLE-4 |
 | S6 | A rescue ref or draft PR whose task has a person as owner | the task of the branch | One `ask_on_task` to that person | IDLE-5 |
 | S7 | A rescue ref or draft PR whose task a box lane can finish | the task, and the lane list | A NOTE and a task comment that name the landing lane | IDLE-5 |
@@ -2011,10 +2011,21 @@ nothing.
 - The commit message holds the machine, the worktree path, the task, the idle
   hours and "rescue: no review, do not merge".
 - A push never uses force.
+- **Retention.** A rescue ref stays until its task is Done and its work has
+  landed, plus 30 days. IDLE-0 never deletes a rescue ref. A later slice, or a
+  person, removes it.
+- **The refs that exist.** The 20 refs of 2026-11-28 use
+  `rescue/<worktree-or-name>/20261128`, and the box ones use
+  `rescue/box-<worktree>/20261128`. IDLE-1 matches `refs/heads/rescue/*/*`.
+  It maps each ref to its task through the `mt-<8 hex>` short id of the branch
+  that its commit came from. The commit message names that branch. Else, a
+  branch that holds the parent commit gives it. It never maps from the ref
+  name alone.
 
 #### 7b.11.4 The never rules
 
-Each rule has a fence (R7). A breach is a bug, and the action stops.
+metorite-78 approved this spec on 2026-11-28 (PR 2967), and added rule 7, the
+S4 limit on a person's machine and the retention rule. Each rule has a fence (R7). A breach is a bug, and the action stops.
 1. Never delete unsaved work. No action removes a worktree, a branch or a
    file. The reaper still removes a merged, clean worktree, as today.
 2. Never touch a worktree with a file change in the last hour. Never touch a
@@ -2028,6 +2039,8 @@ Each rule has a fence (R7). A breach is a bug, and the action stops.
 5. Never push to `main`, to the branch of an open PR, or with force.
 6. Never read or report across tenants. The loop reads the dev machines of one
    org, and each report holds only its own machine.
+7. Never stop a session that `~/.claude/idle-keep.txt` names, on any machine.
+   The owner keeps some sessions open on purpose, such as a local server.
 
 #### 7b.11.5 One command, dry first
 
@@ -2052,10 +2065,10 @@ Each rule has a fence (R7). A breach is a bug, and the action stops.
 | Slice | What | Tier | Done when |
 |---|---|---|---|
 | IDLE-0 (task 4204) | This spec | docs | metorite-78 approves the PR |
-| IDLE-1 (task 4216) | The finder and the dry report, on the box and the PC. It reports S1 to S7 and the rows of 7b.11.1 | STANDARD | The report on a fake machine (temp repos, a fake `gh` and `claude`) holds one line per state. With mode `off`, nothing runs. A Windows path skips the `/proc` checks |
+| IDLE-1 (task 4216) | The finder and the dry report, on the box and the PC. It reports S1 to S7, the rows of 7b.11.1, and the rescue refs that exist (7b.11.3) | STANDARD | The report on a fake machine (temp repos, a fake `gh` and `claude`) holds one line per state. With mode `off`, nothing runs. A Windows path skips the `/proc` checks |
 | IDLE-2 (task 4217) | S1 and S2: the rescue ref | HIGH | Each rule of 7b.11.3 has a test. The worktree, its index and its branch are byte-equal before and after. A secret-shaped name stops the save |
 | IDLE-3 (task 4218) | S3: the draft PR | HIGH | A draft PR with `Task:` and `Rescue: no review` lines. Rule 3 of 7b.11.4 skips a person's branch |
-| IDLE-4 (task 4219) | S4 and S5: stop a session, release its runs | HIGH | Rule 2 and rule 4 of 7b.11.4 each have a test. A run is released only with a handoff |
+| IDLE-4 (task 4219) | S4 and S5: stop a session, release its runs | HIGH | Rules 2, 4 and 7 of 7b.11.4 each have a test. A test holds a keep-listed session and a PC host, and nothing stops. A run is released only with a handoff |
 | IDLE-5 (task 4220) | S6 and S7: a question to the person, or a NOTE to the landing lane | STANDARD | One question per task, never a second while one is open |
 | IDLE-6 (task 4221) | The "Idle work" view: a My Day card for the owner and a section of the Agents map | STANDARD, UI | Written in `agent_coordination.md` with lane-mcp. It reads the report, and adds no second store |
 
