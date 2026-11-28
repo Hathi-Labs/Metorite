@@ -2732,7 +2732,7 @@ def _mint_run_row(
             thread_id,
             [MessageRecord(
                 id=message_id, role="assistant", content="",
-                timestamp=int(time.time() * 1000),
+                timestamp=_mint_stamp(int(time.time() * 1000), prompt),
                 author_email=agent_name, author_kind="agent",
             )],
             actor_email=run_member, agent_name=agent_name,
@@ -2812,6 +2812,19 @@ class PromptToSave(BaseModel):
     member_typed: bool = False
 
 
+def _mint_stamp(now_ms: int, prompt: PromptToSave | None) -> int:
+    """The stamp of a run's agent row (task 4146).
+
+    It is the server's clock, and one millisecond after the run's prompt at
+    least. The prompt is stamped first, in the same worker call, so the two
+    can share one millisecond. The gateway then sorts by ``id``, and a random
+    id puts the reply above its prompt.
+    """
+    if prompt is None:
+        return now_ms
+    return max(now_ms, prompt.timestamp_ms + 1)
+
+
 def prompt_to_save(
     *, thread_id: str | None, message_id: str, text: str, timestamp: Any,
     actor: str, room: Any, supersedes: str = "", card_answer: Any = None,
@@ -2835,6 +2848,11 @@ def prompt_to_save(
     could sort this turn above the reply before it. With no stamp, the server
     clock is used.
 
+    Task 4146: the stamp is never after the server's clock. The reply carries
+    the server's clock (the mint, the chat proxy's checkpoint), so a fast
+    browser clock sorted the reply above its prompt for every later read. A
+    slow browser clock keeps its own stamp, as before.
+
     *typed* is the request's mark (WS-63 D-PZ-37): True only when the member
     typed the turn in the message box. A card answer is never typed, so the
     mark of a card answer is False.
@@ -2851,9 +2869,11 @@ def prompt_to_save(
         return None
     if not getattr(room, "can_send", False):
         return None
+    now = int(time.time() * 1000)
     ts = timestamp if isinstance(timestamp, int) and not isinstance(timestamp, bool) else 0
     if not 0 < ts < 2**53:
-        ts = int(time.time() * 1000)
+        ts = now
+    ts = min(ts, now)
     # An edit keeps its "Edited" marker after a reload, as the browser's own
     # save writes it (lib/chatEdit.ts `editedMarker`).
     marker = [{"name": "edited", "value": {"supersedes": supersedes}}] if supersedes else []

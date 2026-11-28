@@ -1867,6 +1867,27 @@ async def _held_permissions(
         return frozenset()
 
 
+def _bounded_by_server_clock(
+    messages: list[MessageRecord], now_ms: int | None = None,
+) -> list[MessageRecord]:
+    """*messages* with each stamp capped at the server's clock (task 4146).
+
+    The client save (the browser, and the chat proxy's checkpoint) names
+    each stamp. The prompt that the run route saves (``prompt_to_save``) and
+    the agent row that the mint stamps are on the server's clock, so a fast
+    browser clock here would sort rows out of the order they were sent in.
+    A stamp that is not ahead stays as it is. The SQL of the upsert stays
+    the same.
+    """
+    import time  # noqa: PLC0415
+
+    now = int(time.time() * 1000) if now_ms is None else now_ms
+    return [
+        m if m.timestamp <= now else m.model_copy(update={"timestamp": now})
+        for m in messages
+    ]
+
+
 @router.post(
     "/sessions/{session_id}/messages",
     status_code=status.HTTP_200_OK,
@@ -1898,6 +1919,10 @@ async def save_messages(
     if not room.can_send:
         raise HTTPException(status_code=room.refusal_status, detail=room.denied("save messages"))
 
+    # Task 4146: no client stamp is after the server's clock. The browser's
+    # save of a reply with an empty stored row sets its stamp (the upsert's
+    # GREATEST), and a fast stamp there sorted the next prompt above it.
+    messages = _bounded_by_server_clock(messages)
     # A declined write is not an error (S13, §19.4 rule 5). The row stays as
     # it was, and ``unchanged`` names it so the caller can tell.
     unchanged = await asyncio.to_thread(

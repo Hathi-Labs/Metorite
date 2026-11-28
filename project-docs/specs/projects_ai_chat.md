@@ -40,7 +40,9 @@ and a PDF) was built 2026-10-16. §14.10.9 B3 (`crm_report` and
 `render_report` make a kept report by code) was built 2026-10-16. §24.9.1 (a
 card of questions says why Submit is off) was built 2026-10-17, on a
 branch. §26 (a plan row with no owner is an unassigned task, and one card
-approves many tasks) was built 2026-10-17, on a branch.** §10 says which
+approves many tasks) was built 2026-10-17, on a branch. §20.9 (a reply
+never draws above its prompt, task 4146) was built 2026-11-28, on a
+branch.** §10 says which
 slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
@@ -3660,10 +3662,10 @@ later slice give these rows a server writer.
 - The run member can still write any content in her own reply until the
   seal. A per-run token for the translator is a later slice.
 - No server writer exists for a LiteLLM reply or a compaction summary yet.
-- The first checkpoint takes its timestamp from the clock of the Next
+- ~~The first checkpoint takes its timestamp from the clock of the Next
   server, and the prompt takes the browser clock. A browser clock that runs
   more than the time to the first checkpoint fast can still sort the reply
-  before its prompt. That was also true before S14.
+  before its prompt.~~ Task 4146 closed this on 2026-11-28 (§20.9).
 - Two members can start their first runs at the same instant on a session
   with no `primary` agent. Each run can then insert a `primary` row. The
   reviewer accepted this (round 2, P3).
@@ -3691,6 +3693,51 @@ uv run mypy $G/routes/chat.py $G/chat_fold.py $G/routes/agent.py
 ```
 
 The `-rs` output must show no R8 skip.
+
+### 20.9 A reply never draws above its prompt (task 4146)
+
+**Owner report, 2026-11-28.** On production, a reply drew ABOVE the prompt
+that it answers. The saved rows were in the right order. The browser
+flipped them.
+
+**The cause on the client.** The history load on open replaced the thread
+with a snapshot that it read before the gateway saved the prompt. It kept
+only the live reply, so the prompt left the screen. The recovery poll then
+appended the prompt after the reply. The re-attach appended its rows too,
+and it chose them by a mix of browser and server clocks.
+
+**The client rule.** `src/lib/chatOrder.ts` is the one merge of server rows
+into a chat. The poll, the re-attach and the history load call it.
+
+1. The server's order wins for each row that the server returned. A new
+   row goes after its nearest server predecessor in the list, else before
+   its nearest server successor.
+2. No merge compares a timestamp or an id.
+3. A local row that the server does not know keeps its place. The history
+   load keeps the turn in flight and each row that has not reached the
+   server yet.
+4. The content of a row only grows, as the poll did before.
+
+**The server rule.** The saved order must not depend on a fast browser
+clock.
+
+1. `prompt_to_save` keeps the browser's stamp only when it is not after
+   the server's clock.
+2. The mint stamps the reply one millisecond after its prompt at least
+   (`_mint_stamp`). Two rows of one millisecond then never let a random id
+   decide.
+3. `save_messages` caps each client stamp at the server's clock. Without
+   this cap, the browser's save of a reply kept a fast stamp, and the next
+   prompt sorted above that reply.
+
+**Not done.** A browser clock that is BEHIND the server can still sort a
+new prompt above the reply before it. The reply carries the server's
+clock, and the prompt keeps the slow stamp. A floor at the newest stamp of
+the chat would close it. That floor needs a read on the path to the first
+byte, so it is a later slice.
+
+**Fences.** `workbench/control_plane/src/lib/chatOrder.test.ts` and
+`tests/unit/test_chat_prompt_saved_at_start.py` (R8).
 
 ## 21. Chat is saved on production (S15)
 

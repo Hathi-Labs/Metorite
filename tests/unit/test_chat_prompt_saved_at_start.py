@@ -702,3 +702,133 @@ def test_a_run_the_cap_refuses_saves_no_prompt_and_mints_no_row(
         assert c.execute(text(
             "SELECT count(*) FROM chat_session WHERE id = :s"), {"s": sid}).scalar() == 0
     assert world.payloads == []
+
+
+# ── The saved order never trusts a fast browser clock (task 4146) ───────────
+#
+# The prompt carries the browser's stamp, and the reply carries the server's
+# (the mint, the chat proxy's checkpoint). A browser clock ahead of the
+# server sorted the reply above its prompt for every later read: a reload,
+# a poll, another device. Mutations these cases catch (R7):
+#
+# * the clamp in ``prompt_to_save`` removed: the fast-clock cases go red;
+# * the mint stamped at the server clock alone, not after the prompt: the
+#   same-millisecond case goes red, because the ids then decide;
+# * the clamp of a browser save removed: the second-turn case and the
+#   browser-save-first case go red.
+
+def _now_ms() -> int:
+    import time
+
+    return int(time.time() * 1000)
+
+
+def _reply_row(mid: str, words: str, ts: int) -> dict:
+    """The reply row that the chat proxy's checkpoint, or the browser's own
+    save (``turnTs + 1``), sends."""
+    return {"id": mid, "role": "assistant", "content": words, "timestamp": ts,
+            "tool_events": [], "progress_lines": [], "agent_state": None,
+            "custom_events": []}
+
+
+def _shown(client, sid: str) -> list[str]:
+    """The ids that a reload draws, in the gateway's order."""
+    return [m["id"] for m in client.get(f"/chat/sessions/{sid}/messages").json()]
+
+
+def _save(client, sid: str, rows: list[dict]) -> None:
+    saved = client.post(f"/chat/sessions/{sid}/messages", json=rows)
+    assert saved.status_code == 200 and saved.json()["unchanged"] == [], saved.text
+
+
+def test_prompt_to_save_never_stamps_after_the_server_clock(monkeypatch):
+    """The pure rule: a browser stamp ahead of the server becomes the
+    server's clock. A stamp behind it stays, as before."""
+    import time
+
+    from gateway.routes.agent import prompt_to_save
+
+    now = 1_795_816_137_000
+    monkeypatch.setattr(time, "time", lambda: now / 1000)
+    room = SimpleNamespace(can_send=True, resolve_failed=False)
+    ok = dict(thread_id="t1", message_id="u1", text="Hi", actor=_ALICE, room=room)
+    assert prompt_to_save(**ok, timestamp=now + 60_000).timestamp_ms == now
+    assert prompt_to_save(**ok, timestamp=now - 5_000).timestamp_ms == now - 5_000
+
+
+@_DB_GATE
+def test_a_fast_browser_clock_still_saves_the_prompt_before_the_reply(graph_as_app, world):
+    """The browser is 60 s ahead. The chat proxy's first checkpoint stamps
+    the reply with the server's clock. A reload draws the prompt first."""
+    a = graph_as_app.org_a
+    sid = _sid()
+    alice = _client(_user(_ALICE, a))
+    body = _run_body(sid, "u1", "There should be an email that Akram sent me")
+    body["payload"]["user_message_ts"] = _now_ms() + 60_000
+    assert _send_and_close(alice, body)[0] == 200
+    _save(alice, sid, [_reply_row("a-u1", "I found it. Akram's email", _now_ms())])
+    assert _shown(alice, sid) == ["u1", "a-u1"]
+    # No row carries a stamp from the browser's future.
+    assert max(r.timestamp_ms for r in _rows(graph_as_app, sid)) <= _now_ms()
+
+
+@_DB_GATE
+def test_a_reply_minted_in_the_same_millisecond_still_sorts_after_its_prompt(
+        graph_as_app, world, monkeypatch):
+    """The incident's ids: a random id sorts the reply ("5…") before the
+    prompt ("k…"). The clock stands still, so the prompt and the mint share
+    one millisecond, and only a later stamp keeps the order."""
+    import time
+
+    a = graph_as_app.org_a
+    sid = _sid()
+    alice = _client(_user(_ALICE, a))
+    frozen = _now_ms()
+    body = _run_body(sid, "kjcbswcqf", "There should be an email that Akram sent me")
+    body["assistant_message_id"] = "5bk4rcdmn"
+    body["payload"]["user_message_ts"] = frozen
+    with monkeypatch.context() as m:
+        m.setattr(time, "time", lambda: frozen / 1000)
+        assert _send_and_close(alice, body)[0] == 200
+        _save(alice, sid, [_reply_row("5bk4rcdmn", "I found it. Akram's email", frozen)])
+    assert _shown(alice, sid) == ["kjcbswcqf", "5bk4rcdmn"]
+
+
+@_DB_GATE
+def test_a_fast_browser_save_of_the_reply_never_sorts_the_next_prompt_above_it(
+        graph_as_app, world):
+    """The browser's own save writes reply 1 first, with its fast clock.
+    Turn 2 comes 30 s later on that clock. Prompt 2 still sorts after
+    reply 1, so a clamp of the prompt alone makes no new flip."""
+    a = graph_as_app.org_a
+    sid = _sid()
+    alice = _client(_user(_ALICE, a))
+    t1 = _now_ms() + 60_000
+    body = _run_body(sid, "u1", "First question")
+    body["payload"]["user_message_ts"] = t1
+    assert _send_and_close(alice, body)[0] == 200
+    _save(alice, sid, [_reply_row("a-u1", "First answer.", t1 + 1)])
+    body2 = _run_body(sid, "u2", "Second question")
+    body2["payload"]["user_message_ts"] = t1 + 30_000
+    assert _send_and_close(alice, body2)[0] == 200
+    _save(alice, sid, [_reply_row("a-u2", "Second answer.", t1 + 30_001)])
+    assert _shown(alice, sid) == ["u1", "a-u1", "u2", "a-u2"]
+
+
+@_DB_GATE
+def test_a_fast_browser_save_of_the_prompt_before_the_run_keeps_the_reply_after_it(
+        graph_as_app, world):
+    """The browser saves the turn first, 60 s ahead. The run route's write
+    then keeps that stamp, because the row holds words. The reply, on the
+    server's clock, still sorts after the prompt."""
+    a = graph_as_app.org_a
+    sid = _sid()
+    alice = _client(_user(_ALICE, a))
+    _new_session(alice, sid)
+    ahead = _now_ms() + 60_000
+    _save(alice, sid, [_browser_row("u1", "Plan the release", ahead)])
+    body = _run_body(sid, "u1", "Plan the release")
+    body["payload"]["user_message_ts"] = ahead
+    assert _send_and_close(alice, body)[0] == 200
+    _save(alice, sid, [_reply_row("a-u1", "Here is the plan.", _now_ms())])
+    assert _shown(alice, sid) == ["u1", "a-u1"]
