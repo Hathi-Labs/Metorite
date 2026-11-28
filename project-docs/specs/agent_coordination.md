@@ -14,7 +14,7 @@
 
 **SW-7b (a display label for each session) is built, 2026-11-11 (task 2858). migration 418.**
 
-**AMR-1 to AMR-3 (the lenses and the phone view of the Agents view, §3.12.8) are built and dark, 2026-11-26, behind `AGENT_LENSES_ORGS`.** **AMR-4 (the Agents view at scale, §3.12.9) is built and dark behind the same flag, 2026-11-26.** **AMR-5a (task 4098, only the cards that draw count toward the overview) is built, 2026-11-27, and AMR-5 replaces it.** **AMR-5 (one Agents map, owner 2026-11-27) replaces the three lenses and the overview.**
+**AMR-1 to AMR-3 (the lenses and the phone view of the Agents view, §3.12.8) are built and dark, 2026-11-26, behind `AGENT_LENSES_ORGS`.** **AMR-4 (the Agents view at scale, §3.12.9) is built and dark behind the same flag, 2026-11-26.** **AMR-5a (task 4098, only the cards that draw count toward the overview) is built, 2026-11-27, and AMR-5 replaces it.** **AMR-5 (one Agents map, owner 2026-11-27) replaces the three lenses and the overview.** **AMR-5b (task 4111, the orchestrator outside the project, §3.12.8) is open, 2026-11-28.**
 
 **SW-48 (the app lead may Release and Resume a teammate's run) is built and dark, behind `APP_LEAD_RUNS_ORGS` (task 1881).**
 
@@ -842,7 +842,7 @@ of agent graph view as well, in addition to the timeline, list, board, etc.
 1. **One map, two scopes.** The Agents view of a project draws the map of SW-103 from the read of SW-102. The read takes an optional `project_id`. With it, the scope is the runs on the visible tasks of that project and its sub-projects. The read uses the subtree and visibility text of `GET /projects/{project_id}/agent-summary` (`_SUMMARY_SQL`). A project that the viewer cannot see answers 404. Without `project_id`, the read is the fleet map of Agents at work.
 2. **A seventh canvas.** The canvases of Projects are Overview, Board, List, Table, Calendar and Timeline (`VIEW_MODES` in `lib/commands.ts`). SW-112 adds `agents`, with the key sequence `v a`, which is free on 2026-11-19. It is a canvas, not a saved view type. The check on `pm_views.view_type` allows `list` and `board` only (`146_projects.sql`), so the slice needs no migration. The canvas has no group-by and no lanes, and My Tasks shows no Agents tab.
 3. **The tab shows only where agents work.** The Agents tab shows when the scope has an agent run that the viewer can see, at any age. The Overview hides its agent panels by the same rule (`overviewShown` in `lib/overviewLive.ts`, RA-3). With the flag off, the tab draws nothing, as the lens does today.
-4. **A line that leaves the project.** An orchestrator often holds its run on a task of another project. The viewer may see that run (§3.12.4 rule 1). Then its session shows at the left edge, with the mark "Outside this project". Its tasks do not show. When the viewer cannot see that run, the line drops, and nothing names the run.
+4. **A line that leaves the project.** An orchestrator often holds its run on a task of another project. The viewer may see that run (§3.12.4 rule 1). Then its session shows in the orchestrator column, with the mark "Outside this project". The bullet "The orchestrator outside the project" of §3.12.8 holds the rule (G8, AMR-5b). Its tasks do not show. When the viewer cannot see that run, the line drops, and nothing names the run.
 5. **The kind of machine.** SW-104 takes a third optional input, `host_kind`, with one of three values:
    - `computer`: the PC or laptop of a person.
    - `server`: a VPS or a box, such as metorite-home.
@@ -912,6 +912,16 @@ This replaces some rules of 2026-11-26. They are the Board, Graph and List switc
 - **The phone, 760 pixels and under.** It shows the counts, then the questions that wait on the member, then the people. The oldest question comes first. AMR-5 does not change it.
 - **One level for each screen.** On a phone, a person opens their orchestrators. An orchestrator opens its sessions. A session opens in a bottom sheet.
 - **One answer path.** The phone uses the list of agent questions (`QuestionsView`). The map does not draw on a phone.
+- **The orchestrator outside the project (G8, AMR-5b, task 4111).** An orchestrator often holds its run on a task of another project. In the Agents view of a project, the summary read then adds the node of that orchestrator as a context node. These rules bind it:
+  - **The read.** The read resolves each dispatcher of a listed session through the `seen` text with no project filter. A context node shows only when the summary of everyone lists that node. A dispatcher that the viewer cannot see adds no node, and its line drops.
+  - **The row.** It holds `id`, `name`, `person`, `context: true` and `context_project`, and no other key. `context_project` is `{"name": ...}` of the project of the newest dispatcher run that a listed lane names.
+  - **The project name.** It is the name of that one project, and only when the viewer may see the project (`visible_project_paths`). Else it is null, for example for a member who sees the run only as its assignee. No project id leaves. An archived project acts as on the map of everyone.
+  - **No total.** The client keeps a context row out of `sessions`. So no count, People, "Needs you N", Find or phone view holds it. On a phone, those lanes still read "Started directly".
+  - **The place.** It draws in the orchestrator column, only while a lane that it dispatched draws. It counts in the bound of 40 cards, and a drawn lane brings it, as a lane brings its orchestrator.
+  - **Under a person.** When its person is on the map and in the People choice, it draws under that person. The lanes of that person that it dispatched, with no orchestrator of their own, hang from it.
+  - **After the people.** Else it draws after the people, with a plain line from the scope. It brings no person card. The lanes of other people keep the dispatch line from it.
+  - **No chevron.** A context node does not fold. This is the one exception to "One chevron".
+  - **The card.** It reads the name, "Outside this project" and the project name when the read gives one. A click opens the details with the same three facts. The details never read `session=` for it.
 
 #### 3.12.9 The Agents view at scale (AMR-4 and AMR-5)
 
@@ -935,7 +945,7 @@ The owner asked on 2026-11-26 that the view of §3.12.8 stays usable with hundre
 - **Failed and Done on the summary.** A node with no open run reads `failed` or `done` when its newest ended run is `failed` or `completed`. That run ended in the last 24 hours (`MAP_ENDED_WINDOW_S`). A newest run that stopped, or ended in another way, lists no node. A node with an open run keeps the state rule of the map.
 - **The counted subagents.** They are the children of the open runs and of the runs that ended in the window, for the listed nodes.
 - **`session=<node id>`.** It gives the runs of one node, at most 300, with the quiet ones. It gives its children too, at most 200, open and ended. Each child has its state. A node that the caller may not see gives the empty map, as an unknown id does. The view reads it only when a session opens, and again with each new map.
-- **Visibility.** Both reads go through the ONE `seen` text of the map (D12), in the scope of `project_id`. No answer holds a session key or an address. The org comes from the session (R5). The edge tool `get_agent_map` sends neither value.
+- **Visibility.** Both reads go through the ONE `seen` text of the map (D12), in the scope of `project_id`. A context node of §3.12.8 comes through the same `seen` text with no project filter, so it adds no second rule of reach. No answer holds a session key or an address. The org comes from the session (R5). The edge tool `get_agent_map` sends neither value.
 
 ### 3.13 What other apps do: agent-autoloop (SW-0d, task 2506)
 
@@ -2292,7 +2302,7 @@ They keep their own gates.
 - **Done when.** A project with runs in two sub-projects shows the sessions of both. The view of one sub-project shows only its own. A project with no visible run shows no Agents tab. A session that waits on the viewer sorts first. `visual-review` passes at four widths, in light mode, at compact density and under a changed accent.
 - **Fence.** `lib/agentMap.test.ts` (from SW-103), `lib/commands.test.ts`, `components/ViewTabs.test.ts`, `src/lib/theme/conformance.test.ts` and `tests/unit/test_chat_parity.py`.
 - **Risk.** STANDARD UI. **Gate.** AGENT-SAFE, dark behind `AGENT_MAP_ORGS`. D145 owner preview, because the view is new. **Depends on.** SW-103, and SW-102 with `project_id`.
-- **Built and dark, 2026-11-21.** The Agents tab is the seventh canvas, with the key sequence `v a`. It draws the map of SW-103 for the selected project through `project_id`. The tab and the palette command drop out while the map read answers 404, 401 or 403. A failed read keeps the tab and shows a message with a "Read again" button. A saved view cannot hold `agents`, because `pm_views.view_type` allows `list` and `board` only. Rule 3 ("a project with no visible run shows no tab") and rule 4 ("Outside this project") are NOT built. An empty map shows the empty state instead, and the owner decides. This slice is stacked on SW-103 and needs that slice first. The visual review and the owner preview are open.
+- **Built and dark, 2026-11-21.** The Agents tab is the seventh canvas, with the key sequence `v a`. It draws the map of SW-103 for the selected project through `project_id`. The tab and the palette command drop out while the map read answers 404, 401 or 403. A failed read keeps the tab and shows a message with a "Read again" button. A saved view cannot hold `agents`, because `pm_views.view_type` allows `list` and `board` only. Rule 3 ("a project with no visible run shows no tab") is NOT built. The summary read of AMR-5b builds rule 4 ("Outside this project"). The plain map of SW-102 and `get_agent_map` do not build it, and that is a known gap. An empty map shows the empty state instead, and the owner decides. This slice is stacked on SW-103 and needs that slice first. The visual review and the owner preview are open.
 
 #### SW-113 · The map in the MCP
 
@@ -2352,6 +2362,15 @@ They keep their own gates.
 - **Fence.** `lib/agentGraph.test.ts`, `lib/agentScale.test.ts`, `lib/agentMapPrefs.test.ts`, `components/AgentLenses.test.ts` and `components/AgentMapNodes.test.ts`.
 - **Risk.** STANDARD UI on a live screen. **Gate.** AGENT-SAFE. D145 owner preview before the merge. `AGENT_LENSES_ORGS` is on for one org, so the next release shows it there. **Depends on.** AMR-1, AMR-3, AMR-4.
 - **Built, 2026-11-27,** on branch `amr5-mt-e85b25cc-one-agents-map`.
+
+#### AMR-5b · The orchestrator outside the project
+
+- **Metorite task.** 4111. Epic 321. Rung M3 (demo task 3621).
+- **Scope.** The bullet "The orchestrator outside the project" of §3.12.8 (G8), for the summary read with a `project_id` only. The read adds the context node and its lines. The client keeps it out of `sessions`, and the map draws it in the orchestrator column.
+- **Non-goals.** The plain map of SW-102, `get_agent_map`, `session=` and the phone view do not change.
+- **Done when.** R8: an orchestrator run in project B and lane runs in project A give the context node and the lines in the read of A. A viewer who cannot see B gets no node and no line, and the answer names nothing of B. A viewer who sees the run but not its project gets the node with no project. The totals of the project do not change. The map test draws the context orchestrator with its mark. The lane does the visual review.
+- **Fence.** `tests/unit/test_agent_map_r8.py`, `lib/agentMap.test.ts`, `lib/agentScale.test.ts`, `lib/agentGraph.test.ts` and `components/AgentMapNodes.test.ts`.
+- **Risk.** HIGH (a visibility read). **Gate.** AGENT-SAFE. `AGENT_LENSES_ORGS` is on for one org, so the next release shows it there. D145 owner preview before the merge. **Depends on.** AMR-5.
 
 #### SW-39 · Child runs
 
@@ -2627,6 +2646,7 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 | SW-112 | `npx vitest run src/app/projects/lib/agentMap.test.ts src/app/projects/lib/commands.test.ts src/app/projects/components/ViewTabs.test.ts src/lib/theme/conformance.test.ts` in `workbench/control_plane`, then `uv run pytest -q -p no:cacheprovider tests/unit/test_chat_parity.py`, then `visual-review` |
 | AMR-1 to AMR-3 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_map_r8.py tests/unit/test_auth_me_shell.py tests/unit/test_auth_me_shell_r8.py`, `npx vitest run src/app/projects src/lib/shell/shellPrefs.test.ts src/lib/theme` in `workbench/control_plane`, then `visual-review` |
 | AMR-5 | `npx tsc --noEmit` and `npx vitest run src/app/projects src/lib src/components` in `workbench/control_plane`, then `visual-review` |
+| AMR-5b | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_map_r8.py tests/unit/test_agent_label_fence.py tests/unit/test_mcp_edge_coverage.py`, `npx tsc --noEmit` and `npx vitest run src/app/projects src/lib src/components` in `workbench/control_plane`, then `visual-review` |
 | AMR-4 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_map_r8.py tests/unit/test_agent_label_fence.py tests/unit/test_app_requests_r8.py tests/unit/test_chat_parity.py`, `npx vitest run src/app/projects src/lib src/components` in `workbench/control_plane`, then `visual-review` |
 | SW-113 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_coverage.py tests/unit/test_agent_map_r8.py tests/unit/test_mcp_edge_prompts.py` |
 | SW-39 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_child_runs_r8.py tests/unit/test_agent_runs_r8.py tests/unit/test_tenant_coverage.py` (new file first) |
@@ -2822,5 +2842,6 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 - **2026-11-19.** The Agents view on each project, for task 3794. It adds §3.12.7, Q22 and Appendix C. It adds the rows SW-101b, SW-112, SW-113, SW-39 and SW-114, with the tasks 3794 to 3797 and 3799. Rung M5 has the demo task 3798. It widens SW-102, SW-104 and SW-105. It adds no code.
 - **2026-11-26.** The lenses and the phone view of the Agents view, from the owner's mockup. It adds §3.12.8 and the rows AMR-1 to AMR-3.
 - **2026-11-27, one map.** The owner's ask of that day. It rewrites §3.12.8 and §3.12.9, and adds the row AMR-5.
+- **2026-11-28, the orchestrator outside the project.** Task 4111, decision G8. It adds one bullet to §3.12.8 and one sentence to §3.12.9, points §3.12.7 rule 4 to them, and adds the row AMR-5b.
 - **2026-11-26, at scale.** The owner's rules for a large fleet. It adds §3.12.9, the row AMR-4 and its verify row. The slice is built and dark behind `AGENT_LENSES_ORGS`.
 - **2026-11-21.** The agent-autoloop research for task 2506 (SW-0d). It adds §3.13, a hop limit in SW-95, retry in SW-78 and the row SW-38. It adds no code.
