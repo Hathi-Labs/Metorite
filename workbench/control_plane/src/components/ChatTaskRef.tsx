@@ -1,8 +1,9 @@
 "use client";
 
 /**
- * A `#171` in a chat answer, drawn as the task pill when it is a task. The
- * `171` of `task 171` is one too (task 1595): `task ` stays words before it.
+ * A `#171` in a chat answer, drawn as the task pill when it is a task. In the
+ * chat reply the `171` of `task 171` is one too (task 1595, rule 8), and
+ * `task ` stays words before it. The task card hands over `#171` only.
  *
  * Owner report, 2026-10-13: a `#172 «one surface»` drew a pill that opens the
  * task, and a bare `#171` in the same paragraph stayed text. The parser, the
@@ -63,8 +64,8 @@ export default function ChatTaskRef({
   resolver = taskRefResolver,
   mustEcho = false,
 }: {
-  /** The reference as the answer wrote it: `#171`, or the `171` of
-   *  `task 171` (`taskRefs.ts` rule 8). */
+  /** The reference as the answer wrote it: `#171`, or in the chat reply the
+   *  `171` of `task 171` (`taskRefs.ts` rule 8). */
   refText: string;
   /** The words right after it in the same text run. */
   after?: string;

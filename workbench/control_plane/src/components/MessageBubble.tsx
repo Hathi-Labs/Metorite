@@ -776,6 +776,9 @@ function MessageBubble({
         entityIndex={entityIndex ?? undefined}
         fences
         taskRefs={refs}
+        // The chat reply links `task 171` too (task 1595). The reply only:
+        // a card, the task card and the saved links keep the bare `#171`.
+        wordForm
         linkChips={linkChips}
         evidenceFor={evidenceFor}
       />
@@ -832,6 +835,7 @@ function MessageBubble({
                   entityIndex={entityIndex ?? undefined}
                   fences
                   taskRefs={refs}
+                  wordForm
                   linkChips={linkChips}
                   caret={!!message.streaming && flow!.indexOf(b) === lastTextIdx}
                 />

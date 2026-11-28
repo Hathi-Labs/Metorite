@@ -87,14 +87,16 @@ describe("splitText", () => {
 
   it("gives `task 235 «Title»` the name as the words after the number (task 1595)", () => {
     const refOf = (nodes: MdNode[]) => flat(nodes).find((n) => n.type === "taskRef")?.data?.hProperties;
-    const word = refOf(splitText("Made task 235 «Spec the tool»", false, true));
+    const word = refOf(splitText("Made task 235 «Spec the tool»", false, true, true));
     expect(word?.[TASK_REF_ATTR]).toBe("235");
     expect(word?.[TASK_REF_AFTER_ATTR]).toBe(" Spec the tool");
     // A `#235` keeps the rule it had: the fence takes `#235 «X»` whole, and
     // `#235«X»` with no gap reads only its own words after it.
-    const hash = refOf(splitText("Made #235«Spec the tool»", false, true));
+    const hash = refOf(splitText("Made #235«Spec the tool»", false, true, true));
     expect(hash?.[TASK_REF_ATTR]).toBe("#235");
     expect(hash?.[TASK_REF_AFTER_ATTR]).toBe("");
+    // With no `words`, the word form is no reference at all.
+    expect(refOf(splitText("Made task 235 «Spec the tool»", false, true))).toBeUndefined();
   });
 });
 

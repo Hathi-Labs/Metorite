@@ -136,6 +136,9 @@ interface MarkdownMessageProps {
    *  see (owner report, 2026-10-13). Absent: on with `entityPills`.
    *  `"echo"`: only when the words after it are the task's title. */
   taskRefs?: TaskRefMode;
+  /** The chat reply only: `task 171` links too (task 1595). See
+   *  `MarkdownBody`. */
+  wordForm?: boolean;
   /** A read's receipt for its step in the trail (`ThinkingContainer`,
    *  spec `projects_ai_chat.md` §24 rule 2). `MessageBubble` supplies it. */
   evidenceFor?: (event: ToolEvent) => React.ReactNode | null;
@@ -420,6 +423,12 @@ function LocalFileChip({ path }: { path: string }) {
 // (fence: `markdownChatGolden.test.ts`). `taskRefResolver` is the store the
 // pills read: the card passes its task's root store (`taskRefResolverFor`).
 //
+// `wordForm` (task 1595, owner answer 7dbf65d9, 2026-11-22) links the word
+// form `task 171` as well (`taskRefs.ts` rule 8). It is the chat reply's
+// own mode: only `MessageBubble` passes it, and only with `entityPills` or
+// `fences` does it change anything. The card, a generative-UI card and every
+// other caller leave it off (fence: `taskRefs.test.ts`).
+//
 // `projectPills` (WS-57 TR-5) draws a link to `/projects?project=<id>` as the
 // project pill, which opens the project. It adds no link to the task.
 //
@@ -448,6 +457,7 @@ export function MarkdownBody({
   entityIndex,
   fences = false,
   taskRefs,
+  wordForm = false,
   inline = false,
   caret = false,
   plainEmails = false,
@@ -466,6 +476,9 @@ export function MarkdownBody({
   /** Absent: the same as `entityPills`. `"echo"`: a bare `#171` links only
    *  when the words after it are the task's title (`taskRefModeForTurn`). */
   taskRefs?: TaskRefMode;
+  /** The chat reply only: a `task 171` links as a bare `#171` does (task
+   *  1595). Off for every other caller. */
+  wordForm?: boolean;
   inline?: boolean;
   /** Draw the streaming caret at the end of the last line of words
    *  (`lib/streamCaret.ts`). Never after the body: that is a line of its own. */
@@ -500,9 +513,9 @@ export function MarkdownBody({
     <ReactMarkdown
       remarkPlugins={[
         ...(entityPills
-          ? [remarkGfm, [remarkEntityPills, { taskRefs: refs }]]
+          ? [remarkGfm, [remarkEntityPills, { taskRefs: refs, wordForm }]]
           : fences
-            ? [remarkGfm, [remarkEntityPills, { emails: false, taskRefs: refs }]]
+            ? [remarkGfm, [remarkEntityPills, { emails: false, taskRefs: refs, wordForm }]]
             : refsOnly
               ? [remarkGfm, [remarkEntityPills, { names: false, emails: false, taskRefs: true }]]
               : [remarkGfm]) as NonNullable<MarkdownOptions["remarkPlugins"]>,
@@ -743,6 +756,7 @@ export default function MarkdownMessage({
   entityIndex: givenIndex,
   fences = false,
   taskRefs,
+  wordForm = false,
   evidenceFor,
   linkChips,
 }: MarkdownMessageProps) {
@@ -816,6 +830,7 @@ export default function MarkdownMessage({
         entityIndex={entityIndex}
         fences={fences}
         taskRefs={taskRefs}
+        wordForm={wordForm}
         linkChips={linkChips}
         // The streaming caret, only once text streams. It draws INSIDE the
         // last line of words. A span here, after the body, drew a lone "|"

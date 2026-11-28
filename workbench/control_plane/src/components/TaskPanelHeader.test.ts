@@ -148,6 +148,20 @@ describe("the title", () => {
     expect(html).toMatch(/<button\b[^>]*aria-label="Edit title"[^>]*class="[^"]*cc-control/);
   });
 
+  it("keeps `task 12` as words: the word form is the chat reply's only (task 1595)", async () => {
+    const resolver = createTaskRefResolver(async () => [
+      { id: "aaaaaaaa-0000-4000-8000-000000000012", task_number: 12, title: "Twelve", status_name: "To do", category: "todo" },
+    ]);
+    resolver.request("", 12);
+    await resolver.flush();
+    const html = renderToStaticMarkup(
+      createElement(EditableTaskTitle, { value: "Do task 12 3 times", onSave: () => {}, refResolver: resolver }),
+    );
+    expect(html).not.toContain("/projects?task=");
+    expect(html).not.toContain("Twelve");
+    expect(html).toContain("Do task 12 3 times");
+  });
+
   it("saves the trimmed text, and nothing for an empty or unchanged one", () => {
     expect(titleToSave("  New name  ", "Old")).toBe("New name");
     expect(titleToSave("   ", "Old")).toBeNull();

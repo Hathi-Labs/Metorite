@@ -135,13 +135,16 @@ describe("a bare #N in an assistant answer", () => {
   });
 
   it("task N «Title» with entity pills: the title draws once (task 1595)", () => {
-    const html = body("Done: task 171 «Composer always steers».");
+    // `wordForm` is the chat reply's (`MessageBubble`).
+    const html = body("Done: task 171 «Composer always steers».", { wordForm: true });
     expect(html).toContain(`href="/projects?task=${T171}"`);
     // The pill shows `#171` only. The name after it draws once, as its own
     // chip (its tooltip carries the name too, so count the words drawn).
     expect(pill(html)).not.toContain("Composer always steers</span>");
     expect(html.match(/>Composer always steers</g)).toHaveLength(1);
     expect(html).toContain("Done: task <");
+    // With no `wordForm`, `task 171` stays words.
+    expect(body("Done: task 171 today.")).not.toContain(`/projects?task=${T171}`);
   });
 
   it("upgrades a fenced pill that this message's tools did not read", () => {

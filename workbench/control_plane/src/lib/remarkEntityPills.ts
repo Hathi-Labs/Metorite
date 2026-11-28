@@ -17,9 +17,12 @@
  * - A pill never shows the guillemets. A stray mark left in the text is
  *   dropped too.
  * - With `{ taskRefs: true }`, a bare `#171` becomes a `taskRef` node
- *   (owner report, 2026-10-13), and so does the `171` of `task 171` (task
- *   1595). `taskRefs.ts` holds the rules of what counts as one. `ChatTaskRef.tsx` draws it as the same task pill, or as the plain
+ *   (owner report, 2026-10-13). `taskRefs.ts` holds the rules of what counts
+ *   as one. `ChatTaskRef.tsx` draws it as the same task pill, or as the plain
  *   text when no visible task has that number.
+ * - With `{ taskRefs: true, wordForm: true }`, the `171` of `task 171` is a
+ *   `taskRef` node too (task 1595, `taskRefs.ts` rule 8). Only the chat
+ *   reply sets `wordForm`, and only a mode with names reads it.
  * - With `{ names: false, taskRefs: true }`, ONLY the bare `#171`s change
  *   (WS-57 TR-5). The task card's description and comments use it: a «mark»
  *   and an email there are the member's own words, and stay as written.
@@ -58,7 +61,7 @@ export const PILL_ATTR = "data-entity-pill";
 export const PILL_TEXT_ATTR = "data-entity-text";
 export const PILL_NUMBER_ATTR = "data-entity-number";
 /** The attribute of a bare task reference. It carries the reference as
- *  written: `#171`, or the `171` of `task 171` (`taskRefs.ts` rule 8). */
+ *  written: `#171`, or with `wordForm` the `171` of `task 171`. */
 export const TASK_REF_ATTR = "data-task-ref";
 /** The words right after a bare reference, so the pill can see that the
  *  answer already wrote the title there (review round 1). */
@@ -162,8 +165,9 @@ function normalise(children: MdNode[], emails: boolean): MdNode[] {
 }
 
 /** Split one text value into text and pill nodes. With `refs`, a bare
- *  `#171` in the plain runs becomes a `taskRef` node too. */
-export function splitText(value: string, emails = true, refs = false): MdNode[] {
+ *  `#171` in the plain runs becomes a `taskRef` node too. With `words` as
+ *  well, so does the `171` of `task 171` (the chat reply, task 1595). */
+export function splitText(value: string, emails = true, refs = false, words = false): MdNode[] {
   const out: MdNode[] = [];
   let last = 0;
   // A stray guillemet — an unclosed mark, an empty pair — never shows. A
@@ -175,7 +179,7 @@ export function splitText(value: string, emails = true, refs = false): MdNode[] 
       out.push({ type: "text", value: clean });
       return;
     }
-    const parts = splitTaskRefs(clean);
+    const parts = splitTaskRefs(clean, { wordForm: words });
     parts.forEach((part, k) => {
       const next = parts[k + 1];
       out.push(
@@ -193,7 +197,7 @@ export function splitText(value: string, emails = true, refs = false): MdNode[] 
       text(m[1], true);
     } else if (m[3] !== undefined) {
       const name = m[3].trim();
-      if (name && !m[2]) echoInto(out, name);
+      if (name && !m[2] && words) echoInto(out, name);
       if (name) out.push(pillNode(name, m[2]));
       else if (m[2]) text(`${m[2]} `);
     } else {
@@ -338,7 +342,7 @@ export function splitRefsOnly(value: string, source?: Source, start?: number, en
 
 function walk(
   node: MdNode, insideLink: boolean, emails: boolean, refs: boolean, names: boolean,
-  source?: Source,
+  words: boolean, source?: Source,
 ): void {
   if (!node.children || SKIP.has(node.type)) return;
   const kids = insideLink || !names ? node.children : normalise(node.children, emails);
@@ -359,11 +363,11 @@ function walk(
         // No pill inside a link (a control inside a control), and no marks.
         next.push({ ...child, value: (child.value ?? "").replace(/[«»]/g, "") });
       } else {
-        next.push(...splitText(child.value ?? "", emails, refs));
+        next.push(...splitText(child.value ?? "", emails, refs, words));
       }
       continue;
     }
-    walk(child, insideLink || child.type === "link", emails, refs, names, source);
+    walk(child, insideLink || child.type === "link", emails, refs, names, words, source);
     next.push(child);
   }
   node.children = next;
@@ -372,11 +376,14 @@ function walk(
 /** The plugin's options. `emails: false` marks only the fenced names.
  *  `taskRefs: true` marks each bare `#171` as well. `names: false` marks no
  *  fenced name and no email, and changes no word: only the `#171`s, for the
- *  task card (WS-57 TR-5). */
+ *  task card (WS-57 TR-5). `wordForm: true` with `taskRefs` marks the `171`
+ *  of `task 171` too. Only the chat reply sets it (task 1595), and the
+ *  `names: false` mode never reads it. */
 export interface EntityPillOptions {
   emails?: boolean;
   taskRefs?: boolean;
   names?: boolean;
+  wordForm?: boolean;
 }
 
 /** The plugin. `remarkPlugins={[remarkGfm, remarkEntityPills]}`. */
@@ -384,6 +391,7 @@ export default function remarkEntityPills(options?: EntityPillOptions) {
   const emails = options?.emails !== false;
   const refs = options?.taskRefs === true;
   const names = options?.names !== false;
+  const words = options?.wordForm === true;
   // The source is read in the card's mode only, so the chat's output does
   // not change (`markdownChatGolden.test.ts`).
   return (tree: MdNode, file?: { value?: unknown }) => {
@@ -391,7 +399,7 @@ export default function remarkEntityPills(options?: EntityPillOptions) {
     const source = text === undefined
       ? undefined
       : { text, refs: new Set(findTaskRefs(text).map((r) => r.start)) };
-    walk(tree, false, emails, refs, names, source);
+    walk(tree, false, emails, refs, names, words, source);
   };
 }
 

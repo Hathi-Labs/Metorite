@@ -1,6 +1,6 @@
 # Task references — links, pull requests, commits, pasted images and `#123` pills
 
-**Status:** ✅ BUILT. TR-1, TR-2 and TR-3 are live since 2026-10-13 (PR #956, migration 255 applied in production). TR-4 is live since 2026-10-13 (PR #955). TR-5 is built on branch `task-pills-v2`, with no migration, and ships in its own PR. TR-5b, the word form `task 3596` (task 1595), is built on branch `pc-chat-1595`, with no flag and no migration. Proposed 2026-10-13 by owner directive, and verified against code on 2026-10-13 at `origin/main` 68e26cad.
+**Status:** ✅ BUILT. TR-1, TR-2 and TR-3 are live since 2026-10-13 (PR #956, migration 255 applied in production). TR-4 is live since 2026-10-13 (PR #955). TR-5 is built on branch `task-pills-v2`, with no migration, and ships in its own PR. TR-5b, the word form `task 3596` in the chat reply ONLY (task 1595, owner answer 7dbf65d9), is built on branch `pc-chat-1595`, with no flag and no migration. The card and the saved links keep the bare `#N`. Proposed 2026-10-13 by owner directive, and verified against code on 2026-10-13 at `origin/main` 68e26cad.
 
 **Board row:** WS-57 (`work_plan.md` §2).
 
@@ -129,19 +129,20 @@ The owner asked for five things on 2026-10-13:
   - **One copy of each insert.** `refs.insert_ref` and `relations.insert_task_link` serve the routes and the text path. Each writes the `link` activity its route writes.
   - Fences: `test_task_refs_text_links.py` (R8 on a private database) and `taskRefs.test.ts`, both over `tests/fixtures/task_ref_cases.json`.
 
-### TR-5b — the word form `task 3596` (task 1595, built 2026-11-22)
+### TR-5b — the word form `task 3596`, in the chat reply only (task 1595, built 2026-11-22)
 
-The owner chose the narrow slice on 2026-11-22 (answer 209e4bcb). A chat answer often writes "task 3596" and not "#3596", and that number stayed text.
+A chat answer often writes "task 3596" and not "#3596", and that number stayed text. The owner chose the narrow slice on 2026-11-22 (answer 209e4bcb). Later that day the owner limited it to the chat reply render (answer 7dbf65d9).
 
-- **The rule.** The word `task`, in any case, then spaces, tabs or no-break spaces on the same line, then a number that obeys rule 1. Examples: `task 3596`, `Task 12` and `(task 3596)`. `taskRefs.ts` rule 8 holds the rule, and `text_links.py` holds the same rule.
-- **The pill covers the number only.** The word `task` stays words before the pill. `task #12` uses the old `#` rule, so nothing new finds it.
-- **No reference:** `tasks 3`, `multitask 5`, `subtask 6`, `task12`, `task-12`, `task: 12` and a line break after `task`. A `/` or `-` with a digit after the number makes no reference too (`task 3/4`, `task 5-7`). The old guards still apply from the number.
-- **A position is no reference.** The Projects tools write `task 5 of 7` (`forms.py`) and the card line `task 1: #7 «Fix the extruder»` (`guarded.py`). So `of` and a digit after the number make no reference. A colon after the number, with or without a space, makes no reference too, and so `task 10:30` is none. The `#7` in that card line still links.
-- **What the parser cannot tell apart.** A plan heading with no colon (`Task 1 — Set up`) and a count (`do the task 3 times`) look like a task number. They go to the lookup, and it links only when exactly one visible task has that number.
-- **`task 235 «Title»` draws the title once.** The fence takes a number only with its `#`. So `remarkEntityPills.ts` gives the bare reference the fenced name as the words after it. The pill then shows the number only, and the name after it draws once. With entity pills on, that name draws as its own name chip.
-- **The lookup does not change.** The link needs exactly one visible task with the number. Otherwise the words stay as written. A chat turn that streams draws text. An orchestrator turn that asked no task agent links `task N` only when the task's title follows the number.
-- **The server saves more.** The gateway runs the same rule on a saved title, description or comment. So a newly typed `task 12` adds a `relates_to` link, as a newly typed `#12` does. A save of the same words adds nothing for old text that held `task 12`. Rule 4 reads the old value with the new rule.
-- **Fences:** the new rows of `tests/fixtures/task_ref_cases.json`, `taskRefs.test.ts`, `chatTaskPills.test.ts` and `test_task_refs_text_links.py`.
+- **Why the chat reply only.** A task number counts inside its root, so two roots can each hold a task 3. In ordinary text, `task 3` is often a count ("do the task 3 times") or a heading ("Task 2 — Review"). The first build also saved a `relates_to` link from the text, and it drew a pill on the task card. So a wrong link stayed for good, or showed on each view of the card. The chat render saves nothing, and an independent verifier rated its lookup low risk.
+- **Where it holds.** `findTaskRefs` and `splitTaskRefs` take the option `{ wordForm: true }`, and it is off by default. `remarkEntityPills.ts` reads it only in a mode with names. `MarkdownBody` and `MarkdownMessage` pass it on as a prop. Only `MessageBubble` sets it, on the two renders of the reply.
+- **Where it does not hold.** The task card's title, description and comments (`TaskRefText`, `TaskBody`) keep rules 1 to 7. So do a generative-UI card, `ProjectUpdateLine` and every other caller. The gateway's `text_links.py` saves links from a `#N` only, as before task 1595.
+- **The rule.** The word `task`, in any case, then spaces, tabs or no-break spaces on the same line, then a number that obeys rule 1. Examples: `task 3596`, `Task 12` and `(task 3596)`. The pill covers the number only, and `task` stays words before it. `task #12` uses the old `#` rule.
+- **No reference:** `tasks 3`, `multitask 5`, `subtask 6`, `my-task 4`, `task12`, `task-12`, `task: 12` and a line break after `task`. A `/` or `-` with a digit after the number makes no reference too (`task 3/4`, `task 5-7`). The old guards still apply from the number.
+- **A position is no reference.** The Projects tools write `task 5 of 7` (`forms.py`) and the card line `task 1: #7 «Fix the extruder»` (`guarded.py`). So `of` and a digit after the number make no reference, with or without a space between them (`task 5 of7`). A colon after the number makes no reference too, and so `task 10:30` is none. The `#7` in that card line still links.
+- **Known limits.** A plan heading with no colon (`Task 1 — Set up`) and a count (`do the task 3 times`) look like a task number. They go to the lookup. The chat sends no root, so the lookup reads every task that the member can see in the organization. It links only when exactly one of those tasks has the number. Otherwise the words stay as written.
+- **`task 235 «Title»` draws the title once.** The fence takes a number only with its `#`. So `remarkEntityPills.ts` gives the bare reference the fenced name as the words after it. The pill then shows the number only, and the name draws once.
+- **Echo and streaming do not change.** A chat turn that streams draws text. An orchestrator turn that asked no task agent links `task N` only when the task's title follows the number.
+- **Fences:** `taskRefs.test.ts` runs `src/lib/taskRefWordForm.cases.json` with the option and without it. Its source fence fails when a file other than `MessageBubble.tsx` sets `wordForm`. `chatTaskPills.test.ts` holds the chat reply from end to end. `TaskPanelHeader.test.ts` and `taskRefs.test.ts` hold the card. `tests/fixtures/task_ref_cases.json` and `test_task_refs_text_links.py` do not change.
 
 ## 7. Verification commands
 
@@ -172,4 +173,4 @@ R8: run the route test against a private database (`bash scripts/dev_db.sh`), ne
 - 2026-10-13 — TR-5 built on branch `task-pills`. §4 names the merged exports. §6 TR-5 records the root rule, the caps and the write paths.
 - 2026-10-13 — TR-5 review round 1. A root resolves a number alone, with no fallback. Only a number that is new in the edit links. The two Markdown layers share one case file. One save links at most 25 tasks. The My Tasks title and the organize steps join.
 - 2026-10-18 — §2, §3 and §8 point to `github_integration.md`, which now plans the GitHub App, the webhook and the merge rule.
-- 2026-11-22 — TR-5b built (task 1595). The word form `task 3596` links in the chat, on the card and in the saved links. The status header and §6 TR-5b say so.
+- 2026-11-22 — TR-5b built (task 1595). By owner answer 7dbf65d9, the word form `task 3596` links in the chat reply only. The card and the saved links keep the bare `#N`. The status header and §6 TR-5b say so.

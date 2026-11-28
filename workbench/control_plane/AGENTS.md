@@ -199,9 +199,12 @@ Twelve rules on top of the three above. Each one exists because somebody broke i
    the gateway's `prose_of` share the `markdown_cases` of
    `tests/fixtures/task_ref_cases.json`. Fences:
    `components/markdownChatGolden.test.ts` and `lib/taskRefs.test.ts`.
-   The word form `task 123` is a reference too (task 1595, `taskRefs.ts`
-   rule 8). The pill covers the number only. A change to that rule changes
-   `taskRefs.ts`, `text_links.py` and the case file together.
+   The word form `task 123` links in the chat reply ONLY (task 1595,
+   `taskRefs.ts` rule 8). It is the option `wordForm`, off by default, and
+   only `MessageBubble` turns it on. The card, a generative-UI card and the
+   gateway's saved links keep the bare `#123`. Do not pass `wordForm`
+   anywhere else. Fence: `lib/taskRefs.test.ts`. Its cases are
+   `lib/taskRefWordForm.cases.json`, not the shared case file.
    **Untrusted HTML has one DOMPurify policy,** `src/lib/untrustedHtml.ts`.
    The email pane and the `.docx` viewer use it. A new raw-HTML sink
    (`dangerouslySetInnerHTML`, an `innerHTML` write, a `srcdoc`) fails

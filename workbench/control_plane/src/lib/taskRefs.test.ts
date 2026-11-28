@@ -8,7 +8,8 @@
  * let through. That is how code, a heading and a URL are proven: those never
  * reach the parser as text, and only the real Markdown tree shows it.
  */
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -101,20 +102,38 @@ describe("findTaskRefs", () => {
     expect(refs("#0 and #012 and #1.5")).toEqual([]);
   });
 
-  it("finds the number after the word task, and keeps the word out of it (task 1595)", () => {
-    expect(refs("See task 3596, Task #12 and (task 7)")).toEqual(["3596", "#12", "7"]);
-    expect(findTaskRefs("task 35")).toEqual([{ start: 5, end: 7, number: 35 }]);
-    expect(splitTaskRefs("(task 7)")).toEqual([
+  it("with no option, finds no word form: the card's and the gateway's rules (task 1595)", () => {
+    expect(refs("See task 3596, Task #12 and (task 7)")).toEqual(["#12"]);
+    expect(findTaskRefs("task 35")).toEqual([]);
+    expect(findTaskRefs("task 35", { wordForm: false })).toEqual([]);
+    expect(splitTaskRefs("do the task 3 times")).toEqual([{ kind: "text", text: "do the task 3 times" }]);
+  });
+});
+
+describe("findTaskRefs with { wordForm: true }, the chat reply's finder (task 1595)", () => {
+  const words = (text: string) =>
+    findTaskRefs(text, { wordForm: true }).map((r) => text.slice(r.start, r.end));
+
+  it("finds the number after the word task, and keeps the word out of it", () => {
+    expect(words("See task 3596, Task #12 and (task 7)")).toEqual(["3596", "#12", "7"]);
+    expect(findTaskRefs("task 35", { wordForm: true })).toEqual([{ start: 5, end: 7, number: 35 }]);
+    expect(splitTaskRefs("(task 7)", { wordForm: true })).toEqual([
       { kind: "text", text: "(task " },
       { kind: "ref", ref: "7", number: 7 },
       { kind: "text", text: ")" },
     ]);
-    // A position, as the Projects tools write it, is no task: `task 5 of 7`
-    // and the card line `task 1: #7 «…»`. The `#7` is still a reference.
-    expect(refs("stopped: task 5 of 7, «Step 5», was refused.")).toEqual([]);
-    expect(refs("task 1: #7 «Fix the extruder»")).toEqual(["#7"]);
-    expect(refs("task 5 of the plan")).toEqual(["5"]);
-    expect(refs("tasks 3, multitask 5, subtask 6, task12, task-12, task 10:30")).toEqual([]);
+  });
+
+  it("does not link a position, as the Projects tools write one", () => {
+    // `task 5 of 7` and the card line `task 1: #7 «…»`. The `#7` still links.
+    expect(words("stopped: task 5 of 7, «Step 5», was refused.")).toEqual([]);
+    expect(words("task 5 of7")).toEqual([]);
+    expect(words("task 1: #7 «Fix the extruder»")).toEqual(["#7"]);
+    expect(words("task 5 of the plan")).toEqual(["5"]);
+  });
+
+  it("does not link a plural, a longer word, a hyphen before task, a glued word or a time", () => {
+    expect(words("tasks 3, multitask 5, subtask 6, my-task 4, task12, task-12, task 10:30")).toEqual([]);
   });
 });
 
@@ -145,10 +164,14 @@ beforeAll(async () => {
   vi.unstubAllGlobals();
 });
 
-/** The task links in one rendered answer, by the number they carry. */
-function linked(content: string): string[] {
+/** The task links in one rendered answer, by the number they carry. With
+ *  `wordForm`, the answer is the chat reply's (`MessageBubble`, task 1595).
+ *  Without it the prop is absent, so the renderer's own default holds. */
+function linked(content: string, wordForm = false): string[] {
   const html = renderToStaticMarkup(
-    createElement(MarkdownBody, { content, entityPills: true, fences: true, sessionId: SCOPE }),
+    createElement(MarkdownBody, {
+      content, entityPills: true, fences: true, sessionId: SCOPE, ...(wordForm ? { wordForm } : {}),
+    }),
   );
   return [...html.matchAll(/href="\/projects\?task=0+-0+-4000-8000-0*(\d+)"/g)].map((m) => `#${m[1]}`);
 }
@@ -158,8 +181,14 @@ describe("bare references in Markdown", () => {
     expect(linked("Both #171 and #87 are open.")).toEqual(["#171", "#87"]);
   });
 
-  it("links the number after the word task, but not in code (task 1595)", () => {
-    expect(linked("Both task 171 and (task 87) are open, not `task 12`.")).toEqual(["#171", "#87"]);
+  it("links the number after the word task in the chat reply, but not in code (task 1595)", () => {
+    expect(linked("Both task 171 and (task 87) are open, not `task 12`.", true)).toEqual(["#171", "#87"]);
+  });
+
+  it("does not link the word form with no `wordForm`: a generative-UI card's text (task 1595)", () => {
+    // `GenUiText` and `GenerativeUINode` pass `entityPills` and `fences`, and
+    // no `wordForm`. Only the chat reply links `task 171`.
+    expect(linked("Both task 171 and (task 87) are open, and #88.")).toEqual(["#88"]);
   });
 
   it("does not link inline code", () => {
@@ -254,6 +283,128 @@ describe("the shared case file (tests/fixtures/task_ref_cases.json)", () => {
       expect(findTaskRefs(c.text).map((r) => r.number)).toEqual(c.numbers);
     });
   }
+
+  it("the chat reply's finder reads each `#N` of these cases as the gateway does (task 1595)", () => {
+    for (const c of CASES) {
+      const hashes = findTaskRefs(c.text, { wordForm: true }).filter((r) => c.text[r.start] === "#");
+      expect(hashes.map((r) => r.number), c.name).toEqual(c.numbers);
+    }
+  });
+});
+
+// ── Task 1595: the word form, the chat reply's own rule ─────────────────────
+
+type WordFormMarkdownCase = SharedCase & { default_numbers: number[] };
+
+// The gateway has no copy of rule 8 (owner answer 7dbf65d9, 2026-11-22), so
+// these rows live beside this test and pytest never reads them.
+const WORD_FORM: { cases: SharedCase[]; markdown_cases: WordFormMarkdownCase[] } = JSON.parse(
+  readFileSync(fileURLToPath(new URL("./taskRefWordForm.cases.json", import.meta.url)), "utf-8"),
+);
+
+describe("the word-form case file (src/lib/taskRefWordForm.cases.json)", () => {
+  it("is present and not trivial", () => {
+    expect(WORD_FORM.cases.length).toBeGreaterThanOrEqual(20);
+    expect(WORD_FORM.cases.some((c) => c.numbers.length > 0)).toBe(true);
+    expect(WORD_FORM.cases.some((c) => c.numbers.length === 0)).toBe(true);
+    expect(WORD_FORM.markdown_cases.length).toBeGreaterThanOrEqual(10);
+  });
+
+  for (const c of WORD_FORM.cases) {
+    it(`with wordForm: ${c.name}`, () => {
+      expect(findTaskRefs(c.text, { wordForm: true }).map((r) => r.number)).toEqual(c.numbers);
+    });
+    it(`with no option, only the \`#N\`s: ${c.name}`, () => {
+      const hashes = findTaskRefs(c.text, { wordForm: true }).filter((r) => c.text[r.start] === "#");
+      expect(findTaskRefs(c.text)).toEqual(hashes);
+    });
+  }
+
+  // The chat reply's own pipeline: `MarkdownBody` with `fences` and
+  // `taskRefs`, as `MessageBubble` draws it. Every number from 1 to 100 is
+  // one task, so each pill is a number the Markdown layer let through.
+  const every = createTaskRefResolver(async (ns) =>
+    ns.map((n) => ({ id: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`, task_number: n, title: `T${n}` })),
+  );
+  beforeAll(async () => {
+    for (let n = 1; n <= 100; n += 1) every.request("", n);
+    await every.flush();
+  });
+  // With no `wordForm` the prop is absent, so the renderer's default holds.
+  const pills = (text: string, wordForm: boolean) => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownBody, {
+        content: text, fences: true, taskRefs: true, taskRefResolver: every, ...(wordForm ? { wordForm } : {}),
+      }),
+    );
+    return [...html.matchAll(/href="\/projects\?task=0+-0+-4000-8000-0*(\d+)"/g)].map((m) => Number(m[1]));
+  };
+
+  for (const c of WORD_FORM.markdown_cases) {
+    it(`in the chat reply's Markdown: ${c.name}`, () => {
+      expect(pills(c.text, true)).toEqual(c.numbers);
+      expect(pills(c.text, false)).toEqual(c.default_numbers);
+    });
+  }
+
+  it("the task card's Markdown never links the word form", () => {
+    // The card's mode is `taskRefs` alone. It reads no `wordForm`.
+    for (const c of WORD_FORM.markdown_cases) {
+      const html = renderToStaticMarkup(
+        createElement(MarkdownBody, {
+          content: keepLineBreaks(forView(c.text)), plainEmails: true, taskRefs: true, wordForm: true,
+          taskRefResolver: every, projectPills: true,
+        }),
+      );
+      const found = [...html.matchAll(/href="\/projects\?task=0+-0+-4000-8000-0*(\d+)"/g)].map((m) => Number(m[1]));
+      expect(found, c.name).toEqual(c.default_numbers);
+    }
+  });
+});
+
+// ── Task 1595: only the chat reply turns the word form on ───────────────────
+
+describe("the source fence: only the chat reply passes `wordForm`", () => {
+  const SRC = fileURLToPath(new URL("..", import.meta.url));
+  const files = (dir: string): string[] =>
+    readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+      e.isDirectory() ? files(join(dir, e.name)) : [join(dir, e.name)],
+    );
+  const sources = files(SRC)
+    .filter((f) => /\.(ts|tsx)$/.test(f) && !/\.test\.tsx?$/.test(f))
+    .map((f) => ({ path: relative(SRC, f).replace(/\\/g, "/"), text: readFileSync(f, "utf-8") }));
+
+  it("names the option in the finder, the plugin, the renderer and the chat reply only", () => {
+    const naming = sources.filter((s) => /\bwordForm\b/.test(s.text)).map((s) => s.path).sort();
+    expect(naming).toEqual([
+      "components/MarkdownMessage.tsx",
+      "components/MessageBubble.tsx",
+      "lib/remarkEntityPills.ts",
+      "lib/taskRefs.ts",
+    ]);
+  });
+
+  it("sets it as a prop only in MessageBubble, on the reply's two renders", () => {
+    // A JSX attribute: `wordForm` alone on its line, or `wordForm={…}`.
+    // `MarkdownMessage` only hands its own prop on to `MarkdownBody`.
+    const setting = sources.flatMap((s) =>
+      [...s.text.matchAll(/^\s*(wordForm(?:=\{[^}]*\})?)\s*$/gm)].map((m) => `${s.path}: ${m[1]}`),
+    );
+    expect(setting.sort()).toEqual([
+      "components/MarkdownMessage.tsx: wordForm={wordForm}",
+      "components/MessageBubble.tsx: wordForm",
+      "components/MessageBubble.tsx: wordForm",
+    ]);
+  });
+
+  it("the card's callers pass no option to the finder", () => {
+    const header = sources.find((s) => s.path === "components/TaskPanelHeader.tsx")!.text;
+    expect(header).toMatch(/findTaskRefs\(value\)/);
+    expect(header).not.toMatch(/wordForm/);
+    const finder = sources.find((s) => s.path === "lib/taskRefs.ts")!.text;
+    // `TaskRefText` splits with the defaults.
+    expect(finder).toMatch(/\.\.\.splitTaskRefs\(text\)\.map/);
+  });
 });
 
 describe("the shared Markdown cases, through the card's own pipeline", () => {
@@ -340,18 +491,23 @@ describe("TaskRefText", () => {
     expect(out).toContain("«x» and #9999, `");
   });
 
-  it("keeps `task 9999` as written when no task has the number (task 1595)", async () => {
+  it("keeps `task 3` as words, even when a task has the number (task 1595)", async () => {
+    // The card's title draws with the default rules: the word form is the
+    // chat reply's only, because `task 3` in a title is often a count.
     const r = createTaskRefResolver(async () => [
+      { id: "00000000-0000-4000-8000-000000000003", task_number: 3, title: "Three" },
       { id: "00000000-0000-4000-8000-000000000012", task_number: 12, title: "Twelve" },
     ]);
+    r.request("", 3);
     r.request("", 12);
-    r.request("", 9999);
     await r.flush();
-    const out = renderToStaticMarkup(createElement(TaskRefText, { text: "Fix task 12, not task 9999", resolver: r }));
+    const out = renderToStaticMarkup(
+      createElement(TaskRefText, { text: "Do the task 3 times, then (task 3) and #12", resolver: r }),
+    );
     expect(out.match(/href="\/projects\?task=/g)).toHaveLength(1);
-    expect(out).toContain("Fix task <");
-    expect(out).toContain(", not task 9999");
-    expect(out).not.toContain("#9999");
+    expect(out).toContain('href="/projects?task=00000000-0000-4000-8000-000000000012"');
+    expect(out).not.toContain("Three");
+    expect(out).toContain("Do the task 3 times, then (task 3) and ");
   });
 });
 

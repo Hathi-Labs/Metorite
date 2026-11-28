@@ -11,13 +11,16 @@
  * reads the same rules (AGENTS.md: one implementation per concept). The chat
  * imports it through `remarkEntityPills.ts` and `ChatTaskRef.tsx`. The task
  * card's title, description and comments import it too (WS-57 TR-5, through
- * `taskRefResolverFor` and `TaskRefText`). Nothing chat-only lives here.
+ * `taskRefResolverFor` and `TaskRefText`). Nothing chat-only lives here:
+ * rule 8, the word form `task 3596`, is an option that is off by default, and
+ * only the chat reply's caller turns it on (task 1595).
  *
- * The gateway has ONE copy of part (a), `find_task_refs` in
+ * The gateway has ONE copy of rules 1 to 7, `find_task_refs` in
  * `gateway/routes/projects/text_links.py`, for the links it saves from the
  * text. `tests/fixtures/task_ref_cases.json` holds the cases, and both
- * `taskRefs.test.ts` and `test_task_refs_text_links.py` run them. Change a
- * rule here and change it there. Three parts:
+ * `taskRefs.test.ts` and `test_task_refs_text_links.py` run them. Change one
+ * of those rules here and change it there. Rule 8 has no gateway copy, on
+ * purpose, and its cases are `taskRefWordForm.cases.json`. Three parts:
  *
  * - **(a) `findTaskRefs`**: the pure parser. No React, no fetch.
  * - **(b) `resolveTaskRefs`**, `useTaskRef` and the store under them: the
@@ -39,7 +42,7 @@ import { statusAccent } from "@/lib/statusAccent";
 //
 // It finds CANDIDATES. A candidate links only when the lookup finds exactly
 // one visible task with that number, so these guards keep the lookup small
-// and the obvious non-references out. Eight rules:
+// and the obvious non-references out. Six rules:
 //
 // 1. A reference is `#` and a number that does not start with 0, 1 to 9
 //    digits. `#0` and `#012` are not task numbers.
@@ -58,45 +61,60 @@ import { statusAccent } from "@/lib/statusAccent";
 // 7. Another kind of number is not a reference. `PR #120`, `Order #45`,
 //    `Sprint #3` and `Invoice #4521` name another thing (`OTHER_KINDS`), and
 //    a rank (`#1 priority`, `#2 spot`) is no task (`RANKS`). Review round 1.
-// 8. The word `task` and a number is a reference too (task 1595, owner
-//    choice 2026-11-22): `task 3596`, `Task 12` and `(task 3596)`. The
-//    reference is the number alone, so `task ` stays words before the pill.
+//
+// Rule 8 is an OPTION, `{ wordForm: true }`, and it is off by default. Only
+// the chat reply turns it on (task 1595, owner answer 7dbf65d9, 2026-11-22).
+// The card, the title and the gateway's saved links keep rules 1 to 7. A
+// task number counts inside its root, so in the member's own words `task 3`
+// is often a count or a heading, and a saved link to it would stay wrong.
+//
+// 8. The word `task` and a number: `task 3596`, `Task 12`, `(task 3596)`.
+//    The reference is the number alone, so `task ` stays words before it.
 //    `task #12` needs no rule of its own: rule 1 finds its `#12`.
-//    - `task` in any case, with no letter, digit, `_` or rule-2 character
-//      before it. So `multitask 5`, `subtask 5` and `_task 5` are no reference.
+//    - `task` in any case, with no letter, digit, `_`, `-` or rule-2
+//      character before it. So `multitask 5`, `subtask 5`, `_task 5` and
+//      `my-task 4` are no reference.
 //    - Then spaces, tabs or no-break spaces on the SAME line, then the number
 //      of rule 1. So `tasks 3`, `task12`, `task-12`, `task: 12` and a
 //      `task` at the end of a line are no reference.
 //    - Rules 4, 6 and 7 hold from the number. A `/` or `-` and a digit after
-//      it is a fraction or a range, so `task 3/4` and `task 5-7` are no
-//      reference.
+//      it is a fraction or a range, so `task 3/4` and `task 5-7` are none.
 //    - A position is no reference. The Projects tools write `task 5 of 7`
 //      (`forms.py`) and the card line `task 1: #7 «Fix the extruder»`
-//      (`guarded.py`). So `of` and a digit after the number, or a colon
-//      after it with or without a gap, makes no reference. `task 10:30` is
-//      no reference for the same reason. The `#7` there is still rule 1's.
-//    - A plan heading with no colon (`Task 1 — Set up`, `Task 1. Set up`) and
-//      a count (`do the task 3 times`) cannot be told apart from a task
-//      number. They reach the lookup, which links only one visible task.
-//    - The spelling is `[Tt][Aa][Ss][Kk]` and `[Oo][Ff]`, not the `i` flag,
-//      and the gap is `[ \t\u00a0]`, not `\s`, so the gateway's copy reads
-//      the same text.
+//      (`guarded.py`). So `of` and a digit after the number (`task 5 of7`
+//      too), or a colon after it with or without a gap, makes no reference.
+//      `task 10:30` is none for the same reason. The `#7` is still rule 1's.
+//    - A plan heading with no colon (`Task 1 — Set up`) and a count (`do the
+//      task 3 times`) cannot be told apart from a task number. They reach
+//      the lookup, which links only one visible task with that number.
 //
 // Code, inline code and a heading's own `#` marker are the CALLER's to skip:
 // a Markdown caller hands this function text nodes only (`remarkEntityPills`).
 
-/** One reference: `text.slice(start, end)` is `#171`, or `171` in
- *  `task 171` (rule 8), and `number` is 171. */
+/** One reference: `text.slice(start, end)` is `#171`, and `number` is 171.
+ *  With `wordForm`, it can also be the `171` of `task 171` (rule 8). */
 export interface TaskRefMatch {
   start: number;
   end: number;
   number: number;
 }
 
-/** Rules 1 to 4 and 8. The lookbehind is rules 2 and 3, each lookahead rule
- *  4. Group 1 is the number after `#`, group 2 the number after `task`. */
-const CANDIDATE =
-  /(?<![\p{L}\p{N}_/\\#&=?@])(?:#([1-9][0-9]{0,8})(?![\p{L}\p{N}_]|[.,][0-9])|[Tt][Aa][Ss][Kk][ \t\u00a0]+([1-9][0-9]{0,8})(?![\p{L}\p{N}_]|[.,/-][0-9]|[ \t\u00a0]*:|[ \t\u00a0]+[Oo][Ff][ \t\u00a0]+[0-9]))/gu;
+/** What the finder reads besides rules 1 to 7. */
+export interface TaskRefOptions {
+  /** Rule 8, the word form `task 3596`. Default false. Only the chat reply
+   *  turns it on (`MessageBubble`, task 1595). */
+  wordForm?: boolean;
+}
+
+/** Rules 1 to 4. The lookbehind is rules 2 and 3, the lookahead rule 4. */
+const CANDIDATE = /(?<![\p{L}\p{N}_/\\#&=?@])#([1-9][0-9]{0,8})(?![\p{L}\p{N}_]|[.,][0-9])/gu;
+
+/** Rule 8. Its own lookbehind adds `-`, so `-#12` keeps rule 2 as it was. */
+const WORD_SOURCE = String.raw`(?<![\p{L}\p{N}_/\\#&=?@-])[Tt][Aa][Ss][Kk][ \t\u00a0]+([1-9][0-9]{0,8})(?![\p{L}\p{N}_]|[.,/-][0-9]|[ \t\u00a0]*:|[ \t\u00a0]+[Oo][Ff][ \t\u00a0]*[0-9])`;
+
+/** `CANDIDATE` or rule 8, in one scan. Group 1 is the number after `#`, as
+ *  in `CANDIDATE`. Group 2 is the number after `task`. */
+const WORD_CANDIDATE = new RegExp(`${CANDIDATE.source}|${WORD_SOURCE}`, "gu");
 
 /** Rule 5: the hex run that starts at `#`. */
 const HEX_RUN = /^#[0-9a-fA-F]+/;
@@ -139,10 +157,27 @@ function isOtherKind(text: string, start: number, end: number): boolean {
   return RANKS.test(text.slice(end, end + 24));
 }
 
-/** Every task reference in one run of plain text, in order. Pure. */
-export function findTaskRefs(text: string): TaskRefMatch[] {
+/** Every task reference in one run of plain text, in order. Pure. With no
+ *  options, rules 1 to 7 only: the rules of the card and of the gateway. */
+export function findTaskRefs(text: string, options?: TaskRefOptions): TaskRefMatch[] {
+  if (options?.wordForm === true) return findWithWordForm(text);
+  if (!text.includes("#")) return [];
   const out: TaskRefMatch[] = [];
   for (const m of text.matchAll(CANDIDATE)) {
+    const start = m.index ?? 0;
+    if (isColourAt(text.slice(start))) continue;
+    if (isInsideUrl(text, start)) continue;
+    if (isOtherKind(text, start, start + m[0].length)) continue;
+    out.push({ start, end: start + m[0].length, number: Number(m[1]) });
+  }
+  return out;
+}
+
+/** Rules 1 to 8: the chat reply's finder (task 1595). Rules 5 to 7 read
+ *  from the number, so the word `task` before it is never part of a check. */
+function findWithWordForm(text: string): TaskRefMatch[] {
+  const out: TaskRefMatch[] = [];
+  for (const m of text.matchAll(WORD_CANDIDATE)) {
     // The number ends the match, because each lookahead reads no character.
     const end = (m.index ?? 0) + m[0].length;
     const start = m[1] !== undefined ? (m.index ?? 0) : end - m[2].length;
@@ -159,9 +194,10 @@ export type TaskRefPart =
   | { kind: "text"; text: string }
   | { kind: "ref"; ref: string; number: number };
 
-/** Split one run of plain text into words and references. Pure. */
-export function splitTaskRefs(text: string): TaskRefPart[] {
-  const refs = findTaskRefs(text);
+/** Split one run of plain text into words and references. Pure. The options
+ *  are `findTaskRefs`'s, and they are off by default. */
+export function splitTaskRefs(text: string, options?: TaskRefOptions): TaskRefPart[] {
+  const refs = findTaskRefs(text, options);
   if (refs.length === 0) return text ? [{ kind: "text", text }] : [];
   const out: TaskRefPart[] = [];
   let last = 0;
@@ -667,29 +703,24 @@ export function TaskRefText({
     ...splitTaskRefs(text).map((part, k) =>
       part.kind === "text"
         ? createElement(Fragment, { key: k }, part.text)
-        : createElement(RefPart, {
-          key: k, number: part.number, written: part.ref, resolver, className: refClassName,
-        }),
+        : createElement(RefPart, { key: k, number: part.number, resolver, className: refClassName }),
     ),
   );
 }
 
 /** One reference of `TaskRefText`. The class wraps a pill only: a number
- *  that names no single task stays text in the words' own size, as written
- *  (`#12`, or the `12` of `task 12`). */
+ *  that names no single task stays text in the words' own size. */
 function RefPart({
   number,
-  written,
   resolver,
   className,
 }: {
   number: number;
-  written: string;
   resolver: TaskRefResolver;
   className?: string;
 }) {
   const task = taskOf(useTaskRef("", number, true, resolver));
-  if (!task) return createElement(Fragment, null, written);
+  if (!task) return createElement(Fragment, null, `#${number}`);
   const pill = createElement(TaskPill, { task });
   return className ? createElement("span", { className }, pill) : pill;
 }
