@@ -38,7 +38,11 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 from acb_common import get_settings, name_match
-from acb_common.edge_vocabulary import EDGES, MAIL_EDGES, RECORD_EDGES  # noqa: F401  (EDGES: re-export)
+from acb_common.edge_vocabulary import (  # noqa: F401  (EDGES: re-export)
+    EDGES,
+    MAIL_EDGES,
+    RECORD_EDGES,
+)
 
 #: The ``matched_by`` values of §3.5, from the closed list. The lower the
 #: number, the lower the rung of §3.1, and the earlier the hit comes on a tie.
