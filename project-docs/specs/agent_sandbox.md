@@ -565,6 +565,12 @@ reading.
 §3 records it as D233. The text below gives the meaning of the four
 decisions. It is not a quote.
 
+**Cross-reference (D235, 2026-11-28).** `building_blocks.md` §10 is the
+cohesion map. A sandbox-built tool reads a source through the door and the
+meaning model, and never keeps what a field means. A core tool comes before
+the sandbox. A need that the sandbox fills twice becomes a core-tool
+candidate, through `tool_gaps` and LOOP-16.
+
 ### The four decisions
 
 1. **AI Studio is unpaused** for the long tail of use cases. The chat builds

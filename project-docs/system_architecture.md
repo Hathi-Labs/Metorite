@@ -428,7 +428,8 @@ flowchart TD
 - **Superseded by:** ADR-026 (MAF + DurableTask). PostgresSaver was never wired in code. The migration is a pre-load-bearing swap.
 - **Kept:** Postgres for entity graph, memory, audit, Integration Registry. Only workflow checkpoint responsibility moves to DTS.
 
-### ADR-002: Postgres + pgvector + Apache AGE for entity graph + vectors
+### ADR-002: ~~Postgres + pgvector + Apache AGE for entity graph + vectors~~ **Superseded by D128.6** (2026-10-29)
+- **Superseded by:** `work_plan.md` D128.6. The graph is a graph of pointers in plain Postgres tables (`kb_entities`, `kb_links`), with FORCE ROW LEVEL SECURITY. No Apache AGE and no Neo4j. `specs/knowledge_graph.md` owns it. The research of 2026-11-28 confirmed the skip (`research/company_intelligence_2026-11.md`).
 - **Context:** Team of 2 cannot run Neo4j + Pinecone + Postgres separately.
 - **Decision:** Single Postgres with `pgvector` for embeddings and Apache AGE for property-graph queries.
 - **Consequences:** One DB to back up; AGE sufficient for v2 scale.
