@@ -1,5 +1,5 @@
 /**
- * The Agents view · one model for the Graph, Board, List and phone views
+ * The Agents view · one model for the map and the phone view
  * (WS-MCP AMR-1 to AMR-3, `agent_coordination.md` §5.12).
  *
  * It turns the checked map read of `agentMap.ts` into people, orchestrator
@@ -7,7 +7,7 @@
  *
  * ⚠️ It adds no fact. A state, a wait, a dispatch line and a machine all come
  * from the map read. A question text comes from the questions read, joined by
- * run id. A session with no structured wait draws no "waits on" edge.
+ * run id. A session with no structured wait says none.
  *
  * ⚠️ One vocabulary. A state is a key of `AGENT_STATES` (`statusAccent.ts`),
  * its words are those of the board lanes (`AGENT_LANES`), and its card edge is
@@ -146,21 +146,17 @@ export interface LensWait {
   until: string | null;
 }
 
-/** The words of a "waits on" node of the graph. */
-export const WAIT_NODE_WORD: Record<AgentWaitingOn, string> = {
-  ci: "CI",
-  review: "A review",
-  deploy: "A deploy",
-  member: "A person",
-  agent: "Another agent",
-};
-
 export interface LensSession {
   id: string;
   person: string;
   name: string;
   state: LensState;
   lastAt: string | null;
+  /**
+   * Seconds since the oldest listed run started, or 0. The map orders the
+   * orchestrators by it (decision G4). The read holds no start of a session.
+   */
+  startedAge: number;
   client: string;
   host: MapSession["host"];
   hostKind: MapSession["host_kind"];
@@ -292,6 +288,7 @@ export function buildLensModel(
       name: s.name,
       state,
       lastAt: s.last_at,
+      startedAge: Math.max(0, ...runs.map((r) => r.age ?? 0)),
       client: s.client,
       host: s.host,
       hostKind: s.host_kind,
@@ -383,18 +380,9 @@ export function countStates(sessions: readonly LensSession[]): LensCounts {
   return counts;
 }
 
-/* ── The filters of the toolbar ─────────────────────────────────────────── */
+/* ── The switch and the find box ────────────────────────────────────────── */
 
-export interface LensFilters {
-  /** The states that show. A state that is off folds into one line. */
-  states: ReadonlySet<LensState>;
-  /** One person, or "" for everyone. */
-  person: string;
-  /** Free text, over the session, its tasks, its machine and its model. */
-  find: string;
-}
-
-/** Idle starts folded (`agent_coordination.md` §3.12.2). Done starts folded too. */
+/** The states of the Active switch. Idle and Done fold (`agent_coordination.md` §3.12.2). */
 export const DEFAULT_STATES: readonly LensState[] = ["you", "failed", "working", "waiting"];
 
 /** A task as the find box reads it: its title and its number. */
@@ -421,38 +409,6 @@ export function matchesFind(s: LensSession, find: string, personName: string): b
   return !q || findText(s, personName).includes(q);
 }
 
-export interface SplitGroup {
-  shown: LensSession[];
-  /** Folded into one line, because their state chip is off. */
-  folded: LensSession[];
-}
-
-/**
- * Which sessions of a group draw, and which fold. A find shows each match, a
- * folded one too, and hides the rest. `opened` unfolds one group.
- */
-export function splitSessions(
-  sessions: readonly LensSession[],
-  filters: LensFilters,
-  opened: boolean,
-  nameOf: (email: string) => string,
-): SplitGroup {
-  const q = filters.find.trim();
-  if (q) return { shown: sessions.filter((s) => matchesFind(s, q, nameOf(s.person))), folded: [] };
-  const shown: LensSession[] = [];
-  const folded: LensSession[] = [];
-  for (const s of sessions) (opened || filters.states.has(s.state) ? shown : folded).push(s);
-  return { shown, folded };
-}
-
-/** "3 idle sessions", "4 idle or done sessions", or "2 hidden sessions" for a fold of other states. */
-export function foldWord(folded: readonly LensSession[]): string {
-  const noun = folded.length === 1 ? "session" : "sessions";
-  const only = (...states: LensState[]) => folded.every((s) => states.includes(s.state));
-  const kind = only("idle") ? "idle" : only("done") ? "done" : only("idle", "done") ? "idle or done" : "hidden";
-  return `${folded.length} ${kind} ${noun}`;
-}
-
 /** The second line of a card: the question, else the wait, else the task. */
 export function sessionLine(s: LensSession, nowMs: number): string {
   if (s.question) return s.question;
@@ -466,6 +422,40 @@ export function sessionLine(s: LensSession, nowMs: number): string {
     if (s.quietCount === 0) return "No open task";
     return s.quietCount === 1 ? "1 quiet run" : `${s.quietCount} quiet runs`;
   }
+  return run.task_number === null ? run.title : `#${run.task_number} ${run.title}`;
+}
+
+/** The short names of a wait, on a card of the map. */
+const WAIT_SHORT: Record<AgentWaitingOn, string> = {
+  ci: "CI",
+  review: "Review",
+  deploy: "Deploy",
+  member: "A person",
+  agent: "An agent",
+};
+
+/**
+ * The wait fact of a map card (decision G1): "Needs you", "Waiting · CI ·
+ * 25 min", the member that another session asks, or "Failed". `null` for a
+ * session that waits on nothing.
+ */
+export function cardFact(s: LensSession, nowMs: number): string | null {
+  if (s.state === "you" || s.state === "failed") return lensWord(s.state);
+  if (s.state !== "waiting") return null;
+  if (s.askedOf) return s.askedOf;
+  const parts = [lensWord("waiting")];
+  if (s.wait) {
+    parts.push(WAIT_SHORT[s.wait.on]);
+    const until = Date.parse(s.wait.until ?? "");
+    if (!Number.isNaN(until)) parts.push(`${Math.max(1, Math.ceil((until - nowMs) / 60_000))} min`);
+  }
+  return parts.join(" · ");
+}
+
+/** What a session does now: the number and the title of its task, else its latest line. */
+export function workLine(s: LensSession, nowMs: number): string {
+  const run = s.runs[0];
+  if (!run) return sessionLine(s, nowMs);
   return run.task_number === null ? run.title : `#${run.task_number} ${run.title}`;
 }
 

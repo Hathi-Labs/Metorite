@@ -299,3 +299,11 @@ describe("statViewBlock icon (STU-LOOK-2)", () => {
     }
   });
 });
+
+describe("statBlock target (STU-LOOK-2b)", () => {
+  it("passes a target to the tile data only when it is set", () => {
+    const src = { action: "a" };
+    expect(statBlock(src, "T", 0, "up", undefined, 40).props.data).toMatchObject({ target: 40 });
+    expect(statBlock(src, "T").props.data).not.toHaveProperty("target");
+  });
+});

@@ -9,18 +9,39 @@ rather than in the browser.
 No database: these three routes are pure in-memory (presence lives in Postgres
 and is covered separately), which is also why on-page live transcription works
 the moment the app is deployed.
+
+Task 3966: each member route here checks the owner first, through
+``core.require_owned_meeting``. The fixture below plays that check for the
+signed-in tester, so these tests stay hermetic. The R8 proof of the check is
+``test_notes_meeting_owner_r8.py``.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 
-from acb_auth import get_current_user
-from fastapi import APIRouter, FastAPI
-from acb_auth import UserContext, UserRole, build_access
+import pytest
+from acb_auth import UserContext, UserRole, build_access, get_current_user
+from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from gateway.routes.notes import live_speakers as ls
 from gateway.routes.notes import live_transcript as lt
+
+OWNER = "tester@example.com"
+
+
+@pytest.fixture(autouse=True)
+def _owner_check(monkeypatch) -> list[str]:
+    """The owner check, played for ``OWNER``: any other member gets the 404."""
+    checked: list[str] = []
+
+    async def require(meeting_id: str, owner_email: str | None) -> None:
+        checked.append(meeting_id)
+        if owner_email != OWNER:
+            raise HTTPException(status_code=404, detail="meeting not found")
+
+    monkeypatch.setattr(lt, "require_owned_meeting", require)
+    return checked
 
 
 def _client() -> TestClient:
@@ -35,7 +56,7 @@ def _client() -> TestClient:
     # gated on `feature:notes` (org access control), so the override has to
     # carry a resolvable permission set the way the real dependency does.
     app.dependency_overrides[get_current_user] = lambda: UserContext(
-        email="tester@example.com",
+        email=OWNER,
         role=UserRole.EMPLOYEE,
         access=build_access(["feature:notes"], roles=["member"]),
     )
@@ -137,3 +158,16 @@ def test_bot_ingest_still_requires_its_token(monkeypatch) -> None:
         headers={"Authorization": "Bearer s3cret"},
     )
     assert ok.status_code == 202
+
+
+def test_the_member_routes_check_the_owner_first(_owner_check) -> None:
+    """Task 3966: the caption post and the roster read run the owner check."""
+    mid = "http-owner"
+    lt._BUSES.pop(mid, None)
+    ls.reset(mid)
+    c = _client()
+    body = {"text": "x", "start_s": 0.0, "end_s": 1.0, "is_final": True}
+    assert c.post(f"/notes/meetings/{mid}/live/browser-segment", json=body).status_code == 202
+    assert c.get(f"/notes/meetings/{mid}/live/roster").status_code == 200
+    assert _owner_check == [mid, mid]
+    ls.reset(mid)

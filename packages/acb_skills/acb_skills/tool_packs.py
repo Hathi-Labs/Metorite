@@ -1883,6 +1883,9 @@ PACKS: dict[str, Pack] = {
 
 # ── The pack tools that read outside text (task 2492) ───────────────────────
 
+#: The owner of the two email packs.
+_MAIL = "email-assistant"
+
 #: Each tool of a pack whose owner reads stranger text
 #: (``egress.UNTRUSTED_INPUT_AGENTS``), and when its answer brings text that a
 #: stranger wrote into the model's context. ``_tool_injection._pack_call``
@@ -1904,73 +1907,79 @@ PACKS: dict[str, Pack] = {
 #: When in doubt, ``True``. A tool that the map does not name marks (fail
 #: closed). Fence: ``tests/unit/test_pack_outside_text.py`` holds each tool of
 #: each such pack to one entry here.
-PACK_OUTSIDE_TEXT: Mapping[str, bool | tuple[str, ...]] = {
+#:
+#: Task 4053: the key is ``(owner, tool)``. So two owners that each hold a tool
+#: of the same name get two entries, and never share one. Fence:
+#: ``tests/unit/test_pack_outside_text_digest.py`` pins the source of each tool
+#: that does not always mark, and of the helpers that build its answer. An
+#: edit to that source fails it until a person classifies the tool again.
+PACK_OUTSIDE_TEXT: Mapping[tuple[str, str], bool | tuple[str, ...]] = {
     # The ``email`` pack.
-    "bulk_manage_inbox": False,  # counts and the model's own filter
-    "cancel_scheduled_send": False,  # fixed words, or the server's refusal
-    "compose_reply": True,  # the subject and the recent reply of the thread
-    "create_label": False,  # the model's own label name
-    "digest": True,  # subjects and senders
-    "draft_reply": True,  # the drafter's text from the mail, and its subject
-    "edit_draft": True,  # the draft's subject, which can be "Re: <subject>"
-    "find_contact": True,  # names from the headers of mail
-    "find_follow_ups": True,  # subjects and senders
-    "find_priority": True,  # subjects and senders
-    "forward_email": True,  # the subject and the file names of the mail
-    "get_account_overview": True,  # top senders and subjects
-    "list_accounts": False,  # the member's own mailboxes and counts
-    "list_artifacts": True,  # file names that a mail can have named
-    "list_labels": True,  # a label name that a rule or a sort can have made
-    "list_scheduled_sends": True,  # draft subjects and failure text
+    (_MAIL, "bulk_manage_inbox"): False,  # counts and the model's own filter
+    (_MAIL, "cancel_scheduled_send"): False,  # fixed words, or the server's refusal
+    (_MAIL, "compose_reply"): True,  # the subject and the recent reply of the thread
+    (_MAIL, "create_label"): False,  # the model's own label name
+    (_MAIL, "digest"): True,  # subjects and senders
+    (_MAIL, "draft_reply"): True,  # the drafter's text from the mail, and its subject
+    (_MAIL, "edit_draft"): True,  # the draft's subject, which can be "Re: <subject>"
+    (_MAIL, "find_contact"): True,  # names from the headers of mail
+    (_MAIL, "find_follow_ups"): True,  # subjects and senders
+    (_MAIL, "find_priority"): True,  # subjects and senders
+    (_MAIL, "forward_email"): True,  # the subject and the file names of the mail
+    (_MAIL, "get_account_overview"): True,  # top senders and subjects
+    (_MAIL, "list_accounts"): False,  # the member's own mailboxes and counts
+    (_MAIL, "list_artifacts"): True,  # file names that a mail can have named
+    (_MAIL, "list_labels"): True,  # a label name that a rule or a sort can have made
+    (_MAIL, "list_scheduled_sends"): True,  # draft subjects and failure text
     # Task 3977: a trash with CHAT_DRAFT_CHOICE_ORGS on answers a MESSAGES
     # block of the subjects, the people and the text of drafts and mail.
-    "manage_inbox": True,
-    "mark_thread_done": False,  # fixed words; the subject stays on the card
-    "narrow_and_read": True,  # mail text
-    "present_email_groups": True,  # subjects and senders
-    "query_inbox": True,  # mail text
-    "query_insights": True,  # mail text
-    "read_email": True,  # mail text
-    "read_email_attachment": True,  # file text
-    "read_thread": True,  # mail text
-    "reclassify_reply_zero": False,  # fixed words
+    (_MAIL, "manage_inbox"): True,
+    (_MAIL, "mark_thread_done"): False,  # fixed words; the subject stays on the card
+    (_MAIL, "narrow_and_read"): True,  # mail text
+    (_MAIL, "present_email_groups"): True,  # subjects and senders
+    (_MAIL, "query_inbox"): True,  # mail text
+    (_MAIL, "query_insights"): True,  # mail text
+    (_MAIL, "read_email"): True,  # mail text
+    (_MAIL, "read_email_attachment"): True,  # file text
+    (_MAIL, "read_thread"): True,  # mail text
+    (_MAIL, "reclassify_reply_zero"): False,  # fixed words
     # HRD-10d-2: with CHAT_CARD_PRECONDITION_ORGS on, a 409 of a changed
     # draft answers its subject, its people, the start of its text and its
     # file names (``_send_changed_text``). A draft can quote a stranger.
-    "schedule_send": True,
-    "send_draft": True,
-    "send_email": ("reply_to_email_id",),  # a reply names derived addresses
-    "snooze_email": True,  # the subject of the mail
-    "sync_account": False,  # a count
+    (_MAIL, "schedule_send"): True,
+    (_MAIL, "send_draft"): True,
+    (_MAIL, "send_email"): ("reply_to_email_id",),  # a reply names derived addresses
+    (_MAIL, "snooze_email"): True,  # the subject of the mail
+    (_MAIL, "sync_account"): False,  # a count
     # The ``email-setup`` pack.
-    "apply_settings_to_mailboxes": False,  # the member's own mailboxes
-    "auto_categorize_inbox": True,  # senders and categories of mail
-    "categorize_senders": True,  # senders
-    "copy_rules": True,  # rule names that a learned rule can carry
-    "create_rule": False,  # the model's own rule and the own mailbox
-    "create_rules_from_prompt": True,  # rule names that a model wrote
-    "delete_knowledge": False,  # the id
-    "delete_rule": False,  # the id
-    "forget_pattern": True,  # a pattern learned from mail
-    "generate_writing_style": True,  # a style read from sent mail and quotes
-    "get_rules_and_settings": True,  # rules and patterns learned from mail
-    "install_default_rules": False,  # the preset names and the own mailbox
-    "learn_rule_pattern": True,  # a pattern learned from a mail
-    "list_knowledge": True,  # entries that a mail can have filled
-    "list_patterns": True,  # patterns learned from mail
-    "list_rule_history": True,  # subjects and senders of the acted mail
-    "list_senders": True,  # senders
-    "resolve_execution": True,  # the subject and the sender of the act
-    "rule_guidance": True,  # guidance and policy lines
-    "run_rules": True,  # subjects and senders of the acted mail
-    "save_knowledge": False,  # the model's own title and the own mailbox
-    "set_sender_status": True,  # the sender lines of the server
-    "test_rule_match": True,  # subjects and senders of the matched mail
-    "unsubscribe_sender": True,  # unsubscribe targets that a mail names
-    "update_account": False,  # the member's own mailbox
-    "update_assistant_settings": False,  # the own mailbox, or the server's words
-    "update_rule": True,  # the stored rule name
-    "voice_profile": True,  # a voice read from sent mail and quotes
+    (_MAIL, "apply_settings_to_mailboxes"): False,  # the member's own mailboxes
+    (_MAIL, "auto_categorize_inbox"): True,  # senders and categories of mail
+    (_MAIL, "categorize_senders"): True,  # senders
+    (_MAIL, "copy_rules"): True,  # rule names that a learned rule can carry
+    (_MAIL, "create_rule"): False,  # the model's own rule and the own mailbox
+    (_MAIL, "create_rules_from_prompt"): True,  # rule names that a model wrote
+    (_MAIL, "delete_knowledge"): False,  # the id
+    (_MAIL, "delete_rule"): False,  # the id
+    (_MAIL, "forget_pattern"): True,  # a pattern learned from mail
+    (_MAIL, "generate_writing_style"): True,  # a style read from sent mail and quotes
+    (_MAIL, "get_rules_and_settings"): True,  # rules and patterns learned from mail
+    (_MAIL, "install_default_rules"): False,  # the preset names and the own mailbox
+    (_MAIL, "learn_rule_pattern"): True,  # a pattern learned from a mail
+    (_MAIL, "list_knowledge"): True,  # entries that a mail can have filled
+    (_MAIL, "list_patterns"): True,  # patterns learned from mail
+    (_MAIL, "list_rule_history"): True,  # subjects and senders of the acted mail
+    (_MAIL, "list_senders"): True,  # senders
+    (_MAIL, "resolve_execution"): True,  # the subject and the sender of the act
+    (_MAIL, "rule_guidance"): True,  # guidance and policy lines
+    (_MAIL, "run_rules"): True,  # subjects and senders of the acted mail
+    (_MAIL, "save_knowledge"): False,  # the model's own title and the own mailbox
+    (_MAIL, "set_sender_status"): True,  # the sender lines of the server
+    (_MAIL, "test_rule_match"): True,  # subjects and senders of the matched mail
+    (_MAIL, "unsubscribe_sender"): True,  # unsubscribe targets that a mail names
+    (_MAIL, "update_account"): False,  # the member's own mailbox
+    (_MAIL, "update_assistant_settings"): False,  # the own mailbox, or the server's words
+    (_MAIL, "update_rule"): True,  # the stored rule name
+    (_MAIL, "voice_profile"): True,  # a voice read from sent mail and quotes
 }
 
 
@@ -1981,14 +1990,15 @@ def marks_chat(owner: str, tool: str, args: Mapping[str, Any] | None = None) -> 
     An owner outside ``egress.UNTRUSTED_INPUT_AGENTS`` gives False, because
     its tools read no stranger text. For an owner inside it, the entry of
     :data:`PACK_OUTSIDE_TEXT` decides, with the call's own arguments *args*.
-    A tool that the map does not name gives True (fail closed)."""
+    The entry is the one of the pair ``(owner, tool)`` (task 4053). A pair
+    that the map does not name gives True (fail closed)."""
     try:
         from acb_skills.egress import UNTRUSTED_INPUT_AGENTS
     except ImportError:
         return True
     if str(owner or "") not in UNTRUSTED_INPUT_AGENTS:
         return False
-    rule = PACK_OUTSIDE_TEXT.get(str(tool or ""), True)
+    rule = PACK_OUTSIDE_TEXT.get((str(owner or ""), str(tool or "")), True)
     if isinstance(rule, bool):
         return rule
     given = args or {}

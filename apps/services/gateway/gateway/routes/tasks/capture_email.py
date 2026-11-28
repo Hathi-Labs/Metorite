@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from datetime import UTC, datetime
 from typing import Any
 
@@ -153,9 +154,25 @@ def _parse_addr_list(raw: Any) -> list[dict[str, Any]]:
         return []
 
 
+def _sender_label(addr: dict[str, Any]) -> str:
+    """The text that shows one stored address: its name, else its address.
+
+    A display name can hold a false address, as in
+    ``"<ceo@company.test>" <mallory@evil.test>`` (task 4016). A name that
+    holds ``@`` or ``<``, in any width, and is not the address itself, shows
+    the real address. The stored ``from_address`` does not change.
+    """
+    name = str(addr.get("name") or "").strip()
+    email = str(addr.get("email") or "").strip()
+    folded = unicodedata.normalize("NFKC", name)
+    if (("@" in folded or "<" in folded)
+            and folded.lower() != email.lower()):
+        return email
+    return name or email
+
+
 def _fmt_addrs(addrs: list[dict[str, Any]], limit: int = 6) -> str:
-    out = [str(a.get("name") or a.get("email") or "").strip()
-           for a in addrs[:limit]]
+    out = [_sender_label(a) for a in addrs[:limit]]
     return ", ".join(x for x in out if x)
 
 
@@ -204,7 +221,7 @@ async def _fetch_thread(
         if not body:
             continue
         frm = _parse_addr(r.from_address)
-        sender = frm.get("name") or frm.get("email") or "?"
+        sender = _sender_label(frm) or "?"
         when = r.received_at.isoformat() if hasattr(r.received_at, "isoformat") else ""
         parts.append(f"From: {sender}" + (f" · {when}" if when else "")
                      + f"\n{body[:_THREAD_MSG_MAX_CHARS]}")
@@ -557,7 +574,7 @@ async def _route_and_persist(
     writes the item through the seam (plus its Waiting-For for follow-ups)
     and returns (item_id, disposition, assignee_name). Caller commits."""
     from_addr = _parse_addr(email.from_address)
-    from_name = str(from_addr.get("name") or from_addr.get("email") or "")
+    from_name = _sender_label(from_addr)
     from_email_ = str(from_addr.get("email") or "")
 
     # Resolve a delegate to a real person; a WAITING with a resolved teammate is
@@ -664,7 +681,7 @@ async def capture_from_email(
                 due_at=item.due_at)
 
         from_addr = _parse_addr(email.from_address)
-        from_name = str(from_addr.get("name") or from_addr.get("email") or "")
+        from_name = _sender_label(from_addr)
         from_email_ = str(from_addr.get("email") or "")
         to_list = _parse_addr_list(email.to_addresses)
         cc_list = _parse_addr_list(email.cc_addresses)
@@ -804,7 +821,7 @@ async def preview_capture_from_email(
     async with _tenant_session() as db:
         email = await _load_email(db, uid, req.account_id, req.email_id)
         from_addr = _parse_addr(email.from_address)
-        from_name = str(from_addr.get("name") or from_addr.get("email") or "")
+        from_name = _sender_label(from_addr)
 
         existing = await _find_existing_capture(db, uid, str(email.id))
         already = _row_to_item(existing) if existing is not None else None
@@ -840,7 +857,7 @@ async def enhance_capture_from_email(
     async with _tenant_session() as db:
         email = await _load_email(db, uid, req.account_id, req.email_id)
         from_addr = _parse_addr(email.from_address)
-        from_name = str(from_addr.get("name") or from_addr.get("email") or "")
+        from_name = _sender_label(from_addr)
         from_email_ = str(from_addr.get("email") or "")
         to_list = _parse_addr_list(email.to_addresses)
         cc_list = _parse_addr_list(email.cc_addresses)

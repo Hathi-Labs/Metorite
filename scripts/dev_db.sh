@@ -13,6 +13,13 @@
 #     eval "$(bash scripts/dev_db.sh --export)"   # ...and set them in this shell
 #     bash scripts/dev_db.sh --down     # throw both away
 #
+# Slots (task 4105): several R8 runs at once, each on its own database pair.
+#     eval "$(METORITE_SCRATCH_SLOT=2 bash scripts/dev_db.sh --export)"
+#     METORITE_SCRATCH_SLOT=2 bash scripts/dev_db.sh --down
+# Slot n (1 to 9) names the containers `metorite-scratch-*-s<n>`, and uses the
+# ports 5433+10n and 5434+10n. With no slot, nothing changes. One run at a time
+# for each slot: the caller holds a lock, this script does not.
+#
 # ⚠️ **These are THROWAWAY databases and nothing here touches production.** The
 # containers are named `metorite-scratch-*`, they bind to loopback only, and
 # the credentials are `cc/cc` and `acb/acb` on purpose — a scratch database
@@ -25,10 +32,37 @@ set -euo pipefail
 # from a subdirectory would otherwise not find it.
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-CC_CONTAINER="metorite-scratch-console"
-TENANT_CONTAINER="metorite-scratch-tenant"
-CC_PORT="${METORITE_SCRATCH_CONSOLE_PORT:-5433}"
-TENANT_PORT="${METORITE_SCRATCH_TENANT_PORT:-5434}"
+say() { printf '%s\n' "$*" >&2; }
+
+# A bad slot STOPS here. A silent fall back to the default pair would put two
+# runs on one database, which is what a slot exists to prevent.
+SLOT="${METORITE_SCRATCH_SLOT:-}"
+SUFFIX=""
+OFFSET=0
+if [ -n "$SLOT" ]; then
+    case "$SLOT" in
+        [1-9]) ;;
+        *)
+            say "ERROR: METORITE_SCRATCH_SLOT must be one digit from 1 to 9, not '$SLOT'."
+            exit 2
+            ;;
+    esac
+    SUFFIX="-s$SLOT"
+    OFFSET=$((10 * SLOT))
+fi
+
+CC_CONTAINER="metorite-scratch-console$SUFFIX"
+TENANT_CONTAINER="metorite-scratch-tenant$SUFFIX"
+# An explicit port variable wins over the slot.
+CC_PORT="${METORITE_SCRATCH_CONSOLE_PORT:-$((5433 + OFFSET))}"
+TENANT_PORT="${METORITE_SCRATCH_TENANT_PORT:-$((5434 + OFFSET))}"
+
+# One pair of log files for each slot, so two runs never read the other's log.
+# A slot's log also carries the user id: another user cannot write a file that
+# this user left in /tmp (`fs.protected_regular`). No slot keeps the old names.
+LOG_SUFFIX="${SLOT:+$SUFFIX-u$(id -u)}"
+ERR_LOG="${METORITE_SCRATCH_LOG_DIR:-/tmp}/dev_db_err$LOG_SUFFIX"
+TENANT_LOG="${METORITE_SCRATCH_LOG_DIR:-/tmp}/dev_db_tenant$LOG_SUFFIX.log"
 
 CC_DSN="postgresql+psycopg://cc:cc@127.0.0.1:${CC_PORT}/cc_platform"
 TENANT_DSN="postgresql+psycopg://acb:acb@127.0.0.1:${TENANT_PORT}/acb_tenant"
@@ -38,8 +72,6 @@ TENANT_DSN="postgresql+psycopg://acb:acb@127.0.0.1:${TENANT_PORT}/acb_tenant"
 # comment warns about.
 CC_IMAGE="postgres:16"
 TENANT_IMAGE="pgvector/pgvector:pg16"
-
-say() { printf '%s\n' "$*" >&2; }
 
 if [ "${1:-}" = "--down" ]; then
     docker rm -f "$CC_CONTAINER" "$TENANT_CONTAINER" >/dev/null 2>&1 || true
@@ -114,9 +146,9 @@ say "Console ladder:"
 applied=0
 for f in infra/customer_console/[0-9][0-9][0-9]_*.sql; do
     if ! docker exec -i "$CC_CONTAINER" psql -U cc -d cc_platform \
-            -v ON_ERROR_STOP=1 -q < "$f" 2>/tmp/dev_db_err; then
+            -v ON_ERROR_STOP=1 -q < "$f" 2>"$ERR_LOG"; then
         say "  FAILED $(basename "$f")"
-        sed 's/^/    /' /tmp/dev_db_err >&2
+        sed 's/^/    /' "$ERR_LOG" >&2
         exit 1
     fi
     applied=$((applied + 1))
@@ -172,9 +204,9 @@ tenant_tables="$(docker exec "$TENANT_CONTAINER" psql -U acb -d acb_tenant -tAc 
     2>/dev/null | tr -d '[:space:]')"
 if [ "${tenant_tables:-0}" = "0" ]; then
     if ! docker exec -i "$TENANT_CONTAINER" psql -U acb -d acb_tenant \
-            -v ON_ERROR_STOP=1 -q < infra/postgres/01_schema.sql 2>/tmp/dev_db_err; then
+            -v ON_ERROR_STOP=1 -q < infra/postgres/01_schema.sql 2>"$ERR_LOG"; then
         say "  FAILED 01_schema.sql"
-        sed 's/^/    /' /tmp/dev_db_err >&2
+        sed 's/^/    /' "$ERR_LOG" >&2
         say '  !! If that named the "vector" type, the IMAGE is wrong — the'
         say '     tenant container must be pgvector, not stock postgres.'
         exit 1
@@ -189,13 +221,13 @@ fi
 if ! APP_DIR="$REPO_ROOT" PG_CONTAINER="$TENANT_CONTAINER" \
         PG_USER=acb PG_DB=acb_tenant SKIP_PRE_MIGRATION_BACKUP=1 \
         bash "$REPO_ROOT/scripts/apply_migrations.sh" \
-        >/tmp/dev_db_tenant.log 2>&1; then
+        >"$TENANT_LOG" 2>&1; then
     say "  FAILED — the last 20 lines of the replay:"
-    tail -20 /tmp/dev_db_tenant.log | sed 's/^/    /' >&2
+    tail -20 "$TENANT_LOG" | sed 's/^/    /' >&2
     exit 1
 fi
 tenant_note="$(grep -oE '\([0-9]+ applied, [0-9]+ already recorded\)' \
-    /tmp/dev_db_tenant.log | tail -1)"
+    "$TENANT_LOG" | tail -1)"
 say "  ${tenant_note:-replayed}"
 
 if [ -n "$EXPORT_ONLY" ]; then
@@ -210,7 +242,7 @@ say ""
 say "  export CUSTOMER_CONSOLE_DATABASE_URL=$CC_DSN"
 say "  export TENANT_LADDER_DATABASE_URL=$TENANT_DSN"
 say ""
-say "  eval \"\$(bash scripts/dev_db.sh --export)\"    # both, in one line"
+say "  eval \"\$(${SLOT:+METORITE_SCRATCH_SLOT=$SLOT }bash scripts/dev_db.sh --export)\"    # both, in one line"
 say ""
 say "⚠️ Without these, 843 R8 tests SKIP and the run still reads green."
 say ""

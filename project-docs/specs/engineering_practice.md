@@ -97,6 +97,23 @@ It applies each migration through the container's own `psql`. A Windows box
 carries no `psql`, and `scripts/apply_customer_console_migrations.sh` needs
 one. On the main development machine that script cannot run at all.
 
+**Slots: two or more R8 runs at once (task 4105).** Set
+`METORITE_SCRATCH_SLOT` to one digit from 1 to 9. Each slot has its own two
+containers, ports, DSNs and logs. With no slot, nothing changes.
+
+```sh
+export METORITE_SCRATCH_SLOT=2
+eval "$(bash scripts/dev_db.sh --export)"    # containers *-s2, ports 5453 and 5454
+bash scripts/dev_db.sh --down                # removes slot 2 only
+```
+
+Slot n uses ports 5433+10n and 5434+10n. An explicit `METORITE_SCRATCH_*_PORT`
+variable still wins. Fence for the names, ports and logs:
+`tests/unit/test_dev_db_script.py` (`TestSlots`).
+
+Run one command at a time on one slot. The script holds no lock, so the caller
+holds it (advisory).
+
 **Why a command, and not the paragraph above it.** §1 described the
 `mt-scratch` pattern for weeks. A pattern is a thing a person must remember.
 

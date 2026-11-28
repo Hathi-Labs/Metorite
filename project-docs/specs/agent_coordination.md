@@ -14,7 +14,7 @@
 
 **SW-7b (a display label for each session) is built, 2026-11-11 (task 2858). migration 418.**
 
-**AMR-1 to AMR-3 (the lenses and the phone view of the Agents view, §3.12.8) are built and dark, 2026-11-26, behind `AGENT_LENSES_ORGS`.** **AMR-4 (the Agents view at scale, §3.12.9) is built and dark behind the same flag, 2026-11-26.** **AMR-5a (task 4098, only the cards that draw count toward the 40) is built, 2026-11-27.**
+**AMR-1 to AMR-3 (the lenses and the phone view of the Agents view, §3.12.8) are built and dark, 2026-11-26, behind `AGENT_LENSES_ORGS`.** **AMR-4 (the Agents view at scale, §3.12.9) is built and dark behind the same flag, 2026-11-26.** **AMR-5a (task 4098, only the cards that draw count toward the overview) is built, 2026-11-27, and AMR-5 replaces it.** **AMR-5 (one Agents map, owner 2026-11-27) replaces the three lenses and the overview.**
 
 **SW-48 (the app lead may Release and Resume a teammate's run) is built and dark, behind `APP_LEAD_RUNS_ORGS` (task 1881).**
 
@@ -881,43 +881,55 @@ of agent graph view as well, in addition to the timeline, list, board, etc.
 - **The model of a sub-agent.** The hook input has no model. A child run reads "Not reported" unless its agent definition names a model.
 - **The tasks of SW-64 and SW-86.** A board search on 2026-11-19 did not find tasks 1910 and 1931. Read task 3378 before rung M5 starts, and file new tasks if the slices are gone.
 
-#### 3.12.8 The lenses and the phone view (AMR-1 to AMR-3, 2026-11-26)
+#### 3.12.8 The map and the phone view (AMR-1 to AMR-3 and AMR-5)
 
 The owner approved two mockups on 2026-11-26: a new Agents view, and a simpler phone view. The new view replaces the map of SW-103 on the Agents canvas of a project. The lens of Agents at work keeps that map. The flag `AGENT_LENSES_ORGS` keeps the new view dark.
 
-- **One toolbar.** Four state filters show their counts: Needs you, Working, Waiting and Idle. A person filter and a find box follow. One switch selects Board, Graph or List.
-- **Idle starts off.** The idle sessions of a group fold into one line.
-- **The Graph.** It has four columns: person, orchestrator, session, and the wait of the session. This clarifies the tree of §3.12.2 for this view.
-- **A session node.** It is the task card of the board, with the agent edge of `lib/agentCardLook.ts`.
-- **The lines.** A dispatch line is neutral. A line to "You" takes the warning colour. A line to another wait takes the accent colour.
+**Owner, 2026-11-27 (task 4097).** The view had too many options. The owner asked for one map of everyone's work, with a few filters and the same data.
+
+This replaces some rules of 2026-11-26. They are the Board, Graph and List switch, the state chips and the Waits-on toggle. They are also the overview tiles, the levels and the breadcrumb. It also replaces the scale mockup `scale.html`. Do not bring them back.
+
+- **One view.** The Agents canvas draws one map. The question that it answers: how the work splits across people, their agents and their subagents, and what needs the member.
+- **One toolbar, one row.** People (Everyone, Me, then each person), one switch (Active or All) and Find. "Needs you N" with a step back and next sits at the right, and only when a question waits. It holds no other control. In a narrow column, as with the dock open, the switch and "Needs you" hide their words. Each control keeps its word as its accessible name.
+- **Active or All.** Active shows Needs you, Failed, Working and Waiting. It is the default. All adds Idle and Done. "Done" is the word of the ended state `completed`. Its look is the key `lens_done` of `statusAccent.ts`. So a `completed` run keeps its gray chip on every other surface. The test `AgentRepairs.test.ts` holds that rule.
+- **Four columns.** Left to right: the scope, the person, the orchestrator and the agent (a session). The subagents of one open agent add a column. The columns never move.
+- **The counts.** The scope node reads "Everyone" or the person. It counts the agents, the active ones, the ones that need the member and the subagents. Each level shows its own counts.
+- **One chevron.** Each node that holds others folds and unfolds in place. There are no levels. A click on a node opens the details dock.
+- **The start rule.** A person with active work starts open. A person with none starts folded, as a card with the counts and one square for each agent. Under Active, the idle and done agents of an open person fold into one node, "N idle or done". A click opens it.
+- **The lines (G1).** A dispatch line always draws, between people too. It ends on what stands for a hidden agent: a state node, the "idle or done" node, a folded orchestrator or a person card. A plain line joins the scope, a person and an orchestrator to what each holds. The map draws no wait line and no "waits on" column.
+- **A wait (G1).** It is a fact of the card: "Needs you", or "Waiting · CI · 25 min". The details dock keeps the full wait.
+- **The card (G2).** Line 1 holds the name and the age. Line 2 holds the task, or the latest line, and the machine. The foot holds the wait fact and the subagent count. The card keeps the look of `agentCardLook` and `statusAccent`, and adds no colour.
+- **A question of another member (EA3-50).** That session reads "Waiting for" and the member's name. It counts as waiting.
 - **The layout.** A pure function places the nodes (`lib/agentGraph.ts`). `@xyflow/react` pans and zooms.
-- **No invented line.** "You" holds the sessions of the viewer that read `waiting_on_person`. Another wait comes from `waiting_on` and `waiting_until` of a listed run. AMR-1 adds those two fields to the map read.
-- **A question of another member (EA3-50).** That session reads "Waiting for" and the member's name. It counts as waiting, and its line goes to "A person". The `waiting_on_person` state is the fact of that line.
-- **A find.** The Graph also draws the orchestrator of a match, as context. Board and List show the matches only.
-- **A wait with no field.** It draws no line. The read has no field for one session that needs another session, so the view draws no such line.
+- **A stable map (G4).** The viewer comes first, then the people by Needs you, Failed and active counts. Inside a person, the orchestrators come by urgency, then by start. The read holds no start of a session. So the view takes the start of the listed run when it first sees a session, and keeps that value until the page loads again. The order changes only when an agent changes its state group. A node moves in 200 ms, and not at all with reduced motion. After the first view, a refresh never moves the viewport.
+- **Remembered filters (G5).** People and Active or All stay for each member in `localStorage`, inside try and catch (`lib/agentMapPrefs.ts`). An empty store gives the defaults.
+- **The empty state (G6).** Under Active with no active agent, the view reads "No agent works now." and offers "Show all N".
+- **Find.** The map draws the matches, whatever the switch and the folds, with their orchestrator as context. A person with no match does not draw.
+- **The controls.** Fit, zoom out, zoom in and one "Legend" button. The button opens the states and the dispatch line. The legend starts shut, and Escape closes it.
 - **Details.** A click opens a dock at the right. A narrow window uses the shared `Modal`.
 - **The acts.** The view only reads (rule 7 of §3.12.7). The details show the run panel (`AgentRunPanel`) of one task. That panel has no Steer control before SW-86, so a member writes to an agent in its reply box.
-- **The phone, 760 pixels and under.** It shows three counts, then the questions that wait on the member, then the people. The oldest question comes first.
-- **One level for each screen.** A person opens their orchestrators. An orchestrator opens its sessions. A session opens in a bottom sheet.
-- **One answer path.** The phone uses the list of agent questions (`QuestionsView`). The graph does not draw on a phone.
+- **Started directly (G7).** The group of the sessions that no orchestrator handed work to reads "Started directly". Its tip reads "Sessions that a person started, not an orchestrator." On the map, those agents hang from their person.
+- **The phone, 760 pixels and under.** It shows the counts, then the questions that wait on the member, then the people. The oldest question comes first. AMR-5 does not change it.
+- **One level for each screen.** On a phone, a person opens their orchestrators. An orchestrator opens its sessions. A session opens in a bottom sheet.
+- **One answer path.** The phone uses the list of agent questions (`QuestionsView`). The map does not draw on a phone.
 
-#### 3.12.9 The Agents view at scale (AMR-4, 2026-11-26)
+#### 3.12.9 The Agents view at scale (AMR-4 and AMR-5)
 
-The owner asked on 2026-11-26 that the view of §3.12.8 stays usable with hundreds of sessions. The flag `AGENT_LENSES_ORGS` keeps these rules dark too. Where this section and §3.12.8 differ, this section wins.
+The owner asked on 2026-11-26 that the view of §3.12.8 stays usable with hundreds of sessions. **Owner, 2026-11-27 (task 4097):** the overview tiles, the levels and the toolbar rule of 2026-11-26 are gone. The map folds in place. The flag `AGENT_LENSES_ORGS` keeps these rules dark too. Where this section and §3.12.8 differ, this section wins.
 
-- **Aggregate first.** A canvas draws at most 40 session cards, plus the orchestrator card. Past that it groups, and each group says what it holds.
-- **Six states.** Needs you, Failed, Working, Waiting, Idle and Done. Idle and Done start off. "Done" is the word of the ended state `completed`. Its look is the key `lens_done` of `statusAccent.ts`. So a `completed` run keeps its gray chip on every other surface. The test `AgentRepairs.test.ts` holds that rule.
-- **The count (AMR-5a, owner 2026-11-27).** Only the cards that draw count toward the 40. Those are the sessions that the state chips and Find let through, and each orchestrator card. When a fold would pass 40 with the folds that are open, its orchestrator opens as its own level. On the Graph and the Board, open folds that pass 40 together close.
-- **The overview.** A scope that shows more than 40 sessions draws one tile for each orchestrator, under its person, on the Graph and the Board. The tile that wants the most attention comes first. A tile holds its counts, one square for each session (the most urgent first, at most 96) and a bar of its subagents. The sessions with no orchestrator make one "No orchestrator" tile for each person.
-- **Quiet orchestrators.** A tile with only idle and done sessions folds into one row for its person. A find opens that row.
-- **Levels.** A tile, or a square, opens the graph of that orchestrator. A breadcrumb leads back: All agents, then a person, then an orchestrator.
-- **The bound.** One orchestrator draws its card and at most 12 session cards, ranked needs you, failed, working and waiting. The rest fold into one node for each state. The node shows its squares and opens 12 more. A node that fills the canvas then walks on to its next cards, so a member reaches every session by clicking. The canvas never passes 40 session cards, plus the orchestrator card. The selected session always draws.
-- **Subagents are a count.** A card shows the short form, an icon with "7 · 2 working" and the failed count beside its icon. So the task or the question keeps most of the line. The accessible name and the tip say "7 subagents · 2 working · 1 failed". A List row and the details say it in full. One session at a time opens its subagents in the graph, as at most 8 rows and then "+N more". The details list each one by state, with the done ones folded. A stopped or released subagent reads Idle.
-- **Ways to the work.** "Question 1 of N" walks the questions that wait on the member, the oldest first. Each step opens the orchestrator, centres the card and opens the details. Find reaches the names of the subagents.
+- **The bound.** The canvas draws at most 40 agent cards, the orchestrators included. The pure function `planMap` (`lib/agentScale.ts`) holds this rule.
+- **Group by group.** Inside one state, a person's cards fill one group after the other, so an orchestrator keeps its agents on the canvas.
+- **Urgency wins (G3).** While the cap has room, a Needs you or Failed agent never folds. The rest fold in this order: Done, Idle, Waiting, Working. Inside one state, the people with the most agents fold first. A person with no card left draws as their folded card.
+- **The click.** The person that the member opened last takes the room first, after each urgent agent. When the urgent agents leave no room, a click on a state node still takes the slots that it needs, at most 12. So each agent stays reachable. A click that opens a person takes the same room for that person. No slot stays empty. A folded orchestrator ranks by the most urgent agent that it holds, and joins that state node.
+- **The state nodes.** A person whose agents do not all fit draws one node for each state of the rest, "+N working". A click draws the next agents of that state, and walks on to the next ones. So the member reaches every agent by clicks.
+- **The selection.** The selected agent always draws. A fold that holds it closes the details.
+- **Six states.** Needs you, Failed, Working, Waiting, Idle and Done.
+- **Subagents are a count.** A card shows the short form, an icon with "7 · 2 working" and the failed count beside its icon. So the task or the question keeps most of the line. The accessible name and the tip say "7 subagents · 2 working · 1 failed". The details say it in full. One agent at a time opens its subagents on the map, as at most 8 rows and then "+N more". The details list each one by state, with the done ones folded. A stopped or released subagent reads Idle.
+- **Ways to the work.** "Needs you N" walks the questions that wait on the member, the oldest first. Each step opens the way to the agent, centres the card and opens the details. Find reaches the names of the subagents.
 - **Zoom.** Under 60 % zoom, a card shows its name only.
+- **The speed.** The first map of 500 sessions draws under 1 second after the map answers.
 - **The phone.** The first screen shows four counts: needs you, failed, working and waiting. It shows one question card, with a step back and a step forward. Then it shows the people with their squares. A person shows orchestrators as rows. An orchestrator shows its sessions by state, 10 cards and then "Show more". Idle and Done are rows that open. The answer keeps the one path of `QuestionsView`.
-- **Long lists.** A list of more than 50 rows draws only the rows on screen (`lib/windowedList.ts`). This holds for the List, the session and task lists of the details, the subagent list and the cards of a phone level. The row heights are rem, and the sums use the applied root font size, so each density works. No library.
-- **The toolbar.** With the dock closed, it stays one row at 1280 pixels and wider. In a narrow column it first hides the words of the chips and of the lens switch. The icon and the count stay, and each control keeps its word as its accessible name. It never scrolls the page sideways.
+- **Long lists.** A list of more than 50 rows draws only the rows on screen (`lib/windowedList.ts`). This holds for the session and task lists of the details, the subagent list and the cards of a phone level. The row heights are rem, and the sums use the applied root font size, so each density works. No library.
 - **Two more reads.** Both are query values of the map read, and both act only for an org that `AGENT_LENSES_ORGS` holds. For any other org the gateway does not read them. A bad value answers the one 404 of the map.
 - **`detail=summary`.** It lists at most 1000 session nodes, each with ONE lead run. That is the run that asks, then the run that waits, then the newest open run. With no open run, it is the newest ended run. `children` is empty. Each session holds `subagents`: `total`, `working`, `failed`, `done` and at most 40 distinct `names`. Each session holds `tasks`: the `number` and the `title` of at most 20 tasks of its runs, the lead task first. The title is one line of untrusted text. The find box reads them.
 - **Failed and Done on the summary.** A node with no open run reads `failed` or `done` when its newest ended run is `failed` or `completed`. That run ended in the last 24 hours (`MAP_ENDED_WINDOW_S`). A newest run that stopped, or ended in another way, lists no node. A node with an open run keeps the state rule of the map.
@@ -2293,6 +2305,8 @@ They keep their own gates.
 
 #### AMR-1 · The Graph lens of the Agents view
 
+⚠️ **Replaced in part by AMR-5 (owner, 2026-11-27).** The four columns and the wait nodes are gone. The flag and the fields of the read stay.
+
 - **Metorite task.** 4020. Epic 321.
 - **Scope.** §3.12.8 for the Graph and the details. The flag `AGENT_LENSES_ORGS`, its shell field `agent_lenses`, and `waiting_on` and `waiting_until` on each run of the map read and of `get_agent_map`.
 - **Done when.** With the flag on, the canvas shows the four columns, and each line comes from a field of the read. With the flag off, the canvas is the map of SW-103. A waiting run gives its wait, and every other run gives two nulls.
@@ -2300,6 +2314,8 @@ They keep their own gates.
 - **Risk.** STANDARD UI, with a change to the read. **Gate.** AGENT-SAFE, dark. D145 owner preview before the flip. **Depends on.** SW-112, SW-107.
 
 #### AMR-2 · The Board and List lenses, and the toolbar
+
+⚠️ **Replaced by AMR-5 (owner, 2026-11-27).** The code and the tests of this row are gone. Do not build it again.
 
 - **Metorite task.** 4021. Epic 321.
 - **Scope.** The toolbar of §3.12.8, and the Board and List lenses over the same model. The words and the icons of a state come from `AGENT_STATES` and the board lanes.
@@ -2317,12 +2333,25 @@ They keep their own gates.
 
 #### AMR-4 · The Agents view at scale
 
+⚠️ **Replaced in part by AMR-5 (owner, 2026-11-27).** The overview tiles and the levels are gone. The two reads, the subagent counts, the phone levels and the windowed lists stay.
+
 - **Metorite task.** 4023. Epic 321.
 - **Scope.** §3.12.9. It holds the overview tiles, the bound, the subagent counts, the question pager, the phone levels, the windowed lists and the two reads.
 - **Done when.** A fleet of 500 sessions and 2000 subagents draws at most 40 session cards on a canvas, plus the orchestrator card. R8: the summary holds no child row, and one session reads its own rows only, under the reach of the map. With the flag off, the map answers as before. The first overview draws under 1 second after the map answers.
 - **Fence.** `tests/unit/test_agent_map_r8.py`, `tests/unit/test_agent_label_fence.py`, `lib/agentScale.test.ts`, `components/AgentScale.test.ts` and `components/AgentRepairs.test.ts`.
 - **Risk.** STANDARD UI, with a change to a shared read. **Gate.** AGENT-SAFE, dark. D145 owner preview before the flip. **Depends on.** AMR-1 to AMR-3, SW-39.
 - **Built and dark, 2026-11-26.** The repairs after the verifier and the review are in, 2026-11-26.
+
+#### AMR-5 · One simple Agents map
+
+- **Metorite task.** 4097. Epic 321.
+- **Owner, 2026-11-27.** One map of everyone's work, with a few filters, and no view switch.
+- **Scope.** §3.12.8 and §3.12.9. It deletes the Board, the List, the overview tiles, the breadcrumb, the Waits-on toggle and the wait lines, in commits of their own.
+- **Decisions.** G1 to G6 of task 4097 (metorite-78, 2026-11-27, delegated by the owner). §3.12.8 and §3.12.9 hold them.
+- **Done when.** 64 sessions of two people draw one map. It holds the scope, both people and the 4 active agents. It also holds one "43 idle or done" node, and the second person folded. With All, and with 500 working sessions, the map draws at most 40 agent cards, and clicks reach every agent. People narrows the map to one person. The toolbar holds People, Active or All, Find, and "Needs you N" when a question waits. The phone view does not change.
+- **Fence.** `lib/agentGraph.test.ts`, `lib/agentScale.test.ts`, `lib/agentMapPrefs.test.ts`, `components/AgentLenses.test.ts` and `components/AgentMapNodes.test.ts`.
+- **Risk.** STANDARD UI on a live screen. **Gate.** AGENT-SAFE. D145 owner preview before the merge. `AGENT_LENSES_ORGS` is on for one org, so the next release shows it there. **Depends on.** AMR-1, AMR-3, AMR-4.
+- **Built, 2026-11-27,** on branch `amr5-mt-e85b25cc-one-agents-map`.
 
 #### SW-39 · Child runs
 
@@ -2597,6 +2626,7 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 | SW-101b | The command of SW-101 |
 | SW-112 | `npx vitest run src/app/projects/lib/agentMap.test.ts src/app/projects/lib/commands.test.ts src/app/projects/components/ViewTabs.test.ts src/lib/theme/conformance.test.ts` in `workbench/control_plane`, then `uv run pytest -q -p no:cacheprovider tests/unit/test_chat_parity.py`, then `visual-review` |
 | AMR-1 to AMR-3 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_map_r8.py tests/unit/test_auth_me_shell.py tests/unit/test_auth_me_shell_r8.py`, `npx vitest run src/app/projects src/lib/shell/shellPrefs.test.ts src/lib/theme` in `workbench/control_plane`, then `visual-review` |
+| AMR-5 | `npx tsc --noEmit` and `npx vitest run src/app/projects src/lib src/components` in `workbench/control_plane`, then `visual-review` |
 | AMR-4 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_map_r8.py tests/unit/test_agent_label_fence.py tests/unit/test_app_requests_r8.py tests/unit/test_chat_parity.py`, `npx vitest run src/app/projects src/lib src/components` in `workbench/control_plane`, then `visual-review` |
 | SW-113 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_coverage.py tests/unit/test_agent_map_r8.py tests/unit/test_mcp_edge_prompts.py` |
 | SW-39 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_child_runs_r8.py tests/unit/test_agent_runs_r8.py tests/unit/test_tenant_coverage.py` (new file first) |
@@ -2791,5 +2821,6 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 - **2026-11-17.** The orchestration map for task 3617. It adds §3.12, §5.12, §7.2, Q19 to Q21 (§8.2), one row in §3.7 and item 6 of SW-51. The board holds the slices SW-102 to SW-111 (tasks 3623 to 3632) and the demo tasks 3619 to 3622. It adds no code.
 - **2026-11-19.** The Agents view on each project, for task 3794. It adds §3.12.7, Q22 and Appendix C. It adds the rows SW-101b, SW-112, SW-113, SW-39 and SW-114, with the tasks 3794 to 3797 and 3799. Rung M5 has the demo task 3798. It widens SW-102, SW-104 and SW-105. It adds no code.
 - **2026-11-26.** The lenses and the phone view of the Agents view, from the owner's mockup. It adds §3.12.8 and the rows AMR-1 to AMR-3.
+- **2026-11-27, one map.** The owner's ask of that day. It rewrites §3.12.8 and §3.12.9, and adds the row AMR-5.
 - **2026-11-26, at scale.** The owner's rules for a large fleet. It adds §3.12.9, the row AMR-4 and its verify row. The slice is built and dark behind `AGENT_LENSES_ORGS`.
 - **2026-11-21.** The agent-autoloop research for task 2506 (SW-0d). It adds §3.13, a hop limit in SW-95, retry in SW-78 and the row SW-38. It adds no code.

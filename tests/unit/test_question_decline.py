@@ -432,7 +432,7 @@ def test_the_route_relays_the_decline_to_the_parked_run(monkeypatch, fake_redis)
     calls: list[dict] = []
 
     def _resolve(rid, answer, was_freeform=True, *, thread_id, declined=False,
-                 responder=None):
+                 responder=None, taken=None):
         calls.append({"rid": rid, "answer": answer, "declined": declined, "thread": thread_id})
         return True
 

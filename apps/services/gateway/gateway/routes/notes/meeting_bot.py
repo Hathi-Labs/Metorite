@@ -34,6 +34,7 @@ Config (all via env; the feature is inert but safe until configured):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import uuid
 from urllib.parse import urlparse
@@ -46,6 +47,7 @@ from gateway.routes.notes.core import (
     _get_db,
     _log,
     _tenant_session,
+    load_owned_meeting,
     media_dir,
     router,
 )
@@ -464,8 +466,28 @@ async def _set_bot(db, bot_id: str, **fields) -> None:
     )
 
 
+@contextlib.asynccontextmanager
+async def _bot_session(bound: bool):
+    """The session of one step of a bot refresh or ingest (task 3966).
+
+    ``bound=True`` is a member request that already checked the owner
+    (``GET /meetings/{id}/bot``, ``GET /bots/active``). It opens
+    ``_tenant_session()`` in the tenant of that request. ``bound=False`` is
+    the background poller ``_poll_bot``, which keeps its unbound session.
+    """
+    if bound:
+        async with _tenant_session() as db:
+            yield db
+        return
+    # H4: the background poller (`_poll_bot`) reaches the refresh and the
+    # ingest with no ambient tenant; derive it from the meeting_bot row.
+    async with await _get_db() as db:
+        yield db
+
+
 async def _ingest_recording(
-    meeting_id: str, audio: bytes, ctype: str, requested_by: str
+    meeting_id: str, audio: bytes, ctype: str, requested_by: str,
+    *, bound: bool = False,
 ) -> None:
     """Save the bot's audio as a `meeting_recording` and run the pipeline —
     identical to an upload, so diarization/speaker-naming/summary all apply.
@@ -487,9 +509,9 @@ async def _ingest_recording(
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(audio)
 
-    # H4: reached from `_refresh_bot` (background poller / poll-on-read) — no
-    # ambient tenant; derive it from the meeting_bot row (`requested_by`).
-    async with await _get_db() as db:
+    # The poll-on-read of a member request binds its tenant. The poller does
+    # not (see `_bot_session`).
+    async with _bot_session(bound) as db:
         await db.execute(
             text(
                 "INSERT INTO meeting_recording (id, meeting_id, channel, "
@@ -522,18 +544,19 @@ async def _ingest_recording(
     _log.info("notes.bot_ingested", meeting_id=meeting_id, bytes=len(audio), mime=mime)
 
 
-async def _refresh_bot(bot_row_id: str) -> None:
+async def _refresh_bot(bot_row_id: str, *, bound: bool = False) -> None:
     """Poll the provider once and advance the bot's state; ingest on completion.
     Idempotent + safe to call from both the background poller and poll-on-read;
-    ingestion is claimed atomically so it happens exactly once. Never raises."""
+    ingestion is claimed atomically so it happens exactly once. Never raises.
+
+    ``bound=True`` is the poll-on-read of a member request: every step runs
+    in the tenant of that request (task 3966). The poller passes nothing."""
     provider = resolve_bot_provider()
     if provider is None:
         return
     try:
-        # H4: dual-entry — the background poller (`_poll_bot`) reaches this
-        # with no ambient tenant, so every `_get_db` block in this function
-        # stays unbound until H4 derives the tenant from the meeting_bot row.
-        async with await _get_db() as db:
+        # Dual-entry: see `_bot_session` for which caller binds the tenant.
+        async with _bot_session(bound) as db:
             row = (
                 await db.execute(
                     text("SELECT id, meeting_id, provider_bot_id, status, "
@@ -555,7 +578,7 @@ async def _refresh_bot(bot_row_id: str) -> None:
             # persists terminal state across restarts, so a 404 means even
             # that is gone (volume wiped / very old id) — fail the row
             # honestly instead of polling "joining" for four hours.
-            async with await _get_db() as db:
+            async with _bot_session(bound) as db:
                 await _set_bot(
                     db, bot_row_id, status="failed",
                     error="The meeting-bot worker no longer knows this bot — "
@@ -570,13 +593,13 @@ async def _refresh_bot(bot_row_id: str) -> None:
                 await db.commit()
             from gateway.routes.notes import live_session
 
-            await live_session.end(str(row.meeting_id))
+            await live_session.end(str(row.meeting_id), bound=bound)
             return
 
         # Terminal success: call finished AND media is downloadable → claim the
         # ingest atomically (only one caller flips out of an active status).
         if new_status == "done" and download_url:
-            async with await _get_db() as db:
+            async with _bot_session(bound) as db:
                 claim = (
                     await db.execute(
                         text(
@@ -593,10 +616,10 @@ async def _refresh_bot(bot_row_id: str) -> None:
                 audio, ctype = await provider.download(download_url)
                 await _ingest_recording(
                     str(row.meeting_id), audio, ctype,
-                    getattr(row, "requested_by", None) or "",
+                    getattr(row, "requested_by", None) or "", bound=bound,
                 )
             except Exception as exc:  # ingest failed after claiming
-                async with await _get_db() as db:
+                async with _bot_session(bound) as db:
                     await _set_bot(db, bot_row_id, status="failed",
                                    error=f"ingest failed: {str(exc)[:400]}")
                     await db.execute(
@@ -608,7 +631,7 @@ async def _refresh_bot(bot_row_id: str) -> None:
 
         # Non-terminal (or terminal-without-media-yet): record status changes.
         if new_status and new_status != row.status and new_status != "done":
-            async with await _get_db() as db:
+            async with _bot_session(bound) as db:
                 if new_status in ("failed", "not_admitted") and worker_error:
                     # Carry the worker's own explanation to the row the UI
                     # renders — "Failed" alone tells a human nothing.
@@ -625,7 +648,7 @@ async def _refresh_bot(bot_row_id: str) -> None:
                     # normally ends a session won't run without a recording).
                     from gateway.routes.notes import live_session
 
-                    await live_session.end(str(row.meeting_id))
+                    await live_session.end(str(row.meeting_id), bound=bound)
                 elif new_status == "in_call":
                     await db.execute(
                         text("UPDATE meeting SET status='recording' "
@@ -868,39 +891,49 @@ async def bot_join(
 # watching just empties — the single most confusing outcome, because "it didn't
 # work" is indistinguishable from "nothing happened". Keeping recent failures
 # visible is what makes the error text reachable at all.
+#
+# The member's own meetings only, by the rule of the meetings list (task 3966).
+# The list drives poll-on-read, so the rule also decides whose bots a GET
+# refreshes.
 _RECENT_FAILURE_WINDOW = "30 minutes"
 _ACTIVE_SQL = (
     "SELECT b.*, m.title AS meeting_title FROM meeting_bot b "
     "JOIN meeting m ON m.id = b.meeting_id "
-    "WHERE b.status IN :active "
+    "WHERE (b.status IN :active "
     "   OR (b.status IN ('failed', 'not_admitted') "
-    f"       AND b.updated_at > now() - interval '{_RECENT_FAILURE_WINDOW}') "
+    f"       AND b.updated_at > now() - interval '{_RECENT_FAILURE_WINDOW}')) "
+    f"  AND {OWNED_MEETING_PREDICATE} "
     "ORDER BY b.created_at DESC"
 )
 
 
 @router.get("/bots/active")
 async def list_active_bots(
-    _user: UserContext = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ) -> list[MeetingBotModel]:
     """Active notetaker bots (for the live surface). Poll-on-read: refresh each
     from the provider so status advances (and completed calls ingest) even
-    without the in-process poller."""
+    without the in-process poller.
+
+    The bots of the member's own meetings only (``_ACTIVE_SQL``, task 3966)."""
+    params = {"active": list(ACTIVE_STATUSES), "owner": user.email or ""}
     async with _tenant_session() as db:
         rows = (
             await db.execute(
                 text(_ACTIVE_SQL).bindparams(bindparam("active", expanding=True)),
-                {"active": list(ACTIVE_STATUSES)},
+                params,
             )
         ).fetchall()
     ids = [str(r.id) for r in rows]
     if ids:
-        await asyncio.gather(*(_refresh_bot(i) for i in ids), return_exceptions=True)
+        await asyncio.gather(
+            *(_refresh_bot(i, bound=True) for i in ids), return_exceptions=True
+        )
         async with _tenant_session() as db:
             rows = (
                 await db.execute(
                     text(_ACTIVE_SQL).bindparams(bindparam("active", expanding=True)),
-                    {"active": list(ACTIVE_STATUSES)},
+                    params,
                 )
             ).fetchall()
     return [_row_to_bot(r) for r in rows]
@@ -909,9 +942,13 @@ async def list_active_bots(
 @router.get("/meetings/{meeting_id}/bot")
 async def get_meeting_bot(
     meeting_id: str,
-    _user: UserContext = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ) -> MeetingBotModel | None:
+    """The newest bot of the meeting. Owner only, checked before the
+    poll-on-read refresh, so a GET never refreshes a colleague's bot
+    (task 3966)."""
     async with _tenant_session() as db:
+        await load_owned_meeting(db, meeting_id, user.email, columns="m.id")
         r = (
             await db.execute(
                 text("SELECT b.*, m.title AS meeting_title FROM meeting_bot b "
@@ -923,7 +960,7 @@ async def get_meeting_bot(
     if r is None:
         return None
     if r.status in ACTIVE_STATUSES:
-        await _refresh_bot(str(r.id))
+        await _refresh_bot(str(r.id), bound=True)
         async with _tenant_session() as db:
             r = (
                 await db.execute(
@@ -938,15 +975,16 @@ async def get_meeting_bot(
 @router.get("/meetings/{meeting_id}/bot/diagnostics")
 async def meeting_bot_diagnostics(
     meeting_id: str,
-    _user: UserContext = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ) -> dict:
     """Why a notetaker couldn't join, in enough detail to act on.
 
     Browser automation against a UI that isn't a public API breaks in ways a
     status code can't express — a sign-in wall, a device dialog covering the
     green room and a host who never clicked Admit all end as "didn't join".
-    This returns the page the bot actually saw."""
+    This returns the page the bot actually saw. Owner only (task 3966)."""
     async with _tenant_session() as db:
+        await load_owned_meeting(db, meeting_id, user.email, columns="m.id")
         r = (
             await db.execute(
                 text("SELECT id, provider, provider_bot_id, status, error "
@@ -971,11 +1009,13 @@ async def meeting_bot_diagnostics(
 @router.get("/meetings/{meeting_id}/bot/screenshot")
 async def meeting_bot_screenshot(
     meeting_id: str,
-    _user: UserContext = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ) -> Response:
     """The green room exactly as the bot saw it (PNG). 404 when no screenshot
-    was captured (only failure paths snapshot the page)."""
+    was captured (only failure paths snapshot the page). Owner only
+    (task 3966)."""
     async with _tenant_session() as db:
+        await load_owned_meeting(db, meeting_id, user.email, columns="m.id")
         r = (
             await db.execute(
                 text("SELECT provider_bot_id FROM meeting_bot "
@@ -997,11 +1037,13 @@ async def meeting_bot_screenshot(
 @router.post("/meetings/{meeting_id}/bot/stop", status_code=202)
 async def stop_meeting_bot(
     meeting_id: str,
-    _user: UserContext = Depends(get_current_user),
+    user: UserContext = Depends(get_current_user),
 ) -> dict:
     """Remove the notetaker from the call. Any audio captured so far is still
-    processed by the provider and ingested when ready."""
+    processed by the provider and ingested when ready. Owner only
+    (task 3966)."""
     async with _tenant_session() as db:
+        await load_owned_meeting(db, meeting_id, user.email, columns="m.id")
         r = (
             await db.execute(
                 text("SELECT id, provider_bot_id, status FROM meeting_bot "

@@ -21,8 +21,10 @@ from gateway.routes.tasks import capture_email as ce
 
 
 @pytest.mark.parametrize(("stored", "name", "address"), [
+    # Task 4016: a name that holds another address never shows as the
+    # sender. The name is the real address, and from_email stays the same.
     ({"name": "ceo@company.test", "email": "mallory@evil.test"},
-     "ceo@company.test", "mallory@evil.test"),
+     "mallory@evil.test", "mallory@evil.test"),
     ({"email": "ravi@x.test"}, "ravi@x.test", "ravi@x.test"),
     ({"name": "Priya"}, "Priya", ""),
     ({}, "", ""),

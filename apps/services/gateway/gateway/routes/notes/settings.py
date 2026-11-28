@@ -24,6 +24,7 @@ combinations when exposed directly.
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
@@ -170,21 +171,30 @@ def _row_to_settings(row) -> NotesSettings:
     )
 
 
-async def load(owner_email: str) -> NotesSettings:
+_SETTINGS_SQL = "SELECT * FROM copilot_config WHERE owner_email = :e"
+_MEETING_CFG_SQL = (
+    "SELECT owner_email, template_key FROM meeting WHERE id = CAST(:id AS UUID)"
+)
+
+
+async def load(owner_email: str, db: Any = None) -> NotesSettings:
     """Settings for a user — defaults when they've never saved any. Never
-    raises: a settings read must not be able to break a meeting."""
+    raises: a settings read must not be able to break a meeting.
+
+    A request passes its tenant-bound session ``db`` (task 3966). With no
+    ``db`` it reads as before."""
     if not owner_email:
         return NotesSettings()
     try:
+        if db is not None:
+            row = (await db.execute(text(_SETTINGS_SQL), {"e": owner_email})).fetchone()
+            return _row_to_settings(row) if row is not None else NotesSettings()
         # H4: shared helper also consumed by background paths (`auto_dispatch`
         # from the summary pipeline task, `load_for_meeting` below) — no
         # ambient tenant there; derive it from the owner's app_user/meeting row.
         async with await _get_db() as db:
             row = (
-                await db.execute(
-                    text("SELECT * FROM copilot_config WHERE owner_email = :e"),
-                    {"e": owner_email},
-                )
+                await db.execute(text(_SETTINGS_SQL), {"e": owner_email})
             ).fetchone()
         return _row_to_settings(row) if row is not None else NotesSettings()
     except Exception as exc:
@@ -192,25 +202,29 @@ async def load(owner_email: str) -> NotesSettings:
         return NotesSettings()
 
 
-async def load_for_meeting(meeting_id: str) -> tuple[NotesSettings, str | None]:
-    """Settings of whoever owns this meeting, plus its template key."""
-    # H4: consumed by the copilot orchestrator task and the meeting-bot
-    # worker's `/live/wanted` (service identity) — no ambient tenant; derive
-    # it from the meeting row.
+async def load_for_meeting(
+    meeting_id: str, db: Any = None
+) -> tuple[NotesSettings, str | None]:
+    """Settings of whoever owns this meeting, plus its template key.
+
+    A request passes its tenant-bound session ``db`` (task 3966). With no
+    ``db`` it reads as before."""
     try:
-        async with await _get_db() as db:
+        if db is not None:
             row = (
-                await db.execute(
-                    text(
-                        "SELECT owner_email, template_key FROM meeting "
-                        "WHERE id = CAST(:id AS UUID)"
-                    ),
-                    {"id": meeting_id},
-                )
+                await db.execute(text(_MEETING_CFG_SQL), {"id": meeting_id})
             ).fetchone()
+        else:
+            # H4: consumed by the copilot orchestrator task and the
+            # meeting-bot worker's `/live/wanted` (service identity) — no
+            # ambient tenant; derive it from the meeting row.
+            async with await _get_db() as unbound:
+                row = (
+                    await unbound.execute(text(_MEETING_CFG_SQL), {"id": meeting_id})
+                ).fetchone()
         if row is None:
             return NotesSettings(), None
-        return await load(row.owner_email or ""), row.template_key
+        return await load(row.owner_email or "", db), row.template_key
     except Exception:
         return NotesSettings(), None
 
@@ -222,8 +236,10 @@ async def get_settings(
     user: UserContext = Depends(get_current_user),
 ) -> dict:
     """Everything configurable about the Note Taker, plus the meeting-type
-    catalogue so the UI can show shipped defaults next to any overrides."""
-    settings = await load((getattr(user, "email", "") or "").strip())
+    catalogue so the UI can show shipped defaults next to any overrides.
+    The read runs in the bound session of this request (task 3966)."""
+    async with _tenant_session() as db:
+        settings = await load((getattr(user, "email", "") or "").strip(), db)
     return {
         "settings": settings.model_dump(),
         "templates": [t.model_dump() for t in template_catalogue()],
@@ -291,5 +307,6 @@ async def put_settings(
                 "add": body.auto_dispatch_docs,
             },
         )
+        saved = await load(email, db)
     _log.info("notes.settings_saved", overrides=len(overrides))
-    return {"settings": (await load(email)).model_dump()}
+    return {"settings": saved.model_dump()}
