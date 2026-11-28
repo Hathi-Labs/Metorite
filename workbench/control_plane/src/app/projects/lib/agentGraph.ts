@@ -28,6 +28,7 @@ import {
   membersOf,
 } from "./agentLenses";
 import {
+  type PersonPlan,
   type PlanOptions,
   SUB_ROWS_MAX,
   contextNodeId,
@@ -140,6 +141,24 @@ function placeSubs(
 type DistributiveOmit<T, K extends keyof never> = T extends unknown ? Omit<T, K> : never;
 
 /**
+ * AMR-5b. The ids of the context nodes that the map draws: a context card draws
+ * only while a lane that it dispatched draws a card. ONE rule for the layout and
+ * for the view, which closes the details of a context whose card left the map.
+ * `plans` is the `planMap` of the same options, when the caller has it.
+ */
+export function drawnContextIds(
+  model: LensModel,
+  options: PlanOptions,
+  plans: readonly PersonPlan[] = planMap(model, options),
+): Set<string> {
+  const inScope = options.person ? model.sessions.filter((s) => s.person === options.person) : model.sessions;
+  const rootFolded = !options.find.trim() && options.folds.get(ROOT_ID) === false;
+  if (inScope.length === 0 || rootFolded) return new Set();
+  const drawn = new Set(plans.filter((p) => p.open).flatMap((p) => [...p.shown]));
+  return new Set(model.contexts.filter((c) => c.lanes.some((id) => drawn.has(id))).map((c) => c.id));
+}
+
+/**
  * The one map of the Agents view (AMR-5): the scope, each person, their
  * orchestrators, their agents and the sub-agents of the one open agent.
  * `planMap` bounds the cards. A fold, a state node and the "idle or done" node
@@ -170,9 +189,8 @@ export function layoutGraph(model: LensModel, options: GraphOptions): Graph {
   const own = new Set<string>();
   const centers: number[] = [];
   let y = 0;
-  // AMR-5b: a context card draws only while a lane that it dispatched draws a card.
-  const drawn = new Set(rootFolded ? [] : plans.filter((p) => p.open).flatMap((p) => [...p.shown]));
-  const contexts = model.contexts.filter((c) => c.lanes.some((id) => drawn.has(id)));
+  const drawnIds = drawnContextIds(model, options, plans);
+  const contexts = model.contexts.filter((c) => drawnIds.has(c.id));
   /** A context draws under its person when that person is open on the map. Else after the people. */
   const homeOf = new Map(
     contexts.map((c) => [c.id, plans.some((p) => p.open && p.person === c.person) ? c.person : null]),

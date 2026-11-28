@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 
 import { AgentDetails, selectedSessionId, selectionNodeId, selectionTitle } from "../components/AgentDetails";
 import { GraphCard } from "../components/AgentGraphLens";
-import { type Graph, type GraphNode, type GraphOptions, GRAPH_X, ROOT_ID, layoutGraph } from "./agentGraph";
+import { type Graph, type GraphNode, type GraphOptions, GRAPH_X, ROOT_ID, drawnContextIds, layoutGraph } from "./agentGraph";
 import { buildLensModel, personSessions } from "./agentLenses";
 import { contextRow, mapOf, outsideFleet, run, session } from "./agentLensesFixtures";
 import { OUTSIDE_PROJECT, parseAgentMap } from "./agentMap";
@@ -210,5 +210,23 @@ describe("the context card and its details", () => {
   });
   it("closes the details of a context that left the map", () => {
     expect(selectionTitle(model, { kind: "context", id: "gone" }, (e) => e)).toBeNull();
+  });
+  it("knows which context cards draw, by the one rule of the layout", () => {
+    const ids = (over: Partial<GraphOptions>) => [...drawnContextIds(model, options(over))].sort();
+    const layout = (over: Partial<GraphOptions>) => contextsOf(layoutGraph(model, options(over))).map((id) => id.slice(2));
+    const cases: Array<Partial<GraphOptions>> = [
+      {},
+      { ...foldView(NEW_VIEW, "p:ana@x.test", false, "ana@x.test") },
+      { ...foldView(NEW_VIEW, ROOT_ID, false, null) },
+      { person: "ben@x.test" },
+      { person: "nobody@x.test" },
+      { find: "ben-1" },
+    ];
+    for (const over of cases) expect(ids(over)).toEqual(layout(over));
+    expect(ids({})).toEqual(["ctx-ana", "ctx-zed"]);
+    // A fold of Ana or the People choice of Ben takes ctx-zed off the map, so its details close.
+    expect(ids({ ...foldView(NEW_VIEW, "p:ana@x.test", false, "ana@x.test") })).toEqual(["ctx-ana"]);
+    expect(ids({ person: "ben@x.test" })).toEqual(["ctx-ana"]);
+    expect(ids({ ...foldView(NEW_VIEW, ROOT_ID, false, null) })).toEqual([]);
   });
 });

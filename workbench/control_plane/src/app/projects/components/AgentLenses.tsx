@@ -30,7 +30,7 @@ import { agentMapApi, questionsApi } from "../lib/api";
 import { QUESTIONS_COPY } from "../lib/agentQuestions";
 import { type MapPrefs, readPrefs, writePrefs } from "../lib/agentMapPrefs";
 import { type AgentMap, type AgentMapRead, MAP_RESPONSE_MARK, MAP_TRUNCATED_COPY } from "../lib/agentMap";
-import { type GraphNode, type OpenSubs, ROOT_ID } from "../lib/agentGraph";
+import { type GraphNode, type OpenSubs, ROOT_ID, drawnContextIds } from "../lib/agentGraph";
 import { type LensSession, type LensState, buildLensModel, lensIcon, matchesFind, subRows } from "../lib/agentLenses";
 import {
   type MapMode,
@@ -287,6 +287,14 @@ export function AgentLenses({
     [view, mode, scope, find, nameOf, mine, selected, seenStarts],
   );
 
+  // AMR-5b: a context node draws only with a lane that it dispatched. When its
+  // card leaves the map (a fold, the People choice, the switch), its details close.
+  const contextId = selection?.kind === "context" ? selection.id : null;
+  const contextGone = useMemo(
+    () => contextId !== null && model !== null && !drawnContextIds(model, options).has(contextId),
+    [contextId, model, options],
+  );
+  if (contextGone) setSelection(null);
   const stops = useMemo(() => (model ? questionStops(model, questions.order) : []), [model, questions.order]);
   const drawn = !phone && model !== null && model.sessions.length > 0;
   useMapTiming(drawn, map);

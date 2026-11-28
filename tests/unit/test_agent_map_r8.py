@@ -2003,16 +2003,34 @@ class TestTheOrchestratorOutside:
         assert edge in _lines(admin) and _contexts(admin) == {}
 
     async def test_an_old_dispatcher_run_in_the_project_gives_a_context_node(self, outside):
-        """C1, the missed case. The run is in A, but its node has no current run in A."""
+        """C1, the missed case. The run is in A, but its node has no current run in A.
+        P2-1: the card names the project where the node works now (C), never A."""
         o = outside
         old = o.add("amr5b-old", "completed", ago="30 hours", on=o.on_a("amr5b-old-task"))
         o.add("amr5b-old", "in_progress", on=b.task(o.p, o.p.org_a, OTHER_A, o.proj_c))
         _dispatch(o.p, o.add("amr5b-lane", "in_progress", on=o.on_a()), old)
-        _, body, _ = await _get(o, o.admin_a, o.scope_a)
+        _, body, raw = await _get(o, o.admin_a, o.scope_a)
         assert set(_named(body)) == {"amr5b-lane"}
         row = _contexts(body)["amr5b-old"]
-        assert row["context_project"] == {"name": NAME_A}
+        assert row["context_project"] == {"name": NAME_C}
         assert (row["id"], _node(body, "amr5b-lane")["id"]) in _lines(body)
+        assert NAME_A not in raw
+
+    async def test_a_dispatcher_run_in_a_sub_project_never_names_a_project_in_scope(
+            self, outside):
+        """P2-1. The run is in a sub-project of A and ended long ago. The node
+        works in C now, so the card names C, and no project of the scope."""
+        o = outside
+        p = o.p
+        sub = b.project(p, p.org_a, OTHER_A, parent=o.proj_a)
+        _rename(p, sub, "amr5b-sub-of-a")
+        old = o.add("amr5b-old", "completed", ago="30 hours",
+                    on=b.task(p, p.org_a, MEMBER_A, sub, title="amr5b-sub-task"))
+        o.add("amr5b-old", "in_progress", on=b.task(p, p.org_a, OTHER_A, o.proj_c))
+        _dispatch(p, o.add("amr5b-lane", "in_progress", on=o.on_a()), old)
+        _, body, raw = await _get(o, o.admin_a, o.scope_a)
+        assert _contexts(body)["amr5b-old"]["context_project"] == {"name": NAME_C}
+        assert "amr5b-sub-of-a" not in raw and NAME_A not in raw
 
     async def test_a_dispatcher_that_the_map_of_everyone_does_not_list_gives_nothing(
             self, outside):
@@ -2024,19 +2042,61 @@ class TestTheOrchestratorOutside:
         assert _contexts(body) == {} and body["lines"] == []
         assert "amr5b-gone" not in raw and NAME_B not in raw
 
-    async def test_one_node_takes_the_project_of_its_newest_dispatcher_run(self, outside):
-        """C5. One context node for two runs in two projects: the newest run wins."""
+    async def test_one_node_takes_the_project_of_its_newest_current_run(self, outside):
+        """C5 as amended by P2-1. One context node for two runs in two projects:
+        the run with the newest event names the project, not the newest dispatch."""
         o = outside
-        older = o.add("amr5b-two", "in_progress", ago="3 hours", on=o.task_b)
-        newer = o.add("amr5b-two", "in_progress", ago="1 hour",
-                      on=b.task(o.p, o.p.org_a, OTHER_A, o.proj_c))
-        _dispatch(o.p, o.add("amr5b-lane-1", "in_progress", on=o.on_a()), older)
-        _dispatch(o.p, o.add("amr5b-lane-2", "in_progress", on=o.on_a()), newer)
+        in_b = o.add("amr5b-two", "in_progress", ago="3 hours", on=o.task_b)
+        in_c = o.add("amr5b-two", "in_progress", ago="1 hour",
+                     on=b.task(o.p, o.p.org_a, OTHER_A, o.proj_c))
+        _dispatch(o.p, o.add("amr5b-lane-1", "in_progress", on=o.on_a()), in_b)
+        _dispatch(o.p, o.add("amr5b-lane-2", "in_progress", on=o.on_a()), in_c)
+        _place(o.p, in_b, host=None, kind=None, model=None, ago_s=7200)
         _, body, _ = await _get(o, o.admin_a, o.scope_a)
         rows = [s for s in body["sessions"] if s.get("context")]
         assert len(rows) == 1 and rows[0]["context_project"] == {"name": NAME_C}
         for n in (1, 2):
             assert (rows[0]["id"], _node(body, f"amr5b-lane-{n}")["id"]) in _lines(body)
+        # The run in B gets the newest event: B names the node now.
+        _place(o.p, in_b, host=None, kind=None, model=None, ago_s=0)
+        _place(o.p, in_c, host=None, kind=None, model=None, ago_s=10800)
+        _, body, _ = await _get(o, o.admin_a, o.scope_a)
+        assert _contexts(body)["amr5b-two"]["context_project"] == {"name": NAME_B}
+
+    async def test_the_project_skips_a_project_the_viewer_cannot_see(self, outside):
+        """P2-1. The newest run of the node is on a task of B that the member
+        holds as its assignee, so B is hidden. The next run outside, in C, names it."""
+        o = outside
+        p = o.p
+        in_c = o.add("amr5b-skip", "in_progress",
+                     on=b.task(p, p.org_a, MEMBER_A, o.proj_c, title="amr5b-skip-task-c"))
+        assigned = b.task(p, p.org_a, OTHER_A, o.proj_b, title=TITLE_B, assignee=MEMBER_A)
+        in_b = o.add("amr5b-skip", "in_progress", on=assigned)
+        _place(p, in_c, host=None, kind=None, model=None, ago_s=7200)
+        _dispatch(p, o.add("amr5b-lane", "in_progress", on=o.on_a()), in_b)
+        _, body, raw = await _get(o, o.member_a, o.scope_a)
+        assert _contexts(body)["amr5b-skip"]["context_project"] == {"name": NAME_C}
+        self._no_trace(raw, body, NAME_B, o.proj_b["id"], o.proj_c["id"], TITLE_B, assigned,
+                       in_b, in_c)
+
+    async def test_a_hidden_dispatcher_does_not_change_truncated(self, outside, monkeypatch):
+        """P2-2. The cap counts only the lines that pass the ``seen`` text. Two
+        hidden dispatcher runs give the answer of no dispatcher, ``truncated`` too."""
+        from gateway.routes.projects import agent_summary as m
+
+        o = outside
+        monkeypatch.setattr(m, "MAP_SUMMARY_SESSIONS_MAX", 1)
+        lanes = [o.add("amr5b-lane", "in_progress", on=o.on_a()) for _ in range(2)]
+        for lane in lanes:
+            _dispatch(o.p, lane, o.add("amr5b-orch", "in_progress",
+                                       on=b.task(o.p, o.p.org_a, OTHER_A, o.proj_b)))
+        _, body, raw = await _get(o, o.member_a, o.scope_a)
+        assert body["truncated"] is False
+        for lane in lanes:
+            _dispatch(o.p, lane, None)
+        _, plain, _ = await _get(o, o.member_a, o.scope_a)
+        assert _ageless(body) == _ageless(plain)
+        self._no_trace(raw, body, "amr5b-orch", NAME_B)
 
     async def test_an_ended_run_of_an_open_lane_draws_no_line(self, outside):
         """C7. A lane with an open run takes its lines from its open runs only."""

@@ -1023,6 +1023,9 @@ SELECT DISTINCT d.node_id AS from_id, src.node_id AS to_id
 #: above do not resolve: a run that the scoped ``seen`` does not hold, or whose
 #: node is not listed. The rule of the lines holds: the same ``src`` rows, the
 #: same ``(src.is_open OR NOT src.node_open)``, and ONE step.
+#: It has no cap of its own: a cap here would count runs that the viewer cannot
+#: see. Step 2 resolves the runs first, and the cap counts what step 2 keeps.
+#: The rows are the dispatcher refs of the current runs of the listed nodes.
 _MAP_OUTSIDE_REFS_SQL = _MAP_CUR_CTE + _SUMMARY_SRC_CTE + """
 SELECT DISTINCT src.node_id AS to_id, src.dispatched_by_run_id AS ref
   FROM src
@@ -1032,18 +1035,37 @@ SELECT DISTINCT src.node_id AS to_id, src.dispatched_by_run_id AS ref
                     WHERE d.id = src.dispatched_by_run_id
                       AND d.node_id = ANY(CAST(:nodes AS text[])))
  ORDER BY 1, 2
- LIMIT :cap
 """
 
 #: Step 2. The dispatcher runs of step 1, through the ONE ``seen`` text with NO
 #: project filter. ``{only}`` is :data:`_THESE_RUNS`, so the read takes only
 #: those runs. A run that the viewer cannot see gives no row, so it gives no
-#: node and no line. The project id stays in the server: only its name leaves,
-#: through :func:`core.visible_project_paths`.
+#: node and no line.
 _MAP_DISPATCHERS_SQL = "{head}seen AS (" + _SEEN_RUNS_SQL + """)
-SELECT seen.id, """ + _NODE_SQL + """ AS node_id, seen.created_at, t.project_id
+SELECT seen.id, """ + _NODE_SQL + """ AS node_id
   FROM seen
-  JOIN pm_tasks t ON t.id = seen.task_id
+"""
+
+#: Step 4, only for the context nodes that step 3 keeps. The projects of the
+#: current runs of each node that are OUTSIDE the scoped subtree (the CTE
+#: ``sub``), one row for each project, the newest run first (:data:`_NEWEST_SQL`).
+#: It reads ``cur`` with the subtree in its head and no subtree filter in
+#: ``seen``, so the runs are those of the map of everyone. A project of the
+#: scope is never named. The project id stays in the server: only the name of
+#: the first project that the viewer may see leaves, through
+#: :func:`core.visible_project_paths`.
+_MAP_CONTEXT_PROJECTS_SQL = _MAP_CUR_CTE + """, outside AS (
+    SELECT DISTINCT ON (cur.node_id, t.project_id)
+           cur.node_id, t.project_id, cur.is_open, cur.life_at, cur.id
+      FROM cur
+      JOIN pm_tasks t ON t.id = cur.task_id
+     WHERE cur.node_id = ANY(CAST(:ctx AS text[]))
+       AND t.project_id NOT IN (SELECT id FROM sub)
+     ORDER BY cur.node_id, t.project_id, cur.is_open DESC, cur.life_at DESC, cur.id DESC
+)
+SELECT node_id, project_id
+  FROM outside
+ ORDER BY node_id, is_open DESC, life_at DESC, id DESC
 """
 
 #: The ``{only}`` of step 2: the runs of ``:refs``.
@@ -1433,47 +1455,56 @@ async def _outside_project(db: Any, vis: Any, read: Any, nodes: list[str]) -> _O
        that the lines of the scope do not resolve. None: no other read.
     2. :data:`_MAP_DISPATCHERS_SQL` resolves them through the ONE ``seen``
        text with no project filter. A hidden run gives no row, so its line drops.
-       A dispatcher whose node is listed gives a line only.
+       A dispatcher whose node is listed gives a line only. The cap of the lines
+       counts only these resolved lines, so a hidden run never sets ``truncated``
+       and never pushes a visible line out.
     3. Only for a node that is not listed: :data:`_MAP_SUMMARY_SQL` with no
        project filter, kept to those nodes. A node that it does not list
        gives no row and no line. So the rule of a node stays ONE rule.
+    4. Only for the nodes of step 3: :data:`_MAP_CONTEXT_PROJECTS_SQL`.
 
-    The project of a context node is that of its newest dispatcher run that a
-    listed lane names (the start, then the id). Its name leaves only when
-    ``Visibility.project_clause`` keeps the project.
+    The project of a context node is that of its newest current run outside
+    the scoped subtree whose project ``Visibility.project_clause`` keeps. With
+    no such run, it is ``None``. A project of the scope is never named.
     """
-    refs = await read(_MAP_OUTSIDE_REFS_SQL, nodes=nodes, cap=MAP_SUMMARY_SESSIONS_MAX + 1)
-    over = len(refs) > MAP_SUMMARY_SESSIONS_MAX
-    refs = refs[:MAP_SUMMARY_SESSIONS_MAX]
+    refs = await read(_MAP_OUTSIDE_REFS_SQL, nodes=nodes)
     if not refs:
-        return _Outside([], set(), over)
+        return _Outside([], set(), False)
     found = await read(_MAP_DISPATCHERS_SQL, wide=True, only=_THESE_RUNS,
                        refs=sorted({str(r.ref) for r in refs}))
-    by_run = {str(d.id): d for d in found}
+    by_run = {str(d.id): str(d.node_id) for d in found}
+    resolved = sorted({(by_run[str(r.ref)], str(r.to_id)) for r in refs
+                       if str(r.ref) in by_run and by_run[str(r.ref)] != str(r.to_id)})
+    over = len(resolved) > MAP_SUMMARY_SESSIONS_MAX
+    pairs = resolved[:MAP_SUMMARY_SESSIONS_MAX]
     listed = set(nodes)
-    pairs: set[tuple[str, str]] = set()
-    newest: dict[str, Any] = {}
-    for r in refs:
-        d = by_run.get(str(r.ref))
-        if d is None or str(d.node_id) == str(r.to_id):
-            continue
-        node = str(d.node_id)
-        pairs.add((node, str(r.to_id)))
-        if node in listed:
-            continue
-        held = newest.get(node)
-        if held is None or (d.created_at, str(d.id)) > (held.created_at, str(held.id)):
-            newest[node] = d
+    wanted = sorted({f for f, _ in pairs if f not in listed})
     contexts: list[dict[str, Any]] = []
-    if newest:
+    if wanted:
         rows = await read(_MAP_SUMMARY_SQL, wide=True, node=_CONTEXT_NODES,
-                          ctx=sorted(newest), cap=len(newest))
-        paths = await visible_project_paths(
-            db, vis, [newest[str(c.node_id)].project_id for c in rows])
-        contexts = [_context_row(c, _leaf_name(paths, str(newest[str(c.node_id)].project_id)))
-                    for c in rows]
+                          ctx=wanted, cap=len(wanted))
+        names = await _context_projects(db, vis, read, [str(c.node_id) for c in rows])
+        contexts = [_context_row(c, names.get(str(c.node_id))) for c in rows]
     shown = listed | {c["id"] for c in contexts}
     return _Outside(contexts, {p for p in pairs if p[0] in shown}, over)
+
+
+async def _context_projects(db: Any, vis: Any, read: Any, ctx: list[str]) -> dict[str, str]:
+    """Node id to the name of its project (step 4 of :func:`_outside_project`):
+    the newest current run outside the scope whose project the viewer may see."""
+    if not ctx:
+        return {}
+    rows = await read(_MAP_CONTEXT_PROJECTS_SQL, only="", ctx=ctx)
+    paths = await visible_project_paths(db, vis, [r.project_id for r in rows])
+    names: dict[str, str] = {}
+    for r in rows:
+        node = str(r.node_id)
+        if node in names:
+            continue
+        name = _leaf_name(paths, str(r.project_id))
+        if name:
+            names[node] = name
+    return names
 
 
 async def _agent_map_session(
