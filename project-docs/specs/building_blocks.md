@@ -376,9 +376,9 @@ A thing has ONE home. Code that needs it reads it through the seam of that home.
 | **A frequent need**: Excel, PDF, an export | A core tool: `make_document`, `make_spreadsheet` (`chat_parity.md` §6.6). The sandbox covers only the long tail | A sandbox copy of a core tool for one org | advisory |
 | **A member's preferences and concerns** | The member profile: `user_settings.assistant_profile`, with the kind `concern` and its history (`personalization.md` §20) | Studio, the graph, org memory | `test_assistant_profile_r8.py` (V), `test_memory_isolation_r8.py` (P, MEM-14) |
 | **Company terms and rules** | Org memory. `memory_architecture.md` §11.1 gives each kind of term one home | Mem0 (retired, D132) | `test_memory_isolation_r8.py` (P, MEM-14) |
-| **Finding things** | `search_company` and its one registry (`gateway/retrieval/`) | A second index | `test_company_search_sources.py` (V) |
+| **Finding things** | `search_company` and its one registry (`gateway/retrieval/`) | A second index | `test_company_search_sources.py` (V) pins the registry. A second index is advisory: a reviewer checks it |
 | **A watch or a risk** | A kind of `finding_contract`, sent by My Day and Reach. A "watch this for me" of a member is a workflow template that emits findings (LOOP-34, which takes AUTO-5 of `proactive_agent.md`) | A second nudge engine | `test_finding_contract.py` (V), `test_shell_feed.py` (V) |
-| **Who gets a nudge** | The block "Roles and reporting lines" of §2: a resolver over the record owner, `org_role`, `group:<slug>` and the reporting line (D12) | A new subject, a score for a person | `test_grant_subject_grammar.py` (V), `test_nudge_route_r8.py` (P, LOOP-30) |
+| **Who gets a nudge** | The block "Roles and reporting lines" of §2: a resolver over the record owner, `org_role`, `group:<slug>` and the reporting line (D12) | A new subject, a score for a person | `test_grant_subject_grammar.py` (V) refuses a new subject. `test_nudge_route_r8.py` (P, LOOP-30). A second resolver is advisory: a reviewer checks it |
 
 ### 10.2 The rules that keep the map true
 

@@ -151,6 +151,7 @@ core kind maps to its type by a fixed table in code:
 | `project` | `project` |
 | `calendar_event`, `meeting` | `event` |
 | `document`, `artifact` | `document` |
+| `entity` | None. A Knowledge entity (a product, a topic) is not one of the ten types |
 
 A `connection_record` and a `studio_record` take the type of the certified
 map of their source (SEM-20, SEM-21). An uncertified record has no type, and
@@ -498,7 +499,7 @@ here in the same pull request (R4).
 | **KG-21** (task 4176) | Open. Rung 2. After KG-20 | The exact keys grow: a phone in E.164 form, and a tax or GST id, beside the email and the domain of KG-5. The same AMBIGUOUS rule as KG-5. A key that names two records in one app links neither | R8: a GST id on a Zoho Books customer and on a CRM company links them, with the reason `tax_id`. Two candidates give AMBIGUOUS. No link joins two orgs | `test_kg_resolve_r8.py` (extended) | `uv run pytest tests/unit/test_kg_resolve_r8.py -p no:xdist -rs -q` | HIGH (identity) · AGENT-SAFE, dark |
 | **KG-22** (task 4177) | Open. Rung 2. After KG-21 | A probabilistic match for the records that no exact key links: the Fellegi-Sunter method of Splink, written in SQL, for each tenant, with no model and no egress. A high threshold, because a false merge costs more than a missed one. A pair under the threshold and over a floor becomes a proposal for KG-23, never a link | The weights are fixed in code and give the same result each run. A pair over the threshold links with the reason `probable` and its score. Nothing calls a model or the network | `test_kg_match_probabilistic.py` (new, pure), `test_kg_match_probabilistic_r8.py` (new: no pair crosses two orgs) | `uv run pytest tests/unit/test_kg_match_probabilistic.py tests/unit/test_kg_match_probabilistic_r8.py -p no:xdist -rs -q` | HIGH (identity) · AGENT-SAFE, dark |
 | **KG-23** (task 4178) | Open. Rung 2. After KG-22 | Confirm, split and Undo. A proposed link is a kind of the waiting seam ("Needs you") for an admin. Each merge stores its split, so one click splits the entity. A correction by a member pins the result, and a later sweep keeps it | An admin confirms a link on a card, then splits it, and the two records stand apart again. A pinned split survives the next sweep | `test_kg_link_confirm_r8.py` (new), `test_waiting_seam_r8.py` | `uv run pytest tests/unit/test_kg_link_confirm_r8.py tests/unit/test_waiting_seam_r8.py -p no:xdist -rs -q` | HIGH (identity) · AGENT-SAFE, dark. The card is a new screen: owner preview |
-| **KG-24** (task 4179) | Open. Rung 5 (task 4168). After KC-9, KG-11 and KG-30. The dated states wait on D-A | A timeline across apps: dated facts as pointers, read from `kb_facts` (KC-9, `knowledge_curation.md`) and the `kb_links` edges, in time order, for one entity. Each item is re-checked through its owning app | R8: the timeline of one company shows its invoices, tickets and deal notes in order, and never a record that the member cannot open | `test_kg_timeline_r8.py` (new) | `uv run pytest tests/unit/test_kg_timeline_r8.py -p no:xdist -rs -q` | HIGH (visibility) · AGENT-SAFE, dark |
+| **KG-24** (task 4179) | **Pending owner (D-A).** Rung 5 (task 4168). After KC-9, KG-11 and KG-30 | A timeline across apps: dated facts as pointers, read from `kb_facts` (KC-9, `knowledge_curation.md`) and the `kb_links` edges, in time order, for one entity. Each item is re-checked through its owning app | R8: the timeline of one company shows its invoices, tickets and deal notes in order, and never a record that the member cannot open | `test_kg_timeline_r8.py` (new) | `uv run pytest tests/unit/test_kg_timeline_r8.py -p no:xdist -rs -q` | HIGH (visibility) · AGENT-SAFE, dark |
 | **KG-25** (task 4180) | Open. Rung 5. After KG-24 | A join over several sources, as the member: each source is read through its own seam, and the join runs in `compute_run` (SBX-18, SBX-19) or the data engine of WS-43y2b. No row is copied into a store | R8: a join over invoices and tickets gives the same total as each source alone. A source that the member cannot read adds no row | `test_cross_source_join_r8.py` (new) | `uv run pytest tests/unit/test_cross_source_join_r8.py -p no:xdist -rs -q` | STANDARD · **OWNER-GATE** for the `compute:` flip (SBX-G13) |
 | **KG-26** (task 4181) | Open. Rung 5. After KG-25 | The answer names its level (§13.4): a fact (a plain query), an association (a correlation, a trend break, an anomaly or a cohort), or a hypothesis (a causal claim, KG-28 only). The answer check (`acb_skills/answer_check.py`) refuses the words "caused by" in an answer below the hypothesis level | A golden case: an association answer that says "caused by" fails the check. The same answer with "consistent with" passes | `test_answer_level_label.py` (new) | `uv run pytest tests/unit/test_answer_level_label.py -q` | STANDARD · AGENT-SAFE |
 | **KG-27** (task 4182) | Open. Rung 5. After KG-26 | Each figure of an answer over several sources goes through the one number check (`acb_common/number_check.py`). A figure that no source holds is refused | A figure changed by one unit in a fixture fails the check | `test_number_check.py` (extended), `test_answer_level_label.py` | `uv run pytest tests/unit/test_number_check.py tests/unit/test_answer_level_label.py -q` | STANDARD · AGENT-SAFE |
@@ -669,8 +670,8 @@ Each demo traces end to end before its build starts.
 
 **Rung 1, "Tell me everything about Acme":**
 
-1. "Acme" resolves to one `kb_entities` row, with pointers to a CRM company,
-   a mail domain and a Books customer.
+1. "Acme" resolves to one `kb_entities` row, with pointers to a CRM company
+   and a mail domain. The Books customer joins from rung 2 (KG-20).
 2. The read takes the edges from `kb_links`.
 3. Each pointer is checked through its app as the member. A pointer that the
    member cannot open drops.
@@ -709,4 +710,4 @@ compute join, with the label "association". Never "caused by".
 |---|---|---|---|
 | **D-A** | May the timeline keep small typed signals: an event type, a date, a state, and an amount where a rule needs it? They are rebuilt from the apps, kept for a limited time, under RLS, and never free text. This bends D105 | Yes, as signals, not content | KG-30, KG-24, LOOP-29 |
 | **D-B** | Strict visibility of what exists (§13.5) | Yes | KG-31 |
-| **D-C** | Writes driven by events, with the nightly sweep as repair (§13.3) | Yes | KG-29 |
+| **D-C** | Writes driven by events, with the nightly sweep as repair (§13.3) | Yes | KG-29, LOOP-29 |
