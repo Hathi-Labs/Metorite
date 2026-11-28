@@ -691,7 +691,7 @@ def test_a_ceiling_above_its_baseline_names_the_task_that_pays_it() -> None:
 
 def test_five_ceilings_are_above_p0() -> None:
     """The owner met eight on 2026-11-13. Email, the shell and the integrations are
-    under their baselines now, so five are left. A ceiling may go down, and one that
+    under their baselines now, so five are left. The calendar is at its baseline. A ceiling may go down, and one that
     goes up here must name its task. Mutation: raise a ceiling and the test above is red."""
     up = sorted(a for a, v in cp.DEBT_CEILING.items() if v > cp.P0_CEILING[a])
     # PAR-8b (task 3903) took the shell below its baseline (16 to 7).
@@ -699,7 +699,8 @@ def test_five_ceilings_are_above_p0() -> None:
     # 3109) took the integrations below their baseline (22 to 4).
     # PAR-3 (task 3105) took Knowledge below its baseline (17 to 15).
     # PAR-11 part a (task 4012) took the chat below its baseline (28 to 19).
-    assert up == ["calendar", "settings", "studio"]
+    # CAL-6a (task 1680) took the calendar to its baseline (2 to 1).
+    assert up == ["settings", "studio"]
 
 
 def test_a_raise_with_no_task_in_its_comment_is_found() -> None:

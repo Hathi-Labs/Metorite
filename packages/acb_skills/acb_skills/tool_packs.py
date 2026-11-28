@@ -639,6 +639,9 @@ No Projects agent exists to hand a task to.
   that a part is not available, say so and offer the single tool for that part.
 - Closing the day cannot plan tomorrow's calendar. Say so, and offer the One
   Thing for tomorrow (my_tasks_set_one_thing with tomorrow's date).
+- my_tasks_get_day_state reads the One Thing and the seeded tasks that the
+  member saved for one day (today when no date is given). my_tasks_rollover_log
+  reads what the roll-over moved and when, newest first. Both only read.
 - Say that a plan, a block, a setting or a day rule is set only after the tool says so.
 - my_tasks_list_calendar_connections lists the member's own connected
   calendars. It shows no token. If it says that calendar sync is not
@@ -677,6 +680,11 @@ _CALENDAR_DAY_WORDS = (
     # "morning" or "wrap up" would load the pack in a mail turn.
     "close my day", "end my day", "wrap up my day", "end of day review",
     "end-of-day review", "morning plan", "good morning plan", "start the day",
+    # CAL-6a (task 1680): the two reads. Phrases again: a bare "log", "state"
+    # or "day" would load the pack in a mail turn.
+    "day state", "my day state", "rollover log", "roll-over log", "roll over log",
+    "what did i roll over", "what got rolled over", "what was rolled over",
+    "my one thing",
     # P-1a (task 3112): the connected calendars and the two task proposals.
     # Phrases again: a bare "connected", "title" or "details" would load the
     # pack in a mail or a Knowledge turn. Each title or fill-in phrase names the task. Fence: test_my_tasks_p1a_tools.py.

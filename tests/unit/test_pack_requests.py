@@ -444,6 +444,9 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     # -- calendar-day flows (CAL-4, task 1678) --
     "my_tasks_start_my_day": ("start my day", "good morning plan"),
     "my_tasks_close_my_day": ("close my day", "wrap up my day"),
+    # -- calendar-day state reads (CAL-6a, task 1680) --
+    "my_tasks_get_day_state": ("show my day state",),
+    "my_tasks_rollover_log": ("what did I roll over last week?", "show the rollover log"),
     # -- calendar-day events (CE-15, task 3463) --
     "my_tasks_list_events": ("what is on my calendar this week?",
                              "which meetings are on my calendar tomorrow?"),
