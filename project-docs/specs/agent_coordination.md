@@ -1013,7 +1013,7 @@ A role is the chip of SW-59. A sub-agent is a child run of SW-39, written by the
 
 **The ask.** The owner wants to see the downstream work of each agent on the map (AMR-6, task 4205, 2026-11-28). That work is its sub-agents and its jobs. A sub-agent can be an adversarial reviewer. A job can be a GitHub Actions run, local CI, the merge queue or a release.
 
-The owner also wants to see each team as a group, labelled with its topology (AMR-8, task 4209). lane-amr5 builds the UI of both, and this section is its data. It amends SW-115 and adds SW-116 and SW-114c. Where it differs from §3.12.10, this section wins.
+The owner also wants to see each team as a group, labelled with its topology (AMR-8, task 4209). The lane lane-amr5 builds the UI of both, and this section is its data. It amends SW-115 and adds SW-116 and SW-114c. Where it differs from §3.12.10, this section wins.
 
 **One store: the child run.** A sub-agent is already a child run of SW-39, written by `report_subagent` (SW-114). An external job is a child run too. So AMR-6 needs no new table. A child run holds no task, no lease and no session key, and it shows only under its parent (§3.12.4 rule 1).
 
