@@ -16,8 +16,18 @@ is `CHAT_RUN_PHASE_ORGS`. HRD-5 (a per-turn budget for each read tool, task
 
 **HRD-16 (task 2995) is BUILT, 2026-11-26, with no flag. A card answer acts
 once, and a steer seen twice counts once. A repeat answer gets the 409
-`answered_once`, and the browser sends nothing again (owner, 2026-11-23). The
-follow-up is task 4036.**
+`answered_once`, and the browser sends nothing again (owner, 2026-11-23).**
+
+**Task 4036 (the HRD-16 follow-up) is BUILT, 2026-11-27, with no flag. The
+answered mark holds the responder, from the session and never from the body.
+A repeat of the same member gets `by_you` true and reads "You already answered
+this". The words stay out of the composer, so a send cannot act twice. Only
+another member's answer gives the words back.**
+
+**Task 4036 also closes the park race. A run on another event loop
+says whether it took the answer. When the park ended the wait first, the
+route sets no mark, and the answer takes the late path. Fence:
+`tests/unit/test_card_answer_once.py` and `src/lib/respondInput.test.ts`.**
 
 **HRD-1b (the HRD-1 answer on the batch path, task 3230) is BUILT,
 2026-11-17, with no flag. The model of a batch run, a delegated agent and a

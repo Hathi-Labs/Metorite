@@ -54,11 +54,12 @@ from fastapi import Header, Request
 #: The four signed headers, the two that tell branch 0 to refuse a body on a
 #: GET, the nonce of a write (EA-6a), the signed MCP session key (SW-7), and
 #: the signed approval of a door write with the ``If-Match`` that its digest
-#: reads (MCP-P1b-2, AD-6 and AD-17).
+#: reads (MCP-P1b-2, AD-6 and AD-17), and the signed batch key of a bulk call
+#: (MCP-G28a, D209).
 ALLOWED_HEADERS = frozenset({
     "x-agent-connection", "x-agent-timestamp", "x-agent-signature",
     "x-actor-via", "content-length", "transfer-encoding", "x-agent-nonce",
-    "x-agent-session", "x-agent-approval", "if-match",
+    "x-agent-session", "x-agent-approval", "if-match", "x-agent-batch",
 })
 
 #: SBX-2: the capability of the sandbox sibling, and the headers that the

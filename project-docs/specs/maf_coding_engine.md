@@ -3051,7 +3051,9 @@ network.** Not built.
 
 - The firewall script applied in CI (done-when 8).
 - The pip half of 5: pip installs a package through the proxy. It is a
-  `sandbox_docker` test with outbound network.
+  `sandbox_docker` test with outbound network. SBX-4b1 proves pip through
+  the proxy against a stub index (`agent_sandbox.md` §12.4 done-when 9).
+  WS-43g3 keeps the path to the real PyPI.
 
 **Verification.**
 
