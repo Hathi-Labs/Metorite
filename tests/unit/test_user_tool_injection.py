@@ -357,6 +357,25 @@ async def test_build_tool_reaches_only_the_gated_run(
         assert names.count("build_tool") == 1
 
 
+@pytest.mark.parametrize("whatsapp", [True, False])
+async def test_build_tool_is_not_in_the_whatsapp_pack_turn(
+        store, monkeypatch, whatsapp) -> None:  # noqa: F811
+    """§12.4 done-when 30, the G2 WhatsApp pack turn by name. The real
+    ``_start_pack_turn(whatsapp=True)`` and ``_apply_pack_turn(read_only=True)``
+    load the read packs, and the run holds no ``build_tool``, with every
+    switch on. Non-vacuity: the web turn of the same harness holds it.
+
+    Mutation: give the tool to a read-only turn -> red."""
+    from tests.unit import test_chat_packs_batch as g2
+
+    _build_on(monkeypatch, tool_search_orgs=g2.ORG, maf_coding_scope=f"tools:{g2.ORG}",
+              sandbox_door_orgs=g2.ORG)
+    applied, agent = await g2._apply(monkeypatch, read_only=whatsapp)
+    assert applied is not None and applied.builds, "the pack turn loaded packs"
+    names = {ti._tool_name(t) for t in agent.default_options["tools"]}
+    assert ("build_tool" in names) is (not whatsapp), sorted(names)[:8]
+
+
 async def test_build_tool_reaches_only_the_orchestrator(
         staging_shape, orchestrator, store, monkeypatch) -> None:  # noqa: F811
     """§12.4 done-when 36a (audit B1). A custom agent that lists
