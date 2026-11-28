@@ -41,6 +41,8 @@ import httpx
 from acb_common import get_logger
 from acb_common.settings import internal_auth_headers
 
+from acb_skills.memory_tools import run_member_address
+
 _log = get_logger("acb_skills.sandbox_held")
 
 __all__ = ["POLL_S", "RESULTS_GRACE_S", "WatchReport", "watch_held"]
@@ -211,7 +213,7 @@ async def watch_held(run_id: str, thread_id: str, *, stop: asyncio.Event,
     returns at once: the batch then times out with nothing run."""
     report = WatchReport()
     member = _member()
-    if not member or "@" not in member or not run_id or not thread_id:
+    if not member or run_member_address(member) is None or not run_id or not thread_id:
         _log.warning("sandbox_held.no_member")
         return report
     step = POLL_S if poll_s is None else poll_s

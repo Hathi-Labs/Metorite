@@ -207,19 +207,23 @@ def _held(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @contextlib.contextmanager
 def _run(*, user: str = MEMBER, verified: bool = True, member: str | None = None,
-         session: str = THIS, memory: str | None = None) -> Iterator[None]:
+         session: str = THIS, memory: str | None = None, solo: bool = True) -> Iterator[None]:
     """The binding of one run: the run context, the artifact context and the
-    memory id, as ``test_chat_pin_tool.py`` binds them."""
+    memory id, as ``test_chat_pin_tool.py`` binds them. *solo* is what the run
+    boundary binds (``executor.run_is_solo``, task 4017)."""
     from acb_skills.memory_tools import _bind_memory_user_id, _unbind_memory_user_id
+    from orchestrator.executor import _bind_solo_room, _release_solo_room
 
     with run_context_scope(), artifact_context_scope():
         bind_run_context(run_id="r-par11", user=user or None, member_verified=verified)
         bind_artifact_context(session_id=session, member=user if member is None else member,
                               batch_thread=False, agent_name="orchestrator", run_id="r-par11")
         binding = _bind_memory_user_id(memory if memory is not None else user)
+        token = _bind_solo_room(solo)
         try:
             yield
         finally:
+            _release_solo_room(token)
             _unbind_memory_user_id(binding)
 
 
@@ -338,6 +342,12 @@ async def test_topics_off_give_one_line(gw: Gateway) -> None:
     ({"user": ""}, ct._NO_MEMBER),
     ({"member": OTHER}, ct._NO_MEMBER),
     ({"memory": "room:par11-room"}, ct._SHARED_ROOM),
+    # Task 4017: a chosen chat id with an "@" makes a room id with an "@".
+    ({"memory": "room:team@x"}, ct._SHARED_ROOM),
+    # Task 4017: a real room with the typer's own address, and a room of one
+    # that others can read. The run boundary binds solo False.
+    ({"memory": "room:par11-room", "solo": False}, ct._SHARED_ROOM),
+    ({"solo": False}, ct._SHARED_ROOM),
 ])
 async def test_a_run_that_may_not_use_the_list_sends_nothing(
     gw: Gateway, card: Card, over: dict[str, Any], words: str,

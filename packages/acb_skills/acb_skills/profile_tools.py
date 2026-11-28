@@ -172,6 +172,7 @@ from acb_common.paging import paged
 from acb_common.settings import internal_auth_headers
 
 from acb_skills.company_search_tools import _gateway_url
+from acb_skills.memory_tools import run_member_address
 from acb_skills.tool_annotations import TOOL_ANNOTATIONS
 
 #: The first line of every answer (the ``company_search_tools`` convention).
@@ -247,7 +248,7 @@ def _headers() -> dict[str, str]:
             "No acting user for this run, so there is nobody to act as — "
             "refusing to call the gateway as the platform itself."
         )
-    if "@" not in user:
+    if run_member_address(user) is None:
         raise _Refused(SHARED_ROOM)
     return {
         **internal_auth_headers(),
@@ -709,7 +710,7 @@ async def _write_gate() -> dict[str, str]:
     chat (``WRITES_OPEN``), a WhatsApp run with writes off, then a marked
     session."""
     user = _current_user_email()
-    if user and "@" not in user:
+    if user and run_member_address(user) is None:
         raise _Refused(SHARED_ROOM_WRITE, "not_your_turn")
     if user and not writes_open() and writes_closed_by_read():
         raise _Refused(CLOSED_BY_READ, "closed_by_read")
@@ -898,7 +899,7 @@ async def _claim_offer() -> bool:
     except Exception:
         return False
     member = _current_user_email().strip().lower()
-    if not (org and session and "@" in member):
+    if not (org and session and run_member_address(member)):
         return False
     # 24 hex characters, from a digest of that size: no cut of a value.
     part = hashlib.blake2b(member.encode("utf-8"), digest_size=12).hexdigest()

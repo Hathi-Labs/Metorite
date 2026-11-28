@@ -75,6 +75,7 @@ from acb_common.settings import internal_auth_headers
 
 from acb_skills.company_search_tools import _gateway_url
 from acb_skills.hidden_text import body_hidden_problem
+from acb_skills.memory_tools import run_member_address
 from acb_skills.tool_annotations import annotate
 
 _log = get_logger("acb_skills.home_tools")
@@ -137,6 +138,9 @@ LAYOUT_RIGHT = "admin:settings:manage"
 # The answers. Each starts with what happened, and names the next step.
 NO_MEMBER = ("Nothing was read or changed. Metorite could not confirm who asked in this chat. "
              "Open Home in the Metorite web app.")
+#: Task 4017. A shared room, or a room of one that other members can read.
+SHARED_ROOM = ("Nothing was read or changed. A shared room cannot use your Home. "
+               "Ask in your own chat.")
 NO_ANSWER = "The Home service did not answer. Nothing changed. Try again in a minute."
 MAYBE = "The {act} may have worked. Read Home again before you try again."
 BAD_VIEW = "The view must be one of: {views}. Nothing was read."
@@ -250,9 +254,25 @@ def _member() -> str:
         bound = str(artifact_context().get("member") or "").strip()
     except Exception:
         return ""
-    if not user or "@" not in user or user.lower() != bound.lower():
+    if not user or run_member_address(user) is None or user.lower() != bound.lower():
         return ""
     return user
+
+
+def _solo_run() -> bool:
+    """True only when the run boundary says this run is the member's own
+    solo chat (``executor.run_is_solo``). Task 4017: in a shared web room the
+    verified ``user`` of the run context is the TYPER's real address, so
+    :func:`_member` passes there, and the member's own Home would print into a
+    chat that other people read. A room, a room of one that other members can
+    read, and a run whose boundary bound nothing read False. So does a failed
+    import. Never raises."""
+    try:
+        from orchestrator.executor import run_is_solo
+
+        return run_is_solo() is True
+    except Exception:
+        return False
 
 
 async def _must_ask() -> bool:
@@ -583,6 +603,8 @@ async def home_read(view: str, words: str = "", limit: int = 0,
     member = _member()
     if not member:
         return _fail(NO_MEMBER)
+    if not _solo_run():
+        return _fail(SHARED_ROOM)
     if choice == "feed":
         return await _read_feed(member, limit, offset)
     if choice == "needs":
@@ -643,6 +665,8 @@ async def home_card(card_id: str, act: str, until: str = "", undo: str = "") -> 
     member = _member()
     if not member:
         return _fail(NO_MEMBER)
+    if not _solo_run():
+        return _fail(SHARED_ROOM)
     try:
         return await _card_after_check(member, cid, choice, when, undo)
     except _Refused as exc:
@@ -760,6 +784,8 @@ async def home_prefs(key: str, value_json: str) -> dict[str, Any]:
     member = _member()
     if not member:
         return _fail(NO_MEMBER)
+    if not _solo_run():
+        return _fail(SHARED_ROOM)
     try:
         before = (await _read_pref_map(member)).get(name)
         if await _must_ask():
@@ -858,6 +884,8 @@ async def home_layout(role: str, preset: str = "", pins_json: str = "",
     member = _member()
     if not member:
         return _fail(NO_MEMBER)
+    if not _solo_run():
+        return _fail(SHARED_ROOM)
     try:
         pins = _pins_arg(pins_json)
         style = str(preset or "").strip()
@@ -926,6 +954,8 @@ async def home_test_push() -> dict[str, Any]:
     member = _member()
     if not member:
         return _fail(NO_MEMBER)
+    if not _solo_run():
+        return _fail(SHARED_ROOM)
     if await _must_ask():
         try:
             decision, context = await _ask(

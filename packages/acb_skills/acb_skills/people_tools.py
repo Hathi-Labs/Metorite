@@ -87,6 +87,7 @@ from acb_common.paging import paged
 from acb_common.settings import internal_auth_headers
 
 from acb_skills.hidden_text import body_hidden_problem, hidden_problem, strip_hidden
+from acb_skills.memory_tools import run_member_address
 from acb_skills.tool_annotations import annotate
 
 __all__ = [
@@ -349,7 +350,7 @@ def _headers() -> dict[str, str]:
     user = _current_user_email()
     if not user:
         raise _Refused(_NO_MEMBER)
-    if "@" not in user:
+    if run_member_address(user) is None:
         raise _Refused(_SHARED_ROOM)
     return {**internal_auth_headers(), "X-User-Email": user}
 
@@ -653,7 +654,7 @@ def _member_headers() -> dict[str, str]:
     user = _current_user_email()
     if not user:
         raise _Refused(_W_NO_MEMBER)
-    if "@" not in user:
+    if run_member_address(user) is None:
         raise _Refused(_W_SHARED)
     return {**internal_auth_headers(), "X-User-Email": user}
 

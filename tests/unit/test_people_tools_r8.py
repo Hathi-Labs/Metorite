@@ -98,6 +98,8 @@ class _World:
         self.users: dict[str, UserContext] = {}
         self.ids: dict[str, str] = {}
         self.member = self.mel
+        #: The callers of each request that reached the routes (task 4017).
+        self.hits: list[str] = []
 
     @property
     def url(self) -> str:
@@ -135,6 +137,7 @@ def _app(w: _World) -> Any:
 
     async def bound(scope: Any, receive: Any, send: Any) -> None:
         caller = dict(scope.get("headers") or []).get(b"x-user-email", b"").decode()
+        w.hits.append(caller)
         user = w.users.get(caller)
         token = bind_tenant(user.organization_id) if user is not None else None
         try:
@@ -507,3 +510,44 @@ def test_d8_a_shift_name_that_matches_no_shift_is_told_after_the_save(world, app
     out = w.act(w.mel, pt.update_my_profile, working_hours={"shift": "nosuchshift"})
     assert out["ok"] is True, out
     assert "matches no shift of your organisation" in out["note"], out
+
+
+# ── e. A shared room (task 4017) ────────────────────────────────────────────
+
+#: A shared room's memory id, from a chosen chat id that holds an "@".
+ROOM = "room:team@p5b-a.example.test"
+
+
+def test_e_a_room_id_with_an_at_sign_gets_the_refusal_and_reads_no_row(world) -> None:
+    """The route WOULD answer this caller: it is a principal with the admin
+    right. So a bare ``"@" in`` gate leaks the directory into the room. The
+    helper refuses before any request, and no row is read."""
+    w = world
+    w.principal(ROOM, w.p.org_a, ADMIN_PERMS)
+    for tool in (pt.people_directory, pt.people_me):
+        out = w.act(ROOM, tool)
+        assert out == {"ok": False, "error": pt._SHARED_ROOM}, out
+    assert w.hits == []
+    # Non-vacuity: a member's own run reaches the real route.
+    assert w.act(w.mel, pt.people_directory, limit=50)["ok"] is True
+    assert w.hits == [w.mel]
+
+
+def test_e_a_room_id_with_an_at_sign_changes_no_people_record(world, approve) -> None:
+    """The five self writes (P-5b-2) refuse a room before the card and before
+    any request, and no row of any person changes."""
+    w = world
+    w.principal(ROOM, w.p.org_a, ADMIN_PERMS)
+    before = _state(w)
+    writes = (
+        (pt.update_my_profile, (), {"pronouns": "x/y"}),
+        (pt.set_my_skills, (["python"],), {}),
+        (pt.set_my_credentials, ([{"kind": "education", "title": "BEng"}],), {}),
+        (pt.add_my_absence, ("2027-03-01", "2027-03-02", "holiday"), {}),
+        (pt.remove_my_absence, (str(uuid.uuid4()),), {}),
+    )
+    for tool, args, kw in writes:
+        out = w.act(ROOM, tool, *args, **kw)
+        assert out == {"ok": False, "error": pt._W_SHARED}, (tool.__name__, out)
+    assert w.hits == [] and approve == []
+    assert _state(w) == before

@@ -81,6 +81,7 @@ from acb_common.card_body import CARD_CLIP
 from acb_common.settings import internal_auth_headers
 
 from acb_skills import knowledge_manifest
+from acb_skills.memory_tools import run_member_address
 from acb_skills.tool_annotations import TOOL_ANNOTATIONS
 
 #: The line above the body of a page (``narrowing.py`` convention).
@@ -206,7 +207,7 @@ def _headers(member: str | None = None) -> dict[str, str]:
             "No acting user for this run, so there is nobody to act as — "
             "refusing to call the gateway as the platform itself."
         )
-    if "@" not in user:
+    if run_member_address(user) is None:
         raise _Refused(SHARED_ROOM)
     return {
         **internal_auth_headers(),

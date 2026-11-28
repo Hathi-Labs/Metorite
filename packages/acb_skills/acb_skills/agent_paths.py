@@ -65,6 +65,8 @@ import hmac
 import re
 from pathlib import Path
 
+from acb_skills.memory_tools import run_member_address
+
 __all__ = [
     "AGENT_NAME_RE",
     "BROKER_AGENT_NAMES",
@@ -640,7 +642,7 @@ def skill_owner(
         return SKILL_FOREIGN
     if _AUTHOR_ID_RE.fullmatch(value):
         return SKILL_MINE if hmac.compare_digest(value, mine) else SKILL_FOREIGN
-    if "@" not in value or value.lower() != _member_address(member):
+    if run_member_address(value) is None or value.lower() != _member_address(member):
         return SKILL_FOREIGN
     if upgraded is not None:
         data = mine.encode("ascii")

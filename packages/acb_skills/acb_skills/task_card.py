@@ -62,6 +62,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
+from acb_skills.memory_tools import run_member_address
+
 #: The kind of the one form of EAC-1: the card of a new task.
 CREATE_TASK = "create_task"
 
@@ -345,7 +347,7 @@ def parse_task_edit_answer(answer: Any, responder: Any) -> TaskEdit | None:
     edit either: the card gate reads it as the approve of the original
     values, before it calls this."""
     who = responder.strip().lower() if isinstance(responder, str) else ""
-    if "@" not in who:
+    if run_member_address(who) is None:
         return None
     text = answer if isinstance(answer, str) else ""
     if len(text) > MAX_TASK_EDIT_ANSWER:
