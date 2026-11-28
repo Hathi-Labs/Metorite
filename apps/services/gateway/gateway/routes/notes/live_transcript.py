@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hmac
 import json
 import os
 import time
@@ -129,15 +130,40 @@ async def subscribe(meeting_id: str) -> AsyncIterator[dict]:
 
 # ── Ingest (producer → bus) ──────────────────────────────────────────────────
 
+#: The setting that holds the shared secret of the meeting-bot worker.
+BOT_TOKEN_ENV = "MEETING_BOT_TOKEN"
+
+#: True after the first refusal for an unset token logged its line.
+_unset_logged = False
+
+
 def _bot_token() -> str:
-    return os.environ.get("MEETING_BOT_TOKEN", "").strip()
+    return os.environ.get(BOT_TOKEN_ENV, "").strip()
 
 
 def _check_bot_auth(authorization: str | None) -> None:
-    """Machine-to-machine auth for the worker's callback. When a shared
-    MEETING_BOT_TOKEN is set it's required; unset → open (dev/self-hosted LAN)."""
-    tok = _bot_token()
-    if tok and authorization != f"Bearer {tok}":
+    """The ONE check of the worker's bot token (task 4113).
+
+    Each machine route of the worker calls it first: ``/live/segment``,
+    ``/live/wanted`` and ``/stt/bot-live-token``. It fails closed.
+
+    * An unset token answers 503 and names the setting, the shape of
+      ``operator._require_operator_token``. The first refusal logs one line
+      with the setting name, never a value.
+    * A missing or wrong bearer answers 401. The compare is constant-time.
+
+    The env is read on each call, so a rotation needs no restart."""
+    global _unset_logged
+    expected = _bot_token()
+    if not expected:
+        if not _unset_logged:
+            _unset_logged = True
+            _log.warning("notes.bot_token.not_configured", setting=BOT_TOKEN_ENV)
+        raise HTTPException(
+            status_code=503, detail=f"{BOT_TOKEN_ENV} is not configured"
+        )
+    presented = (authorization or "").encode("utf-8")
+    if not hmac.compare_digest(presented, f"Bearer {expected}".encode()):
         raise HTTPException(status_code=401, detail="bad bot token")
 
 
