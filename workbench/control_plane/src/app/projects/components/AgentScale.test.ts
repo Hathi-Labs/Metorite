@@ -1,112 +1,15 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { type SubRow, buildLensModel } from "../lib/agentLenses";
 import { BEN, bigFleet, session, mapOf, run } from "../lib/agentLensesFixtures";
-import { overviewTiles } from "../lib/agentScale";
-import { AgentLenses, type AgentLensesProps } from "./AgentLenses";
-import { AgentOverview } from "./AgentOverview";
 import { AgentsPhone } from "./AgentsPhone";
 import { AgentSubagents, subLines } from "./AgentSubagents";
 
 const NOW = Date.parse("2026-11-26T12:00:00Z");
 const map = bigFleet(500);
-const lenses = (over: Partial<AgentLensesProps> = {}) =>
-  renderToStaticMarkup(
-    createElement(AgentLenses, {
-      read: { kind: "ready", map },
-      onOpenTask: () => {},
-      emptyCopy: "Nothing here.",
-      nowMs: NOW,
-      phone: false,
-      viewerEmail: BEN.email,
-      ...over,
-    }),
-  );
 const count = (text: string, needle: string) => text.split(needle).length - 1;
-
-describe("a fleet of 500 sessions", () => {
-  it("draws the overview on the Graph and the Board: tiles, no session card", () => {
-    for (const initialLens of ["graph", "board"] as const) {
-      const out = lenses({ initialLens });
-      expect(out).toContain("data-agent-overview");
-      expect(count(out, "data-agent-tile=")).toBe(14);
-      expect(out).toContain("1 quiet orchestrator");
-      expect(out).not.toContain("data-agent-session=");
-      expect(out).toContain("500 sessions");
-      expect(out).toContain("All agents");
-    }
-  });
-  it("opens the quiet row for a find", () => {
-    const model = buildLensModel(map, new Map(), BEN);
-    const people = overviewTiles(model, { person: "", find: "" }, (e) => e);
-    const draw = (finding: boolean) =>
-      renderToStaticMarkup(
-        createElement(AgentOverview, {
-          people, nowMs: NOW, nameOf: (e: string) => e, onOpenTile: () => {}, onPickSession: () => {}, onOpenPerson: () => {}, finding,
-        }),
-      );
-    expect(count(draw(false), "data-agent-tile=")).toBe(14);
-    expect(count(draw(true), "data-agent-tile=")).toBe(15);
-  });
-  it("draws one orchestrator bounded on the Board, with its buckets", () => {
-    const out = lenses({ initialLens: "board", initialGroup: "ben@x.test|o1" });
-    // The orchestrator and 12 sessions.
-    expect(count(out, "data-agent-session=")).toBe(13);
-    expect(out).toContain("data-agent-bucket");
-    expect(out).toContain("4 subagents");
-    expect(out).toContain("data-agent-crumb");
-  });
-  it("draws only the rows on screen in the List", () => {
-    const out = lenses({ initialLens: "list" });
-    expect(count(out, "data-agent-list-row")).toBeLessThan(50);
-    expect(count(out, "data-agent-list-row")).toBeGreaterThan(5);
-  });
-  it("reads no session on the first draw", () => {
-    const readSession = vi.fn();
-    lenses({ readSession });
-    expect(readSession).not.toHaveBeenCalled();
-  });
-  it("builds and draws the first overview within two seconds on a loaded box", () => {
-    const from = performance.now();
-    lenses();
-    // A server render of the markup. The browser time is in the AMR-4 captures.
-    expect(performance.now() - from).toBeLessThan(2000);
-  });
-});
-
-describe("everyone's graph with idle sessions hidden (AMR-5a)", () => {
-  /** The owner's view of 2026-11-27: two people, 64 sessions, 4 active. */
-  const split = mapOf(
-    [
-      ...Array.from({ length: 4 }, (_, i) => session(`w${i}`)),
-      ...Array.from({ length: 43 }, (_, i) => session(`a${i}`, { state: i % 2 ? "done" : "quiet" })),
-      ...Array.from({ length: 17 }, (_, i) => session(`b${i}`, { state: "quiet", person: "ben@x.test" })),
-    ],
-    [run("r", "w0")],
-  );
-  it("draws the Graph for Everyone, and no tile", () => {
-    const out = lenses({ read: { kind: "ready", map: split }, initialLens: "graph" });
-    expect(out).toContain('data-agent-graph=""');
-    expect(out).not.toContain("data-agent-overview");
-    expect(out).not.toContain("data-agent-tile=");
-  });
-  it("draws the four cards on the Board", () => {
-    const out = lenses({ read: { kind: "ready", map: split }, initialLens: "board" });
-    expect(count(out, "data-agent-session=")).toBe(4);
-    expect(out).not.toContain("data-agent-overview");
-  });
-});
-
-describe("a fleet of 40 sessions", () => {
-  it("keeps the board of AMR-2, with the subagents as a count", () => {
-    const out = lenses({ read: { kind: "ready", map: bigFleet(40) }, initialLens: "board" });
-    expect(out).not.toContain("data-agent-overview");
-    expect(out).toContain("data-agent-session=");
-    expect(out).toContain("4 subagents");
-  });
-});
 
 describe("the phone at scale", () => {
   const model = buildLensModel(map, new Map(), BEN);

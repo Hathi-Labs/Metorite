@@ -1,40 +1,36 @@
 /**
- * The Agents view at scale (WS-MCP AMR-4, `agent_coordination.md` §3.12.9).
+ * The Agents view at scale (WS-MCP AMR-4 and AMR-5, `agent_coordination.md`
+ * §3.12.8 and §3.12.9).
  *
- * The pure rules of a large fleet: the order of attention, the overview tiles,
- * the bound of one orchestrator's cards, and the order of the questions. It
- * draws nothing and it reads nothing, so a vitest proves each rule.
+ * The pure rules of a large fleet: the order of attention, the bound of the map,
+ * what the member folds and opens, and the order of the questions. It draws
+ * nothing and it reads nothing, so a vitest proves each rule.
  *
- * ⚠️ Aggregate first. No canvas draws more than `CARDS_MAX` full cards. Past
- * that it groups, and each group says what it holds.
+ * ⚠️ No canvas draws more than `CARDS_MAX` agent cards. Past that it folds, and
+ * each fold says what it holds.
  */
 import {
   type LensCounts,
-  type LensFilters,
   type LensGroup,
   type LensModel,
+  type LensPerson,
   type LensSession,
   type LensState,
   type SubCounts,
+  DEFAULT_STATES,
   LENS_STATES,
+  compareSessions,
   countStates,
   matchesFind,
   membersOf,
   personSessions,
-  splitSessions,
 } from "./agentLenses";
 
-/** A scope that shows more sessions than this draws the overview tiles. */
-export const OVERVIEW_ABOVE = 40;
-/** The session cards of one orchestrator before a bucket opens. */
-export const SESSION_CARDS_MAX = 12;
-/** The most full session cards on one canvas. */
+/** The most agent cards on one canvas. */
 export const CARDS_MAX = 40;
-/** How many more a bucket opens. */
-export const BUCKET_STEP = 12;
 /** The sub-agent rows under one session card. The rest are in the details. */
 export const SUB_ROWS_MAX = 8;
-/** The squares of one tile. The rest read "+N". */
+/** The squares of one group. The rest read "+N". */
 export const SQUARES_MAX = 96;
 /** A list longer than this draws only the rows on screen. */
 export const WINDOW_ABOVE = 50;
@@ -60,58 +56,414 @@ export function rankSessions(sessions: readonly LensSession[]): LensSession[] {
   });
 }
 
-/** The sessions of one person, or of everyone with "". */
-export function scopeSessions(model: LensModel, person: string): LensSession[] {
-  return person ? model.sessions.filter((s) => s.person === person) : model.sessions;
+/* ── The map of everyone (AMR-5) ────────────────────────────────────────── */
+
+/** The one switch of the toolbar: the active states, or every state. */
+export type MapMode = "active" | "all";
+
+/** The room that an open state node keeps for its next cards. */
+export const WINDOW_ROOM = 12;
+
+export const personNodeId = (person: string): string => `p:${person}`;
+export const sessionNodeId = (id: string): string => `s:${id}`;
+
+/** Active = needs you, failed, working and waiting (`DEFAULT_STATES`). */
+export function isActive(s: Pick<LensSession, "state">): boolean {
+  return DEFAULT_STATES.includes(s.state);
+}
+
+/** The cards that an open state node of one person shows, from `start`. */
+export interface MapWindow {
+  person: string;
+  state: LensState;
+  start: number;
+}
+
+/** What the member opened and folded on the map. */
+export interface MapView {
+  /** Node id to open (true) or folded (false): what the member chose. */
+  folds: ReadonlyMap<string, boolean>;
+  /** The people whose "idle or done" node is open. */
+  restOpen: ReadonlySet<string>;
+  /** The person that the member opened last. The bound never folds them. */
+  latest: string | null;
+  window: MapWindow | null;
+}
+
+export const NEW_VIEW: MapView = { folds: new Map(), restOpen: new Set(), latest: null, window: null };
+
+/**
+ * The chevron of a node: folds it, or opens it. `person` is the person that the
+ * node belongs to, and `null` for the root.
+ */
+export function foldView(view: MapView, nodeId: string, open: boolean, person: string | null): MapView {
+  const folds = new Map(view.folds).set(nodeId, open);
+  if (person === null) return { ...view, folds };
+  const latest = open ? person : view.latest === person ? null : view.latest;
+  return { ...view, folds, latest, window: view.window?.person === person ? null : view.window };
+}
+
+/** A click on the "idle or done" node of a person. */
+export function restView(view: MapView, person: string): MapView {
+  const open = !view.restOpen.has(person);
+  const restOpen = new Set(view.restOpen);
+  if (open) restOpen.add(person);
+  else restOpen.delete(person);
+  return {
+    ...view,
+    restOpen,
+    latest: open ? person : view.latest,
+    window: view.window?.person === person ? null : view.window,
+  };
+}
+
+/** A click on a state node: its next cards draw, and its person stays open. */
+export function bucketView(view: MapView, person: string, state: LensState, next: number): MapView {
+  return { ...view, latest: person, window: { person, state, start: next } };
+}
+
+export interface PlanOptions extends MapView {
+  mode: MapMode;
+  /** One person, or "" for everyone. */
+  person: string;
+  /** A find shows each match, whatever the switch, and ignores the folds. */
+  find: string;
+  nameOf: (email: string) => string;
+  /** The starts of `rememberStarts`. Absent: the start of the listed run. */
+  starts?: ReadonlyMap<string, number>;
+  /** The address of the viewer. Their column comes first (decision G4). */
+  me?: string;
+  /** The selected session. It always draws. */
+  pin: string | null;
+}
+
+/** One state node: the sessions of a state that draw no card. */
+export interface StateNode {
+  state: LensState;
+  sessions: LensSession[];
+  /** Where the next click starts. */
+  next: number;
+}
+
+export interface PersonPlan {
+  person: string;
+  /** The sessions that the person card counts: all of them, or the matches of a find. */
+  sessions: LensSession[];
+  open: boolean;
+  /** The sessions that draw a card, an orchestrator included. */
+  shown: ReadonlySet<string>;
+  /** The "idle or done" node of the Active switch, or `null`. */
+  rest: { count: number; open: boolean } | null;
+  buckets: StateNode[];
+}
+
+interface Draft {
+  person: string;
+  sessions: LensSession[];
+  /** What wants a card, the most urgent first. */
+  ranked: LensSession[];
+  /**
+   * The state that a card ranks by: its own, and for a folded orchestrator the
+   * most urgent one that it holds, because its card stands for those agents.
+   */
+  rankOf: (s: LensSession) => LensState;
+  /** Session id to the orchestrator that must draw with it. */
+  holder: Map<string, LensSession>;
+  /** How many cards the person needs: the ranked ones and their orchestrators. */
+  cards: number;
+  open: boolean;
+  /** The idle and done sessions that the rest node stands for. */
+  quiet: LensSession[] | null;
 }
 
 /**
- * How many cards the Graph and the Board draw for a scope (AMR-5a): the
- * sessions that the chips, the find box and the open folds let through, and
- * each orchestrator card. An orchestrator draws whatever its chip says. Under a
- * find it draws for a match, its own or one under it.
+ * When each session started, as the view first saw it, in epoch milliseconds.
+ * The read holds no start of a session, and its one listed run changes when a
+ * new run opens. So the view keeps the first value, and the order holds still.
  */
-export function drawnCards(
-  model: LensModel,
-  filters: LensFilters,
-  opened: ReadonlySet<string>,
-  nameOf: (email: string) => string,
-): number {
-  const find = filters.find.trim();
-  let cards = 0;
-  for (const p of model.people) {
-    if (filters.person && p.person !== filters.person) continue;
-    for (const group of p.groups) {
-      const shown = splitSessions(group.sessions, filters, opened.has(group.key), nameOf).shown.length;
-      const orch = group.orch !== null && (!find || shown > 0 || matchesFind(group.orch, find, nameOf(group.orch.person)));
-      cards += shown + (orch ? 1 : 0);
+export function rememberStarts(
+  known: ReadonlyMap<string, number>,
+  sessions: readonly LensSession[],
+  nowMs: number,
+): ReadonlyMap<string, number> {
+  const fresh = sessions.filter((s) => !known.has(s.id));
+  if (fresh.length === 0) return known;
+  const next = new Map(known);
+  for (const s of fresh) next.set(s.id, nowMs - s.startedAge * 1000);
+  return next;
+}
+
+/**
+ * The groups of a person (decision G4): the orchestrators by urgency, then the
+ * oldest first. The agents with no orchestrator come last. Only a change of a
+ * state moves a group.
+ */
+export function orderGroups(groups: readonly LensGroup[], starts?: ReadonlyMap<string, number>): LensGroup[] {
+  const urgency = (g: LensGroup) => Math.min(...membersOf(g).map((s) => LENS_STATES.indexOf(s.state)));
+  const start = (s: LensSession) => starts?.get(s.id) ?? -s.startedAge * 1000;
+  return [...groups].sort((a, b) => {
+    if (!a.orch || !b.orch) return Number(!a.orch) - Number(!b.orch);
+    return urgency(a) - urgency(b) || start(a.orch) - start(b.orch) || a.key.localeCompare(b.key);
+  });
+}
+
+function draftOf(person: LensPerson, options: PlanOptions): Draft | null {
+  const { mode, find, nameOf, folds, restOpen, pin } = options;
+  const q = find.trim();
+  const all = personSessions(person);
+  const matches = q ? all.filter((s) => matchesFind(s, q, nameOf(s.person))) : all;
+  if (q && matches.length === 0 && !all.some((s) => s.id === pin)) return null;
+  const everyState = mode === "all" || restOpen.has(person.person);
+  const visible = (s: LensSession): boolean => s.id === pin || (q ? matches.includes(s) : everyState || isActive(s));
+  const wanted: LensSession[] = [];
+  const held = new Map<string, LensState>();
+  const rankOf = (s: LensSession): LensState => held.get(s.id) ?? s.state;
+  const holder = new Map<string, LensSession>();
+  const quiet: LensSession[] = [];
+  /** The place of each session among the groups of the person (decision G4). */
+  const placeOf = new Map<string, number>();
+  for (const [place, group] of orderGroups(person.groups, options.starts).entries()) {
+    for (const s of membersOf(group)) placeOf.set(s.id, place);
+    const orch = group.orch;
+    const folded = orch !== null && !q && folds.get(sessionNodeId(orch.id)) === false;
+    const lanes = group.sessions.filter(visible);
+    if (orch && folded) {
+      const states = membersOf(group).map((s) => s.state);
+      held.set(orch.id, LENS_STATES.find((state) => states.includes(state))!);
+    }
+    // The selected session draws even under a folded orchestrator.
+    const drawn = folded ? lanes.filter((s) => s.id === pin) : lanes;
+    for (const s of drawn) if (orch) holder.set(s.id, orch);
+    wanted.push(...drawn);
+    // An orchestrator with a lane to show draws too, whatever its own state.
+    const asContext = orch !== null && (drawn.length > 0 || (folded && lanes.length > 0));
+    if (orch && (visible(orch) || asContext)) wanted.push(orch);
+    if (!folded) quiet.push(...group.sessions.filter((s) => !isActive(s)));
+    if (orch && !isActive(orch) && !(asContext && !everyState)) quiet.push(orch);
+  }
+  const override = folds.get(personNodeId(person.person));
+  const hasPin = pin !== null && all.some((s) => s.id === pin);
+  // The start rule: a person with active work starts open, any other as their
+  // card. The person of the selected session is always open.
+  const open = q || hasPin ? true : (override ?? all.some(isActive));
+  return {
+    person: person.person,
+    sessions: matches,
+    // By state, then by group, then by name. So the bound keeps an orchestrator
+    // with its agents. Never by the last event, so an activity moves no card.
+    ranked: [...wanted].sort(
+      (a, b) =>
+        LENS_STATES.indexOf(rankOf(a)) - LENS_STATES.indexOf(rankOf(b)) ||
+        placeOf.get(a.id)! - placeOf.get(b.id)! ||
+        compareSessions(a, b),
+    ),
+    rankOf,
+    holder,
+    cards: wanted.length,
+    open,
+    quiet: !q && mode === "active" && quiet.length > 0 ? quiet : null,
+  };
+}
+
+/** Takes a session and the orchestrator that must draw with it, if both fit under `cap`. */
+function takeInto(shown: Set<string>, draft: Draft, s: LensSession, cap: number): boolean {
+  const need = [s.id, draft.holder.get(s.id)?.id].filter((id): id is string => id !== undefined && !shown.has(id));
+  if (shown.size + need.length > cap) return false;
+  need.forEach((id) => shown.add(id));
+  return true;
+}
+
+/**
+ * The slots that a click on the state node of `state` needs, at most
+ * `WINDOW_ROOM`: its agents, and each orchestrator that must draw with one. A
+ * slot that an orchestrator holds already goes back to the most urgent card.
+ */
+function roomFor(draft: Draft, state: LensState): number {
+  const ids = new Set<string>();
+  for (const s of draft.ranked) {
+    if (draft.rankOf(s) !== state) continue;
+    ids.add(s.id);
+    const orch = draft.holder.get(s.id);
+    if (orch) ids.add(orch.id);
+  }
+  return Math.min(WINDOW_ROOM, ids.size);
+}
+
+/**
+ * The cards that a person keeps while the state node of `state` is open: the
+ * selected agent, then the most urgent ones. They leave only the room that the
+ * node needs, so an urgent card folds only when no other room is left.
+ */
+function reducedCards(draft: Draft, quota: number, pin: string | null, state: LensState): Set<string> {
+  const shown = new Set<string>();
+  const pinned = draft.ranked.find((s) => s.id === pin);
+  if (pinned) takeInto(shown, draft, pinned, quota);
+  const need = roomFor(draft, state);
+  draft.ranked.forEach((s) => takeInto(shown, draft, s, Math.max(quota - need, 0)));
+  return shown;
+}
+
+/** The sessions of a state that a state node walks: those outside the cards it keeps. */
+function walked(draft: Draft, kept: ReadonlySet<string>, state: LensState): LensSession[] {
+  return draft.ranked.filter((s) => draft.rankOf(s) === state && !kept.has(s.id));
+}
+
+/** The person that the member opened, in at most `quota` cards. An open state node walks. */
+function boundLatest(draft: Draft, quota: number, options: PlanOptions): { shown: Set<string>; nexts: Map<LensState, number> } {
+  const nexts = new Map<LensState, number>();
+  const window = options.window?.person === draft.person ? options.window : null;
+  let shown: Set<string>;
+  if (window) {
+    shown = reducedCards(draft, quota, options.pin, window.state);
+    const list = walked(draft, shown, window.state);
+    let at = window.start < list.length ? window.start : 0;
+    while (at < list.length && takeInto(shown, draft, list[at], quota)) at += 1;
+    nexts.set(window.state, at < list.length ? at : 0);
+  } else {
+    shown = new Set<string>();
+    const pinned = draft.ranked.find((s) => s.id === options.pin);
+    if (pinned) takeInto(shown, draft, pinned, quota);
+  }
+  // Each free slot takes the most urgent card that is left. No room stays empty.
+  draft.ranked.forEach((s) => takeInto(shown, draft, s, quota));
+  for (const state of LENS_STATES) {
+    if (window?.state === state) continue;
+    // A first click skips the cards of the state that show now.
+    const list = walked(draft, reducedCards(draft, quota, options.pin, state), state);
+    nexts.set(state, Math.max(list.findIndex((s) => !shown.has(s.id)), 0));
+  }
+  return { shown, nexts };
+}
+
+const URGENT: readonly LensState[] = ["you", "failed"];
+
+/**
+ * Which cards draw when the open people want more than `CARDS_MAX` (decision
+ * G3). Urgency wins: the selected agent, then each Needs you and Failed agent,
+ * then the person that the member opened, then the rest by state. So Done folds
+ * first, then Idle, Waiting and Working. Inside one state, the people with the
+ * most agents fold first.
+ */
+function share(open: readonly Draft[], options: PlanOptions): Map<string, { shown: Set<string>; nexts: Map<LensState, number> }> {
+  const cards = new Map(open.map((d) => [d.person, new Set<string>()]));
+  let used = 0;
+  const take = (d: Draft, s: LensSession, cap: number) => {
+    const mine = cards.get(d.person)!;
+    const before = mine.size;
+    takeInto(mine, d, s, before + Math.max(cap - used, 0));
+    used += mine.size - before;
+  };
+  const bySize = [...open].sort((a, b) => a.cards - b.cards || a.person.localeCompare(b.person));
+  const latest = open.find((d) => d.person === options.latest) ?? null;
+  for (const d of open) {
+    const pinned = d.ranked.find((s) => s.id === options.pin);
+    if (pinned) take(d, pinned, CARDS_MAX);
+  }
+  /**
+   * The room that the click of the member keeps for the person they opened: what
+   * the open state node needs, and with none, what the person needs.
+   */
+  const window = latest && options.window?.person === latest.person ? options.window : null;
+  const kept = !latest ? 0 : window ? roomFor(latest, window.state) : Math.min(WINDOW_ROOM, latest.cards);
+  const own = () => (latest ? cards.get(latest.person)!.size : 0);
+  // Read before any urgent card, so each urgent card of the opened person
+  // counts toward the room. The selection counts only when it is one of the
+  // agents that the room is for: of the open state node, or with none, urgent.
+  const chosen = latest?.ranked.find((s) => s.id === options.pin);
+  const wanted = chosen !== undefined &&
+    (window ? latest!.rankOf(chosen) === window.state : URGENT.includes(latest!.rankOf(chosen)));
+  const selection = wanted ? 0 : own();
+  if (latest) for (const s of latest.ranked) if (URGENT.includes(latest.rankOf(s))) take(latest, s, CARDS_MAX);
+  for (const state of URGENT) {
+    for (const d of bySize) {
+      if (d === latest) continue;
+      for (const s of d.ranked) if (d.rankOf(s) === state) take(d, s, CARDS_MAX - Math.max(kept - (own() - selection), 0));
     }
   }
-  return cards;
+  const nexts = new Map<string, Map<LensState, number>>();
+  if (latest) {
+    const quota = CARDS_MAX - (used - own());
+    const bound = boundLatest(latest, quota, options);
+    used += bound.shown.size - own();
+    cards.set(latest.person, bound.shown);
+    nexts.set(latest.person, bound.nexts);
+  }
+  for (const state of LENS_STATES) {
+    for (const d of bySize) {
+      if (d === latest) continue;
+      for (const s of d.ranked) if (d.rankOf(s) === state) take(d, s, CARDS_MAX);
+    }
+  }
+  // Where a click on a state node of another person starts: after the cards that show now.
+  for (const d of open) {
+    if (d === latest) continue;
+    const mine = cards.get(d.person)!;
+    const urgentOfOthers = open
+      .filter((o) => o !== d)
+      .reduce((n, o) => n + o.ranked.filter((s) => URGENT.includes(o.rankOf(s))).length, 0);
+    /** The slots of this person after a click on the node of `state`. */
+    const quotaFor = (state: LensState) => CARDS_MAX - Math.min(urgentOfOthers, CARDS_MAX - roomFor(d, state));
+    nexts.set(
+      d.person,
+      new Map(
+        LENS_STATES.map((state) => {
+          const list = walked(d, reducedCards(d, quotaFor(state), options.pin, state), state);
+          return [state, Math.max(list.findIndex((s) => !mine.has(s.id)), 0)];
+        }),
+      ),
+    );
+  }
+  return new Map(open.map((d) => [d.person, { shown: cards.get(d.person)!, nexts: nexts.get(d.person)! }]));
 }
 
-const NO_FOLDS: ReadonlySet<string> = new Set();
-
-/**
- * True when a scope draws too many cards for one canvas. A session that a chip
- * or a find hides does not count.
- */
-export function usesOverview(model: LensModel, filters: LensFilters, nameOf: (email: string) => string): boolean {
-  return drawnCards(model, filters, NO_FOLDS, nameOf) > OVERVIEW_ABOVE;
+/** The order of the people (decision G4): me, then Needs you, Failed and active counts. */
+function peopleOrder(model: LensModel, me: string): LensPerson[] {
+  const mine = me.trim().toLowerCase();
+  const rank = (p: LensPerson) => {
+    const all = personSessions(p);
+    const counts = countStates(all);
+    return [Number(p.person.toLowerCase() === mine), counts.you, counts.failed, all.filter(isActive).length];
+  };
+  return model.people
+    .map((p) => ({ p, rank: rank(p) }))
+    .sort((a, b) => {
+      for (let i = 0; i < a.rank.length; i += 1) if (a.rank[i] !== b.rank[i]) return b.rank[i] - a.rank[i];
+      return a.p.person.localeCompare(b.p.person);
+    })
+    .map((x) => x.p);
 }
 
 /**
- * The folds that the Graph and the Board may draw open. A fold that was opened
- * on the List, or before a refresh or a chip added cards, closes when the open
- * folds together pass the bound.
+ * Which people are open and which agents draw (AMR-5). At most `CARDS_MAX`
+ * agent cards, orchestrators included. Past that `share` folds by urgency, and
+ * each state that does not fit draws one state node. A person with no card
+ * left draws as their folded card.
  */
-export function boundedFolds(
-  model: LensModel,
-  filters: LensFilters,
-  opened: ReadonlySet<string>,
-  nameOf: (email: string) => string,
-): ReadonlySet<string> {
-  return drawnCards(model, filters, opened, nameOf) > OVERVIEW_ABOVE ? NO_FOLDS : opened;
+export function planMap(model: LensModel, options: PlanOptions): PersonPlan[] {
+  const drafts = peopleOrder(model, options.me ?? "").flatMap((p) => {
+    if (options.person && p.person !== options.person) return [];
+    const draft = draftOf(p, options);
+    return draft ? [draft] : [];
+  });
+  const open = drafts.filter((d) => d.open);
+  const over = open.reduce((n, d) => n + d.cards, 0) > CARDS_MAX;
+  const shared = over ? share(open, options) : null;
+  return drafts.map((draft) => {
+    const { person, sessions } = draft;
+    const mine = shared?.get(person);
+    const shown = mine?.shown ?? new Set(draft.ranked.flatMap((s) => [s.id, ...(draft.holder.has(s.id) ? [draft.holder.get(s.id)!.id] : [])]));
+    if (!draft.open || (draft.cards > 0 && shown.size === 0)) {
+      return { person, sessions, open: false, shown: new Set<string>(), rest: null, buckets: [] };
+    }
+    const buckets = LENS_STATES.flatMap((state): StateNode[] => {
+      // A folded orchestrator joins the node of the most urgent agent it holds.
+      const folded = draft.ranked.filter((s) => draft.rankOf(s) === state && !shown.has(s.id));
+      return folded.length > 0 ? [{ state, sessions: folded, next: mine?.nexts.get(state) ?? 0 }] : [];
+    });
+    const rowsOpen = options.restOpen.has(person);
+    const hidden = draft.quiet?.filter((s) => rowsOpen || !shown.has(s.id)).length ?? 0;
+    return { person, sessions, open: true, shown, buckets, rest: hidden > 0 ? { count: hidden, open: rowsOpen } : null };
+  });
 }
 
 export function subTotals(sessions: readonly LensSession[]): SubCounts {
@@ -125,212 +477,16 @@ export function subTotals(sessions: readonly LensSession[]): SubCounts {
   return out;
 }
 
-/* ── The overview ───────────────────────────────────────────────────────── */
+/* ── The phone ───────────────────────────────────────────────────────────── */
 
-export interface Tile {
-  /** The key of the group: the person, and the orchestrator id or "own". */
-  key: string;
-  person: string;
-  /** `null` for the sessions with no orchestrator. */
-  orch: LensSession | null;
-  /** The sessions of the tile, the most urgent first. The orchestrator is one of them. */
-  sessions: LensSession[];
-  counts: LensCounts;
-  subs: SubCounts;
-  machines: string[];
-  /** How much attention it wants. 0 is quiet. */
-  score: number;
-}
-
-export interface TilePerson {
-  person: string;
-  counts: LensCounts;
-  /** The tiles that want attention, the most first. */
-  live: Tile[];
-  /** The quiet ones: only idle and done sessions. They fold into one row. */
-  quiet: Tile[];
-}
-
+/** How much attention a group wants. 0 is quiet. */
 export function attention(counts: LensCounts): number {
   return counts.you * 100 + counts.failed * 50 + counts.working * 2 + counts.waiting;
-}
-
-export function tileOf(group: LensGroup, person: string, sessions = membersOf(group)): Tile {
-  const ranked = rankSessions(sessions);
-  const counts = countStates(ranked);
-  return {
-    key: group.key,
-    person,
-    orch: group.orch,
-    sessions: ranked,
-    counts,
-    subs: subTotals(ranked),
-    machines: [...new Set(ranked.flatMap((s) => (s.host ? [s.host] : [])))],
-    score: attention(counts),
-  };
-}
-
-/** One tile for each orchestrator of each person, and one for the sessions with none. */
-export function overviewTiles(
-  model: LensModel,
-  { person, find }: { person: string; find: string },
-  nameOf: (email: string) => string,
-): TilePerson[] {
-  const out: TilePerson[] = [];
-  for (const p of model.people) {
-    if (person && p.person !== person) continue;
-    const tiles = p.groups
-      .flatMap((group) => {
-        const sessions = membersOf(group).filter((s) => matchesFind(s, find, nameOf(s.person)));
-        return sessions.length > 0 ? [tileOf(group, p.person, sessions)] : [];
-      })
-      .sort((a, b) => b.score - a.score || a.key.localeCompare(b.key));
-    if (tiles.length === 0) continue;
-    out.push({
-      person: p.person,
-      counts: countStates(tiles.flatMap((t) => t.sessions)),
-      live: tiles.filter((t) => t.score > 0),
-      quiet: tiles.filter((t) => t.score === 0),
-    });
-  }
-  return out.sort((a, b) => attention(b.counts) - attention(a.counts) || a.person.localeCompare(b.person));
-}
-
-/** The group of a key, with its person. `null` when it left the map. */
-export function findGroup(model: LensModel, key: string | null): { person: string; group: LensGroup } | null {
-  if (!key) return null;
-  for (const p of model.people) {
-    const group = p.groups.find((g) => g.key === key);
-    if (group) return { person: p.person, group };
-  }
-  return null;
-}
-
-/** The key of the group that holds a session. */
-export function groupKeyOf(model: LensModel, sessionId: string): { person: string; key: string } | null {
-  for (const p of model.people) {
-    for (const group of p.groups) {
-      if (membersOf(group).some((s) => s.id === sessionId)) return { person: p.person, key: group.key };
-    }
-  }
-  return null;
 }
 
 export function allSessionsOf(model: LensModel, person: string): LensSession[] {
   const found = model.people.find((p) => p.person === person);
   return found ? personSessions(found) : [];
-}
-
-/* ── The bound of one orchestrator ──────────────────────────────────────── */
-
-/** The extra cards that an open bucket shows: `count` of them, from `skip`. */
-export interface BucketWindow {
-  skip: number;
-  count: number;
-}
-export type BucketWindows = Partial<Record<LensState, BucketWindow>>;
-
-const EXTRA_MAX = CARDS_MAX - SESSION_CARDS_MAX;
-
-/**
- * Open one bucket: `BUCKET_STEP` more cards of its state. The canvas never
- * passes `CARDS_MAX`, so another open bucket gives way first. A bucket that
- * fills the room alone then moves on to its next cards, and starts again at
- * its end.
- *
- * ⚠️ `rest` is `Bucket.rest`: how many sessions of the state sit outside the
- * first cards, drawn or folded. It is never the folded count, which shrinks as
- * the window grows and so wraps the window before its end.
- */
-export function openBucket(windows: BucketWindows, state: LensState, rest: number): BucketWindows {
-  const now = windows[state] ?? { skip: 0, count: 0 };
-  const count = Math.min(now.count + BUCKET_STEP, EXTRA_MAX);
-  const moved = now.skip + BUCKET_STEP;
-  const own = count > now.count ? { skip: now.skip, count } : { skip: moved < rest ? moved : 0, count };
-  const next: BucketWindows = { [state]: own };
-  let room = EXTRA_MAX - own.count;
-  for (const other of LENS_STATES) {
-    const held = windows[other];
-    if (other === state || !held || room <= 0) continue;
-    next[other] = { skip: held.skip, count: Math.min(held.count, room) };
-    room -= Math.min(held.count, room);
-  }
-  return next;
-}
-
-export interface Bucket {
-  state: LensState;
-  /** The sessions of this state that draw no card, the most urgent first. */
-  sessions: LensSession[];
-  /** The sessions of this state outside the first cards. The window walks them. */
-  rest: number;
-}
-
-export interface Bounded {
-  shown: LensSession[];
-  buckets: Bucket[];
-}
-
-export interface BoundOptions {
-  /** The states whose chip is on. */
-  states: ReadonlySet<LensState>;
-  /** A find shows each match, whatever its chip, and hides the rest. */
-  find: string;
-  nameOf: (email: string) => string;
-  windows?: BucketWindows;
-  /** A session that must draw: the selected one. */
-  pin?: string | null;
-}
-
-/**
- * Which sessions of an orchestrator draw a card: the `SESSION_CARDS_MAX` most
- * urgent of the states that are on, then the cards of each open bucket. The
- * rest fold into one bucket for each state.
- */
-export function boundSessions(sessions: readonly LensSession[], options: BoundOptions): Bounded {
-  const { states, find, nameOf, windows = {}, pin } = options;
-  const q = find.trim();
-  const ranked = rankSessions(q ? sessions.filter((s) => matchesFind(s, q, nameOf(s.person))) : sessions);
-  let first = ranked.filter((s) => q || states.has(s.state)).slice(0, SESSION_CARDS_MAX);
-  /** The sessions of a state outside the first cards, in their order. */
-  const outside = (state: LensState): LensSession[] => {
-    const held = new Set(first.map((s) => s.id));
-    return ranked.filter((s) => s.state === state && !held.has(s.id));
-  };
-  /** The first cards, then the window of each open bucket. */
-  const take = (): Set<string> => {
-    const taken = new Set(first.map((s) => s.id));
-    for (const state of LENS_STATES) {
-      const window = windows[state];
-      if (!window) continue;
-      const rest = outside(state);
-      const skip = window.skip < rest.length ? window.skip : 0;
-      for (const s of rest.slice(skip, skip + window.count)) taken.add(s.id);
-    }
-    return taken;
-  };
-  let taken = take();
-  const pinned = pin ? sessions.find((s) => s.id === pin) : undefined;
-  if (pinned && !taken.has(pinned.id)) {
-    // The selected card takes the place of the least urgent first card. That
-    // card joins its bucket again, so a click on the bucket still reaches it.
-    if (first.length >= SESSION_CARDS_MAX) first = first.slice(0, -1);
-    taken = take().add(pinned.id);
-  }
-  const all = pinned && !ranked.includes(pinned) ? rankSessions([...ranked, pinned]) : ranked;
-  return {
-    shown: all.filter((s) => taken.has(s.id)),
-    buckets: LENS_STATES.flatMap((state) => {
-      const folded = all.filter((s) => s.state === state && !taken.has(s.id));
-      return folded.length > 0 ? [{ state, sessions: folded, rest: outside(state).length }] : [];
-    }),
-  };
-}
-
-/** "28 more working", "6 idle": the words of a bucket. */
-export function bucketWord(bucket: Pick<Bucket, "sessions">, word: string, shownOfState: number): string {
-  const n = bucket.sessions.length;
-  return shownOfState > 0 ? `${n} more ${word.toLowerCase()}` : `${n} ${word.toLowerCase()}`;
 }
 
 /* ── The questions, one at a time ───────────────────────────────────────── */
