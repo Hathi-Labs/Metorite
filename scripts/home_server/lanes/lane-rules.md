@@ -22,9 +22,11 @@ You are a lane on the home box `metorite-home`. You run as user `dev` in
    - Refuse OWNER-GATE work (`work_plan.md` §6).
    - Send your place with each `claim_task`: `agent_label` is your lane name,
      `host` is the machine, `host_kind` is `computer`, `server` or `cloud`, and
-     `model` is your model. Send a value only when you know it. While Remote
-     Control is on, build `external_link` from `CLAUDE_CODE_BRIDGE_SESSION_ID`
-     as `https://claude.ai/code/<id>`. The map of agents shows these values.
+     `model` is your model. `role` is your role: `orchestrator`, `builder`,
+     `verifier`, `reviewer` or `merger`. Send a value only when you know it.
+     While Remote Control is on, build `external_link` from
+     `CLAUDE_CODE_BRIDGE_SESSION_ID` as `https://claude.ai/code/<id>`. The map
+     of agents shows these values.
 2. **Read the whole task.** After `claim_task`, call `get_task_context`. Read
    the description and EVERY comment. When the task has more than 20
    comments, read the older ones with `get_task_timeline` (kind comments).

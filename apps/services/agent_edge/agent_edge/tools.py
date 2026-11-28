@@ -3191,6 +3191,10 @@ _WAITING_SCHEMA = _object({
 #: of a session. ``agent_runs.AGENT_HOST_KINDS`` holds the same, and a pin
 #: test compares the two.
 HOST_KINDS: tuple[str, ...] = ("computer", "server", "cloud")
+#: SW-59a (``agent_coordination.md`` SW-59 and §3.12.10). The roles of a
+#: session. ``agent_runs.AGENT_RUN_ROLES`` holds the same, and a pin test
+#: compares the two. Display data only: a role grants nothing.
+RUN_ROLES: tuple[str, ...] = ("orchestrator", "builder", "verifier", "reviewer", "merger")
 
 #: SW-32 (task 1049, D140.7). The plan of a run: at most 30 steps, each of at
 #: most 200 characters, with four statuses. The gateway holds the same
@@ -3219,6 +3223,8 @@ _RUN_SCHEMA = _object({
     "agent_host": _UNTRUSTED_OR_NULL,
     "agent_model": _UNTRUSTED_OR_NULL,
     "agent_host_kind": {"type": ["string", "null"], "enum": [*HOST_KINDS, None]},
+    # SW-59a. The role of the session. A value of a database CHECK, so (S).
+    "role": {"type": ["string", "null"], "enum": [*RUN_ROLES, None]},
     # SW-107. The run that dispatched this one. The column is a uuid that the
     # gateway checked, so it leaves as an id (S), never as text.
     "dispatched_by_run_id": _NULLABLE_STRING,
@@ -3399,12 +3405,13 @@ def agent_run(row: Mapping[str, Any]) -> dict[str, Any]:
     The link is (S). The question and the line hold free text, so (U).
     SW-7b: ``agent_label`` is the name that an agent gave its session, so (U).
     SW-104: ``agent_host`` and ``agent_model`` are (U) for the same reason.
-    ``agent_host_kind`` leaves only as one of :data:`HOST_KINDS`. SW-107:
+    ``agent_host_kind`` leaves only as one of :data:`HOST_KINDS`. SW-59a:
+    ``role`` leaves only as one of :data:`RUN_ROLES`. SW-107:
     ``dispatched_by_run_id`` leaves only in the shape of an id.
     """
     label = row.get("agent_label")
     host, model = row.get("agent_host"), row.get("agent_model")
-    kind = row.get("agent_host_kind")
+    kind, role = row.get("agent_host_kind"), row.get("role")
     out = {
         "id": str(row.get("id")),
         "task_id": str(row.get("task_id")),
@@ -3423,6 +3430,7 @@ def agent_run(row: Mapping[str, Any]) -> dict[str, Any]:
         "agent_host": untrusted(host) if isinstance(host, str) else None,
         "agent_model": untrusted(model) if isinstance(model, str) else None,
         "agent_host_kind": kind if kind in HOST_KINDS else None,
+        "role": role if role in RUN_ROLES else None,
         "dispatched_by_run_id": _id(row.get("dispatched_by_run_id")),
         "waiting": _waiting(row.get("waiting")),
         "plan": _plan(row.get("plan")),
@@ -5812,15 +5820,17 @@ PLAN_KEY = "plan"
 #: The keys of one row of ``my_work`` (§12.4). ``version`` is the token that
 #: ``claim_task`` sends back as ``expected_version``. SW-104: the machine, its
 #: kind and the model of the row's run, as on the run wire, or null. SW-107:
-#: the run that dispatched the row's run, an id or null.
+#: the run that dispatched the row's run, an id or null. SW-59a: the role of
+#: the row's run, one fixed word or null.
 MY_WORK_ROW_KEYS: tuple[str, ...] = (
     "task_id", "task_number", "title", "status", "project_id", "version", "reason",
     "run_id", "held_by", "yours", "external_link",
-    "agent_host", "agent_model", "agent_host_kind", "dispatched_by_run_id",
+    "agent_host", "agent_model", "agent_host_kind", "dispatched_by_run_id", "role",
 )
-#: SW-104 and SW-107. The keys of the run wire that a ``my_work`` row copies.
+#: SW-104, SW-107 and SW-59a. The keys of the run wire that a ``my_work`` row
+#: copies.
 _WORK_RUN_KEYS: tuple[str, ...] = (
-    "agent_host", "agent_model", "agent_host_kind", "dispatched_by_run_id")
+    "agent_host", "agent_model", "agent_host_kind", "dispatched_by_run_id", "role")
 
 #: SW-7b (``agent_coordination.md`` §3.7 item 2). The most characters of
 #: ``agent_label``. The gateway cleans the value and caps it at the same
@@ -5867,6 +5877,7 @@ _MY_WORK_ROW_SCHEMA = _optional(_object({
     "agent_model": _RUN_SCHEMA["properties"]["agent_model"],
     "agent_host_kind": _RUN_SCHEMA["properties"]["agent_host_kind"],
     "dispatched_by_run_id": _RUN_SCHEMA["properties"]["dispatched_by_run_id"],
+    "role": _RUN_SCHEMA["properties"]["role"],
 }), GUIDANCE_REF_KEY, _GUIDANCE_REF_SCHEMA)
 _MY_WORK_ROW_SCHEMA = _optional(_MY_WORK_ROW_SCHEMA, PLAN_KEY, _object({
     "epic_id": {"type": "string"}, "ready": {"type": "boolean"},
@@ -6144,7 +6155,7 @@ def _work_row(task_id: str, row: Mapping[str, Any] | None, reason: str,
     the run, shaped as on the run wire, or null (CIV-14a). SW-104: the
     machine, its kind and the model of *run*, shaped by :func:`agent_run`,
     or null for a row with no run. SW-107: and its dispatcher, by the same
-    rule."""
+    rule. SW-59a: and its role."""
     shown = _capped(link, _URL_RE, MAX_LINK_CHARS)
     wire = agent_run(run) if run is not None else {}
     place = {key: wire.get(key) for key in _WORK_RUN_KEYS}
@@ -8565,6 +8576,13 @@ _HOST_KIND_INPUT: dict[str, Any] = {
         "The kind of the machine: computer for the PC or laptop of a person,"
         " server for a VPS or a box, cloud for a hosted agent sandbox. It is"
         " display data only.")}
+#: SW-59a. The optional role of this session, on a claim and a start.
+_ROLE_INPUT: dict[str, Any] = {
+    "type": "string", "enum": list(RUN_ROLES),
+    "description": (
+        "The role of this session: orchestrator, builder, verifier, reviewer"
+        " or merger. The map shows it on your session. It is display data"
+        " only, and it grants nothing. A new value replaces the old one.")}
 
 #: SW-107 (``agent_coordination.md`` §3.12.3). The optional run id of the
 #: session that dispatched this one, on a claim and a start.
@@ -8753,6 +8771,7 @@ _CLAIM_INPUT: dict[str, Any] = {
         "model": _MODEL_INPUT,
         "host_kind": _HOST_KIND_INPUT,
         "dispatched_by": _DISPATCHED_BY_INPUT,
+        "role": _ROLE_INPUT,
     },
     "required": ["task_id", "expected_version"],
     "additionalProperties": False,
@@ -8773,8 +8792,9 @@ _CLAIM_OUTPUT = _optional(_CLAIM_OUTPUT, TIPS_KEY, _TIPS_SCHEMA)
 
 def _place_body(args: Mapping[str, Any]) -> dict[str, str]:
     """SW-104. The ``host``, ``model`` and ``host_kind`` of *args* that the
-    agent sent, for the body of a claim or a start. Never a header."""
-    return {key: value for key in ("host", "model", "host_kind")
+    agent sent, for the body of a claim or a start. SW-59a: and ``role``.
+    Never a header."""
+    return {key: value for key in ("host", "model", "host_kind", "role")
             if (value := _str_or_none(args.get(key))) is not None}
 
 
@@ -8882,7 +8902,8 @@ CLAIM_TASK = Tool(
         " another agent holds this task. Do not retry. Pick another"
         " task.[[SHARED]] Send external_link, an https link to"
         " your session, when you have one. The run then shows it. A new link"
-        " replaces the old one. A holder with no activity for 2 hours loses"
+        " replaces the old one. Send role: orchestrator, builder, verifier,"
+        " reviewer or merger. It is display data and grants nothing. A holder with no activity for 2 hours loses"
         " the task to the next claim. When the organization turned on guidance,"
         " the result also has guidance: the organization's written rules for this"
         " task, nearest block first. The last block may be the Metorite default"
@@ -8899,7 +8920,7 @@ CLAIM_TASK = Tool(
     params={"task_id": "task_id", "expected_version": "If-Match",
             "external_link": "external_link", "agent_label": "agent_label",
             "host": "host", "model": "model", "host_kind": "host_kind",
-            "dispatched_by": "dispatched_by"},
+            "dispatched_by": "dispatched_by", "role": "role"},
     not_found=TEXT_TASK_NOT_FOUND,
     run=_claim_task,
     routes=(TASK_ROUTE, STATUSES_ROUTE, GUIDANCE_ROUTE),
@@ -10183,7 +10204,7 @@ AGENT_MAP_KEYS: tuple[str, ...] = (
     "people", "sessions", "runs", "lines", "children", "count", "truncated", "viewer")
 AGENT_MAP_SESSION_KEYS: tuple[str, ...] = (
     "id", "person", "name", "client", "state", "last_at", "run_count", "quiet_count",
-    "quiet_last_at", "host", "host_kind", "host_source", "model",
+    "quiet_last_at", "role", "host", "host_kind", "host_source", "model",
 )
 AGENT_MAP_RUN_KEYS: tuple[str, ...] = (
     "run_id", "session_id", "task_id", "task_number", "title", "state", "quiet", "age",
@@ -10232,6 +10253,8 @@ _MAP_SESSION_SCHEMA = _object({
     "client": _UNTRUSTED_OR_NULL, "state": _NULLABLE_STRING, "last_at": _NULLABLE_STRING,
     "run_count": {"type": "integer"}, "quiet_count": {"type": "integer"},
     "quiet_last_at": _NULLABLE_STRING,
+    # SW-59a: the role of the session, one fixed word or null.
+    "role": _NULLABLE_STRING,
     # SW-106: the machine, its kind, its source and the model. The machine and
     # the model are text that an agent wrote: untrusted. The kind and the
     # source are two fixed words, or null.
@@ -10280,6 +10303,8 @@ def _map_count(value: Any) -> int:
 #: A copy of ``AGENT_HOST_KINDS`` of the gateway, which the edge may not import.
 _MAP_HOST_KINDS = frozenset({"computer", "server", "cloud"})
 _MAP_HOST_SOURCES = frozenset({"checked", "reported"})
+#: SW-59a. The fixed words of the role of a session (:data:`RUN_ROLES`).
+_MAP_ROLES = frozenset(RUN_ROLES)
 
 
 def _map_word(value: Any, allowed: frozenset[str]) -> str | None:
@@ -10294,8 +10319,8 @@ def _map_node(value: Any) -> str | None:
 def map_session(row: Mapping[str, Any]) -> dict[str, Any]:
     """One session node (§3.12.2), with the pinned keys only. The person, the
     name of the session, the client, the machine and the model are untrusted
-    text (§3.12.4 rule 3). The kind of machine and its source are fixed words.
-    A key that the gateway adds later does not leave until a slice maps it
+    text (§3.12.4 rule 3). The kind of machine, its source and the role
+    (SW-59a) are fixed words. A key that the gateway adds later does not leave until a slice maps it
     here."""
     return {
         "id": _map_node(row.get("id")),
@@ -10307,6 +10332,7 @@ def map_session(row: Mapping[str, Any]) -> dict[str, Any]:
         "run_count": _map_count(row.get("run_count")),
         "quiet_count": _map_count(row.get("quiet_count")),
         "quiet_last_at": _map_time(row.get("quiet_last_at")),
+        "role": _map_word(row.get("role"), _MAP_ROLES),
         "host": untrusted(row.get("host")),
         "host_kind": _map_word(row.get("host_kind"), _MAP_HOST_KINDS),
         "host_source": _map_word(row.get("host_source"), _MAP_HOST_SOURCES),
@@ -10563,6 +10589,7 @@ _START_INPUT: dict[str, Any] = {
         "model": _MODEL_INPUT,
         "host_kind": _HOST_KIND_INPUT,
         "dispatched_by": _DISPATCHED_BY_INPUT,
+        "role": _ROLE_INPUT,
     },
     "required": ["task_id", "idempotency_key"],
     "additionalProperties": False,
@@ -10605,7 +10632,9 @@ START_AGENT_RUN = Tool(
         " minutes with no activity, the task shows the run as idle. When you"
         " need a decision from a person, use ask_on_task. When the work is"
         " done, call finish_agent_run. If a person stops the run, the state"
-        " becomes stopping: stop the work at once." + _UNTRUSTED_NOTE
+        " becomes stopping: stop the work at once. Send role: orchestrator,"
+        " builder, verifier, reviewer or merger. It is display data and grants"
+        " nothing." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
     input_schema=_START_INPUT,
@@ -10614,7 +10643,7 @@ START_AGENT_RUN = Tool(
     params={"task_id": "task_id", "external_link": "external_link",
             "idempotency_key": "idempotency_key", "agent_label": "agent_label",
             "host": "host", "model": "model", "host_kind": "host_kind",
-            "dispatched_by": "dispatched_by"},
+            "dispatched_by": "dispatched_by", "role": "role"},
     not_found=TEXT_TASK_NOT_FOUND,
     run=_start_agent_run,
     method="POST",

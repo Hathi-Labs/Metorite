@@ -26,6 +26,8 @@
 
 **SW-107b (the index that serves the delete of a dispatcher run) is built, 2026-11-23 (task 3860). migration 498.**
 
+**SW-59a (a run declares its role: the backend, task 4135) is built, 2026-11-28. migration 518. `claim_task` and `start_agent_run` take `role`, and the runs wire and the map node give it. SW-59b (the role chip on the map and the "Verified by" line) is not built.**
+
 **SW-39 (child runs) is built, 2026-11-22 (task 3799). migration 475.**
 
 **SW-114 (the edge tool `report_subagent`) is built and dark behind `AGENT_MAP_ORGS`, 2026-11-22 (task 3797), with no migration. The edge lists the tool for every org, and the tool answers not found where the flag is off. The hooks of the plugin are not built.**

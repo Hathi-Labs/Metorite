@@ -246,6 +246,11 @@ HostKind = Literal["computer", "server", "cloud"]
 AGENT_HOST_KINDS: tuple[str, ...] = ("computer", "server", "cloud")
 #: SW-104 (SW-50). The kind that a box token sets.
 BOX_HOST_KIND = "server"
+#: SW-59a (``agent_coordination.md`` SW-59 and §3.12.10). The role of an
+#: agent session. Display data only: it grants nothing (R7).
+RunRole = Literal["orchestrator", "builder", "verifier", "reviewer", "merger"]
+#: The roles, in the order of the spec. The CHECK of the migration holds them.
+AGENT_RUN_ROLES: tuple[str, ...] = ("orchestrator", "builder", "verifier", "reviewer", "merger")
 #: SW-107 (``agent_coordination.md`` §3.12.3). ``dispatched_by`` of a body is
 #: the id of a run, else 422 at the schema. The edge has the same pattern.
 DISPATCHED_BY_PATTERN = (
@@ -350,7 +355,8 @@ class StartIn(BaseModel):
     it is 422. SW-104: ``host``, ``model`` and ``host_kind`` name the machine
     and the model of the session, by the same rule. SW-107:
     ``dispatched_by`` is the run of the session that dispatched this one, by
-    the same rule. A member
+    the same rule. SW-59a: ``role`` is the role of the session, one of
+    :data:`AGENT_RUN_ROLES`, by the same rule. A member
     (EA-12d) also sends ``connection_id``, one of their own live agent
     connections, and ``body``, the first ``prompt``. The tenant and the member
     never come from this body (R5).
@@ -369,6 +375,7 @@ class StartIn(BaseModel):
                               pattern=AGENT_PLACE_PATTERN)
     host_kind: HostKind | None = None
     dispatched_by: str | None = Field(default=None, pattern=DISPATCHED_BY_PATTERN)
+    role: RunRole | None = None
 
 
 #: Task 1045a. The longest ``note`` of a wait, in characters.
@@ -817,35 +824,45 @@ def clean_agent_place(value: str | None) -> str | None:
 @dataclass(frozen=True, slots=True)
 class AgentPlace:
     """SW-104. The machine, the kind of machine and the model of an agent
-    session, each cleaned, or ``None`` when the agent sent none."""
+    session, each cleaned, or ``None`` when the agent sent none. SW-59a: and
+    the role of the session, one of :data:`AGENT_RUN_ROLES` or ``None``."""
 
     host: str | None = None
     model: str | None = None
     host_kind: str | None = None
+    role: str | None = None
 
     def empty(self) -> bool:
-        return self.host is None and self.model is None and self.host_kind is None
+        return (self.host is None and self.model is None and self.host_kind is None
+                and self.role is None)
 
 
 def agent_place_of(user: UserContext, host: str | None, model: str | None,
-                   host_kind: str | None) -> AgentPlace:
+                   host_kind: str | None, role: str | None = None) -> AgentPlace:
     """SW-104. The cleaned ``host``, ``model`` and ``host_kind`` of the body
-    of a claim or a start.
+    of a claim or a start. SW-59a: and its ``role``.
 
     Only a signed agent names its own machine and model, as only it names its
     session (:func:`agent_label_of`). So a person's body that names one is
     422. The values come only from that body, never from a header. A box
-    token's connection name wins later (:func:`_box_place`).
+    token's connection name wins later (:func:`_box_place`). The role is
+    display data only: no gate, holder rule or session key reads it (R7).
     """
-    if host is None and model is None and host_kind is None:
+    if host is None and model is None and host_kind is None and role is None:
         return AgentPlace()
     if getattr(user, "agent", None) is None:
+        if role is not None:
+            raise HTTPException(
+                status_code=422,
+                detail="Only an agent sends role, the role of its session.",
+            )
         raise HTTPException(
             status_code=422,
             detail="Only an agent sends host, model and host_kind, the place of its session.",
         )
     return AgentPlace(host=clean_agent_place(host), model=clean_agent_place(model),
-                      host_kind=host_kind if host_kind in AGENT_HOST_KINDS else None)
+                      host_kind=host_kind if host_kind in AGENT_HOST_KINDS else None,
+                      role=role if role in AGENT_RUN_ROLES else None)
 
 
 def dispatched_by_of(user: UserContext, value: str | None) -> str | None:
@@ -878,7 +895,8 @@ _BOX_NAME_SQL = (
 async def _box_place(db: Any, user: UserContext, place: AgentPlace) -> AgentPlace:
     """SW-104. For a box token, the connection name wins over ``host``, and
     ``host_kind`` is ``server`` (``agent_coordination.md`` §3.12.3, §3.12.7
-    rule 5). Any other caller keeps *place*. The model stays the agent's own.
+    rule 5). Any other caller keeps *place*. The model stays the agent's own,
+    and so does the role (SW-59a).
 
     The stamp ``mcp:box:`` of branch 0 marks a box caller, and the row's
     ``credential`` confirms it. Display data only: the result chooses no run.
@@ -892,7 +910,7 @@ async def _box_place(db: Any, user: UserContext, place: AgentPlace) -> AgentPlac
     if row is None or row.credential != agent_oauth.BOX_CREDENTIAL:
         return place
     return AgentPlace(host=clean_agent_place(row.client_name) or place.host,
-                      model=place.model, host_kind=BOX_HOST_KIND)
+                      model=place.model, host_kind=BOX_HOST_KIND, role=place.role)
 
 
 def agent_label_of(user: UserContext, value: str | None) -> str | None:
@@ -1151,6 +1169,9 @@ async def _runs_out(db: Any, rows: list[Any]) -> list[dict[str, Any]]:
             "agent_host": getattr(row, "agent_host", None),
             "agent_model": getattr(row, "agent_model", None),
             "agent_host_kind": getattr(row, "agent_host_kind", None),
+            # SW-59a: the role of the session, one of AGENT_RUN_ROLES or
+            # None. Display data only: it grants nothing.
+            "role": getattr(row, "role", None),
             # SW-107: the run that dispatched this one, an id or None. The
             # gateway checked it on the write. Display data only.
             "dispatched_by_run_id": wire(getattr(row, "dispatched_by_run_id", None)),
@@ -2350,11 +2371,11 @@ _INSERT_RUN_SQL = (
     "(task_id, member_email, connection_id, client_via, status, started_by, "
     " started_at, external_link, last_activity_at, last_agent_activity_at, "
     " idempotency_key, session_key, agent_label, agent_host, agent_model, "
-    " agent_host_kind) "
+    " agent_host_kind, role) "
     "VALUES (CAST(:tid AS uuid), :me, CAST(:cid AS uuid), :via, :status, :by, "
     "        :started, :link, :ts, :agent_ts, :key, CAST(:sk AS text), "
     "        CAST(:label AS text), CAST(:host AS text), CAST(:model AS text), "
-    "        CAST(:kind AS text)) "
+    "        CAST(:kind AS text), CAST(:role AS text)) "
     "ON CONFLICT DO NOTHING RETURNING id"
 )
 
@@ -2399,24 +2420,29 @@ _SET_PLACE_SQL = (
     "UPDATE pm_agent_runs SET"
     " agent_host = COALESCE(CAST(:host AS text), agent_host),"
     " agent_model = COALESCE(CAST(:model AS text), agent_model),"
-    " agent_host_kind = COALESCE(CAST(:kind AS text), agent_host_kind)"
+    " agent_host_kind = COALESCE(CAST(:kind AS text), agent_host_kind),"
+    " role = COALESCE(CAST(:role AS text), role)"
     " WHERE id = CAST(:rid AS uuid)"
     "   AND (agent_host IS DISTINCT FROM COALESCE(CAST(:host AS text), agent_host)"
     "        OR agent_model IS DISTINCT FROM COALESCE(CAST(:model AS text), agent_model)"
     "        OR agent_host_kind IS DISTINCT FROM"
-    "           COALESCE(CAST(:kind AS text), agent_host_kind))"
+    "           COALESCE(CAST(:kind AS text), agent_host_kind)"
+    "        OR role IS DISTINCT FROM COALESCE(CAST(:role AS text), role))"
 )
 
 
 def _place_binds(place: AgentPlace | None) -> dict[str, str | None]:
-    """The binds ``host``, ``model`` and ``kind`` of *place* (SW-104)."""
+    """The binds ``host``, ``model`` and ``kind`` of *place* (SW-104), and
+    ``role`` (SW-59a)."""
     place = place or AgentPlace()
-    return {"host": place.host, "model": place.model, "kind": place.host_kind}
+    return {"host": place.host, "model": place.model, "kind": place.host_kind,
+            "role": place.role}
 
 
 async def _set_run_place(db: Any, run_id: str, place: AgentPlace | None) -> None:
     """SW-104. Set the machine, its kind and the model of an open run that the
-    caller already owns, as :func:`_set_run_label` sets the label. A value
+    caller already owns, as :func:`_set_run_label` sets the label. SW-59a:
+    and the role, by the same rule, so a later role replaces it. A value
     that the call did not send keeps the old one. A Resume and a reopen clear
     them with the label (:func:`_clear_run_label`). The run came from the
     gate, so the place never chooses the run."""
@@ -2513,10 +2539,11 @@ def warn_dispatch(result: dict[str, Any], dropped: str | None) -> None:
 #: SW-104: the machine, its kind and the model of that session go with it.
 _CLEAR_LABEL_SQL = (
     "UPDATE pm_agent_runs SET agent_label = NULL, agent_host = NULL,"
-    " agent_model = NULL, agent_host_kind = NULL"
+    " agent_model = NULL, agent_host_kind = NULL, role = NULL"
     " WHERE id = CAST(:rid AS uuid)"
     "   AND (agent_label IS NOT NULL OR agent_host IS NOT NULL"
-    "        OR agent_model IS NOT NULL OR agent_host_kind IS NOT NULL)"
+    "        OR agent_model IS NOT NULL OR agent_host_kind IS NOT NULL"
+    "        OR role IS NOT NULL)"
 )
 
 
@@ -2527,7 +2554,8 @@ async def _clear_run_label(db: Any, run_id: str) -> None:
     keep the old one (:func:`_set_run_label`). It is a separate statement,
     so no run-slot rule names the label (the fence of §3.7). SW-104: the
     machine, its kind and the model go in the same statement, by the same
-    rule. SW-107: the dispatcher stays by design (§3.12.3)."""
+    rule. SW-59a: so does the role, because it is the role of that session.
+    SW-107: the dispatcher stays by design (§3.12.3)."""
     await db.execute(text(_CLEAR_LABEL_SQL), {"rid": run_id})
 
 
@@ -2631,8 +2659,10 @@ async def start_agent_run(
     body = _clean_body(payload.body)
     # SW-7b: an agent's own label, display data only. A person's is 422.
     label = agent_label_of(user, payload.agent_label)
-    # SW-104: and its machine, its kind and its model. A person's is 422.
-    place = agent_place_of(user, payload.host, payload.model, payload.host_kind)
+    # SW-104: and its machine, its kind and its model. SW-59a: and its role.
+    # A person's is 422.
+    place = agent_place_of(user, payload.host, payload.model, payload.host_kind,
+                           payload.role)
     # SW-107: the run that dispatched it. A person's is 422.
     dispatched_by = dispatched_by_of(user, payload.dispatched_by)
     dropped: str | None = None

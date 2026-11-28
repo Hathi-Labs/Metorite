@@ -1,6 +1,6 @@
 ---
 slug: kit/team-setup
-version: 4
+version: 5
 title: Kit: set up a team of people and agents on one board
 summary: The concrete setup for several people who each run one or more agents on one Metorite board.
 audience: both
@@ -60,6 +60,7 @@ Metorite limits what the connection can reach. It cannot limit the shell, `git p
 
 1. Call `my_work`. Take the top row.
 2. Call `claim_task`, then `get_task_context`. Call `start_agent_run` if the claim opened no run.
+   - Each session sends `role` on its claim: `orchestrator`, `builder`, `verifier`, `reviewer` or `merger`. The map shows the role on the session. It is display data and grants nothing.
 3. Make a worktree and a branch. Put the `short_id` of the task in the branch name.
 4. Do the work. Post a line at least once each minute.
 5. Open the pull request. Put the url of the task in its body.

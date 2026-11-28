@@ -672,7 +672,8 @@ class TestMyWork:
                          "run_id": _uuid(6101), "held_by": None,
                          "yours": False, "external_link": None,
                          "agent_host": None, "agent_model": None,
-                         "agent_host_kind": None, "dispatched_by_run_id": None}]
+                         "agent_host_kind": None, "dispatched_by_run_id": None,
+                         "role": None}]
 
     async def test_a_gateway_with_the_runs_flag_off_gives_no_runs(self, board):
         """The units restart one at a time: the edge has the flag on and the

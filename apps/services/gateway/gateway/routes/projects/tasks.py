@@ -3044,8 +3044,10 @@ class ClaimIn(BaseModel):
     and a person's body that names one is 422. SW-104: ``host``, ``model``
     and ``host_kind`` name the machine and the model of the session, by the
     same rule and the same bounds as ``StartIn``. SW-107: ``dispatched_by``
-    names the run that dispatched the session, by the same rule. The tenant
-    and the member never come from this body (R5)."""
+    names the run that dispatched the session, by the same rule. SW-59a:
+    ``role`` is the role of the session, one of ``agent_runs.AGENT_RUN_ROLES``,
+    by the same rule. Display data only. The tenant and the member never come
+    from this body (R5)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -3059,6 +3061,7 @@ class ClaimIn(BaseModel):
     dispatched_by: str | None = Field(
         default=None,
         pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+    role: Literal["orchestrator", "builder", "verifier", "reviewer", "merger"] | None = None
 
 
 #: SW-63 (agent_coordination.md §5.10). The most subtask ids a claim lists.
@@ -3151,8 +3154,10 @@ async def claim_task(
     link = agent_runs.check_run_link(payload.external_link)
     # SW-7b: the display label of the agent's session. A person's is 422.
     label = agent_runs.agent_label_of(user, payload.agent_label)
-    # SW-104: its machine, its kind and its model. A person's is 422.
-    place = agent_runs.agent_place_of(user, payload.host, payload.model, payload.host_kind)
+    # SW-104: its machine, its kind and its model. SW-59a: and its role.
+    # A person's is 422.
+    place = agent_runs.agent_place_of(user, payload.host, payload.model, payload.host_kind,
+                                      payload.role)
     # SW-107: the run that dispatched it. A person's is 422.
     dispatched_by = agent_runs.dispatched_by_of(user, payload.dispatched_by)
     async with _tenant_session() as db:
