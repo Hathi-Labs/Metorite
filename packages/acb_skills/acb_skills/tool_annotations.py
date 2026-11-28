@@ -110,8 +110,9 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     # WS-43d (maf_coding_engine.md §7.4): the sandbox tools. run_command runs
     # code, so it is a shell tool (manifest.SHELL_TOOLS), and it runs only in
     # the container, which has no network: open_world is False until a grant
-    # (WS-43g). request_network_access is the stub of that grant. Neither is
-    # ever injected, so the risk block below never names them.
+    # (WS-43g). request_network_access asks the member for that grant on a
+    # card (WS-43g2b). Neither is ever injected, so the risk block below never
+    # names them.
     "run_command":           {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
     "request_network_access": {"read_only": False, "destructive": False, "idempotent": False, "open_world": True},
     # H-236: the other sandbox tools. MAF's eight file tools over the run's

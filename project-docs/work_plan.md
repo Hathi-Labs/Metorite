@@ -234,7 +234,7 @@ These are the rows of the board before D118. Each row keeps its ID, so a spec th
 |---|---|---|---|---|
 | WS-0 | Documentation remediation (the old §5) | ✅ done | none | now in WS-DOC |
 | WS-1 | Action Broker truth and completion (BO-1) | 🟢 open | none, the BO checklist is in git | now in WS-TO (WS-1e) |
-| WS-2 | Secrets (BO-8): rotate, purge, fail closed | 🟢 open | none, the BO checklist is in git | now in WS-TS (WS-2d) |
+| WS-2 | Secrets (BO-8): rotate, purge, fail closed | 🟢 open | `docs/secrets_drop.md` §6 (the startup check) | now in WS-TS (WS-2d) · 574: shadow |
 | WS-3 | Isolation ladder (BO-7, HH-6, T0 to T2) | 🟢 open | `specs/permissions_sandbox_b6.md` §P5 | now in WS-TO (WS-3a, WS-3b) |
 | WS-4 | Event-bus consumer and durable queue (BO-20) | 🟢 open | none, the BO checklist is in git | now in WS-BRIEF (BR-1a) |
 | WS-5 | CI gates real (BO-17, BO-18) | 🟢 open | none, the BO checklist is in git | now in WS-PL (WS-5a) |
@@ -6092,6 +6092,21 @@ The owner chose option (b) in chat on 2026-11-09 (Metorite tasks 2520 and 2521).
 6. **Dark.** The table is not in `app_manifests.APPS`, so the door serves no Projects op. MCP-G24b registers it, after MCP-P1b-2 builds the spend. Until then, the table needs no flag.
 
 Fence: `tests/unit/test_projects_door_coverage.py`. MCP-G25 adds `tests/unit/test_mcp_projects_parity.py` on the same table.
+
+Re-check this number at merge. The first merge wins a D-number.
+
+### D209 — The write cap of an agent connection counts calls and rows (2026-11-11)
+
+The replan of 2026-11-09 (Metorite tasks 2518 and 2546) specified two counters for the write cap. Task 2541 point 6 holds them, and MCP-G28a builds them. `external_agent_access.md` §9.2, "The write limit", holds the design.
+
+1. **Two counters, per connection.** The call counter reads `AGENT_WRITE_CAP`, default 120. The row counter reads the new setting `AGENT_WRITE_ROW_CAP`, default 5000. Both use the window `AGENT_WRITE_WINDOW_S`, default 600 seconds.
+2. **The cost.** A single write costs 1 call and 1 row. A batch of 50 rows costs 1 call and 50 rows. So a plain single-write agent meets the same limit as before.
+3. **The edge signs the batch key.** The edge mints one key for each call of `update_tasks`, and each item signs it in as `X-Agent-Batch` (§10.1). Branch 0 takes the key only from that signed header, and only on a write. This adds one optional line to the one canonical string, as SW-7 did.
+4. **One number for the rows of a call.** Each further 50 rows of one key cost one more call. The 50 is `agent_oauth.WRITE_ROWS_PER_CALL`, and `tools.MAX_BULK_UPDATES` is that value. No second number exists.
+5. **The refusal.** Each counter answers 429 with its own detail and `Retry-After`. The text of the edge names the counter and holds `retry_after` (task 844).
+6. **Not in D209.** The batch path, the approved bulk job, the queued answer and the key of a call stay later slices of MCP-G28.
+
+Fence: `tests/unit/test_mcp_write_limit.py`. `tests/unit/test_tenant_request_binding.py` pins the digest of branch 0 and the one new header.
 
 Re-check this number at merge. The first merge wins a D-number.
 

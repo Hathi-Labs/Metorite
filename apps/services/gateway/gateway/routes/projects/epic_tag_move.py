@@ -12,6 +12,8 @@ root project. The tag stays as a plain tag.
 * A task that has a parent is skipped and listed (the Epic-root rule,
   ``core.assert_epic_has_no_parent``).
 * A task whose root project has no epic type is skipped and listed.
+* A Goal is skipped and listed (WS-39 WM-5). A type is never a Goal and an
+  epic, and an epic may point at the Goal, so a person decides.
 * The tag match ignores case, as the tag registry does.
 * Each change goes through ``core.record_field_change`` as ``system:sp7-epic-tag``,
   so the timeline shows it as an automated field change.
@@ -32,7 +34,7 @@ ACTOR = "system:sp7-epic-tag"
 #: type of their root project. ``epic_type_id`` is NULL when the root has none.
 _CANDIDATES_SQL = text("""
 SELECT t.id, t.task_number, t.title, t.parent_task_id, t.type_id,
-       t.root_project_id,
+       t.root_project_id, COALESCE(cur.is_goal, false) AS is_goal,
        (SELECT ty.id FROM pm_task_types ty
          WHERE ty.project_id = t.root_project_id AND ty.is_epic
          ORDER BY ty.is_system DESC, (ty.name = 'Epic') DESC, ty.created_at, ty.id
@@ -68,6 +70,10 @@ async def move_org(org: str, *, dry_run: bool = False) -> dict[str, Any]:
             if r.epic_type_id is None:
                 out["skipped"].append({"task_number": r.task_number, "title": r.title,
                                        "reason": "its project has no epic type"})
+                continue
+            if r.is_goal:
+                out["skipped"].append({"task_number": r.task_number, "title": r.title,
+                                       "reason": "it is a Goal"})
                 continue
             out["moved"] += 1
             out["moved_numbers"].append(r.task_number)

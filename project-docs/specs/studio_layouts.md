@@ -252,12 +252,12 @@ Each layout slice has four parts: the preset component built on `StudioPage` and
 | LY-1 | 3314 | Shared states component | Every preset uses it. A test refuses a local copy. |
 | LY-2 | 3315 | Table workspace: the layout, the shared states, the count line, and a table that keeps 40rem and scrolls in its own strip | The layout and states of the L2 bar. The column hide and the bulk bar are in LY-2b (task 3356), by the LY-2 audit on task 3315 (2026-11-15). The active-filter chips, the phone card list and the tablet panel overlay have no slice yet. **Status: BUILT, dark behind `NEXT_PUBLIC_STUDIO_APP_FRAME` (PR 2363).** |
 | LY-2b | 3356 | Table workspace: column hide, kept in the URL | A member hides columns. The first column never hides, and one column stays. **Status: BUILT, dark behind `NEXT_PUBLIC_STUDIO_APP_FRAME` (PR 2386): the column hide.** The bulk bar is not built. The owner chose "Only a bulk action that the app declares" (task 3356, answer `5e83e927`, 2026-11-15). |
-| LY-3 | 3316 | Record 360, as the AF-5 record page | Meets the L6 bar. Needs `record` (task 3254). |
-| LY-4 | 3317 | Board | Shared filters with L2, phone stage switcher. |
+| LY-3 | 3316 | Record 360, as the AF-5 record page | Meets the L6 bar. Needs `record` (task 3254). **Status: PARTLY BUILT, dark behind `NEXT_PUBLIC_STUDIO_APP_FRAME` (PR 2364): the key facts in the header, the Files count and the not-found sentence.** Left: the main action in the header, the cap of 4 related lists and their counts, the Activity tab (D22), the side panel and the draft keep. |
+| LY-4 | 3317 | Board | Shared filters with L2, phone stage switcher. **Status: PARTLY BUILT, dark behind `NEXT_PUBLIC_STUDIO_APP_FRAME` (PR 2365): the board preset with the shared states, the count line and the sideways-scroll cue.** Left: the phone stage switcher (LY-4b, task 3354), filters shared between a table page and a board page, the tablet column rules and the drop hint of an empty column. |
 | LY-5 | 3318 | Form wizard, as a step mode of Form | Steps, progress, review step, draft keep. |
 | LY-6 | 3319 | Work queue and approval | Next item, decision bar, success empty state. |
 | LY-7 | 3320 | Dashboard | Tile states, caps, tile-to-list link. |
-| LY-8 | 3321 | Mira and IDE | `studio_describe` knows the presets. The Pages tab has a picker. Eval passes. **Status: BUILT (PR 2372): `studio_describe` and the eval of 14 prompts on `layout_hint`.** The Pages-tab picker is LY-8b (task 3352, PR 2381). |
+| LY-8 | 3321 | Mira and IDE | `studio_describe` knows the presets. The Pages tab has a picker. Eval passes. **Status: BUILT (PR 2372): `studio_describe` and the eval of 14 prompts on `layout_hint`.** The Pages-tab picker is LY-8b (task 3352). **LY-8b status: BUILT, dark behind `NEXT_PUBLIC_STUDIO_APP_FRAME` (PR 2381): the picker, the region rows and the note for left-out views.** |
 | LY-9 to LY-15 | 3322 | Calendar, list and detail, gallery, map, timeline, checklist, document and settings | One slice each, after its block. |
 
 ## 9. Owner decisions (2026-11-14, task 3312)

@@ -188,14 +188,16 @@ WAVES: dict[str, tuple[str, tuple[str, ...], tuple[int, ...]]] = {
     "P-2": ("Email", ("email",), (3111, 3919)),
     # P-3 (task 3678): task 3951 built the add and change of the CRM set-up (CRM-M2e).
     # Task 3954 built the suggestions of the field map and the AI analysis.
-    "P-3": ("CRM", ("crm",), (3678, 3951, 3954)),
+    # Task 3953 built the Field map and the mapping plan (CRM-M2f, CRM-M2i).
+    "P-3": ("CRM", ("crm",), (3678, 3951, 3954, 3953)),
     "P-4": ("Notes and WhatsApp", ("notes", "whatsapp"), (3113,)),
     # P-5b (task 3114) splits into P-5b-1 (3114) and P-5b-2 to P-5b-6 (3943 to 3947).
     "P-5": ("People, Knowledge and Memory", ("people", "knowledge", "memory"),
             (3105, 3114, 3943, 3944, 3945, 3946, 3947)),
     "P-6": ("Workflows, Custom Apps and the Agent Registry", ("workflows", "apps", "agents"),
             (3115, 3903, 3950)),
-    "P-7": ("Chat threads and the shell", ("chat", "shell"), (3115, 3903)),
+    # PAR-11 part a (task 4012): the chat list of the member, in the pack chat-threads.
+    "P-7": ("Chat threads and the shell", ("chat", "shell"), (3115, 3903, 4012)),
     "P-8": ("Settings, Admin and Integrations", ("settings", "admin", "integrations"),
             (3102, 3925, 3107, 3935, 3936, 3108, 3109, 3932, 3990)),
     "P-9": ("AI Studio", ("studio",), (3115,)),
@@ -230,6 +232,8 @@ TOOL_SOURCES: tuple[str, ...] = (
     "apps/agents/agent-whatsapp-assistant/agents.py",
     "apps/skills/skill-my-tasks/skill_my_tasks/core.py",
     "packages/acb_skills/acb_skills/chat_pin_tools.py",
+    # PAR-11 part a (task 4012): the chat-threads pack sends the routes of the chat list.
+    "packages/acb_skills/acb_skills/chat_thread_tools.py",
     "packages/acb_skills/acb_skills/crm_tools.py",
     # PAR-9 (task 3950): the studio-apps pack sends the routes of the Custom Apps.
     "packages/acb_skills/acb_skills/custom_app_tools.py",
@@ -423,6 +427,15 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "POST /api/whatsapp/chats/{}/draft": "draft_whatsapp_reply",
     "POST /api/whatsapp/commitments/{}/nudge": "draft_waiting_on_nudge",
     "POST /api/whatsapp/messages/{}/transcribe": "transcribe_whatsapp_voice_note",
+    # P-4b (task 3961): seven writes of the WhatsApp agent, each on one card.
+    # None sends a message. Fence: tests/unit/test_whatsapp_write_tools.py.
+    "DELETE /api/whatsapp/saved-replies/{}": "delete_whatsapp_saved_reply",
+    "PATCH /api/whatsapp/categories/{}": "update_whatsapp_category",
+    "POST /api/whatsapp/accounts/{}/categories/bootstrap": "seed_whatsapp_categories",
+    "POST /api/whatsapp/capture-task": "capture_whatsapp_task",
+    "POST /api/whatsapp/chats/{}/snooze": "snooze_whatsapp_chat",
+    "POST /api/whatsapp/chats/{}/unsnooze": "unsnooze_whatsapp_chat",
+    "POST /api/whatsapp/saved-replies": "create_whatsapp_saved_reply",
     # ── People ──
     "GET /api/tasks/people": "my_tasks_people",
     # P-5b-1 (task 3114): four reads of the people pack. Each tool sends the route as
@@ -442,12 +455,24 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "PUT /api/people/{}/credentials": "set_my_credentials",
     "POST /api/people/{}/absences": "add_my_absence",
     "DELETE /api/people/{}/absences/{}": "remove_my_absence",
+    # P-5b-4 (task 3945): the schedule of the company, on one card with the dry-run impact.
+    # The tool also reads the schedule and asks for a dry run before the card.
+    "PUT /api/people/schedule": "set_work_schedule",
     # ── Chat ──
     # CO-11b (task 3563): Pin and Unpin of THIS chat. The tool takes no chat
     # id: it acts on the chat of the run, as the member of the run.
     "DELETE /api/chat/sessions/{}/pin": "pin_chat",
     "GET /api/agent/artifacts": "list_artifacts",
     "PUT /api/chat/sessions/{}/pin": "pin_chat",
+    # PAR-11 part a (task 4012): the chat list of the member, in the dark pack
+    # chat-threads (chat_thread_tools.py). Each tool sends the route of the dock
+    # as the member of the run. A delete always shows one card.
+    "GET /api/chat/sessions": "list_chats",
+    "GET /api/chat/topics": "list_chats",
+    "PATCH /api/chat/sessions/{}": "edit_chat",
+    "POST /api/chat/topics": "edit_chat",
+    "PUT /api/chat/sessions/{}/topic": "edit_chat",
+    "DELETE /api/chat/sessions/{}": "delete_chat",
     # ── Shell, Home and approvals ──
     # PAR-8b (task 3903, chat_parity.md section 6.4 rung 5): the Home tools of the
     # orchestrator, dark behind HOME_TOOLS_ORGS. Each sends the route as the member of the run.
@@ -884,6 +909,25 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "chat",
         "Reads the saved turns of a thread to draw it. It is the chat's own record.",
     ),
+    # PAR-11 part a (task 4012): three requests that the chat sends by itself.
+    "GET /api/chat/pending-asks": (
+        "chat",
+        "The chat draws its own cards again after a reload or a parked run (WS-51 S2, "
+        "lib/pendingAsks.ts). No member click sends it. It is the chat's own card, and the "
+        "member answers the card.",
+    ),
+    "POST /api/chat/suggestions": (
+        "chat",
+        "The chat asks a model for three follow-up chips after each answer (AgentChat.tsx). "
+        "No member click sends it. It is part of the chat's own composer, and the member "
+        "types the same words as a turn.",
+    ),
+    "GET /api/models/all": (
+        "chat",
+        "The chat reads the model list for the picker of its own composer when the picker "
+        "loads (AgentChat.tsx). No member click sends it. The model of a turn is the chat's "
+        "own setting.",
+    ),
     "GET /api/chat/sessions/{}/room-stream": (
         "stream",
         "The live event stream of a shared chat room. The chat reads the room as it runs.",
@@ -1137,18 +1181,11 @@ DEBT: dict[str, str] = {
     "PUT /api/notes/settings": "P-4",
     # ── WhatsApp ──
     "DELETE /api/whatsapp/accounts/{}": "P-4",
-    "DELETE /api/whatsapp/saved-replies/{}": "P-4",
-    "PATCH /api/whatsapp/categories/{}": "P-4",
     "POST /api/me/whatsapp-link/code": "P-4",
-    "POST /api/whatsapp/accounts/{}/categories/bootstrap": "P-4",
     "POST /api/whatsapp/accounts/{}/history-sync": "P-4",
     "POST /api/whatsapp/calls": "P-4",
     "POST /api/whatsapp/calls/{}": "P-4",
-    "POST /api/whatsapp/capture-task": "P-4",
     "POST /api/whatsapp/chats/{}/send": "P-4",
-    "POST /api/whatsapp/chats/{}/snooze": "P-4",
-    "POST /api/whatsapp/chats/{}/unsnooze": "P-4",
-    "POST /api/whatsapp/saved-replies": "P-4",
     # ── People ──
     "DELETE /api/people/{}/avatar": "P-5",
     "PATCH /api/tasks/people/{}": "P-5",
@@ -1156,7 +1193,6 @@ DEBT: dict[str, str] = {
     "POST /api/people/{}/avatar": "P-5",
     "POST /api/people/{}/resume": "P-5",
     "POST /api/tasks/people/{}/resume": "P-5",
-    "PUT /api/people/schedule": "P-5",
     # ── Memory ──
     "DELETE /api/memory/{}/{}": "P-5",
     "GET /api/memory/{}": "P-5",
@@ -1193,22 +1229,13 @@ DEBT: dict[str, str] = {
     "PUT /api/observability/avatars/{}": "P-6",
     # ── Chat ──
     "DELETE /api/agent/workspace/{}/file": "P-7",
-    "DELETE /api/chat/sessions/{}": "P-7",
     "DELETE /api/chat/sessions/{}/agents/{}": "P-7",
     "DELETE /api/chat/sessions/{}/participants/{}": "P-7",
     "GET /api/agent/workspace/{}": "P-7",
     "GET /api/agent/workspace/{}/history": "P-7",
     "GET /api/chat/directory": "P-7",
-    "GET /api/chat/pending-asks": "P-7",
-    "GET /api/chat/sessions": "P-7",
     "GET /api/chat/sessions/{}/room": "P-7",
-    # CO-2b (task 3588): the topic chip reads the topics, makes a private
-    # topic, and moves a chat. No chat tool lists or moves chats today, so P-7
-    # pays the three with the chat tool of the chat list, as for the pin.
-    "GET /api/chat/topics": "P-7",
-    "GET /api/models/all": "P-7",
     "PATCH /api/agent/workspace/{}": "P-7",
-    "PATCH /api/chat/sessions/{}": "P-7",
     "PATCH /api/chat/sessions/{}/participants/{}": "P-7",
     "PATCH /api/chat/sessions/{}/room": "P-7",
     "POST /api/agent/artifacts/upload": "P-7",
@@ -1217,12 +1244,14 @@ DEBT: dict[str, str] = {
     "POST /api/artifacts/compile": "P-7",
     "POST /api/chat/sessions/{}/agents": "P-7",
     "POST /api/chat/sessions/{}/participants": "P-7",
-    "POST /api/chat/suggestions": "P-7",
-    "POST /api/chat/topics": "P-7",
     "POST /api/documents/pdf": "P-7",
+    # PAR-11 part a (task 4012): the thumbs up or down on one answer of the chat
+    # (MessageActionBar.tsx) is a click of the member, so no kind fits by the rule
+    # of section 2. The vote names the id of one saved answer, and a turn of the chat
+    # cannot tell which answer the member means. It waits for an owner ruling: a
+    # button of the chat's own answer, as the cards of P-2c, would make it a chat row.
     "POST /api/feedback": "P-7",
     "PUT /api/agent/workspace/{}/file": "P-7",
-    "PUT /api/chat/sessions/{}/topic": "P-7",
     # ── Shell, Home and approvals ──
     # PAR-8b (task 3903) paid 9 of the 16 shell rows. The two rows of the
     # approval queue stay: the safety fence test_no_person_present.py refuses a tool that
@@ -1347,16 +1376,16 @@ DEBT_CEILING: dict[str, int] = {
     "tasks": 1,  # P-1a (task 3112) paid enrich and suggest-title (9 to 7). P-1b (task 3922) paid the six capture rows of mail (7 to 1).
     "calendar": 2,  # CE-10c (task 66) added the list read, Sync now and Disconnect of the calendar connections, paid by P-1 (1 to 4). The switch of CE-10c follow-up (task 66) added the PATCH, paid by P-1 (5). P-1a (task 3112) paid the list read (5 to 4). P-1c (task 3923) paid Sync now and the switch (4 to 2). Disconnect waits for the owner's decision on C-04. Paid by task 3923. The day-state read is task 1680.
     "email": 5,  # SG-1 (task 2177, 2026-11-07) added the signature image upload, paid by SG-6 (task 2182). Paid by task 3111. P-2c (task 3919) exempted drafts/save, reply-card/bcc and reply-card/discard as the chat's own cards, and paid rules/patterns/review (14 to 10). P-2a (task 3111) paid the search, the facets, the folders, the older-mail read and the org counts (10 to 5).
-    "crm": 60,  # CRM-M2a: the manifest decides. The count is UI actions with no built tool. Field Studio GET /fields reaches crm_list_fields, so it left the debt (73 to 72). Task 3951 (CRM-M2e) paid the add, change and order reset of a stage and the add and change of a lost reason with crm_edit_status and crm_edit_lost_reason (72 to 67). The two DELETE rows and the PUT of the order stay debt: the agent sends no DELETE and no PUT (apps/AGENTS.md). Task 3954 (P-3) paid the suggestions of the field map (list, preview, approve, undo, dismiss) and the AI analysis (status, re-run) with five CRM agent tools (67 to 60).
+    "crm": 52,  # CRM-M2a: the manifest decides. The count is UI actions with no built tool. Field Studio GET /fields reaches crm_list_fields, so it left the debt (73 to 72). Task 3951 (CRM-M2e) paid the add, change and order reset of a stage and the add and change of a lost reason with crm_edit_status and crm_edit_lost_reason (72 to 67). The two DELETE rows and the PUT of the order stay debt: the agent sends no DELETE and no PUT (apps/AGENTS.md). Task 3954 (P-3) paid the suggestions of the field map (list, preview, approve, undo, dismiss) and the AI analysis (status, re-run) with five CRM agent tools (67 to 60). Task 3953 (CRM-M2f, CRM-M2i) paid the Field map read, a rule add and decide, and the five plan routes with six tools (eight rows, 60 to 52).
     "notes": 45,  # Task 3963 paid the 6 GET rows of Notes that are owner-checked or per member with 6 read tools (51 to 45). Paid by task 3963.
-    "whatsapp": 13,  # P-4a (task 3960) paid the 12 read rows of WhatsApp with 12 read tools (25 to 13). Paid by task 3960.
-    "people": 7,  # P-5b-1 (task 3114) paid the directory, my row, my work, the work of a person, and the Reach status and preview (19 to 13). P-5b-6 (task 3947, owner answer OD3 A) deleted the dead client code that created a person, so POST /api/tasks/people left the UI (13 to 12). The gateway route stays. P-5b-2 (task 3943) paid the self writes: the profile PATCH, the skills and credentials PUTs, and the absence add and remove (12 to 7).
+    "whatsapp": 6,  # P-4a (task 3960) paid the 12 read rows of WhatsApp with 12 read tools (25 to 13). P-4b (task 3961) paid the saved reply add and delete, the category change, the default categories, the snooze, the wake and the task capture with seven card tools (13 to 6). The link code of the phone (POST /api/me/whatsapp-link/code) stays: it is a credential. Paid by task 3961.
+    "people": 6,  # P-5b-1 (task 3114) paid the directory, my row, my work, the work of a person, and the Reach status and preview (19 to 13). P-5b-6 (task 3947, owner answer OD3 A) deleted the dead client code that created a person, so POST /api/tasks/people left the UI (13 to 12). The gateway route stays. P-5b-2 (task 3943) paid the self writes: the profile PATCH, the skills and credentials PUTs, and the absence add and remove (12 to 7). P-5b-4 (task 3945) paid PUT /api/people/schedule (7 to 6).
     "knowledge": 4,  # PAR-3 (task 3105) built create_page, edit_page, create_space and edit_space, which pay POST and PATCH of a page and of a space (19 to 15). PAR-3b (task 3901) built move_page, revert_page and eight reads (15 to 4). Publish, archive, restore (chat_parity.md §7 item 7) and the search (AD-11) stay.
     "memory": 4,  # P-5b-1 (task 3114, owner answer OD5 A) made the unmount save of the chat (POST /api/chat/memories) a chat exemption (5 to 4). The four Mem0 rows stay debt until KG-11 (OD2 A).
     "workflows": 0,  # STB-6a (task 3117) paid the list and the read of one workflow (24 to 22). STB-6b (task 3118) paid publish, rollback, disable and enable (22 to 18). PAR-8a (task 3903) paid the other 18 with seven tools of studio-workflows (18 to 0).
     "apps": 2,  # PAR-9: 26 rows paid by task 3950 with the six tools of studio-apps (28 to 2). The model call and the tool call of the cc bridge wait for an owner ruling on their kind.
     "agents": 20,
-    "chat": 28,  # CO-11 (task 3510) added Pin and Unpin of a chat (25 to 27). CO-2b (task 3588) added the topic read, the topic create and the move of a chat (27 to 30). CO-11b (task 3563) paid both pin routes with pin_chat (30 to 28). P-7 pays the three topic routes with the chat tool of the chat list, a separate slice. Paid by task 3115.
+    "chat": 19,  # CO-11 (task 3510) added Pin and Unpin of a chat (25 to 27). CO-2b (task 3588) added the topic read, the topic create and the move of a chat (27 to 30). CO-11b (task 3563) paid both pin routes with pin_chat (30 to 28). PAR-11 part a, paid by task 4012: list_chats, edit_chat and delete_chat pay the list, the rename and archive, the delete and the three topic rows, and the pending asks, the suggestions and the model list are chat exemptions (28 to 19). The vote of POST /api/feedback waits for an owner ruling.
     "shell": 9,  # PKG-17c-1 (task 2969) added the PUT of the org shell layout. PAR-8b (task 3903) paid 9 rows with the Home tools (16 to 7). The two rows of the approval queue wait for the owner (chat_parity.md section 7, item 6). The intent row and the four push rows wait for an owner ruling on their kind (section 2). WS-AP AP-2a added GET /api/shell/waiting and its /count (7 to 9). The chat tool my_waits of AP-10 (task 1860) pays both. Paid by task 1860.
     "settings": 30,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531). PKG-20 added the appearance read and write. Paid by task 3108.
     "admin": 12,  # ACC-2 (task 3988) added the read and the write of who can use an integration (10 to 12). The chat tool is ACC-4 (task 3990), which waits for the owner decision of PAR-6b (task 3932). Paid by task 3990. PAR-2a (task 3102) paid the member list, the requests, the role list, the status, the roles and the answer of a request (36 to 30). PAR-4a (task 3107) paid the six group rows, the features read, the role create and delete, the access read, the overrides write, the removal preview and the org rename (30 to 17). PAR-4c (task 3935) paid the remove and the purge, and PAR-4d (task 3936) paid the five seat rows with read_seats and set_seat (17 to 10).
