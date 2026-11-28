@@ -44,12 +44,14 @@ OWNER-GATE (`enforcement-flip`), after the owner preview.
 it does not change who may flip it. The flip stays OWNER-GATE
 (`enforcement-flip`).
 
-`AGENT_WRITE_CAP` and `AGENT_WRITE_WINDOW_S` set the write cap of each agent
-connection (`external_agent_access.md` §9.2, MCP-G20). The defaults are 120
-writes in 600 s. They are not `*_ORGS` or `*_MODES` keys, so a reload does
-NOT apply them. The gateway counts the writes, and the agent edge names the
-numbers in each write tool. Set both units to the same value. Then restart
-`acb-gateway` and `acb-agent-edge`. A change stays OWNER-GATE
+`AGENT_WRITE_CAP`, `AGENT_WRITE_ROW_CAP` and `AGENT_WRITE_WINDOW_S` set the
+write cap of each agent connection (`external_agent_access.md` §9.2, MCP-G20
+and MCP-G28a, D209). The cap has two counters. The defaults are 120 write
+calls and 5000 changed rows in 600 s. One call of `update_tasks` is 1 call
+and 1 row for each item. They are not `*_ORGS` or `*_MODES` keys, so a reload
+does NOT apply them. The gateway counts the writes, and the agent edge names
+the numbers in each write tool. Set both units to the same values. Then
+restart `acb-gateway` and `acb-agent-edge`. A change stays OWNER-GATE
 (`enforcement-flip`).
 
 `AI_TURN_KIND_NOWAIT_ORGS` stops the turn-kind wait of a delegated run
@@ -654,6 +656,12 @@ also selects the orgs where the daily expiry tick may delete installs
 the next tick. The owner must treat a change of this list as part of the
 expiry decision. `PACKAGE_EXPIRY_ENABLED` does not reload. Only a restart
 changes it.
+
+`PROJECTS_GOALS_ORGS` opens the Goals of Projects (`project_management_app.md`
+§13.6a row WM-5). Its one reader is
+`gateway.routes.projects.core.goals_allowed`. While the list does not hold the
+org, a write that sends a Goal field gets 422 `goals_off`. A reload applies a
+change, and the flip stays OWNER-GATE (`enforcement-flip`).
 
 `PROJECT_EDIT_CARD_ORGS` turns on the card of a new task that the member
 edits (`projects_ai_chat.md` §32, EAC-1). For each listed org, the card of

@@ -16,7 +16,9 @@ seats), ``acb_skills.integrations_admin_tools`` (PAR-6a) and
 ``acb_skills.people_tools`` (P-5b-1, the pack ``people``) and
 ``acb_skills.notes_read_tools`` (task 3963, the pack ``notes``). The one act of
 the dark pack ``calendar-connections`` is ``skill_my_tasks``'s
-``my_tasks_calendar_connection`` (P-1c, task 3923). This module keeps no copy. They call the admin and Integrations routes over
+``my_tasks_calendar_connection`` (P-1c, task 3923). The three tools of the
+dark pack ``chat-threads`` are in ``acb_skills.chat_thread_tools`` (PAR-11
+part a, task 4012). This module keeps no copy. They call the admin and Integrations routes over
 HTTP as the member, and take no org or member argument. The routes decide
 each right.
 
@@ -35,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from acb_common import get_settings
+from acb_skills.chat_thread_tools import CHAT_THREAD_TOOLS
 from acb_skills.integrations_admin_tools import INTEGRATIONS_ADMIN_TOOLS
 from acb_skills.notes_read_tools import NOTES_READ_TOOLS
 from acb_skills.org_admin_more_tools import ORG_ADMIN_MORE_TOOLS, ORG_ADMIN_SEAT_TOOLS
@@ -63,7 +66,7 @@ except ImportError:
     pass
 
 _TOOLS = [*ORG_ADMIN_TOOLS, *ORG_ADMIN_MORE_TOOLS, *ORG_ADMIN_SEAT_TOOLS, *PEOPLE_TOOLS,
-          *_CALENDAR_CONNECTION_TOOLS, *NOTES_READ_TOOLS, *INTEGRATIONS_ADMIN_TOOLS]
+          *_CALENDAR_CONNECTION_TOOLS, *NOTES_READ_TOOLS, *CHAT_THREAD_TOOLS, *INTEGRATIONS_ADMIN_TOOLS]
 
 
 def _register_agent_tools() -> dict[str, Any]:

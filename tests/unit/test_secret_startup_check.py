@@ -12,13 +12,13 @@ edge started under ``enforce`` with no signing key and said nothing.
 from __future__ import annotations
 
 import ast
+import contextlib
 import os
 import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import pytest
-import structlog
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -76,6 +76,72 @@ def _events(logs, name):
     return [e for e in logs if e.get("event") == name]
 
 
+class _Recorder:
+    """Records the log calls of one module, as ``capture_logs`` would."""
+
+    def __init__(self, events: list[dict]) -> None:
+        self.events = events
+
+    def _add(self, level: str, event: str, **kw) -> None:
+        self.events.append({"event": event, "log_level": level, **kw})
+
+    def warning(self, event: str, **kw) -> None:
+        self._add("warning", event, **kw)
+
+    def info(self, event: str, **kw) -> None:
+        self._add("info", event, **kw)
+
+    def error(self, event: str, **kw) -> None:
+        self._add("error", event, **kw)
+
+
+#: The events that ``secret_check._log`` wrote in the current test.
+_LOG: list[dict] = []
+
+
+@pytest.fixture(autouse=True)
+def _secret_log(monkeypatch):
+    """Record every log call of the startup check, in each test of this file.
+
+    Main went red twice on 2026-11-27 (batches 46053188388 and 46070759597):
+    in the full run ``capture_logs`` saw no line of ``secret_check._log``. An
+    earlier test leaves a cached logger behind, and a cached logger keeps the
+    processors of the configure call that made it, so ``capture_logs`` cannot
+    reach it. The file passed alone. So no test here reads structlog
+    capture: this fixture swaps ``_log`` in the module, which is the globals
+    dict of ``check_startup_secrets``, for a recorder. ``monkeypatch`` puts the
+    real logger back after each test.
+    """
+    from acb_auth import secret_check
+    from agent_edge import app as edge_app
+
+    _LOG.clear()
+    rec = _Recorder(_LOG)
+    monkeypatch.setattr(secret_check, "_log", rec)
+    # The edge app holds the same function. A reload would give it another
+    # globals dict, so patch that one too.
+    monkeypatch.setitem(edge_app.check_startup_secrets.__globals__, "_log", rec)
+    yield
+    _LOG.clear()
+
+
+@pytest.fixture
+def edge_log():
+    """The events of the startup check that the edge app calls."""
+    return _LOG
+
+
+@contextlib.contextmanager
+def _captured():
+    """The events written inside the block, as ``capture_logs`` gives them."""
+    start = len(_LOG)
+    seen: list[dict] = []
+    try:
+        yield seen
+    finally:
+        seen.extend(_LOG[start:])
+
+
 # ── The gap: before task 574 a service started with no secret, silently ──────
 
 
@@ -95,29 +161,28 @@ def edge_env(monkeypatch):
     get_settings.cache_clear()
 
 
-def test_the_edge_refuses_to_start_under_enforce_with_no_signing_key(edge_env):
+def test_the_edge_refuses_to_start_under_enforce_with_no_signing_key(edge_env, edge_log):
     """RED before task 574: the edge started and logged nothing."""
     from agent_edge.app import create_app
     from fastapi.testclient import TestClient
 
     app = create_app()
-    with (structlog.testing.capture_logs() as logs, pytest.raises(Exception) as caught,
-          TestClient(app)):
+    with pytest.raises(Exception) as caught, TestClient(app):
         pass
     assert "agent_edge_signing_key" in str(caught.value)
-    assert _events(logs, "secrets.unusable")
+    assert _events(edge_log, "secrets.unusable")
 
 
-def test_the_edge_starts_under_shadow_and_names_the_setting(edge_env):
+def test_the_edge_starts_under_shadow_and_names_the_setting(edge_env, edge_log):
     from acb_common import get_settings  # the real one, not the fixture's
     from agent_edge.app import create_app
     from fastapi.testclient import TestClient
 
     edge_env.setenv("SECRET_STARTUP_CHECK", "shadow")
     get_settings.cache_clear()
-    with structlog.testing.capture_logs() as logs, TestClient(create_app()):
+    with TestClient(create_app()):
         pass
-    named = [e["setting"] for e in _events(logs, "secrets.unusable")]
+    named = [e["setting"] for e in _events(edge_log, "secrets.unusable")]
     assert named == ["agent_edge_signing_key"]
 
 
@@ -129,7 +194,7 @@ def test_shadow_logs_exactly_the_bad_names_and_returns():
 
     s = _settings(gateway_session_secret="", litellm_master_key="sk-local",
                   secret_startup_check="shadow")
-    with structlog.testing.capture_logs() as logs:
+    with _captured() as logs:
         bad = check_startup_secrets("gateway", s)
     assert bad == ["gateway_session_secret", "litellm_master_key"]
     warned = _events(logs, "secrets.unusable")
@@ -159,7 +224,7 @@ def test_a_summary_line_is_always_logged():
     """No warning on a box must mean "all usable", never "never ran"."""
     from acb_auth.secret_check import check_startup_secrets
 
-    with structlog.testing.capture_logs() as logs:
+    with _captured() as logs:
         check_startup_secrets("gateway", _settings())
     summary = _events(logs, "secrets.startup_check")
     assert len(summary) == 1
@@ -178,7 +243,7 @@ def test_shadow_never_raises_on_a_bug_of_the_check(monkeypatch):
         raise KeyError(leaked)
 
     monkeypatch.setattr(secret_check, "unusable_secrets", boom)
-    with structlog.testing.capture_logs() as logs:
+    with _captured() as logs:
         assert secret_check.check_startup_secrets("gateway", _settings()) == []
     failed = _events(logs, "secrets.startup_check_failed")
     assert [e["error"] for e in failed] == ["KeyError"]
@@ -193,7 +258,7 @@ def test_a_settings_load_that_fails_never_stops_the_unit(monkeypatch):
         raise ValueError("a bad env file")
 
     monkeypatch.setattr(secret_check, "get_settings", broken)
-    with structlog.testing.capture_logs() as logs:
+    with _captured() as logs:
         assert secret_check.check_startup_secrets("agent_edge") == []
     failed = _events(logs, "secrets.startup_check_failed")
     assert [e["error"] for e in failed] == ["ValueError"]
@@ -230,7 +295,7 @@ def test_enforce_fails_closed_on_a_bug_of_the_check(monkeypatch):
         raise KeyError(leaked)
 
     monkeypatch.setattr(secret_check, "unusable_secrets", boom)
-    with (structlog.testing.capture_logs() as logs,
+    with (_captured() as logs,
           pytest.raises(secret_check.SecretsUnusable) as caught):
         secret_check.check_startup_secrets(
             "gateway", _settings(secret_startup_check="enforce"))
@@ -249,7 +314,7 @@ def test_dev_never_refuses_and_logs_nothing():
     s = _settings(acb_env="dev", gateway_session_secret="", gateway_internal_token="",
                   acb_master_key="", litellm_master_key="sk-local",
                   secret_startup_check="enforce")
-    with structlog.testing.capture_logs() as logs:
+    with _captured() as logs:
         assert check_startup_secrets("gateway", s) == []
     assert not _events(logs, "secrets.unusable")
 
@@ -404,7 +469,7 @@ def test_no_value_reaches_the_log_or_the_error():
 
     s = _settings(gateway_session_secret="change-me-dev-only",
                   litellm_master_key="sk-local-dev-change-me")
-    with structlog.testing.capture_logs() as logs:
+    with _captured() as logs:
         check_startup_secrets("gateway", s)
     with pytest.raises(SecretsUnusable) as caught:
         check_startup_secrets("gateway", _settings(

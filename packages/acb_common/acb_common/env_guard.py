@@ -366,6 +366,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # for an org. A tenant must not open it for another org, so only the
     # owner writes it.
     "PROJECTS_TEMPLATES_ORGS",
+    # WS-39 WM-5: PROJECTS_GOALS_ORGS opens the Goals of Projects for an org.
+    # A tenant must not open it for another org, so only the owner writes it.
+    "PROJECTS_GOALS_ORGS",
     # WS-39 T-1: TEAMS_ORGS opens the team scope of Projects for an org. A
     # tenant must not open it for another org, so only the owner writes it.
     "TEAMS_ORGS",
@@ -395,8 +398,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # WS-55 MCP-G20: the write cap of each agent connection on the box. A
     # tenant that raised it would lift the cap of every org, so only the
     # owner writes it. The AGENT_ prefix covers both too, and the exact
-    # names keep the fence if that prefix ever narrows.
-    "AGENT_WRITE_CAP", "AGENT_WRITE_WINDOW_S",
+    # names keep the fence if that prefix ever narrows. MCP-G28a adds the
+    # row counter of the same cap.
+    "AGENT_WRITE_CAP", "AGENT_WRITE_ROW_CAP", "AGENT_WRITE_WINDOW_S",
     # WS-MCP SW-53: GITHUB_APP_ORGS turns the GitHub App on for an org. On,
     # deliveries write the org's pull requests and a merge can move its tasks,
     # so only the owner writes it. The GITHUB_APP_ prefix covers it too.
@@ -650,6 +654,10 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     "PROVIDER_ALERT_",
     # STU-B1: STUDIO_ORGS opens the AI Studio catalog for an org.
     "STUDIO_",
+    # SBX-4b1: USER_TOOL_MAX_PER_ORG, USER_TOOL_MAX_TOTAL and
+    # USER_TOOL_STEP_SECONDS_BUILD cap and time the sandbox builds of the box,
+    # so a tenant that set them could raise the caps for every org.
+    "USER_TOOL_",
     # STU-E12a: CORE_EVENTS_ORGS opens the core app events for an org, so a
     # tenant that set it could open them for every org on the box.
     "CORE_",
