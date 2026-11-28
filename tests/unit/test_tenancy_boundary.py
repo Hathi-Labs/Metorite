@@ -176,6 +176,9 @@ EXPECTED_SCOPED = {
     "pm_project_updates",
     # WS-39 TPL-1a (2026-11-08): the template store, keyed at CREATE time.
     "pm_templates", "pm_template_applies",
+    # WS-STU D13b (2026-11-14): migration 518 (442 at build), the bytes of a file of a
+    # record of a Studio app, keyed at CREATE time, FORCE RLS.
+    "studio_record_files",
     # Task 3844 (2026-11-22): migration 487 puts `organization_id` on the
     # numbered ladder for `copilot_config` and `notes_glossary`, because the
     # per-org unique keys need it, as 354 did for `agent_avatars`.

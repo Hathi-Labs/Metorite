@@ -7,12 +7,14 @@ same router, as an import side effect. STU-B2a adds the action door
 routes (``packages.py``) on it too. STU-AF-10a adds the saved views
 (``views.py``) in the same way. STU-I8a adds the connections of a draft
 (``connections.py``) in the same way. SBX-1a adds the gap view of an
-approver (``tool_gaps.py``) in the same way. Each route is gated on
+approver (``tool_gaps.py``) in the same way. STU-D13b adds the serve route
+of a record file (``files.py``) in the same way. Each route is gated on
 ``STUDIO_ORGS`` (default OFF), and on the ``studio`` feature (J1).
 """
 
 from gateway.routes.studio import connections as _connections  # noqa: F401
 from gateway.routes.studio import csv_import as _csv_import  # noqa: F401
+from gateway.routes.studio import files as _files  # noqa: F401
 from gateway.routes.studio import invoke as _invoke  # noqa: F401
 from gateway.routes.studio import packages as _packages  # noqa: F401
 from gateway.routes.studio import skills as _skills  # noqa: F401

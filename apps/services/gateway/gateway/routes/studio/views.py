@@ -21,10 +21,10 @@ transaction (``record_app_audit_in``). A failed audit row rolls the write
 back, because a share and an unshare change who reads a view.
 
 **Who reaches the app.** The member is ``user.email``, never request input.
-The owner reads the package through ``packages_store.get_package``. Each other
-member reads it through ``package_host/viewer.installed_app``, while
-``PACKAGE_HOST_ORGS`` holds the org. These are the two reads of the action
-door (``invoke._check``), and this module keeps no third rule. A member with
+The shared resolver ``studio/reach.py`` holds the two reads of the action door
+(``invoke._check``): the owner through ``packages_store.get_package``, then
+each other member through ``package_host/viewer.installed_app`` while
+``PACKAGE_HOST_ORGS`` holds the org. This module keeps no copy. A member with
 neither gets 404.
 
 **The rules (owner to confirm at preview).**
@@ -70,12 +70,12 @@ from acb_common.studio_fields import NAME_PATTERN, storable_text
 from fastapi import Depends, HTTPException, Query, Request
 from gateway.db import tenant_session as _tenant_session
 from gateway.package_host import viewer as _viewer
-from gateway.package_host.flags import package_host_allowed
 from gateway.routes.apps._common import record_app_audit_in
 from gateway.routes.studio import flags
 from gateway.routes.studio.actions import NOT_FOUND, router
-from gateway.studio import objects_store, packages_store
+from gateway.studio import objects_store
 from gateway.studio import views_store as store
+from gateway.studio.reach import reach_package
 
 __all__ = ["MAX_BODY_BYTES", "MAX_COLUMNS", "PROJECTED_KEYS", "SPEC_KEYS", "project_spec",
            "router"]
@@ -271,15 +271,12 @@ def _out(view: store.SavedView, member: str, spec: Mapping[str, Any] | None = No
 
 async def _reach(db: Any, user: UserContext, pid: str) -> _viewer.InstalledApp | None:
     """None when the member owns the package *pid*. The installed app when
-    the member reads it through an install. Else 404. The two reads of the
-    door's ``_check``, in the same order."""
-    if await packages_store.get_package(db, user.email, pid) is not None:
-        return None
-    if package_host_allowed(user.organization_id):
-        app = await _viewer.installed_app(db, viewer=user.email, app_id=pid)
-        if app is not None:
-            return app
-    raise _not_found()
+    the member reads it through an install. Else 404. The resolver is
+    ``studio/reach.py``, the two reads of the door's ``_check``."""
+    found = await reach_package(db, user.email, user.organization_id, pid)
+    if found is None:
+        raise _not_found()
+    return found.app
 
 
 async def _readable(db: Any, app: _viewer.InstalledApp, user: UserContext, pid: str,
