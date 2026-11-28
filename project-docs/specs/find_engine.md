@@ -327,8 +327,9 @@ off, `Hit.as_dict` gives the keys of today, byte for byte.
 | `outside` | `source`, `acting` | `[Salesforce, with the access of Priya]` |
 
 `edge` is a code constant from a closed list: `contact_of`, `lead_of`,
-`deal_of`, `company_of`, `mail_from`, `mail_to` and `mail_domain`. It holds no
-text of either record. A hit found by two rungs keeps the copy that holds
+`deal_of`, `company_of`, `mail_from`, `mail_to` and `mail_domain`. The list
+lives in `acb_common/edge_vocabulary.py` (CI-R1a), with the codes of the
+stored edges. It holds no text of either record. A hit found by two rungs keeps the copy that holds
 more words. On a tie of words, it keeps the lower rung (the planner, FIND-2b,
 2026-11-17).
 

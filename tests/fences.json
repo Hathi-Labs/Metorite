@@ -158,6 +158,7 @@
       "tests/unit/test_crm_ui_actions.py",
       "tests/unit/test_decision_ids.py",
       "tests/unit/test_drafting_voice.py",
+      "tests/unit/test_edge_vocabulary.py",
       "tests/unit/test_email_compose_latency.py",
       "tests/unit/test_email_manual_sync_parity.py",
       "tests/unit/test_email_rulepath_draft_parity.py",

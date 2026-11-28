@@ -11,10 +11,11 @@ R1) widens ``kb_links``.
 provenance and a confidence. Its one writer is :func:`_write_edges` here.
 The page reads key on ``page_id``, so a graph row never reaches them.
 
-**The relations are a closed code list.** :data:`RELATIONS` holds each
-relation that a writer of today writes. The database holds no CHECK on
-``relation``, so a later slice adds its relation here and needs no
-migration. ``tests/unit/test_kg_links_writer.py`` pins the list to the
+**The relations are a closed code list.** :data:`RELATIONS` of
+``acb_common.edge_vocabulary`` (CI-R1a) holds each relation that a writer of
+today writes, with the node kinds and the edge codes of find. The database
+holds no CHECK on ``relation``, so a later slice adds its relation there and
+needs no migration. ``tests/unit/test_kg_links_writer.py`` pins the list to the
 table of §4.1.
 
 **The sweep (KG-4).** :func:`sweep_org` writes the structural edges of one
@@ -71,6 +72,14 @@ from typing import Any
 
 from acb_auth import UserContext
 from acb_common import get_logger, get_settings
+from acb_common.edge_vocabulary import (
+    APP_KINDS,
+    EXTRACTED_CONFIDENCE,
+    NODE_KINDS,
+    PROVENANCES,
+    RELATIONS,
+    Relation,
+)
 from sqlalchemy import text
 
 from gateway.db import current_tenant, tenant_session
@@ -84,67 +93,9 @@ _log = get_logger("gateway.kb_entities.graph")
 
 # ── The vocabulary ──────────────────────────────────────────────────────────
 
-#: The node kinds of §3.1. The CHECK ``kb_links_source_kind_check`` of the
-#: migration mirrors this tuple (fence: test_kg_links_writer.py).
-NODE_KINDS: tuple[str, ...] = (
-    "task", "email", "person", "lead", "deal", "contact", "company",
-    "artifact", "whatsapp", "page", "entity", "meeting",
-)
-
-#: The provenance values of §4.2, and the confidence of an EXTRACTED edge.
-PROVENANCES: tuple[str, ...] = ("EXTRACTED", "INFERRED", "AMBIGUOUS")
-EXTRACTED_CONFIDENCE = 1.0
-
 #: The ``created_by`` of a row that the sweep writes.
 SYSTEM = "system"
 
-
-@dataclass(frozen=True)
-class Relation:
-    """One relation of §4.1.
-
-    ``evidence`` names the end that holds the link (§4.3). ``source``: the
-    source record holds it. ``app``: both ends and the record that holds the
-    link sit under one access rule of one app, named by ``app``.
-
-    ``ambiguous`` is True for a relation that an exact identifier gives
-    (KG-5). One candidate gives ``provenance`` (EXTRACTED). Two or more give
-    one AMBIGUOUS row for each candidate (§4.2).
-    """
-
-    name: str
-    sources: tuple[str, ...]
-    targets: tuple[str, ...]
-    provenance: str
-    evidence: str
-    app: str | None = None
-    ambiguous: bool = False
-
-
-#: The relations that a writer of today writes (§4.1). ``links_to`` is the
-#: page row of ``sync_page_links``. The KG-4 sweep writes the next seven, and
-#: the KG-5 forms add ``participant``, ``domain_company`` and the address half
-#: of ``attendee``.
-RELATIONS: dict[str, Relation] = {r.name: r for r in (
-    Relation("links_to", ("page",), NODE_KINDS, "EXTRACTED", "source"),
-    Relation("deal_contact", ("deal",), ("contact",), "EXTRACTED", "app", "crm"),
-    Relation("deal_company", ("deal",), ("company",), "EXTRACTED", "source"),
-    Relation("contact_company", ("contact",), ("company",), "EXTRACTED", "source"),
-    Relation("activity_on", ("deal", "contact"), ("contact", "company"),
-             "EXTRACTED", "app", "crm"),
-    Relation("origin", ("task",), ("email", "whatsapp"), "EXTRACTED", "source"),
-    Relation("task_link", ("task",), ("task",), "EXTRACTED", "source"),
-    Relation("attendee", ("meeting",), ("person",), "EXTRACTED", "source",
-             ambiguous=True),
-    Relation("participant", ("email", "whatsapp"), ("person", "contact"),
-             "EXTRACTED", "source", ambiguous=True),
-    Relation("domain_company", ("email",), ("company",), "EXTRACTED", "source"),
-)}
-
-#: The node kinds of each app whose one access rule covers both ends.
-APP_KINDS: dict[str, frozenset[str]] = {
-    "crm": frozenset({"lead", "deal", "contact", "company"}),
-}
 
 # ── The sweep: one form for each edge it writes ─────────────────────────────
 

@@ -38,6 +38,11 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 from acb_common import get_settings, name_match
+from acb_common.edge_vocabulary import (  # noqa: F401  (EDGES: re-export)
+    EDGES,
+    MAIL_EDGES,
+    RECORD_EDGES,
+)
 
 #: The ``matched_by`` values of §3.5, from the closed list. The lower the
 #: number, the lower the rung of §3.1, and the earlier the hit comes on a tie.
@@ -431,17 +436,10 @@ def near_words(query: str, words: list[str], held: set[str]) -> list[str]:
 
 # ── Rung 4: related records (FIND-3, §3.1, §3.5, §4.3) ──────────────────────
 
-#: The edge of a related hit (§3.5): a code constant from this closed list. It
-#: holds no text of either record.
-EDGES: tuple[str, ...] = (
-    "contact_of", "lead_of", "deal_of", "company_of", "mail_from", "mail_to", "mail_domain",
-)
-#: The edges that end in a mail. Each starts at a key of :data:`KEYS`.
-MAIL_EDGES: dict[str, str] = {"mail_from": "address", "mail_to": "address",
-                              "mail_domain": "domain"}
-#: The edges from a record to a record, each with the kind of record it ends at.
-RECORD_EDGES: dict[str, str] = {"contact_of": "contact", "lead_of": "lead",
-                                "deal_of": "deal", "company_of": "company"}
+#: :data:`EDGES`, :data:`MAIL_EDGES` and :data:`RECORD_EDGES` come from the one
+#: edge vocabulary, ``acb_common.edge_vocabulary`` (CI-R1a). A code holds no
+#: text of either record. :data:`MAIL_EDGES` names the key each mail edge starts
+#: at, and :data:`RECORD_EDGES` the kind each live record edge ends at.
 #: The keys that carry the step from a record to its mail: an address and a
 #: web domain. A key is a transit value: no answer key, no ``from`` and no log
 #: line holds one.

@@ -774,7 +774,7 @@ async def near_names(
 # Each read gives ids and addresses only, never a name or a note. Each text
 # is a constant of this module. The reads share one ``_tenant_session()``, so
 # FORCE RLS keeps each in the caller's tenant. The edge and key names are the
-# codes of ``gateway.retrieval.find.EDGES`` and ``KEYS``. The step drops any
+# codes of ``acb_common.edge_vocabulary.EDGES`` and ``find.KEYS``. The step drops any
 # other code.
 
 #: The contacts of each deal: the primary contact first, then the newest.
