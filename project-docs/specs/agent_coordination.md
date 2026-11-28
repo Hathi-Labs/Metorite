@@ -30,7 +30,7 @@
 
 **SW-114 (the edge tool `report_subagent`) is built and dark behind `AGENT_MAP_ORGS`, 2026-11-22 (task 3797), with no migration. The edge lists the tool for every org, and the tool answers not found where the flag is off. The hooks of the plugin are not built.**
 
-**Task 4206 planned the data side of AMR-6 and AMR-8 on 2026-11-28 (§3.12.11).** Jobs are child runs (SW-116), lines get kinds and teams get a topology record (SW-115, no longer later), and SW-114c reports sub-agents from every machine. Nothing of it is built.
+**Task 4206 planned the data side of AMR-6 and AMR-8 on 2026-11-28 (§3.12.11).** **SW-116 (jobs as child runs, migration 519) is built and dark, 2026-11-28.** Jobs are child runs (SW-116), lines get kinds and teams get a topology record (SW-115, no longer later), and SW-114c reports sub-agents from every machine. Nothing of it is built.
 
 **ORCH-0 (task 4145) amended the map on 2026-11-28 (§3.12.10).** It names the four causes of "No orchestrator", the orchestrator rule, the dispatch record, the node lifetime and the topologies. The rows SW-107c, SW-108b, SW-108c, SW-114b and SW-115 are new (tasks 4151 to 4154, 4136), and SW-59 is amended (task 4135). Nothing of it is built.
 
@@ -2553,6 +2553,7 @@ They keep their own gates.
 - **Done when.** R8: a `running` report writes one child with `job_kind` set and status `in_progress`. A second report with `passed` moves the same row to `completed` with `ended_at`. A report after the end changes nothing. A `queued` after `running` changes nothing too. A job open when its parent ends takes `abandoned` and reads `unknown`. A run of another connection gets 403. The 21st open job gets 429, and 20 open jobs do not block a sub-agent. A `job_id` over 64 characters or of another shape gets 422. A link that is not https, or that holds a user name, gets 422. The gateway drops a query. Org B sees nothing of org A. A lane that starts pr-check shows a running job under its run. The job then turns passed or failed, with its link.
 - **Fence.** `tests/unit/test_agent_child_runs_r8.py` (extended), `tests/unit/test_agent_map_r8.py`, `tests/unit/test_mcp_edge_coverage.py`, `tests/unit/test_agent_label_fence.py` (extended to `job_kind`), and a `node --test` or pytest file for each lane hook.
 - **Risk.** HIGH (a migration). **Gate.** AGENT-SAFE, dark behind `AGENT_MAP_ORGS`. The server reader of GitHub checks is OWNER-GATE and has no row yet. **Depends on.** SW-114, SW-114b.
+- **Built and dark (task 4206), 2026-11-28.** Migration 519 adds `job_kind` and its two CHECKs. The route is `POST /projects/agent-runs/{run_id}/jobs`, and the edge tool is `report_job`. The map read gives `job_kind` and `link` on each child, and the summary gives `jobs`. The parser of the map UI drops a job, so the sub-agent list never shows it before AMR-6. `scripts/report_job.mjs` takes `--run`. Not built: the lane wiring of item 2 and the kit text (task 4223). Fence: `tests/unit/test_agent_run_jobs_r8.py`.
 
 #### SW-114c · Sub-agents from every machine
 
