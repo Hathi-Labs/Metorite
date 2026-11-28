@@ -30,6 +30,8 @@
 
 **SW-114 (the edge tool `report_subagent`) is built and dark behind `AGENT_MAP_ORGS`, 2026-11-22 (task 3797), with no migration. The edge lists the tool for every org, and the tool answers not found where the flag is off. The hooks of the plugin are not built.**
 
+**ORCH-0 (task 4145) amended the map on 2026-11-28 (§3.12.10).** It names the four causes of "No orchestrator", the orchestrator rule, the dispatch record, the node lifetime and the topologies. The rows SW-107c, SW-108b, SW-108c, SW-114b and SW-115 are new (tasks 4151 to 4154, 4136), and SW-59 is amended (task 4135). Nothing of it is built.
+
 **SW-110 (task 3631): the half for child runs is built and dark behind `AGENT_MAP_ORGS`, 2026-11-23, with no migration. The machine heartbeat card is not built, because it waits on SW-77 (task 1923).**
 
 **P10 (§3.11, §5.11, D186) was planned on 2026-11-06. The backend of SW-94 (the policy store) is built and dark, 2026-11-08. Its Settings tab is not built. No other P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
@@ -467,7 +469,7 @@ SW-34a adds resources. SW-31 adds guidance. SW-30b and WS-56 plan cloud agents. 
 **New.**
 
 - **Both stay mandatory for every contributor.** The enforcement is in GitHub (SW-57), because a local hook binds one tool only.
-- **A run role (SW-59).** A run may declare `implementer`, `verifier` or `reviewer`. The task shows "Verified by <run>". A self-declared role is evidence for a reviewer and never a gate. This part is advisory (R7).
+- **A run role (SW-59).** A run may declare `implementer`, `verifier` or `reviewer`. **Amended 2026-11-28:** the set is `orchestrator`, `builder`, `verifier`, `reviewer` and `merger` (§3.12.10). The task shows "Verified by <run>". A self-declared role is evidence for a reviewer and never a gate. This part is advisory (R7).
 
 #### 3.10.11 The board of 2026-11-06 (task 1900)
 
@@ -771,7 +773,7 @@ The connection name of a box token wins over `host`, and the map marks that mach
 
 The gateway keeps it only when the run is in the caller's organization, is not the run itself, and makes no loop within 5 steps. A bad value never fails the claim. The result drops the value and carries a `warning`.
 
-**The orchestrator's rule (SW-108).** An orchestrator holds a run on a coordination task of its own, and posts `waiting` before each quiet stretch. Each hand-off names its run id. The lane sends that id as `dispatched_by`, and keeps it in its note header. So a lane that restarts finds its dispatcher. An orchestrator with no run has no node, and its lanes show as roots under their people.
+**The orchestrator's rule (SW-108).** An orchestrator holds a run on a coordination task of its own, and posts `waiting` before each quiet stretch. Each hand-off names its run id. The lane sends that id as `dispatched_by`, and keeps it in its note header. So a lane that restarts finds its dispatcher. An orchestrator with no run has no node, and its lanes show as roots under their people. **Amended 2026-11-28 (§3.12.10):** the orchestrator keeps its run open while one lane runs, and records each hand-off with `dispatch_task` (SW-108b). Its node stays while one of its lanes is open (SW-107c).
 
 **A line outlives a run.** A line joins the dispatcher's session node, not its run. So a new run of the same orchestrator keeps the lines of its earlier runs. The lease rule stays (§3.1). If the lease of a coordination task ends, the orchestrator's next claim takes the task back, and the map keeps its node.
 
@@ -936,6 +938,70 @@ The owner asked on 2026-11-26 that the view of §3.12.8 stays usable with hundre
 - **The counted subagents.** They are the children of the open runs and of the runs that ended in the window, for the listed nodes.
 - **`session=<node id>`.** It gives the runs of one node, at most 300, with the quiet ones. It gives its children too, at most 200, open and ended. Each child has its state. A node that the caller may not see gives the empty map, as an unknown id does. The view reads it only when a session opens, and again with each new map.
 - **Visibility.** Both reads go through the ONE `seen` text of the map (D12), in the scope of `project_id`. No answer holds a session key or an address. The org comes from the session (R5). The edge tool `get_agent_map` sends neither value.
+
+#### 3.12.10 Orchestration done right: the four causes of "No orchestrator", and the topologies (ORCH-0, task 4145, 2026-11-28)
+
+**The ask.** On 2026-11-28 the owner asked for a correct specification of the orchestrator, in the MCP and in the kit. The "No orchestrator" problem must go away. The map must show each topology of agent orchestration. This section is the answer. It amends §3.12.3, SW-59, SW-107 and SW-108, and it adds the rows SW-107c, SW-108b, SW-108c, SW-114b and SW-115 (§5.12). Where this section and an earlier part of §3.12 differ, this section wins.
+
+**The four causes, and the evidence.** metorite-78 found them on 2026-11-27 and 2026-11-28, on origin/main and in the owner's browser. Task 4145 checked causes 2 and 3 again on 2026-11-28.
+
+| # | Cause | Evidence | The fix |
+|---|---|---|---|
+| 1 | **Scope drop.** The Agents view of a project keeps a line only when both runs are in the scope (`TestTheLines` `test_the_scope_keeps_a_line_only_when_both_runs_are_in_it`) | The orchestrator's coordination task is in another project than the lane's task | Task 4111, by lane-amr5 after AMR-5. This section does not change it |
+| 2 | **Only the worker writes the link.** `dispatched_by` is an input of the worker's own claim. A lane that does not send it has no line | The production map of 2026-11-28 06:25 UTC: 71 sessions and 7 lines. All 7 lines start at one session, metorite-78. The other person has 18 sessions. One of them is named "ishaan-orchestrator", and it starts no line. So those lanes have an orchestrator, and the map does not show it | SW-108b (the dispatch record) and SW-108c (the rule in the kit and in `lane-rules.md`) |
+| 3 | **Node lifetime.** The plain map lists a session node only with an open run (`_MAP_CTE`, `live`). The summary of AMR-4 also lists a node whose newest run is `completed` or `failed` and ended in the last 24 hours (`_MAP_SUMMARY_SQL`). A line needs both nodes | A probe on a real database (dev_db, 2026-11-28, scratch test of task 4145). An orchestrator run is released, and its lane is open with `dispatched_by` set. The plain map and the summary both show no orchestrator node and no line. With the run `completed`, only the summary keeps the node and the line. With the run open, both show them | SW-107c (a dispatcher node stays while one of its lanes is open) |
+| 4 | **Old unlinked runs.** Open runs from sessions that ended days ago have no line. They fill the "No orchestrator" group | 44 sessions of the production map read quiet, with all runs quiet | Task 4137 (SW-62 item 4, the bulk release) |
+
+**The orchestrator rule (amends SW-108).**
+
+1. **One coordination run.** An orchestrator holds one run on a coordination task of its own. It keeps that run open while one of its lanes runs.
+2. **Name the run in each hand-off.** Each hand-off names that run id. The lane sends it as `dispatched_by` on each claim and each start, and keeps it in its note header.
+3. **Record the dispatch.** Before the hand-off, the orchestrator calls `dispatch_task` (SW-108b) for each task that it gives out. So the link exists when a lane forgets `dispatched_by`.
+4. **Park, do not end.** Before a quiet stretch, the orchestrator posts `waiting` on `agent` (1045a). It does not finish its run while a lane runs.
+5. **A role.** The orchestrator sends `role: orchestrator` on its claim. A lane sends its own role (SW-59).
+
+**The dispatch record (SW-108b).** A new edge tool `dispatch_task` takes `run_id` (the orchestrator's open run), `task_id` and an optional `agent_label` of the lane. The gateway writes one row in a new table `pm_agent_dispatches`. The row holds the organization, the task, the dispatcher run, the label and the time. The table has `organization_id` and FORCE RLS (R5).
+
+- **The claim reads it.** A `claim_task` or a `start_agent_run` reads the newest open dispatch row of the task. The row must be less than 24 hours old. When it names a label, the label must equal the caller's `agent_label`. When a row matches, the gateway writes its run as `dispatched_by_run_id` and marks the row used.
+- **The order of the two sources.** A row whose `agent_label` equals the caller's label comes first. The worker's `dispatched_by` comes next. A row with no label applies only when the worker sends no `dispatched_by`. So a row with no label never replaces a link that the worker sent. When a labelled row and the worker's value differ, the row wins, and the result carries a `warning`. The warning names no run id, because the caller may not see the dispatcher run (§3.12.4 rule 1). This is the safe reading of task 4145.
+- **The checks of SW-107 stay.** The dispatcher run must be in the caller's organization. It cannot be the run itself, and it must make no loop within 5 steps. A bad row never fails the claim.
+- **It grants nothing.** A dispatch row gives no hold, no claim right and no visibility. A member who sees a task can write a row that draws a wrong line. That is false display data only, and the timeline of the dispatcher run records the call. It is display data, as `dispatched_by_run_id` is (§3.12.4 rule 2). An orchestrator may write a dispatch row for the task of another member, because it dispatches the lanes of other people (rung M3).
+- **The other way.** Q20 recommended no new table, and said "look again if orchestrators skip the rule". Cause 2 shows that orchestrators skip it. Q23 asks the owner to confirm the table.
+
+**Node lifetime (SW-107c).** A dispatcher's session node stays on the map while one run that it dispatched is open and visible to the viewer. This holds when the dispatcher's own run is released, stopped or completed.
+
+- The node reads its state from its newest run, and shows the end time.
+- The rule holds for the plain map and for the summary of AMR-4.
+- The node needs the dispatcher run in `seen` (D12, §3.12.4 rule 1). A viewer who cannot see that run gets no node and no line. The lane then stays a root under its person.
+- The read takes one step, as `_MAP_LINES_SQL` does. It never walks the chain.
+
+**The topologies (amends §3.12.2).** Task 4138 writes the catalog in `orchestration_playbook.md` §6e, with when each one wins and what it costs. The default stays one agent first. This table says only how each topology shows on the map. A role is the chip of SW-59. A sub-agent is a child run of SW-39, written by the hooks of SW-114b. A kind of line beyond "dispatched by" is SW-115, which is later work.
+
+| Topology | The sessions and the runs | The roles | Sub-agents | The lines today | The lines with SW-115 |
+|---|---|---|---|---|---|
+| **Pipeline** (build, then verify, then review) | One lane session | `builder` on the lane run | The verifier and the reviewer, under the lane run | None | `verifies` and `reviews`, from each child to the lane |
+| **Router** | One router session, and one session for each target | `orchestrator` on the router | None | One line from the router to each target | `hands off to` |
+| **Fan-out** (parallel slices, then a join) | One orchestrator, and N lane sessions | `orchestrator`, then `builder` on each lane | The verifier of each lane | One line to each lane | `hands off to`, and one `merges` line from the merger |
+| **Orchestrator and workers** | One orchestrator, and lanes that it starts as it learns | `orchestrator`, then `builder`, `verifier`, `reviewer` or `merger` | Each lane's own | One line to each lane | The kind of each line follows the lane's role |
+| **Creator and critic** | One creator session, and one critic, which can be a sub-agent | `builder` and `reviewer` | The critic, when it is a sub-agent | One line when the critic is a session | `reviews`, from the critic to the creator |
+| **Hierarchical** | One orchestrator, its sub-orchestrators, and their lanes | `orchestrator` on each level | Each lane's own | A tree of lines. SW-109 draws at most 4 depths, one session column for each | The kinds of each level |
+| **Swarm** (peers that hand work to each other) | N peer sessions, and no single orchestrator | Each peer's own | Each peer's own | One line for each hand-off, from peer to peer | `hands off to` |
+| **Debate** | Two or more sessions on the same question, and one judge | `reviewer` on each side, `orchestrator` on the judge | None | One line from the judge to each side | `reviews` |
+
+**The kit (`packages/acb_playbook`).** SW-108c and the rows of tasks 4136 and 4138 change the kit.
+
+- `kit/team-setup.md` gets the orchestrator rule above, the call of `dispatch_task`, and `role` on each claim (SW-108c, SW-59).
+- `kit/hooks-example.md` gets the two hooks of SW-114b.
+- A new pattern page `patterns/topologies` (task 4138) gets the catalog and the pick rule. The prompt `choose_topology` reads it.
+- `lane-rules.md` of this repository says the same as the kit. No HathiLabs rule enters the product text (D186.2).
+
+**The ladder (D211).** The owner's demo: "every lane has its orchestrator on the map, also after the orchestrator's run ends". The order is 4136 (sub-agents show), 4131 (context reaches agents), 4135 (roles), SW-107c and SW-108b, 4138 (the catalog), then 4137 (the bulk release). Task 4111 runs beside it in lane-amr5.
+
+**What this section could not settle.**
+
+- **A dispatch to a lane that has no name.** A row with no `agent_label` matches the first claim of the task by any session. A wrong match is possible when two sessions race for one task. The claim lock already lets only one of them win.
+- **The age limit of a dispatch row.** 24 hours follows `MAP_ENDED_WINDOW_S`. A longer hand-off needs a new row.
+- **An orchestrator that never holds a run.** It has no node, also with SW-108b, because a dispatch row names a run. The kit tells it to hold one.
 
 ### 3.13 What other apps do: agent-autoloop (SW-0d, task 2506)
 
@@ -1773,11 +1839,11 @@ They keep their own gates.
 
 #### SW-59 · A run declares its role
 
-- **Metorite task.** 1891.
-- **Scope.** Migration, expand only: `pm_agent_runs.role TEXT NULL`, with a CHECK of `implementer`, `verifier` and `reviewer`, added as `NOT VALID` and then `VALIDATE` (R6). `claim_task` and `start_agent_run` take an optional `role`. The task shows "Verified by <run>" when a verifier run of another run id finished on the head of the task's pull request. The role is display data.
-- **Done when.** Two runs with two roles show two chips. The role reaches no authorization check.
-- **Fence.** The structural test of §3.7 (extended), an edge schema test and a vitest for the chip. The chip is advisory (R7).
-- **Risk.** HIGH (a migration). **Gate.** AGENT-SAFE. D145 owner preview for the chip. **Depends on.** SW-7b, GH-5 (the head of the pull request) and SW-53.
+- **Metorite task.** 4135. The row named task 1891, and a board search of 2026-11-28 did not find it.
+- **Scope.** **Amended 2026-11-28 (task 4135, §3.12.10).** Migration, expand only: `pm_agent_runs.role TEXT NULL`. A CHECK holds `orchestrator`, `builder`, `verifier`, `reviewer` and `merger`. The migration adds it as `NOT VALID`, and then validates it (R6). `claim_task` and `start_agent_run` take an optional `role`. A later claim replaces it. The map draws a role chip on each session node, from its newest run. The run panel shows "Verified by <session>" when a run with the role `verifier` of another session ran on the same task. The head of the pull request (GH-5) is a later step. The role is display data. The kit and `lane-rules.md` send it.
+- **Done when.** A claim with `role: verifier` shows the chip on the map. A claim with no role works as today. A bad role gets 422 at the schema. Two runs with two roles show two chips. The role reaches no authorization check. R8 on a real database for the migration.
+- **Fence.** `tests/unit/test_agent_label_fence.py` (extended to `role`), an edge schema test in `tests/unit/test_mcp_edge_coverage.py`, and a vitest for the chip. The chip is advisory (R7).
+- **Risk.** HIGH (a migration). **Gate.** AGENT-SAFE. D145 owner preview for the chip. **Depends on.** SW-7b. The "Verified by" line of a pull request head waits on GH-5 and SW-53.
 
 #### SW-60 · A CI wait is handed to Metorite
 
@@ -1807,7 +1873,7 @@ They keep their own gates.
 
 #### SW-62 · The first sweep writes one digest, and the owner can release the runs of ended sessions
 
-- **Metorite task.** 1904.
+- **Metorite task.** 1904. **Amended 2026-11-28 (§3.12.10, cause 4):** task 4137 builds item 4 first, as one act on a session node of the map. "Release all runs of this session" releases each run of that session with the standard handoff, and asks first when a run waits on a person. It reuses the release route. It adds no second release path.
 - **Scope.**
   1. A sweep pass may find more than 5 new strands in one organization. Then it writes one digest. The store is `pm_agent_run_strands`, with a new kind `digest` (migration, expand only: widen the CHECK as `NOT VALID`, then `VALIDATE`). Needs attention reads it as one row, "N runs have no live session". The row lists the runs and groups epic holds. The pass sends no single nudge.
   2. The second miss rolls up too. One lease later the sweep updates the digest and writes no row for each run.
@@ -2244,6 +2310,7 @@ They keep their own gates.
 - **Risk.** HIGH (a migration, and a reference from one run to another). **Gate.** AGENT-SAFE. **Depends on.** SW-102, Q20.
 - **Built (task 3628), 2026-11-21.** Migration 472 adds the column and its key. The claim, the start, the runs wire and the `my_work` rows carry the value. The value leaves as an id, not as untrusted text, because the column is a uuid that the gateway checked.
 - **The map line (built, 2026-11-21).** The map read gives `lines`, each with `from` and `to`, two session nodes. A line shows only when the viewer can see both runs through `seen`, and both nodes are on the map. A line joins session nodes, so an ended dispatcher run keeps its line while its session has a node. The read takes one step and never walks the chain. Fence: `tests/unit/test_agent_map_r8.py` (`TestTheLines`).
+- **Amended 2026-11-28 (§3.12.10).** SW-108b adds a second source of the value, the dispatch record, which comes first. SW-107c keeps the dispatcher's node while one of its lanes is open.
 - **Two concurrent claims can make a loop.** Each claim passes the loop check, and neither sees the other's write. A lock would be costly for display data. So each reader that walks the dispatchers, such as SW-109, must stop after 5 steps.
 - **The cost of the delete (SW-107b, task 3860).** Without an index, each delete of a run makes Postgres scan `pm_agent_runs` to set the lines of that run to NULL. An organization delete makes one scan for each run.
 - **Decision (owner, 2026-11-23).** A plain partial index in a migration, with a `lock_timeout`, and one narrow exemption in the label fence. Not `CREATE INDEX CONCURRENTLY`.
@@ -2257,6 +2324,7 @@ They keep their own gates.
 - **Fence.** Advisory (R7). The fence of `orchestration_playbook.md` §4 keeps HathiLabs rules out of the product text.
 - **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** SW-107.
 - **Built (task 3629), 2026-11-22.** The step `DISPATCH_RULE` of `work_on_task` (runs flag on only), a paragraph of `orchestration_playbook.md` §6b, `next-ticket.md` and the note rule of `docs/home_box.md`. This slice does not change `lane-rules.md`, the lane rules of the owner's fleet. Q20 is decided. So the row builds before the map shows the lines (SW-109).
+- **Amended 2026-11-28 (§3.12.10).** Production showed that orchestrators skip the rule (cause 2). The rule now has five points. SW-108c puts them in the kit and in `lane-rules.md`, and SW-108b records the hand-off on the server.
 
 #### SW-109 · The map draws who dispatched whom
 
@@ -2388,6 +2456,47 @@ They keep their own gates.
   - Each sub-agent costs two writes of the write cap of the connection, 120 in 10 minutes. The parent's own writes share that cap, so a lane with many sub-agents can hit it. Only the open children have a cap of 20. The total children of a run have no cap.
   - A `start_agent_run` whose key is `child:<parent>:<agent_id>` gets 409 when it tries again. That key space is the member's own.
   - A start with the `agent_id` of a stopped child answers the ended child, 200 with `created` false. If Claude Code uses an `agent_id` again when it resumes a sub-agent, the map shows that sub-agent as ended. Check this when the hooks are built.
+- **Amended 2026-11-28 (§3.12.10).** SW-114b (task 4136) builds the hooks in this repository and in the kit. They do not wait for the plugin of SW-82.
+
+#### SW-114b · Our lanes and the kit send sub-agents to the map
+
+- **Metorite task.** 4136.
+- **Scope.** §3.12.10. One hook script, `.claude/hooks/subagent-report.mjs`, tracked (D29). It reads the input of `SubagentStart` and `SubagentStop`. It calls `report_subagent` for the open run of the session. The label is the `agent_type`, for example `ws-verifier` or `diff-reviewer`. A failed report logs one line and never blocks the agent. The two hook entries go in `.claude/settings.json`, which needs the `guard-write` grant (until 2026-11-30). `kit/hooks-example.md` and `kit/team-setup.md` of `acb_playbook` give a customer the same hooks. This row replaces the hooks half of SW-114 that waited on the plugin of SW-82.
+- **Done when.** A lane that dispatches a verifier shows it under its run on the map, and its stop ends it. A hook with no run, no token or a failed call exits 0.
+- **Fence.** `node --test .claude/hooks/subagent-report.test.mjs` (new), in pr-check. The kit text is advisory (R7).
+- **Risk.** STANDARD. **Gate.** AGENT-SAFE. `guard-write` for the settings entry. **Depends on.** SW-114 (built). At dispatch, check the hook path of §3.12.7 ("The way a hook calls Metorite") on a real Claude Code.
+
+#### SW-107c · A dispatcher node stays while its lanes run
+
+- **Metorite task.** 4151.
+- **Scope.** §3.12.10, "Node lifetime". The plain map (`_MAP_SESSIONS_SQL`, `_MAP_LINES_SQL`) and the summary (`_MAP_SUMMARY_SQL`, `_MAP_SUMMARY_LINES_SQL`) also list the session node of a run in `seen` that an open listed run names as `dispatched_by_run_id`. The node takes its facts and its state from its newest run. Its `last_at` is the end of that run, and it counts no open run. The read takes one step and never walks the chain. Add no second route and no second `seen` text.
+- **Done when.** R8: an orchestrator run that is released, stopped or completed, with one open lane, keeps its node and its line on both reads. With no open lane, the node leaves the plain map, and the summary rule of AMR-4 holds. A viewer who cannot see the dispatcher run gets no node and no line. Org B sees nothing of org A.
+- **Fence.** `tests/unit/test_agent_map_r8.py` (a new class `TestTheDispatcherStays`). The probe of task 4145 (`released`, `completed`, `in_progress`) is its first case.
+- **Risk.** HIGH (a visibility read across the organization, as SW-102). **Gate.** AGENT-SAFE, dark behind `AGENT_MAP_ORGS`. **Depends on.** SW-107, AMR-4.
+
+#### SW-108b · The dispatch record
+
+- **Metorite task.** 4152.
+- **Scope.** §3.12.10, "The dispatch record". Migration, expand only: a new table `pm_agent_dispatches` with `organization_id`, `task_id`, `dispatcher_run_id` (a reference to `pm_agent_runs (id)`, `ON DELETE CASCADE`), `agent_label TEXT NULL`, `created_by`, `created_at` and `used_by_run_id NULL`. FORCE RLS, with the policy of the tenant tables. A partial index on `(organization_id, task_id)` where `used_by_run_id IS NULL`. A gateway route and an edge tool `dispatch_task` (inputs `run_id`, `task_id`, optional `agent_label`). The caller must hold `run_id` as its own open run, and must see the task. `claim_task` and `start_agent_run` read the newest unused row of the task, at most 24 hours old, whose label is empty or equals the caller's label. The order of the sources and the checks of SW-107 are in §3.12.10.
+- **Done when.** R8: a dispatch, then a claim with no `dispatched_by`, links the run and marks the row used. A second claim of the task does not take the used row. A row with a label skips a session with another label. A claim with a `dispatched_by` that differs from a labelled row gets the row's run and a `warning` with no run id. A row with no label does not replace a `dispatched_by` that the worker sent. A row whose dispatcher run the caller cannot see links no run and leaks no id. A row of org A is not visible in org B. A `dispatch_task` on a run of another session gets 403, and on a task the caller cannot see gets 404.
+- **Fence.** `tests/unit/test_agent_run_dispatch_r8.py` (extended), `tests/unit/test_tenant_coverage.py`, `tests/unit/test_mcp_edge_coverage.py`, `tests/unit/test_agent_label_fence.py` (the new label column grants nothing).
+- **Risk.** HIGH (a migration, a new tenant table). **Gate.** AGENT-SAFE, dark behind `AGENT_MAP_ORGS`. Q23. **Depends on.** SW-107.
+
+#### SW-108c · The orchestrator rule in the kit and the lane rules
+
+- **Metorite task.** 4153.
+- **Scope.** §3.12.10, "The orchestrator rule" and "The kit". `kit/team-setup.md` of `acb_playbook`, `scripts/home_server/lanes/lane-rules.md`, `.claude/commands/next-ticket.md` and the `DISPATCH_RULE` step of `work_on_task` say the five points. `dispatch_task` enters the text only after SW-108b is built.
+- **Done when.** The four texts say the same five points.
+- **Fence.** Advisory (R7). The fence of `orchestration_playbook.md` §4 keeps HathiLabs rules out of the product text.
+- **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** SW-108.
+
+#### SW-115 · Kinds of lines (later)
+
+- **Metorite task.** 4154.
+- **Scope.** The last column of the topology table of §3.12.10. A line on the map gets a kind: `dispatched by`, `hands off to`, `verifies`, `reviews` or `merges`. The kind comes from the roles of SW-59 and the child runs of SW-39. It adds no new input. The design is open.
+- **Done when.** A later plan of this row.
+- **Fence.** The plan names it.
+- **Risk.** STANDARD UI. **Gate.** Later. Do not start before SW-59 and SW-114b are live. **Depends on.** SW-59, SW-114b, SW-109.
 
 ---
 
@@ -2631,6 +2740,11 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 | SW-113 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_coverage.py tests/unit/test_agent_map_r8.py tests/unit/test_mcp_edge_prompts.py` |
 | SW-39 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_child_runs_r8.py tests/unit/test_agent_runs_r8.py tests/unit/test_tenant_coverage.py` (new file first) |
 | SW-114 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_child_runs_r8.py tests/unit/test_mcp_edge_coverage.py`, and `node --test` on the hook tests |
+| SW-114b | `node --test .claude/hooks/subagent-report.test.mjs` |
+| SW-107c | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_map_r8.py` |
+| SW-108b | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_run_dispatch_r8.py tests/unit/test_tenant_coverage.py tests/unit/test_mcp_edge_coverage.py tests/unit/test_agent_label_fence.py` |
+| SW-108c | None. The text is advisory (R7) |
+| SW-59 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_label_fence.py tests/unit/test_mcp_edge_coverage.py`, and the vitest of the chip |
 
 ---
 
@@ -2673,7 +2787,8 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 | # | Question | Recommendation | Blocks |
 |---|---|---|---|
 | Q19 | May an agent report the name of its own machine and its model? The map shows such a machine as "reported", because no box token proves it. Since 2026-11-19, the same question covers the kind of machine: computer, server or cloud (§3.12.7 rule 5) | **Yes.** On 2026-11-17, the 50 newest open runs of HathiLabs all carried one client stamp, and none of them named its machine. Without a report, no session on the map has a machine. The value grants nothing | SW-104, SW-105, SW-106 |
-| Q20 | Must an orchestrator hold a run on a coordination task to show on the map? | **Yes, for now.** It needs no new table. The other way is a session record that the edge writes on each MCP call. That way needs a new table, and a write on the edge's one database connection. Look again if orchestrators skip the rule | SW-107, SW-108, SW-109 |
+| Q20 | Must an orchestrator hold a run on a coordination task to show on the map? | **Yes, for now.** It needs no new table. The other way is a session record that the edge writes on each MCP call. That way needs a new table, and a write on the edge's one database connection. Look again if orchestrators skip the rule. **2026-11-28:** they skip it (§3.12.10, cause 2). Q23 asks the next step | SW-107, SW-108, SW-109 |
+| Q23 | May the orchestrator write a dispatch record that the lane's claim inherits (SW-108b)? It is a new tenant table, `pm_agent_dispatches` | **Yes.** On 2026-11-28 the map had 71 sessions and 7 lines, all from one orchestrator. A session named "ishaan-orchestrator" started no line. The side that knows the link writes the record. It is display data, and it grants nothing. The other way is to keep the worker's input only, and teach it harder | SW-108b |
 | Q21 | Do Metorite's own agents, such as chat sub-agents and Studio and workflow agents, join the map? | **Later, after rung M3.** Their machine reads "Metorite", and their model reads "Metorite AI", never a model or tier name | SW-111 |
 | Q22 | Who may steer a run from the map? SW-64 allows the member of the run and the app lead. May an owner or an admin of the organization also steer any run that they can see? (§3.12.7 rule 8) | **Yes.** The notice names the sender. The agent follows a steer from its member, the app lead, an owner or an admin, and takes any other steer as information. Cursor keeps a teammate read only until an admin turns on team follow-ups (Appendix C) | Rung M5 (SW-64, SW-86) |
 
@@ -2823,4 +2938,5 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 - **2026-11-26.** The lenses and the phone view of the Agents view, from the owner's mockup. It adds §3.12.8 and the rows AMR-1 to AMR-3.
 - **2026-11-27, one map.** The owner's ask of that day. It rewrites §3.12.8 and §3.12.9, and adds the row AMR-5.
 - **2026-11-26, at scale.** The owner's rules for a large fleet. It adds §3.12.9, the row AMR-4 and its verify row. The slice is built and dark behind `AGENT_LENSES_ORGS`.
+- **2026-11-28.** ORCH-0 for task 4145. It adds §3.12.10, the rows SW-107c, SW-108b, SW-108c, SW-114b and SW-115, Q23 and their verify rows. It amends §3.10.10, §3.12.3, SW-59, SW-62, SW-107, SW-108, SW-114 and Q20. It adds no code.
 - **2026-11-21.** The agent-autoloop research for task 2506 (SW-0d). It adds §3.13, a hop limit in SW-95, retry in SW-78 and the row SW-38. It adds no code.
