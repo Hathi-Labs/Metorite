@@ -114,6 +114,48 @@ one vocabulary names both.
 - **A kind with no reader never shows.** A `meeting` node waits for its
   source (KG-12). Until then the graph step drops it.
 
+### 3.1a Node kinds and object types (settled 2026-11-28, CI-0)
+
+Two lists, two homes. A node kind says WHICH app record a pointer names. An
+object type says WHAT the record is. The graph holds the first list. The
+meaning model holds the second (`building_blocks.md` §10.1).
+
+**The node kinds.** The twelve kinds of §3.1, and five more for rung 1 slice
+3 (task 4164). The migration is expand only. It widens `NODE_KINDS` and both
+CHECKs of `kb_links` (`source_kind` and `target_kind`).
+
+| New kind | The id | The record |
+|---|---|---|
+| `project` | `pm_projects.id` | A project. The target CHECK already takes it |
+| `calendar_event` | `calendar_entries.id` | An event that is not a to-do |
+| `document` | `kb_documents.id` | An indexed Drive document. The same word as the `source_kind` of `kb_chunks` |
+| `studio_record` | `studio_records.id` | A record of a Studio object |
+| `connection_record` | `<connection_id>:<record key>`, as text | A record of an outside API or database, such as a Zoho Books customer |
+
+Not now: `invoice` (the CRM invoices are P 2738, and their kind comes in a
+later expand), `ticket` (a ticket is a task type, so its kind is `task`), and
+chat.
+
+**The object types.** A closed list: `person`, `company`, `deal`,
+`invoice`, `thread`, `task`, `page`, `project`, `event` and `document`. A
+core kind maps to its type by a fixed table in code:
+
+| Node kinds | Object type |
+|---|---|
+| `email`, `whatsapp` | `thread` |
+| `person`, `contact` | `person` |
+| `lead`, `deal` | `deal` |
+| `company` | `company` |
+| `task` | `task` |
+| `page` | `page` |
+| `project` | `project` |
+| `calendar_event`, `meeting` | `event` |
+| `document`, `artifact` | `document` |
+
+A `connection_record` and a `studio_record` take the type of the certified
+map of their source (SEM-20, SEM-21). An uncertified record has no type, and
+a rule that needs a type skips it. `kb_links` never stores a type.
+
 ### 3.2 `kb_links` — as built, and after KG-4
 
 Migration 272 built the table for page links. KG-4 widens it with an expand
@@ -456,11 +498,14 @@ here in the same pull request (R4).
 | **KG-21** (task 4176) | Open. Rung 2. After KG-20 | The exact keys grow: a phone in E.164 form, and a tax or GST id, beside the email and the domain of KG-5. The same AMBIGUOUS rule as KG-5. A key that names two records in one app links neither | R8: a GST id on a Zoho Books customer and on a CRM company links them, with the reason `tax_id`. Two candidates give AMBIGUOUS. No link joins two orgs | `test_kg_resolve_r8.py` (extended) | `uv run pytest tests/unit/test_kg_resolve_r8.py -p no:xdist -rs -q` | HIGH (identity) · AGENT-SAFE, dark |
 | **KG-22** (task 4177) | Open. Rung 2. After KG-21 | A probabilistic match for the records that no exact key links: the Fellegi-Sunter method of Splink, written in SQL, for each tenant, with no model and no egress. A high threshold, because a false merge costs more than a missed one. A pair under the threshold and over a floor becomes a proposal for KG-23, never a link | The weights are fixed in code and give the same result each run. A pair over the threshold links with the reason `probable` and its score. Nothing calls a model or the network | `test_kg_match_probabilistic.py` (new, pure), `test_kg_match_probabilistic_r8.py` (new: no pair crosses two orgs) | `uv run pytest tests/unit/test_kg_match_probabilistic.py tests/unit/test_kg_match_probabilistic_r8.py -p no:xdist -rs -q` | HIGH (identity) · AGENT-SAFE, dark |
 | **KG-23** (task 4178) | Open. Rung 2. After KG-22 | Confirm, split and Undo. A proposed link is a kind of the waiting seam ("Needs you") for an admin. Each merge stores its split, so one click splits the entity. A correction by a member pins the result, and a later sweep keeps it | An admin confirms a link on a card, then splits it, and the two records stand apart again. A pinned split survives the next sweep | `test_kg_link_confirm_r8.py` (new), `test_waiting_seam_r8.py` | `uv run pytest tests/unit/test_kg_link_confirm_r8.py tests/unit/test_waiting_seam_r8.py -p no:xdist -rs -q` | HIGH (identity) · AGENT-SAFE, dark. The card is a new screen: owner preview |
-| **KG-24** (task 4179) | Open. Rung 5 (task 4168). After KC-9 and KG-11 | A timeline across apps: dated facts as pointers, read from `kb_facts` (KC-9, `knowledge_curation.md`) and the `kb_links` edges, in time order, for one entity. Each item is re-checked through its owning app | R8: the timeline of one company shows its invoices, tickets and deal notes in order, and never a record that the member cannot open | `test_kg_timeline_r8.py` (new) | `uv run pytest tests/unit/test_kg_timeline_r8.py -p no:xdist -rs -q` | HIGH (visibility) · AGENT-SAFE, dark |
+| **KG-24** (task 4179) | Open. Rung 5 (task 4168). After KC-9, KG-11 and KG-30. The dated states wait on D-A | A timeline across apps: dated facts as pointers, read from `kb_facts` (KC-9, `knowledge_curation.md`) and the `kb_links` edges, in time order, for one entity. Each item is re-checked through its owning app | R8: the timeline of one company shows its invoices, tickets and deal notes in order, and never a record that the member cannot open | `test_kg_timeline_r8.py` (new) | `uv run pytest tests/unit/test_kg_timeline_r8.py -p no:xdist -rs -q` | HIGH (visibility) · AGENT-SAFE, dark |
 | **KG-25** (task 4180) | Open. Rung 5. After KG-24 | A join over several sources, as the member: each source is read through its own seam, and the join runs in `compute_run` (SBX-18, SBX-19) or the data engine of WS-43y2b. No row is copied into a store | R8: a join over invoices and tickets gives the same total as each source alone. A source that the member cannot read adds no row | `test_cross_source_join_r8.py` (new) | `uv run pytest tests/unit/test_cross_source_join_r8.py -p no:xdist -rs -q` | STANDARD · **OWNER-GATE** for the `compute:` flip (SBX-G13) |
-| **KG-26** (task 4181) | Open. Rung 5. After KG-25 | The answer names its level: a plain query, an association (a correlation, a trend break, an anomaly or a cohort), or a causal hypothesis. The answer check (`acb_skills/answer_check.py`) refuses the words "caused by" in an answer that is not of the causal level | A golden case: an association answer that says "caused by" fails the check. The same answer with "consistent with" passes | `test_answer_level_label.py` (new) | `uv run pytest tests/unit/test_answer_level_label.py -q` | STANDARD · AGENT-SAFE |
+| **KG-26** (task 4181) | Open. Rung 5. After KG-25 | The answer names its level (§13.4): a fact (a plain query), an association (a correlation, a trend break, an anomaly or a cohort), or a hypothesis (a causal claim, KG-28 only). The answer check (`acb_skills/answer_check.py`) refuses the words "caused by" in an answer below the hypothesis level | A golden case: an association answer that says "caused by" fails the check. The same answer with "consistent with" passes | `test_answer_level_label.py` (new) | `uv run pytest tests/unit/test_answer_level_label.py -q` | STANDARD · AGENT-SAFE |
 | **KG-27** (task 4182) | Open. Rung 5. After KG-26 | Each figure of an answer over several sources goes through the one number check (`acb_common/number_check.py`). A figure that no source holds is refused | A figure changed by one unit in a fixture fails the check | `test_number_check.py` (extended), `test_answer_level_label.py` | `uv run pytest tests/unit/test_number_check.py tests/unit/test_answer_level_label.py -q` | STANDARD · AGENT-SAFE |
 | **KG-28** (task 4183) | Later. Rung 5 pilot. After KG-27 | A causal hypothesis, only with a graph that a person draws and the refutation tests of DoWhy. No automatic causal discovery in the product. A cause is never claimed without a before-and-after or an experiment | A refutation test that fails stops the answer at the association level | `test_causal_pilot_refutes.py` (new) | `uv run pytest tests/unit/test_causal_pilot_refutes.py -q` | STANDARD · **OWNER-GATE** (a new dependency) |
+| **KG-29** (task 4213) | **Pending owner (D-C).** Rung 6 (task 4169). After KG-21 | Writes driven by events (§13.3). A change of a record puts one job on the job queue or the workflow engine. The job runs the resolver, the edge writer and the fact writer for that record only. The nightly `graph.sweep` stays, as the repair pass. No new bus | R8: a new CRM contact with a known address gets its edges within the job's run, with no sweep. A second job for the same record writes nothing new. The sweep repairs a lost job | `test_kg_event_writes_r8.py` (new), `test_job_effects_fence.py` | `uv run pytest tests/unit/test_kg_event_writes_r8.py tests/unit/test_job_effects_fence.py -p no:xdist -rs -q` | HIGH (writes, tenancy) · pending owner, then AGENT-SAFE, dark |
+| **KG-30** (task 4214) | **Pending owner (D-A).** Rung 6. After KG-29 and KC-9 | Typed signals on the timeline (§13.1, §13.8): `kb_facts` gains a signal kind with an event type from a closed list, a date, a state, and an amount only where a rule names it. No free-text column. Each signal is rebuilt from its app, and a purge drops it after its keep time | R8: a signal row has no text column. A purge drops a row past its keep time. Org B reads no signal of org A. A rebuild from the app gives the same rows | `test_kg_signals_r8.py` (new) | `uv run pytest tests/unit/test_kg_signals_r8.py -p no:xdist -rs -q` | HIGH (a migration, D105) · pending owner, then AGENT-SAFE, dark |
+| **KG-31** (task 4215) | **Pending owner (D-B).** Rung 2 (task 4165). After KG-23 | Strict visibility of what exists (§13.5): one function decides whether a member may see an entity, a link, a name, an alias or a merge reason. The map, search, `get_entity` and the MCP read call it | R8: a member who can open no source record of an entity gets no trace of it. An alias from a hidden record never shows. A link with one hidden end never shows. The four readers give the same result | `test_kg_entity_visibility_r8.py` (new) | `uv run pytest tests/unit/test_kg_entity_visibility_r8.py -p no:xdist -rs -q` | HIGH (visibility) · pending owner, then AGENT-SAFE |
 
 A test file marked "new" does not exist yet. The slice that names it writes
 it, red first (R8).
@@ -534,3 +579,134 @@ the owner or a decision gives one. Build to the default.
 - **The KG rows of `company_context.md` §12** are the as-built record of
   KG-1, KG-2 and KG-3a. From today this spec owns every KG slice, and the
   KG-3b row there points here.
+
+---
+
+## 13. The company memory layer (CI-0, D235, 2026-11-28)
+
+**Status: ACTIVE for the parts the owner decided. Three parts wait on the
+owner** (D-A, D-B and D-C on task 4150). A row of a waiting part says
+"pending owner", and no slice builds it before the answer. The binding brief
+is the comment of metorite-78 on task 4163 (2026-11-28, 07:47 UTC).
+`building_blocks.md` §10 places the layer in the cohesion map.
+
+### 13.1 What it is
+
+The company memory layer is ONE layer in five parts. Each part has one home.
+**The graph is the index that joins them.** It is not a copy of the data.
+
+| Part | What it holds | Its home | Stored here? |
+|---|---|---|---|
+| Records | The content: mails, deals, invoices, tasks | The owning apps | No. The apps stay the system of record (D105) |
+| Identity | One entity for each real thing, with its pointers to each app | `kb_entities` | Pointers and names only |
+| Links | Typed edges between pointers, with provenance, confidence, and `valid_from` and `valid_to` | `kb_links` | Pointers only |
+| Timeline | Dated events about an entity: "invoice became overdue", "deal moved to Negotiation", "ticket opened" | `kb_facts` (KC-9) | **Pending owner (D-A)** |
+| Meaning and memory | What the data means, and what members and the org care about | WS-SEM, the member profile and org memory | Definitions and preferences, never a copy of a record |
+
+### 13.2 Measured in production (2026-11-28, read-only counts by metorite-78)
+
+- `kb_links` holds about 143,000 live edges. 116,430 are email to person
+  (EXTRACTED) in 6 orgs. 17,376 are AMBIGUOUS, in 1 org. 5,307 are email to
+  contact, and 1,734 are task to task.
+- The CRM edges (contact to company 665, deal to contact 568, deal to company
+  520, domain to company 136) are in 1 org only.
+- No edge names WhatsApp, a calendar event, accounting or an outside
+  connection.
+- The nightly `graph.sweep` is the only writer, so a link can be 24 hours
+  old. No code reads `kb_links`.
+- The KG-1 eval rose from recall@5 0.400 to 0.550, at p50 0.87 s. It holds no
+  question across apps yet.
+
+### 13.3 The write path
+
+**Target (pending owner, D-C):**
+
+1. A record changes in an app.
+2. An event goes to the job queue or the workflow engine. No new bus.
+3. The resolver finds or makes the entity: exact keys first, then the
+   probabilistic match, then a person confirms (KG-21 to KG-23).
+4. The edge writer adds the links, structure first: keys, address, domain,
+   phone.
+5. The fact writer adds a timeline event (D-A).
+6. The nightly sweep stays, as the repair pass.
+
+The target freshness is minutes, because a risk nudge a day late is of no
+use (rung 6). A model reads unstructured pages at write time only (D128).
+Row KG-29 builds it.
+
+### 13.4 The read path
+
+A question goes through six steps:
+
+1. **Meaning.** The member's words resolve through the org glossary (MEM-10)
+   and the source model (SEM-14), and pick the sources.
+2. **Identity.** Which Acme? The chat asks when the name is AMBIGUOUS.
+3. **Neighbourhood and timeline.** At most 2 hops, inside the token budget of
+   §7.1.
+4. **Live reads.** The content comes from the owning apps, as the member.
+5. **Compute.** Only when the question needs a join or statistics (KG-25).
+6. **The answer.** A citation for each item, a level label (fact,
+   association or hypothesis, KG-26) and `number_check` on each figure
+   (KG-27).
+
+### 13.5 Visibility of what exists (pending owner, D-B)
+
+§6 already drops a neighbour that the member cannot open. D-B makes the rule
+strict for identity too:
+
+1. A member sees an entity only when the member can open at least one of its
+   source records.
+2. A member sees a link only when the member can open both ends.
+3. A name, an alias or a merge reason that comes from a record the member
+   cannot open never shows. Existence is data.
+4. The map, search, `get_entity` and the MCP read apply the same function.
+
+Row KG-31 builds it. Rung 1 (task 4164) reads by §6 already.
+
+### 13.6 The traces
+
+Each demo traces end to end before its build starts.
+
+**Rung 1, "Tell me everything about Acme":**
+
+1. "Acme" resolves to one `kb_entities` row, with pointers to a CRM company,
+   a mail domain and a Books customer.
+2. The read takes the edges from `kb_links`.
+3. Each pointer is checked through its app as the member. A pointer that the
+   member cannot open drops.
+4. The live content comes from each app: subject lines, the deal stage, the
+   invoice state.
+5. One card returns, with a citation on each row. The budget is p95 under
+   3 s.
+
+**Rung 6, an overdue invoice, open tickets and a quiet deal:**
+
+1. Timeline facts of the entity start the detector (LOOP-29).
+2. The detector checks the 3 conditions inside 14 days.
+3. The router picks the record owner (LOOP-30). It checks visibility, the
+   budget and the quiet hours. Reach sends a card with the evidence links.
+4. The response is logged, and the action rate is counted for each rule
+   (LOOP-32).
+
+This trace needs D-A (the dates and the states) and D-C (fresh writes).
+
+**Rung 5, "Why did collections slow in October?":** a timeline query and a
+compute join, with the label "association". Never "caused by".
+
+### 13.7 What a member gains
+
+| Person | Today | With the layer |
+|---|---|---|
+| A sales rep before a call | Opens 4 apps | One card: the open deal, the last mails, an unpaid invoice, an open ticket |
+| Finance | An export and a spreadsheet | "Who owes more than 30 days and has an active deal?" in one answer |
+| Support | Sees the ticket only | "This customer is also in a large open deal", so the ticket goes up |
+| The CEO | Asks people | "Top 5 risks this week", each with evidence and an owner |
+| Every member | Explains terms and preferences again | The chat keeps the terms, the preferences and the concerns |
+
+### 13.8 The owner decisions that this section waits on
+
+| Id | Question | Recommended | The rows that wait |
+|---|---|---|---|
+| **D-A** | May the timeline keep small typed signals: an event type, a date, a state, and an amount where a rule needs it? They are rebuilt from the apps, kept for a limited time, under RLS, and never free text. This bends D105 | Yes, as signals, not content | KG-30, KG-24, LOOP-29 |
+| **D-B** | Strict visibility of what exists (§13.5) | Yes | KG-31 |
+| **D-C** | Writes driven by events, with the nightly sweep as repair (§13.3) | Yes | KG-29 |

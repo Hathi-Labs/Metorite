@@ -354,6 +354,15 @@ Each epic writes its owning spec in its first slice. Until then this table and t
 
 **Status: ACTIVE, 2026-11-28 (D235, CI-0, task 4163).** The owner asked for this map on task 4150, so that the AI systems work as one, and no two features overlap or compete. D235 holds the owner's words. Every lane that works on the chat, AI Studio, the sandbox, the graph, memory or the proactive loop follows it. The research note is `project-docs/research/company_intelligence_2026-11.md`.
 
+### 10.0 The company memory layer
+
+The graph, memory and the meaning model form ONE layer in five parts: records,
+identity, links, timeline, and meaning and memory. The apps keep the records.
+The graph is the index that joins the parts, and it copies no record.
+`knowledge_graph.md` §13 owns the layer: its write path, its read path, its
+visibility rule, the traces of the demos and what each member gains. Three
+parts wait on the owner (D-A, D-B and D-C on task 4150).
+
 ### 10.1 The map
 
 A thing has ONE home. Code that needs it reads it through the seam of that home. The third column names the places where the thing must never live. **V** = the fence is on `main`. **P** = the slice in brackets writes it.
@@ -374,7 +383,7 @@ A thing has ONE home. Code that needs it reads it through the seam of that home.
 ### 10.2 The rules that keep the map true
 
 1. **The chat picks a source of truth in this order.** The meaning model gives what a field means. The graph gives which records are linked. Search gives text. A skill gives a procedure. A core tool comes before the sandbox. Fence: advisory until KG-7 (task 792) adds the order to the tool text.
-2. **A gap that the sandbox fills twice becomes a core-tool candidate.** Two kept tools for the same need raise a "Tool gaps" signal on the board. `tool_gaps` (SBX-1a, V `studio/tool_gaps.py`) holds the count, and LOOP-16 (task 3456) reads it. Fence: advisory until LOOP-16.
+2. **A gap that the sandbox fills twice becomes a core-tool candidate.** Two kept tools for the same need set the core-tool mark in the Tool gaps view. `tool_gaps` (SBX-1a, V `studio/tool_gaps.py`) holds the count. SBX-22 (task 4173, `agent_sandbox.md` §12) sets the mark, and LOOP-16 (task 3456) reads it. Fence: the fence of SBX-22, advisory until it builds.
 3. **No feature writes a fact that another block owns.** Where code needs the fact, it reads it through the seam of that block. Fence: advisory. A reviewer checks each new table against §10.1.
 4. **A model proposes, and a person certifies.** A model may propose a map of a source, a link of two records, a concern or an org term. Each one is kept only after a person says yes (D235.1, D235.4). Retrieval calls no model (D128).
 5. **Memory changes ranking and tone, never access.** A concern or an org term never widens what a member may read (D12).
@@ -387,9 +396,9 @@ The order is rung 1, 2, 4, 3, 6, then 5. Each rung ends in its demo on productio
 | Rung | Task | The demo | Its rows |
 |---|---|---|---|
 | 1 | 4164 | "Tell me everything about Acme" gives one card from every app | `knowledge_graph.md` KG-6, KG-7, KG-8 and the R1 rows that lane-kg writes (ids KG-15 to KG-19 are kept for them) |
-| 2 | 4165 | A Zoho Books customer and a CRM company show as one entity, with the reason. An admin splits them with one click | `knowledge_graph.md` KG-20 to KG-23 |
+| 2 | 4165 | A Zoho Books customer and a CRM company show as one entity, with the reason. An admin splits them with one click | `knowledge_graph.md` KG-20 to KG-23, and KG-31 (pending owner, D-B) |
 | 4 | 4167 | "I worry about cash flow" becomes a watch after one tap, and the next answers lead with cash | `personalization.md` PZ-54 to PZ-57, `memory_architecture.md` MEM-10 to MEM-14, KG-11 (task 795) |
 | 3 | 4166 | A new database gets a proposed map. An admin certifies it, and the chat answers over it | `semantic_model.md` SEM-13c, SEM-14, SEM-15, SEM-16, SEM-18 to SEM-21, SEM-9b |
-| 6 | 4169 | Three signals of one account give ONE nudge to its owner. The team lead gets it after 2 days with no act | `proactive_loop.md` LOOP-28 to LOOP-34, `proactive_reach.md` RE-11 |
+| 6 | 4169 | Three signals of one account give ONE nudge to its owner. The team lead gets it after 2 days with no act | `proactive_loop.md` LOOP-28 to LOOP-34, `proactive_reach.md` RE-11, `knowledge_graph.md` KG-29 and KG-30 (pending owner, D-C and D-A) |
 | 5 | 4168 | "Why did collections slow in October?" joins four sources, shows the evidence and says "consistent with" | `knowledge_graph.md` KG-24 to KG-28 |
 

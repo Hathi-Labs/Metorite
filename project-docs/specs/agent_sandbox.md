@@ -569,7 +569,7 @@ decisions. It is not a quote.
 cohesion map. A sandbox-built tool reads a source through the door and the
 meaning model, and never keeps what a field means. A core tool comes before
 the sandbox. A need that the sandbox fills twice becomes a core-tool
-candidate, through `tool_gaps` and LOOP-16.
+candidate: SBX-22 (task 4173) sets the mark, and LOOP-16 reads it.
 
 ### The four decisions
 

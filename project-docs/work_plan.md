@@ -6543,6 +6543,8 @@ The owner asked on 2026-11-28, in chat to metorite-78 (task 4150): graph and sea
 
 The binding rules stay: D105, D128, D132, D12, no score for a person, and a finding's entity is never a person. This decision flips no flag and opens no owner gate.
 
+**Still open on task 4150 (asked 2026-11-28, 07:47 UTC):** D-A (small typed signals on the timeline, which bends D105), D-B (strict visibility of what exists) and D-C (writes driven by events). `knowledge_graph.md` §13.8 lists the rows that wait. Each such row says "pending owner", and no slice builds it before the answer. The answer gets its own D-number, in the first PR that acts on it.
+
 Fence: `tests/unit/test_cohesion_map.py` for the map. The fences of each row of `building_blocks.md` §10.3, advisory until their slices build them. `tests/unit/test_decision_ids.py` fails when two D235 entries merge. **Re-check this number at merge.**
 
 ## 4. Single-owner registry (who owns duplicated work)
