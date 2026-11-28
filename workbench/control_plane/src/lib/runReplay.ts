@@ -5,7 +5,8 @@
  * Pure. `useAgentChat.attach` calls it with the rows the server holds, when
  * no message of the run is known.
  *
- * Fence (R7): `runStatus.test.ts` ("a run started elsewhere").
+ * Fences (R7): `runStatus.test.ts` ("a run started elsewhere") and
+ * `chatOrder.test.ts` (the replay places its rows by the server's order).
  */
 
 import type { ChatMessage } from "@/lib/chatStore";
@@ -28,8 +29,13 @@ export function runRowOf(messages: readonly ChatMessage[]): ChatMessage | null {
  *   member's last turn. A row in `reject` belongs to an earlier run, and is
  *   never a target, so a run started elsewhere never replays into it.
  *   `rejectFor` builds that set.
- * - `missing` is every saved row that this chat lacks and that is newer than
- *   what shows. That is the prompt of a run started elsewhere.
+ * - `missing` is every saved row that this chat lacks and that comes after
+ *   the last saved row that it shows, the target aside. That is the prompt
+ *   of a run started elsewhere. "After" is the server's order, never a
+ *   timestamp: a phone's clock and this tab's clock disagree, and the
+ *   prompt of this run is older than a reply that this tab stamped
+ *   (task 4146). With no saved row shown, every row it lacks is missing.
+ *   `chatOrder.placeReplayRows` places them.
  *
  * A saved row carries no `streaming` flag, so "finished" alone cannot tell
  * the current run's reply from an old one. The run's identity does.
@@ -42,8 +48,9 @@ export function planReplay(
   const have = new Set(shown.map((m) => m.id));
   const row = runRowOf(saved);
   const target = row && !reject.has(row.id) ? { ...row, streaming: true } : null;
-  const tail = shown[shown.length - 1]?.timestamp ?? 0;
-  const missing = saved.filter((m) => !have.has(m.id) && m.id !== target?.id && m.timestamp > tail);
+  let waterline = -1;
+  saved.forEach((m, i) => { if (have.has(m.id) && m.id !== target?.id) waterline = i; });
+  const missing = saved.filter((m, i) => i > waterline && !have.has(m.id) && m.id !== target?.id);
   return { target, missing };
 }
 
