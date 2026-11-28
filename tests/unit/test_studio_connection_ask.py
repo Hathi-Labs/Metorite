@@ -288,13 +288,17 @@ def test_another_member_gets_404_and_no_store_call(world: _World) -> None:
     ("mailbox", MEMBER, 409, connections.NOT_CHECKABLE),
     ("mcp", MEMBER, 409, connections.NOT_CHECKABLE),
     ("slack", MEMBER, 409, connections.NOT_CHECKABLE),
-    ("zoho", MEMBER, 409, connections.ALREADY_MET),
+    ("google_drive", MEMBER, 409, connections.ALREADY_MET),
     ("google_calendar", MEMBER, 409, connections.CAN_CONNECT),
     ("mcp:tally", ADMIN, 409, connections.CAN_CONNECT),
 ])
 def test_the_refusals_come_in_the_order_of_the_spec(
     world: _World, name: str, grants: list[str], status: int, code: str,
 ) -> None:
+    # I9b-1: an org need of a draft is never met, so a member need with the
+    # caller's own row stands for ``already_met``.
+    world.names = [*world.names, "google_drive"]
+    world.met_member = frozenset({"google_drive"})
     r = _post(_user(grants=grants), {"name": name})
     assert r.status_code == status, r.text
     assert r.json()["detail"]["code"] == code
@@ -316,12 +320,18 @@ def test_a_member_row_of_the_caller_never_makes_an_org_ask_met(world: _World) ->
     assert [c[3] for c in world.calls if c[0] == "ask"] == ["zoho", "mcp:tally"]
 
 
-def test_an_org_row_makes_an_org_ask_met(world: _World) -> None:
+def test_an_org_row_never_makes_an_org_ask_of_a_draft_met(world: _World) -> None:
+    """I9b-1. An ``org`` need of a draft reads ``org_approval``, whatever the org
+    rows hold. So the ask answers the same with an org row and with none, and
+    tells the caller nothing of the org account."""
     world.names = [{"name": "mcp:tally", "as": "org"}]
-    world.met_org = frozenset({"mcp:tally"})
-    r = _post(_user(), {"name": "mcp:tally"})
-    assert (r.status_code, r.json()["detail"]["code"]) == (409, connections.ALREADY_MET)
-    assert _store_calls(world) == []
+    answers = []
+    for org_rows in (frozenset(), frozenset({"mcp:tally"})):
+        world.met_org = org_rows
+        world.live = set()
+        r = _post(_user(), {"name": "mcp:tally"})
+        answers.append((r.status_code, r.json()))
+    assert answers == [(200, {"asked": True, "new": True})] * 2
 
 
 def test_a_member_need_reads_the_rows_of_the_caller_only(world: _World) -> None:
@@ -374,16 +384,24 @@ def test_the_ask_and_the_read_use_one_rule_of_met() -> None:
     ``can_connect`` refusal and ``can_connect`` on the line read
     ``_can_connect``, the one caller of ``console.may_connect``."""
     tree = ast.parse(ROUTES.read_text(encoding="utf-8"))
+    # I9b-1: the one rule is ``_need_reason``, the one caller of the door's
+    # ``need_reason``. No line of the module reads ``met.org`` or ``met.member``.
     reads = [n for n in ast.walk(tree) if isinstance(n, ast.Attribute)
              and isinstance(n.value, ast.Name) and n.value.id == "met"
              and n.attr in ("org", "member")]
+    assert reads == []
+    rule = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+            and ast.unparse(n.func) == "host_resolve.need_reason"]
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "_need_reason")
+    assert len(rule) == 1 and fn.lineno <= rule[0].lineno <= (fn.end_lineno or 0)
     fn = next(n for n in ast.walk(tree)
               if isinstance(n, ast.FunctionDef) and n.name == "_need_met")
-    assert reads and all(fn.lineno <= r.lineno <= (fn.end_lineno or 0) for r in reads)
-    for name in ("_check_member", "connection_rows"):
+    assert "_need_reason(" in ast.unparse(fn)
+    for name, rule_name in (("_check_member", "_need_met("), ("connection_rows", "_need_reason(")):
         fn = next(n for n in ast.walk(tree)
                   if isinstance(n, ast.FunctionDef) and n.name == name)
-        assert "_need_met" in ast.unparse(fn), name
+        assert rule_name in ast.unparse(fn), name
         assert "_can_connect(" in ast.unparse(fn), name
     calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
              and ast.unparse(n.func) == "console.may_connect"]
@@ -432,18 +450,23 @@ def test_the_query_names_no_org_and_no_member(world: _World) -> None:
 
 
 def test_the_read_reads_the_asks_of_the_names_that_are_not_met(world: _World) -> None:
+    """I9b-1: the org row of ``zoho`` never meets an ``org`` need of a draft, so
+    its ask is read and shows."""
     world.live = {(OWEN, "mcp:tally"), (BEN, "github"), (OWEN, "zoho")}
     rows = _client(_user()).get(READ).json()["connections"]
     assert {r["name"]: r["asked"] for r in rows} == {
-        "zoho": False, "mcp:tally": True, "google_calendar": False, "mailbox": False,
+        "zoho": True, "mcp:tally": True, "google_calendar": False, "mailbox": False,
         "mcp": False, "slack": False}
     asks = [c for c in world.calls if c[0] == "asked_by"]
     assert asks == [("asked_by", ORG, OWEN,
-                     ["mcp:tally", "google_calendar", "mailbox", "mcp", "slack"])]
+                     ["zoho", "mcp:tally", "google_calendar", "mailbox", "mcp", "slack"])]
 
 
 def test_the_read_of_a_draft_with_each_name_met_reads_no_ask(world: _World) -> None:
-    world.names = ["zoho"]
+    # I9b-1: an org need of a draft is never met, so a member need with the
+    # caller's own row stands for a met name.
+    world.names = ["google_calendar"]
+    world.met_member = frozenset({"google_calendar"})
     rows = _client(_user()).get(READ).json()["connections"]
     assert [r["asked"] for r in rows] == [False]
     assert [c for c in world.calls if c[0] == "asked_by"] == []

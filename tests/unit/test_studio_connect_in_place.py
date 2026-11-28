@@ -75,7 +75,8 @@ PATH = f"/studio/packages/{PID}/connections"
 NOT_FOUND = {"detail": "Not found"}
 MEMBER = ["feature:studio"]
 ADMIN = ["feature:studio", "integrations:manage"]
-ROW_KEYS = {"name", "label", "met", "checkable", "setup_href", "can_connect", "asked"}
+ROW_KEYS = {"name", "label", "as", "met", "reason", "checkable", "setup_href", "can_connect",
+            "asked"}
 SRC = ROOT / "apps/services/gateway/gateway/routes/studio/connections.py"
 
 
@@ -196,8 +197,8 @@ class _World:
         self.met_reads: list[str] = []
         self.owner = OWEN
         self.names: Any = ["zoho", "mcp:tally", "google_calendar"]
-        self.met_org: frozenset[str] = frozenset({"zoho"})
-        self.met_member: frozenset[str] = frozenset()
+        self.met_org: Any = frozenset({"zoho"})
+        self.met_member: Any = frozenset()
         #: I8b-1a: the reads of the asks, and the names that the caller asked for.
         self.asked_reads: list[tuple[str, list[str]]] = []
         self.asked: frozenset[str] = frozenset()
@@ -231,7 +232,9 @@ def world(monkeypatch: pytest.MonkeyPatch) -> _World:
     async def met_connections(db: Any, *, viewer: str) -> Met:
         w.met_reads.append(viewer)
         # I9a: the real answer is a Met pair. A set here hid a merge bug once.
-        return Met(org=frozenset(w.met_org), member=frozenset(w.met_member))
+        org = w.met_org if isinstance(w.met_org, dict) else frozenset(w.met_org)
+        member = w.met_member if isinstance(w.met_member, dict) else frozenset(w.met_member)
+        return Met(org=org, member=member)
 
     async def asked_by(db: Any, org: str, member: str, providers: Any) -> frozenset[str]:
         w.asked_reads.append((member, list(providers)))
@@ -259,18 +262,23 @@ def test_the_read_answers_one_row_for_each_name_in_order(world: _World) -> None:
     rows = r.json()["connections"]
     assert [x["name"] for x in rows] == ["zoho", "mcp:tally", "google_calendar"]
     assert all(set(x) == ROW_KEYS for x in rows)
-    assert rows[0] == {"name": "zoho", "label": "Zoho CRM", "met": True, "checkable": True,
-                       "setup_href": "/crm", "can_connect": False, "asked": False}
-    assert rows[1] == {"name": "mcp:tally", "label": "tally", "met": False, "checkable": True,
+    # I9b-1: a draft is never an approved install, so an org need with an org row waits
+    # for an admin (`org_approval`), and `met` is False.
+    assert rows[0] == {"name": "zoho", "label": "Zoho CRM", "as": "org", "met": False,
+                       "reason": "org_approval", "checkable": True, "setup_href": "/crm",
+                       "can_connect": False, "asked": False}
+    assert rows[1] == {"name": "mcp:tally", "label": "tally", "as": "org", "met": False,
+                       "reason": "org_approval", "checkable": True,
                        "setup_href": "/integrations?add=mcp&name=tally", "can_connect": False,
                        "asked": False}
-    assert rows[2] == {"name": "google_calendar", "label": "Google Calendar", "met": False,
-                       "checkable": True, "setup_href": "/calendar?settings=1", "can_connect": True,
-                       "asked": False}
+    assert rows[2] == {"name": "google_calendar", "label": "Google Calendar", "as": "member",
+                       "met": False, "reason": "missing", "checkable": True,
+                       "setup_href": "/calendar?settings=1", "can_connect": True, "asked": False}
     assert world.sessions == 1
     assert world.met_reads == [OWEN]
-    # I8b-1a: one read of the asks, for the names that are not met only.
-    assert world.asked_reads == [(OWEN, ["mcp:tally", "google_calendar"])]
+    # I8b-1a: one read of the asks, for the names that are not met only. I9b-1: an org
+    # need of a draft is never met, so its name is read too.
+    assert world.asked_reads == [(OWEN, ["zoho", "mcp:tally", "google_calendar"])]
 
 
 def test_a_row_is_met_by_the_set_of_its_own_need(world: _World) -> None:
@@ -282,23 +290,60 @@ def test_a_row_is_met_by_the_set_of_its_own_need(world: _World) -> None:
     world.met_member = frozenset({"google_drive", "mcp:tally"})  # an org need, a member row only
     rows = _client(_user()).get(PATH).json()["connections"]
     assert [(x["name"], x["met"]) for x in rows] == [
-        ("zoho", True), ("google_drive", True), ("mcp:tally", False), ("google_calendar", False)]
+        ("zoho", False), ("google_drive", True), ("mcp:tally", False), ("google_calendar", False)]
+    assert [x["reason"] for x in rows] == ["org_approval", "ok", "org_approval", "missing"]
+
+
+def test_i9b1_the_step_says_the_reason_of_each_need(world: _World) -> None:
+    """I9b-1. ``reason`` is ok, missing, reconnect or org_approval. A draft is never an
+    approved install, so an org need with a good org row is ``org_approval``."""
+    world.names = [
+        {"name": "google_drive", "as": "member", "scopes": ["a", "b"]},
+        {"name": "google_calendar", "as": "member", "scopes": ["a", "b"]},
+        {"name": "github", "as": "member", "scopes": ["a"]},
+        {"name": "zoho", "as": "org", "scopes": ["a"]},
+        {"name": "mcp:tally", "as": "org", "scopes": ["a"]},
+        {"name": "outlook_calendar", "as": "member"},
+    ]
+    world.met_member = {"google_drive": (frozenset({"a", "b", "c"}),),
+                        "google_calendar": (frozenset({"a"}),),
+                        "github": (frozenset(),),
+                        "outlook_calendar": (frozenset(),)}
+    world.met_org = {"zoho": (frozenset({"a"}),), "mcp:tally": (frozenset({"b"}),)}
+    rows = _client(_user()).get(PATH).json()["connections"]
+    assert [(x["name"], x["met"], x["reason"]) for x in rows] == [
+        ("google_drive", True, "ok"), ("google_calendar", False, "reconnect"),
+        ("github", False, "reconnect"), ("zoho", False, "org_approval"),
+        ("mcp:tally", False, "org_approval"), ("outlook_calendar", True, "ok")]
+    # Each row names its account, so the IDE can word the reconnect of an org need.
+    assert [x["as"] for x in rows] == ["member", "member", "member", "org", "org", "member"]
+
+
+def test_connection_rows_need_a_scopes_item_and_fail_closed() -> None:
+    """I9b-1 review. A need of two items has no default of "no scopes": it raises."""
+    with pytest.raises(IndexError):
+        connections.connection_rows([("zoho", "member")], Met(member=frozenset({"zoho"})), _user())
+    rows = connections.connection_rows([("zoho", "member", ())],
+                                       Met(member=frozenset({"zoho"})), _user())
+    assert rows[0]["met"] is True
 
 
 def test_asked_follows_the_set_of_its_own_need(world: _World) -> None:
-    """I8b-1a with I9a: the read asks for the asks of each line that the set of
-    its own need does not meet. A member row of the caller leaves an ``org`` line
-    unmet, so its ask shows. A met line reads ``asked`` False, and its name is
-    not read."""
+    """I8b-1a with I9a and I9b-1: the read asks for the asks of each line that the
+    rule of its own need does not meet. A member row of the caller leaves an ``org``
+    line unmet, so its ask shows. An org row never meets an ``org`` need of a draft
+    (``org_approval``), so that ask shows too. A met line reads ``asked`` False, and
+    its name is not read."""
     world.names = [{"name": "zoho", "as": "org"}, {"name": "google_drive", "as": "member"},
-                   {"name": "mcp:tally", "as": "org"}]
+                   {"name": "mcp:tally", "as": "org"}, {"name": "outlook_calendar", "as": "member"}]
     world.met_org = frozenset({"google_drive", "mcp:tally"})  # a member need, an org row only
-    world.met_member = frozenset({"zoho"})                    # an org need, a member row only
-    world.asked = frozenset({"zoho", "google_drive", "mcp:tally"})
+    world.met_member = frozenset({"zoho", "outlook_calendar"})  # an org need, a member row only
+    world.asked = frozenset({"zoho", "google_drive", "mcp:tally", "outlook_calendar"})
     rows = _client(_user()).get(PATH).json()["connections"]
     assert [(x["name"], x["met"], x["asked"]) for x in rows] == [
-        ("zoho", False, True), ("google_drive", False, True), ("mcp:tally", True, False)]
-    assert world.asked_reads == [(OWEN, ["zoho", "google_drive"])]
+        ("zoho", False, True), ("google_drive", False, True), ("mcp:tally", False, True),
+        ("outlook_calendar", True, False)]
+    assert world.asked_reads == [(OWEN, ["zoho", "google_drive", "mcp:tally"])]
 
 
 def test_a_plain_name_takes_its_as_from_the_connector_list(world: _World) -> None:
@@ -330,7 +375,8 @@ def test_an_unknown_provider_id_reads_its_own_id_and_is_blocked(world: _World, g
     meets it: it is not checkable and offers no Connect, for an admin too."""
     world.names = ["acme"]
     rows = _client(_user(grants=grants)).get(PATH).json()["connections"]
-    assert rows == [{"name": "acme", "label": "acme", "met": False, "checkable": False,
+    assert rows == [{"name": "acme", "label": "acme", "as": "org", "met": False,
+                     "reason": "org_approval", "checkable": False,
                      "setup_href": "/integrations", "can_connect": False, "asked": False}]
 
 
@@ -370,7 +416,7 @@ def test_a_provider_outside_the_registry_is_not_checkable_and_offers_no_connect(
     rows = _client(_user(grants=grants)).get(PATH).json()["connections"]
     assert [(r["name"], r["met"], r["checkable"], r["can_connect"]) for r in rows] == [
         ("mailbox", False, False, False), ("whatsapp", False, False, False),
-        ("apollo", False, False, False), ("zoho", True, True, grants == ADMIN)]
+        ("apollo", False, False, False), ("zoho", False, True, grants == ADMIN)]
     assert rows[0]["label"] == "Email account"
 
 

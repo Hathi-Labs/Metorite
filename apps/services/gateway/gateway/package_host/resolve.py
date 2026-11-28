@@ -98,7 +98,7 @@ from typing import Any, NamedTuple
 from acb_common.app_manifests.shell_manifest import SystemContribution, load_contributes
 from acb_common.db import current_tenant
 from acb_common.studio_flags import connection_gate_on
-from acb_common.studio_manifest import connection_item
+from acb_common.studio_manifest import connection_item, connection_scopes
 from sqlalchemy import text
 
 from gateway.package_host.sharing import SHARE_ROW
@@ -229,12 +229,16 @@ def connection_names(manifest: Any) -> tuple[str, ...] | None:
 
 
 class Met(NamedTuple):
-    """The connections that a viewer may use (WS-STU I9a): ``org`` holds each
-    provider with a ``connected`` org row, and ``member`` each provider with a
-    ``connected`` row of the viewer. The two never mix."""
+    """The connections that a viewer may use (WS-STU I9a, I9b-1): ``org`` holds
+    each provider with a ``connected`` org row, and ``member`` each provider
+    with a ``connected`` row of the viewer. The two never mix.
 
-    org: frozenset[str] = frozenset()
-    member: frozenset[str] = frozenset()
+    A value is a set of names (no scope known: each row holds none), or a map
+    from a provider to the scope set of EACH of its rows
+    (``connections/store.met_providers``)."""
+
+    org: Mapping[str, Any] | frozenset[str] = frozenset()
+    member: Mapping[str, Any] | frozenset[str] = frozenset()
 
 
 def org_install_approved(scope_kind: str | None, review_status: str | None) -> bool:
@@ -253,30 +257,73 @@ def owns(install: InstallRow, viewer: str | None) -> bool:
                 and install.owner_email == viewer.strip().lower())
 
 
-def first_unmet_connection(manifest: Any, met: Met, org_approved: bool = False,
-                           ) -> tuple[str | None, str | None] | None:
-    """The first connection need of *manifest* that is not met, as
-    ``(provider, as)``, or None when each is met (WS-STU I9a).
+#: The three reasons that a connection need is unmet (WS-STU I9b-1).
+REASON_MISSING = "missing"
+REASON_RECONNECT = "reconnect"
+REASON_ORG_APPROVAL = "org_approval"
 
-    THE one rule of a connection need. A ``member`` need is met only by a
-    member row of the viewer (``met.member``), never by an org row. An ``org``
-    need is met only by an org row (``met.org``) AND when *org_approved*
+
+def _rows_of(group: Mapping[str, Any] | frozenset[str], name: str) -> tuple[frozenset[str], ...]:
+    """The scope set of each row of *name* in *group*: none when it holds no
+    row. A plain set of names gives one row with no scope."""
+    if isinstance(group, Mapping):
+        return tuple(group.get(name, ()))
+    return (frozenset(),) if name in group else ()
+
+
+def need_reason(name: str, whose: str, scopes: tuple[str, ...] | None, met: Met,
+                org_approved: bool = False) -> str | None:
+    """Why one connection need is unmet, or None when it is met (WS-STU I9b-1).
+
+    ``org_approval``: an ``org`` need of an install that is no approved ORG
+    install (private, group, draft, preview). It comes FIRST and for every such
+    need, whatever the rows hold, so a caller who is no admin learns nothing of
+    the org account (not that a row exists, not its scopes). Then ``missing``:
+    no connected row of the right account. ``reconnect``: a row exists, and NO
+    single row holds every scope of the need (a subset test, case-sensitive,
+    exact strings). A need with no scopes is met by any row, a need WITH scopes
+    is never met by a row whose scopes are empty, and a ``scopes`` of a wrong
+    shape (None) is never met. Pure."""
+    if whose != "member" and not org_approved:
+        return REASON_ORG_APPROVAL
+    rows = _rows_of(met.member if whose == "member" else met.org, name)
+    if not rows:
+        return REASON_MISSING
+    if scopes is None or (scopes and not any(set(scopes) <= row for row in rows)):
+        return REASON_RECONNECT
+    return None
+
+
+def first_unmet_need(manifest: Any, met: Met, org_approved: bool = False,
+                     ) -> tuple[str | None, str | None, str] | None:
+    """The first connection need of *manifest* that is not met, as
+    ``(provider, as, reason)``, or None when each is met (WS-STU I9b-1).
+
+    THE one rule of a connection need, :func:`need_reason` for each item. A
+    ``member`` need is met only by a member row of the viewer, never by an org
+    row. An ``org`` need is met only by an org row AND when *org_approved*
     (:func:`org_install_approved`). A ``connections`` value of a wrong shape
-    gives ``(None, None)``: it fails closed with no name. Pure."""
+    gives ``(None, None, "missing")``: it fails closed with no name. Pure."""
     items = manifest.get("connections", []) if isinstance(manifest, Mapping) else []
     if not isinstance(items, list):
-        return None, None
+        return None, None, REASON_MISSING
     for raw in items:
         item = connection_item(raw)
         if item is None:
-            return None, None
+            return None, None, REASON_MISSING
         name, whose = item
-        if whose == "member":
-            if name not in met.member:
-                return name, whose
-        elif not (org_approved and name in met.org):
-            return name, whose
+        reason = need_reason(name, whose, connection_scopes(raw), met, org_approved)
+        if reason is not None:
+            return name, whose, reason
     return None
+
+
+def first_unmet_connection(manifest: Any, met: Met, org_approved: bool = False,
+                           ) -> tuple[str | None, str | None] | None:
+    """:func:`first_unmet_need` without the reason: ``(provider, as)``, or None
+    (WS-STU I9a). Kept for the callers that need no reason."""
+    found = first_unmet_need(manifest, met, org_approved)
+    return None if found is None else (found[0], found[1])
 
 
 def connections_met(manifest: Any, met: Met, org_approved: bool = False) -> bool:

@@ -10,16 +10,19 @@ do, so ``main.py`` mounts no second router and the gate
 ``require_feature_router("studio")`` holds (J1).
 
 **The answer of the read.** One row for each name of the draft's
-``connections``, in the order of the draft: ``name``, ``label``, ``met``,
-``checkable``, ``setup_href``, ``can_connect`` and ``asked``. The IDE draws one
+``connections``, in the order of the draft: ``name``, ``label``, ``as``,
+``met``, ``reason``, ``checkable``, ``setup_href``, ``can_connect`` and
+``asked``. The IDE draws one
 line for each name, with Connect on an unmet one.
 
 * ``met`` comes from ``package_host/resolve.met_connections``, the one read of
   a connection need (I1a). It reads the bound org of the session, and the org
   rows and the member rows of the caller only. The route adds no second query
-  of the registry, and :func:`_met` is its one call. WS-STU I9a: each line
-  reads the set of the account of its need (:func:`_need_met`). A ``member``
-  need reads the rows of the caller, and an ``org`` need reads the org rows.
+  of the registry, and :func:`_met` is its one call. WS-STU I9a, I9b-1: each
+  line reads the rule of the door for the draft (:func:`_need_reason`). A
+  ``member`` need reads the rows of the caller, and one row must hold every
+  scope of the need. An ``org`` need of a draft always reads
+  ``org_approval``, whatever the org rows hold.
 * ``label`` comes from the connector list (IN-11) for a provider id. It is the
   server name for ``mcp:<server>``, and the id itself for an id that the list
   does not hold.
@@ -47,8 +50,8 @@ that the registry cannot hold (409 ``not_checkable``), a name that the member
 has now (409 ``already_met``), a name that the member may connect (409
 ``can_connect``), and a name that no connect of an admin can meet (409
 ``admin_cannot_connect``). ``already_met`` uses the rule of the line of the
-read (:func:`_need_met`, I9a). So for an ``org`` need it reads the org rows
-only, and a member row of the caller never makes an org ask ``already_met``.
+read (:func:`_need_met`, I9a, I9b-1). So an ``org`` need of a draft is never
+``already_met``, and the ask tells a caller nothing of the org rows.
 ``can_connect`` uses the rule of the line too (:func:`_can_connect`), and
 :func:`_admin_can_meet` holds the last rule. It answers
 ``{"asked": true, "new": <bool>}``: ``new`` is False when a live ask of the
@@ -81,12 +84,13 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Sequence
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from acb_common.connector_list import connector
 from acb_common.studio_flags import connection_gate_on
-from acb_common.studio_manifest import connection_as, connection_item
+from acb_common.studio_manifest import connection_as, connection_item, connection_scopes
 from fastapi import Depends, HTTPException, Request
 from gateway.connections import attention
 from gateway.connections import mcp as mcp_registry
@@ -184,26 +188,50 @@ def checkable(name: str) -> bool:
             and name not in connections_store.OUTSIDE_REGISTRY)
 
 
-def connection_needs(manifest: Any) -> tuple[tuple[str, str], ...]:
-    """``(name, as)`` of each item of ``connections``, in order (WS-STU I9a).
+#: One need of a draft: ``(name, as, scopes)``, from :func:`connection_needs`.
+Need = tuple[str, str, tuple[str, ...] | None]
 
-    ``as`` is ``org`` or ``member``, from :func:`connection_item`, the one
-    reading that the door and the sidebar use. A manifest with no valid
+
+def connection_needs(manifest: Any) -> tuple[Need, ...]:
+    """``(name, as, scopes)`` of each item of ``connections``, in order
+    (WS-STU I9a, I9b-1).
+
+    ``as`` is ``org`` or ``member``, from :func:`connection_item`, and the
+    scopes come from :func:`connection_scopes` (None for a wrong shape), the
+    one reading that the door and the sidebar use. A manifest with no valid
     ``connections`` gives an empty tuple. Pure."""
     if not host_resolve.connection_names(manifest):
         return ()
-    items = [connection_item(raw) for raw in manifest.get("connections", [])]
-    return tuple(i for i in items if i is not None) if None not in items else ()
+    raws = manifest.get("connections", [])
+    items = [connection_item(raw) for raw in raws]
+    if None in items:
+        return ()
+    return tuple((i[0], i[1], connection_scopes(raw))
+                 for i, raw in zip(items, raws, strict=True) if i is not None)
 
 
-def _need_met(name: str, whose: str, met: host_resolve.Met) -> bool:
-    """True when the set of the account of a need holds *name* (WS-STU I9a).
+def _need_reason(name: str, whose: str, scopes: tuple[str, ...] | None,
+                 met: host_resolve.Met) -> str | None:
+    """Why the need ``(name, whose, scopes)`` is unmet for the DRAFT of the
+    owner, or None when it is met (WS-STU I9a, I9b-1). Pure.
 
-    A ``member`` need reads the rows of the caller, and an ``org`` need reads
-    the org rows, as :func:`~gateway.package_host.resolve.first_unmet_connection`
-    does. The ``met`` of a line and the ``already_met`` refusal of an ask both
-    read this one rule. Pure."""
-    return name in (met.member if whose == "member" else met.org)
+    THE one rule of this module. It is
+    :func:`~gateway.package_host.resolve.need_reason`, the rule of the door. A
+    draft is never an approved install, so each ``org`` need reads
+    ``org_approval``, whatever the org rows hold. That check comes first, so
+    no line and no ask tells a caller whether an org account exists or which
+    scopes it holds. A ``member`` need reads the rows of the caller only, and
+    one row must hold every scope of the need."""
+    return host_resolve.need_reason(name, whose, scopes, met, False)
+
+
+def _need_met(name: str, whose: str, scopes: tuple[str, ...] | None,
+              met: host_resolve.Met) -> bool:
+    """True when :func:`_need_reason` finds the need met (WS-STU I9a, I9b-1).
+
+    The ``met`` of a line and the ``already_met`` refusal of an ask both read
+    this one rule. So an ``org`` need of a draft is never ``already_met``. Pure."""
+    return _need_reason(name, whose, scopes, met) is None
 
 
 def _can_connect(name: str, whose: str, user: UserContext) -> bool:
@@ -214,7 +242,8 @@ def _can_connect(name: str, whose: str, user: UserContext) -> bool:
     ``as`` differs from that scope, no writer can make a row that meets the
     need, so a Connect would be a dead end (I9a review P2). The
     ``can_connect`` of a line and the ``can_connect`` refusal of an ask both
-    read this one rule (I8b-1a review P1). Pure."""
+    read this one rule (I8b-1a review P1). Each owning app asks FIXED scopes,
+    so a ``reconnect`` cannot widen a grant yet (I9b-1, a known limit). Pure."""
     return (checkable(name) and connection_as(name) == whose
             and console.may_connect(user, name))
 
@@ -231,37 +260,41 @@ def _admin_can_meet(name: str, whose: str) -> bool:
     return whose == "org" and connection_as(name) == "org"
 
 
-def connection_rows(needs: tuple[tuple[str, str], ...], met: host_resolve.Met,
+def connection_rows(needs: Sequence[tuple[Any, ...]], met: host_resolve.Met,
                     user: UserContext,
                     asked: frozenset[str] = frozenset()) -> list[dict[str, Any]]:
-    """One row for each ``(name, as)``, in order. Pure: it reads no database.
+    """One row for each ``(name, as, scopes)``, in order. Pure: it reads no
+    database. Each need has three items: a shorter one raises, so no need
+    meets by default.
 
-    A row is ``met`` by the SAME set that the door reads for that need
-    (:func:`~gateway.package_host.resolve.first_unmet_connection`): a
-    ``member`` need by a row of the caller, an ``org`` need by an org row. The
-    approval of an org need is the rule of the door and not of this line, so a
-    draft with an ``org`` need reads connected here and the door still refuses
-    it until I9b (the known limit of ``ai_studio.md`` I9). ``asked`` (I8b-1a)
-    is True only on a line that is not met."""
+    A row is ``met`` by the SAME rule that the door reads for that need
+    (:func:`_need_reason`), for the DRAFT of the owner. A draft is never an
+    approved install, so each ``org`` need reads ``org_approval`` and ``met``
+    False, whatever the org rows hold (I9b-1). ``reason`` is ``ok``,
+    ``missing``, ``reconnect`` or ``org_approval``. ``asked`` (I8b-1a) is True
+    only on a line that is not met."""
     rows: list[dict[str, Any]] = []
-    for name, whose in needs:
-        met_now = _need_met(name, whose, met)
+    for need in needs:
+        name, whose, scopes = need[0], need[1], need[2]
+        reason = _need_reason(name, whose, scopes, met)
         rows.append({
             "name": name,
             "label": _label(name),
-            "met": met_now,
+            "as": whose,
+            "met": reason is None,
+            "reason": reason or "ok",
             "checkable": checkable(name),
             "setup_href": console.setup_href_for(name),
             "can_connect": _can_connect(name, whose, user),
-            "asked": name in asked and not met_now,
+            "asked": name in asked and reason is not None,
         })
     return rows
 
 
-async def _owned_needs(db: Any, user: UserContext, pid: str) -> tuple[tuple[str, str], ...]:
-    """The ``(name, as)`` needs of the draft of the caller's package *pid*
-    (:func:`connection_needs`), or 404 for a package that the caller does not
-    own."""
+async def _owned_needs(db: Any, user: UserContext, pid: str) -> tuple[Need, ...]:
+    """The ``(name, as, scopes)`` needs of the draft of the caller's package
+    *pid* (:func:`connection_needs`), or 404 for a package that the caller
+    does not own."""
     package = await store.get_package(db, user.email, pid)
     if package is None:
         raise _not_found()
@@ -289,7 +322,7 @@ async def package_connections(
     async with _tenant_session() as db:
         needs = await _owned_needs(db, user, pid)
         met = await _met(db, user) if needs else host_resolve.Met()
-        unmet = [n for n, whose in needs if not _need_met(n, whose, met)]
+        unmet = [n for n, whose, scopes in needs if not _need_met(n, whose, scopes, met)]
         asked = (await attention.asked_by(db, str(user.organization_id), user.email, unmet)
                  if unmet else frozenset())
     return {"connections": connection_rows(needs, met, user, asked)}
@@ -320,30 +353,31 @@ def _withdraw_name(request: Request) -> str:
     return given[0]
 
 
-def _check_name(name: str, needs: tuple[tuple[str, str], ...]) -> None:
+def _check_name(name: str, needs: tuple[Need, ...]) -> None:
     """Refuse a name that is not in the draft, or that the registry cannot
     hold. The first two checks of §8.2, before any read of the met set."""
-    if name not in {n for n, _whose in needs}:
+    if name not in {need[0] for need in needs}:
         raise _refused(422, NOT_IN_DRAFT, NOT_IN_DRAFT_TEXT)
     if not checkable(name):
         raise _refused(409, NOT_CHECKABLE, NOT_CHECKABLE_TEXT)
 
 
-def _check_member(name: str, needs: tuple[tuple[str, str], ...], met: host_resolve.Met,
+def _check_member(name: str, needs: tuple[Need, ...], met: host_resolve.Met,
                   user: UserContext) -> None:
     """Refuse a name that the caller has now, may connect, or that no admin
     can connect. The last three checks of §8.2. Each one reads the needs of
     the name that are not met.
 
-    WS-STU I9a: "has now" is the rule of the line of the read
-    (:func:`_need_met`). An ``org`` need reads the org rows only, so a member
-    row of the caller never makes an org ask ``already_met``. A ``member`` need
-    reads the rows of the caller only. "May connect" is the rule of the line
+    WS-STU I9a, I9b-1: "has now" is the rule of the line of the read
+    (:func:`_need_met`). An ``org`` need of a draft is never met, so the ask
+    never tells the caller whether an org row exists. A ``member`` need reads
+    the rows of the caller only, scopes included. "May connect" is the rule of the line
     too (:func:`_can_connect`). So the ask never says "connect it yourself"
     where the line shows no Connect. Last, an ask that no admin can answer
     (:func:`_admin_can_meet`) stores no row: it would take a slot and show
     the admins an item that no connect clears."""
-    unmet = [whose for n, whose in needs if n == name and not _need_met(n, whose, met)]
+    unmet = [whose for n, whose, scopes in needs
+             if n == name and not _need_met(n, whose, scopes, met)]
     if not unmet:
         raise _refused(409, ALREADY_MET, ALREADY_MET_TEXT)
     if any(_can_connect(name, whose, user) for whose in unmet):

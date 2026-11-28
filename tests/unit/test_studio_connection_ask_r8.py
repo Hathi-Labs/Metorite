@@ -447,9 +447,12 @@ def test_r8_f_a_withdraw_deletes_the_row_of_the_asker_only(world) -> None:
 
 
 def test_r8_g_the_route_refuses_each_name_that_no_admin_can_answer(world) -> None:
-    _registry_row(world, LEDGER, world.a)
+    # I9b-1: only a need that the door meets for the draft is ``already_met``. An org
+    # need of a draft never is, so a MEMBER need with Owen's own row stands for it.
+    _registry_row(world, LEDGER, world.a, member=OWEN)
     pid = _run(world, lambda: _new(world.a, OWEN,
-                                   [TALLY, LEDGER, "mailbox", "apollo", "mcp", "google_calendar"]))
+                                   [TALLY, {"name": LEDGER, "as": "member"}, "mailbox", "apollo",
+                                    "mcp", "google_calendar"]))
 
     def code(name: str, grants: tuple[str, ...] = STUDIO) -> tuple[int, str]:
         status, got = _run(world, lambda: _ask(world.a, OWEN, pid, name, grants))
@@ -482,6 +485,20 @@ def test_r8_g_a_member_row_of_the_asker_never_makes_an_org_ask_met(world) -> Non
     assert [(r["name"], r["met"], r["asked"]) for r in got["connections"]] == [
         (TALLY, False, True)]
     assert _asks(world) == [(world.a, TALLY, OWEN.lower(), pid)]
+
+
+def test_r8_g_an_org_row_never_makes_an_org_ask_of_a_draft_met(world) -> None:
+    """I9b-1. An ``org`` need of a draft reads ``org_approval``, whatever the org
+    rows hold. So a connected org row does not make the ask ``already_met``: the
+    ask goes through as with no row, and the answer tells Owen nothing of the row."""
+    _registry_row(world, LEDGER, world.a)
+    pid = _run(world, lambda: _new(world.a, OWEN, [LEDGER]))
+    assert _run(world, lambda: _ask(world.a, OWEN, pid, LEDGER)) == (
+        200, {"asked": True, "new": True})
+    status, got = _run(world, lambda: _read(world.a, OWEN, pid))
+    assert status == 200, got
+    assert [(r["name"], r["met"], r["reason"], r["asked"]) for r in got["connections"]] == [
+        (LEDGER, False, "org_approval", True)]
 
 
 def _asks_of(world: Any, member: str) -> list[tuple[str, str]]:

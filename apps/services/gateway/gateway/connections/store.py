@@ -377,10 +377,10 @@ _DELETE_SQL = (
 
 #: The providers that one member may use now (WS-STU I1a, split by I9a): each
 #: ``connected`` org row, and each ``connected`` member row of that member.
-#: The row of another member never counts. It reads the provider and the kind
-#: of the row only, never the blob.
+#: The row of another member never counts. It reads the provider, the kind and
+#: the granted ``scopes`` of the row only (WS-STU I9b-1), never the blob.
 _MET_SQL = (
-    "SELECT DISTINCT provider, scope_kind FROM integration_connections "
+    "SELECT DISTINCT provider, scope_kind, scopes FROM integration_connections "
     f"WHERE organization_id = CAST(:org AS uuid) AND status = '{STATUS_CONNECTED}' "
     f"AND (scope_kind = '{SCOPE_ORG}' OR (scope_kind = '{SCOPE_MEMBER}' "
     "AND member_email = :member))"
@@ -628,19 +628,39 @@ async def list_all(db: Any, org: str) -> list[Connection]:
     return [_connection(r) for r in rows]
 
 
+def _granted(raw: Any) -> frozenset[str]:
+    """The scopes of one row, as a set of the exact strings. A NULL gives the
+    empty set. No folding of case and no trimming (I9b-1)."""
+    return frozenset(str(x) for x in (raw or ()))
+
+
+def _by_provider(found: list[tuple[str, frozenset[str]]]) -> dict[str, tuple[frozenset[str], ...]]:
+    """Each provider with the scope set of EACH of its rows, never merged: a
+    need with scopes is met only when ONE row holds all of them."""
+    out: dict[str, list[frozenset[str]]] = {}
+    for provider, scopes in found:
+        if scopes not in out.setdefault(provider, []):
+            out[provider].append(scopes)
+    return {p: tuple(v) for p, v in out.items()}
+
+
 async def met_providers(
     db: Any, org: str, member: str,
-) -> tuple[frozenset[str], frozenset[str]]:
+) -> tuple[dict[str, tuple[frozenset[str], ...]], dict[str, tuple[frozenset[str], ...]]]:
     """The providers that *member* may use now in *org*, as
-    ``(org_met, member_met)`` (WS-STU I1a, split by I9a).
+    ``(org_met, member_met)`` (WS-STU I1a, split by I9a, scopes by I9b-1).
 
-    ``org_met`` holds each provider with a ``connected`` org row. ``member_met``
-    holds each provider with a ``connected`` member row of *member* itself. The
-    member row of another member never counts, and ``needs_reconnect``,
-    ``needs_reset`` and ``disconnected`` never count. The two sets stay apart,
-    because a need that asks for the member's own account is never met by an org
-    row, and an org need is never met by a member row. It reads the ``provider``
-    and ``scope_kind`` columns only, never the blob.
+    Each map holds a provider as key, and as value the granted scope set of
+    EACH ``connected`` row of it (a tuple of frozensets, one for each row).
+    The rows are never merged: a need with scopes is met only when one row
+    holds all of them, so no union appears that no single account has.
+    ``org_met`` holds the org rows. ``member_met`` holds the member rows of
+    *member* itself. The member row of another member never counts, and
+    ``needs_reconnect``, ``needs_reset`` and ``disconnected`` never count. The
+    two maps stay apart, because a need that asks for the member's own account
+    is never met by an org row, and an org need is never met by a member row.
+    It reads the ``provider``, ``scope_kind`` and ``scopes`` columns only,
+    never the blob.
 
     The registry holds ``mcp:<server>``, ``zoho``, ``github``,
     ``google_calendar``, ``outlook_calendar`` and ``google_drive``. A mailbox
@@ -654,8 +674,9 @@ async def met_providers(
     rows = (await db.execute(text(_MET_SQL), params)).all()
     # An empty member never matches a member row: the CHECK allows
     # ``member_email = ''``, so the SQL alone would let it match.
-    return (frozenset(str(r[0]) for r in rows if r[1] == SCOPE_ORG),
-            frozenset(str(r[0]) for r in rows if r[1] == SCOPE_MEMBER and who))
+    return (_by_provider([(str(r[0]), _granted(r[2])) for r in rows if r[1] == SCOPE_ORG]),
+            _by_provider([(str(r[0]), _granted(r[2])) for r in rows
+                          if r[1] == SCOPE_MEMBER and who]))
 
 
 async def get_by_id(db: Any, org: str, connection_id: str) -> Connection | None:

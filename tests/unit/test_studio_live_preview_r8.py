@@ -354,4 +354,4 @@ async def test_r8_a_draft_never_meets_the_mcp_need_on_real_rows(two_orgs) -> Non
         met = await resolve.met_connections(db, viewer=ANA)
     name = f"mcp:{w.names['reg_a']}"
     assert name in met.org
-    assert invoke._live_unmet({"connections": [name]}, met) == (name, "org")
+    assert invoke._live_unmet({"connections": [name]}, met) == (name, "org", "org_approval")

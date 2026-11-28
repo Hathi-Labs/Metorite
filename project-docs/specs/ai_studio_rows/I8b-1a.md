@@ -10,6 +10,8 @@ Gate: AGENT-SAFE. A migration
 
 **With I9a (merged on main):** `already_met` and `met` on the line of the read use one rule, `_need_met`. It reads the set of the account of the need. So an `org` need reads the org rows only, and a member row of the asker never makes an org ask met.
 
+**With I9b-1:** `_need_met` now reads `_need_reason`, the rule of the door for a draft. So an `org` need of a draft is never `already_met`, whatever the org rows hold.
+
 **The review of the merge with I9a (2026-11-15):** the `can_connect` refusal reads `_can_connect`, the rule of `can_connect` on the line of the read. A name that no connect of an admin can meet gets 409 `admin_cannot_connect` and stores no row (`_admin_can_meet`). An admin can meet only an `org` need on a connector of `org` scope. So `{zoho, as: member}` and `{google_drive, as: org}` store no ask.
 
 ## Done when
