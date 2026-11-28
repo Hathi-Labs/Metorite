@@ -2073,3 +2073,126 @@ class TestTheOrchestratorOutside:
         node = _node(wide, "amr5b-orch")["id"]
         _, one, _ = await _get(o, o.admin_a, MAP + f"&session={node}&project_id={o.proj_a['id']}")
         assert one["sessions"] == []
+
+    # ── The probe cases of the verifier, as fences (each asserts no trace) ──
+
+    @staticmethod
+    def _no_trace(raw: str, body: dict[str, Any], *secrets: str) -> None:
+        """No secret in the raw answer, nor in the answer serialized again."""
+        serial = json.dumps(body)
+        for secret in secrets:
+            assert secret not in raw and secret not in serial, secret
+
+    async def test_a_pinned_agent_reaches_the_context_only_through_its_pins(self, outside):
+        """(a) D-EA-12. Pinned to A only: no context, no line, no name of B.
+        Pinned to A and B: the context with the name of B."""
+        import dataclasses
+
+        o = outside
+        boss = o.add("amr5b-orch", "in_progress", on=o.task_b)
+        _dispatch(o.p, o.add("amr5b-lane", "in_progress", on=o.on_a()), boss)
+        agent = b._principal(ADMIN_A, o.p.org_a, agent_connection=o.conn_m,
+                             scopes=("projects:read",))
+
+        def pinned(*projects: dict[str, Any]) -> Any:
+            return dataclasses.replace(agent, agent=dataclasses.replace(
+                agent.agent, pinned_projects=tuple(p["id"] for p in projects)))
+
+        status, body, raw = await _get(o, pinned(o.proj_a), o.scope_a)
+        assert status == 200, body
+        assert set(_named(body)) == {"amr5b-lane"}
+        assert _contexts(body) == {} and body["lines"] == []
+        self._no_trace(raw, body, "amr5b-orch", NAME_B, TITLE_B, o.proj_b["id"], o.task_b, boss)
+        status, both, raw = await _get(o, pinned(o.proj_a, o.proj_b), o.scope_a)
+        assert status == 200, both
+        row = _contexts(both)["amr5b-orch"]
+        assert row["context_project"] == {"name": NAME_B}
+        assert (row["id"], _node(both, "amr5b-lane")["id"]) in _lines(both)
+        self._no_trace(raw, both, TITLE_B, o.proj_b["id"], o.task_b, boss)
+
+    async def test_the_led_arm_of_d12_gives_the_context_to_a_lead_only(self, outside):
+        """(b) B2 is granted to the org, so the grant does not hide its tasks.
+        The reach does: a lead of B2 gets the context, a plain member gets nothing."""
+        o = outside
+        p = o.p
+        proj_b2 = b.project(p, p.org_a, OTHER_A, grant="org")
+        _rename(p, proj_b2, "amr5b-led-project-b2")
+        task_b2 = b.task(p, p.org_a, OTHER_A, proj_b2, title="amr5b-led-task-b2")
+        boss = o.add("amr5b-orch", "in_progress", on=task_b2)
+        _dispatch(p, o.add("amr5b-lane", "in_progress", on=o.on_a()), boss)
+
+        def lead(*projects: dict[str, Any]) -> None:
+            with p.admin_engine.begin() as c:
+                c.execute(text("UPDATE pm_projects SET lead = NULL"
+                               " WHERE id = ANY(CAST(:all AS uuid[]))"),
+                          {"all": [o.proj_a["id"], proj_b2["id"]]})
+                c.execute(text("UPDATE pm_projects SET lead = :l WHERE id = ANY(CAST(:p AS uuid[]))"),
+                          {"l": LEAD_A, "p": [x["id"] for x in projects]})
+
+        secrets = ("amr5b-orch", "amr5b-led-project-b2", "amr5b-led-task-b2",
+                   proj_b2["id"], task_b2, boss)
+        try:
+            # The lead of A only sees the lane, and nothing of B2.
+            lead(o.proj_a)
+            _, body, raw = await _get(o, o.lead_a, o.scope_a)
+            assert set(_named(body)) == {"amr5b-lane"} and body["viewer"] == "lead"
+            assert _contexts(body) == {} and body["lines"] == []
+            self._no_trace(raw, body, *secrets)
+            # The lead of A and B2 gets the context and the name of B2.
+            lead(o.proj_a, proj_b2)
+            _, body, raw = await _get(o, o.lead_a, o.scope_a)
+            row = _contexts(body)["amr5b-orch"]
+            assert row["context_project"] == {"name": "amr5b-led-project-b2"}
+            assert (row["id"], _node(body, "amr5b-lane")["id"]) in _lines(body)
+            self._no_trace(raw, body, "amr5b-led-task-b2", proj_b2["id"], task_b2, boss)
+            # A plain member sees B2 by its grant, but the reach keeps the run out.
+            _, body, raw = await _get(o, o.member_a, o.scope_a)
+            assert set(_named(body)) == {"amr5b-lane"}
+            assert _contexts(body) == {} and body["lines"] == []
+            self._no_trace(raw, body, *secrets)
+        finally:
+            lead()
+
+    async def test_a_sealed_project_gives_the_context_with_no_project(self, outside):
+        """(c) D63. The member holds a task of a sealed project as its assignee.
+        The run shows, so the context shows. The sealed name shows nowhere."""
+        o = outside
+        p = o.p
+        sealed = b.project(p, p.org_a, OTHER_A, grant="org")
+        _rename(p, sealed, "amr5b-sealed-project")
+        assigned = b.task(p, p.org_a, OTHER_A, sealed, title="amr5b-sealed-task",
+                          assignee=MEMBER_A)
+        boss = o.add("amr5b-orch", "in_progress", on=assigned)
+        _dispatch(p, o.add("amr5b-lane", "in_progress", on=o.on_a()), boss)
+        with p.admin_engine.begin() as c:
+            c.execute(text("UPDATE pm_projects SET sealed_at = now() WHERE id = CAST(:p AS uuid)"),
+                      {"p": sealed["id"]})
+        secrets = ("amr5b-sealed-project", sealed["id"], "amr5b-sealed-task", assigned, boss)
+        _, body, raw = await _get(o, o.member_a, o.scope_a)
+        row = _contexts(body)["amr5b-orch"]
+        assert row["context_project"] is None
+        assert (row["id"], _node(body, "amr5b-lane")["id"]) in _lines(body)
+        self._no_trace(raw, body, *secrets)
+        # The seal binds the admin too, and the admin is no assignee: nothing shows.
+        _, admin, raw = await _get(o, o.admin_a, o.scope_a)
+        assert _contexts(admin) == {} and admin["lines"] == []
+        self._no_trace(raw, admin, "amr5b-orch", *secrets)
+
+    async def test_a_node_seen_in_c_does_not_open_a_hidden_dispatcher_run_in_b(self, outside):
+        """(d) The orchestrator node shows through its run in C. Its run in B,
+        which dispatched the lane, is hidden from the member: nothing shows."""
+        o = outside
+        seen_c = o.add("amr5b-split", "in_progress",
+                       on=b.task(o.p, o.p.org_a, MEMBER_A, o.proj_c, title="amr5b-split-task-c"))
+        hidden_b = o.add("amr5b-split", "in_progress", on=o.task_b)
+        _dispatch(o.p, o.add("amr5b-lane", "in_progress", on=o.on_a()), hidden_b)
+        _, wide, _ = await _get(o, o.member_a, SUMMARY)
+        assert "amr5b-split" in _named(wide)
+        _, body, raw = await _get(o, o.member_a, o.scope_a)
+        assert set(_named(body)) == {"amr5b-lane"}
+        assert _contexts(body) == {} and body["lines"] == []
+        self._no_trace(raw, body, "amr5b-split", NAME_B, NAME_C, TITLE_B, "amr5b-split-task-c",
+                       o.proj_b["id"], o.proj_c["id"], o.task_b, seen_c, hidden_b)
+        # The admin sees the run in B, so it gets the context with the name of B.
+        _, admin, _ = await _get(o, o.admin_a, o.scope_a)
+        assert _contexts(admin)["amr5b-split"]["context_project"] == {"name": NAME_B}
