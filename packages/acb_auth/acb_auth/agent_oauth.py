@@ -1124,6 +1124,11 @@ REQUEST_READ_ROUTE: tuple[str, str] = ("GET", "/agent-access/requests/{request_i
 #: the caller's member and connection, at most 20 open children for each run.
 #: The GET of the children stays OFF both sets. Fence:
 #: ``tests/unit/test_agent_child_runs_r8.py`` and the coverage fence.
+#: WS-MCP SW-116 adds the POST of the jobs of a run, the route of
+#: ``report_job``. It writes or moves one job, a child run with a job kind,
+#: under an open run of the caller's member and connection, at most 20 open
+#: jobs for each run. Fence: ``tests/unit/test_agent_run_jobs_r8.py`` and the
+#: coverage fence.
 #: CIV-14b (spec §12.9) adds the upload of a file to a task, the route of
 #: ``upload_task_image``. For a signed agent the route takes only a png,
 #: jpeg, gif or webp image of at most :data:`AGENT_IMAGE_MAX_BYTES`, and only
@@ -1166,6 +1171,10 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # under an open run of the same member and connection. Class X in the
     # chat manifest: only a signed agent sends it, and a person gets 422.
     ("POST", "/projects/agent-runs/{run_id}/children"),
+    # WS-MCP SW-116: `report_job`. One report of an external job under an
+    # open run of the same member and connection. Class X in the chat
+    # manifest: only a signed agent sends it, and a person gets 422.
+    ("POST", "/projects/agent-runs/{run_id}/jobs"),
     # WS-MCP SW-32: `set_run_plan`. It replaces the plan of the agent's own
     # run, and it writes one `action` activity as a heartbeat.
     ("PUT", "/projects/agent-runs/{run_id}/plan"),

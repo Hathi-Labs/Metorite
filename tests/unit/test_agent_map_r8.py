@@ -1100,6 +1100,9 @@ def _plain_ok(value: str) -> bool:
         or value in {"admin", "lead", "member"}
         # SW-106: the kind of machine and its source are fixed words.
         or value in {"computer", "server", "cloud", "checked", "reported"}
+        # SW-116: the kind of a job and the state of an abandoned job.
+        or value in {"github_action", "ci_local", "merge_queue", "release", "review",
+                     "unknown"}
         or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+(?:[+-][0-9]{2}:[0-9]{2}|Z)?",
                         value))
 
@@ -1118,6 +1121,12 @@ def test_the_edge_caps_and_keys_equal_the_gateway() -> None:
     assert tools.AGENT_MAP_CHILD_KEYS == m.MAP_CHILD_KEYS
     assert tools.AGENT_MAP_CHILDREN_MAX == m.MAP_CHILDREN_MAX
     assert tools.AGENT_MAP_ROUTE == PATH
+    # SW-116: the kinds of a job are one list in the gateway, the edge tool and
+    # the edge map.
+    from gateway.routes.projects import agent_runs
+
+    assert tools.JOB_KINDS == agent_runs.JOB_KINDS
+    assert frozenset(agent_runs.JOB_KINDS) == tools._MAP_JOB_KINDS
 
 
 def test_the_edge_wraps_each_name_and_keeps_only_the_pinned_keys() -> None:
@@ -1584,7 +1593,7 @@ class TestTheSummary:
         assert _named(body)["finisher"] == "done"
         assert body["count"] == full["count"]
         for s in body["sessions"]:
-            assert set(s) == set(full["sessions"][0]) | {"subagents", "tasks"}
+            assert set(s) == set(full["sessions"][0]) | {"subagents", "jobs", "tasks"}
         # No session key and no connection in the answer.
         assert not [k for k in lenses.keys if k in raw] and lenses.conn not in raw
 
@@ -1815,3 +1824,152 @@ class TestOneSession:
         monkeypatch.setattr(m, "MAP_RUNS_MAX", 1)
         _, body, _ = await _get(lenses, lenses.admin_a, MAP + f"&session={node}")
         assert len(body["runs"]) == 1 and body["truncated"] is True
+
+
+# ── WS-MCP SW-116: the jobs of a run on the map (§3.12.11) ──────────────────
+#
+# A job is a child run with a ``job_kind``. The map shows it in ``children``,
+# with its kind and its link. A job that its parent ended first (status
+# ``abandoned``) reads ``unknown``. The summary counts the jobs apart from the
+# sub-agents (``MAP_JOB_KEYS``).
+#
+# R7, the mutations (each turns a test here red):
+#
+# * **J1** ``agent_summary._child_row`` drops ``link`` -> the plain map test.
+# * **J2** ``agent_summary._child_state`` gives ``abandoned`` for a job -> the
+#   session test.
+# * **J3** ``_MAP_CHILD_COUNTS_SQL`` drops ``c.job_kind IS NULL`` -> the
+#   summary test.
+
+JOB_NAME = "pr-check"
+JOB_LINK = "https://github.com/acme/repo/actions/runs/42"
+
+
+def _job(p: Any, parent: str, *, kind: str = "github_action", status: str = "in_progress",
+         name: str = JOB_NAME, link: str | None = JOB_LINK) -> str:
+    """SW-116. One job under *parent*, in the shape of the one writer
+    (``agent_runs._INSERT_CHILD_SQL``): a child with a ``job_kind``."""
+    ended = status not in ("created", "in_progress", "awaiting", "stopping")
+    with p.admin_engine.begin() as c:
+        return str(c.execute(text(
+            "INSERT INTO pm_agent_runs (organization_id, task_id, app, kind, parent_run_id,"
+            " member_email, connection_id, client_via, status, started_by, started_at,"
+            " last_activity_at, last_agent_activity_at, ended_at, agent_label, job_kind,"
+            " external_link)"
+            " SELECT organization_id, NULL, NULL, 'child', id, member_email, connection_id,"
+            "        client_via, :s, client_via, now() - interval '5 minutes', now(), now(),"
+            "        CASE WHEN CAST(:e AS boolean) THEN now() END, :n, :k, CAST(:l AS text)"
+            "   FROM pm_agent_runs WHERE id = CAST(:p AS uuid) RETURNING id"),
+            {"p": parent, "s": status, "e": ended, "n": name, "k": kind, "l": link}).scalar())
+
+
+@pytest.fixture
+def jobs(w):
+    """The jobs that a test adds, removed again after it."""
+    made: list[str] = []
+
+    def add(parent: str, **kw: Any) -> str:
+        rid = _job(w.p, parent, **kw)
+        made.append(rid)
+        return rid
+
+    w.job = add
+    yield w
+    with w.p.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM pm_agent_runs WHERE id = ANY(CAST(:r AS uuid[]))"),
+                  {"r": made})
+
+
+@_DB_GATE
+class TestTheJobs:
+    async def test_an_open_job_shows_with_its_kind_and_its_link(self, jobs):
+        """J1. The plain map lists an open job under its run. A sub-agent
+        reads null for both new keys. An ended job is not on the plain map."""
+        w = jobs
+        job = w.job(w.r_own)
+        done = w.job(w.r_own, status="completed", name="ended-job")
+        _, body, raw = await _get(w, w.admin_a)
+        kids = _children(body)
+        assert kids[job]["job_kind"] == "github_action" and kids[job]["link"] == JOB_LINK
+        assert kids[job]["name"] == JOB_NAME and kids[job]["state"] == "working"
+        assert kids[job]["run_id"] == w.r_own
+        assert (kids[w.c_own]["job_kind"], kids[w.c_own]["link"]) == (None, None)
+        assert done not in kids and "ended-job" not in raw
+        for child in body["children"]:
+            assert tuple(child) == MAP_CHILD_KEYS_NOW
+
+    async def test_a_job_follows_the_reach_of_its_parent(self, jobs):
+        """A member sees the job of a run they see, and no job of a run on a
+        project hidden from them. Org B sees no job of org A."""
+        w = jobs
+        seen = w.job(w.r_own, kind="ci_local", name="seen-job")
+        hidden = w.job(w.r_private, kind="release", name="hidden-job",
+                       link="https://example.com/hidden")
+        _, body, raw = await _get(w, w.member_a, MAP + "&show_quiet=true")
+        assert seen in _children(body) and hidden not in _children(body)
+        assert "hidden-job" not in raw and "example.com/hidden" not in raw
+        _, body_b, raw_b = await _get(w, w.admin_b, MAP + "&show_quiet=true")
+        assert seen not in _children(body_b) and hidden not in _children(body_b)
+        for secret in ("seen-job", "hidden-job", JOB_LINK, "example.com/hidden"):
+            assert secret not in raw_b, secret
+
+    async def test_one_session_reads_an_abandoned_job_as_unknown(self, jobs, monkeypatch):
+        """J2. ``session=`` lists ended children too. An abandoned job reads
+        ``unknown``. An abandoned sub-agent keeps the rule of SW-39."""
+        w = jobs
+        monkeypatch.setattr(_settings(), "agent_lenses_orgs", "*")
+        lost = w.job(w.r_own, status="abandoned", name="lost-job")
+        passed = w.job(w.r_own, status="completed", name="passed-job", kind="merge_queue")
+        failed = w.job(w.r_own, status="failed", name="failed-job", kind="review")
+        sub = w.job(w.r_own, status="abandoned", name="lost-sub", kind=None, link=None)
+        _, summary, _ = await _get(w, w.admin_a, SUMMARY)
+        node = _node(summary, LABEL_1)["id"]
+        _, body, _ = await _get(w, w.admin_a, MAP + f"&session={node}")
+        kids = _children(body)
+        assert kids[lost]["state"] == "unknown" and kids[lost]["job_kind"] == "github_action"
+        assert kids[passed]["state"] == "completed" and kids[failed]["state"] == "failed"
+        assert kids[sub]["state"] == "abandoned" and kids[sub]["job_kind"] is None
+        assert kids[sub]["link"] is None
+
+    async def test_the_summary_counts_the_jobs_apart_from_the_sub_agents(
+        self, jobs, monkeypatch,
+    ):
+        """J3. The sub-agent count does not change with four jobs, and the job
+        count holds each of them by its state."""
+        w = jobs
+        monkeypatch.setattr(_settings(), "agent_lenses_orgs", "*")
+        w.job(w.r_own)
+        w.job(w.r_own, status="failed", name="failed-job")
+        w.job(w.r_own, status="completed", name="passed-job")
+        w.job(w.r_own, status="abandoned", name="lost-job")
+        _, body, _ = await _get(w, w.admin_a, SUMMARY)
+        got = _node(body, LABEL_1)["subagents"]
+        assert (got["total"], got["working"], got["failed"], got["done"]) == (4, 3, 0, 1)
+        assert "pr-check" not in got["names"] and "lost-job" not in got["names"]
+        assert _node(body, LABEL_1)["jobs"] == {
+            "total": 4, "working": 1, "failed": 1, "done": 1, "unknown": 1}
+        assert tuple(_node(body, LABEL_1)["jobs"]) == MAP_JOB_KEYS_NOW
+        _, body_b, _ = await _get(w, w.admin_b, SUMMARY)
+        assert all(s["jobs"]["total"] == 0 for s in body_b["sessions"])
+
+    async def test_the_edge_carries_the_kind_plain_and_the_link_wrapped(
+        self, jobs, monkeypatch,
+    ):
+        """SW-113 with SW-116. The member's agent reads the job of a run the
+        member sees: the kind as a fixed word, the link as untrusted text."""
+        w = jobs
+        monkeypatch.setattr(_settings(), "agent_edge_signing_key", EDGE_SIGNING_KEY)
+        monkeypatch.setattr(_settings(), "agent_edge_signing_key_previous", "")
+        job = w.job(w.r_own)
+        result = await _edge(w, _member_agent(w), {})
+        assert result["isError"] is False, result
+        by_id = {c["child_id"]: c for c in result["structuredContent"]["children"]}
+        assert by_id[job]["job_kind"] == "github_action"
+        assert by_id[job]["link"] == {"untrusted_text": JOB_LINK}
+        assert by_id[w.c_own]["job_kind"] is None and by_id[w.c_own]["link"] is None
+
+
+#: SW-116. The keys of a child and of the job count, as the tests above read them.
+MAP_CHILD_KEYS_NOW = ("child_id", "run_id", "session_id", "name", "state", "model", "age",
+                      "last_at", "job_kind", "link")
+MAP_JOB_KEYS_NOW = ("total", "working", "failed", "done", "unknown")

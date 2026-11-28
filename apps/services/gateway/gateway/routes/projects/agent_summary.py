@@ -90,7 +90,8 @@ only for an org that ``AGENT_LENSES_ORGS`` holds. For any other org the two
 values are not read, and the answer is the map of SW-102.
 
 * ``detail=summary``. Each session node with ONE lead run, a count of its
-  sub-agents (:data:`MAP_SUBAGENT_KEYS`) and the number and the title of at
+  sub-agents (:data:`MAP_SUBAGENT_KEYS`), a count of its jobs
+  (:data:`MAP_JOB_KEYS`, SW-116) and the number and the title of at
   most :data:`MAP_SUMMARY_TASKS_MAX` of its tasks (:data:`MAP_TASK_KEYS`), so
   the find box reaches each of them. ``children`` is empty. A session
   with no open run whose newest ended run failed or completed in the last
@@ -700,8 +701,11 @@ MAP_LINE_KEYS: tuple[str, ...] = ("from", "to")
 #: its OWN model and its age. ``run_id`` is the parent run, the same id as in
 #: ``runs``, and ``session_id`` is the node of that run. No machine, session
 #: key, connection or address of the child is in it (§3.12.4 rules 4 and 5).
+#: SW-116 (§3.12.11) adds ``job_kind`` and ``link``: a job is a child too.
+#: Both are NULL for a sub-agent. They are display data only.
 MAP_CHILD_KEYS: tuple[str, ...] = (
     "child_id", "run_id", "session_id", "name", "state", "model", "age", "last_at",
+    "job_kind", "link",
 )
 
 #: SW-110. The most child runs that one map lists. The read fetches one more,
@@ -716,6 +720,12 @@ UNNAMED_CHILD = "Sub-agent"
 #: no question of its own, so an open child is working. An ended child is not
 #: on the map.
 MAP_CHILD_STATE = "working"
+
+#: SW-116 (§3.12.11). The state of a job that its parent ended first
+#: (``abandoned``, ``agent_runs.JOB_ABANDONED_STATUS``). The status of the
+#: parent does not say how the job ended, so the read says ``unknown``. A
+#: sub-agent keeps the rule of SW-39 and shows its own status.
+MAP_JOB_UNKNOWN_STATE = "unknown"
 
 #: The ``{only}`` of the map with a ``project_id``: the runs on the tasks of
 #: the project and of each project under it (the CTE ``sub`` of
@@ -856,6 +866,10 @@ MAP_SUB_NAMES_SCAN = 200
 
 #: The keys of the sub-agent count of a summary session.
 MAP_SUBAGENT_KEYS: tuple[str, ...] = ("total", "working", "failed", "done", "names")
+
+#: SW-116. The keys of the job count of a summary session. ``unknown`` counts
+#: the jobs that their parent ended first (:data:`MAP_JOB_UNKNOWN_STATE`).
+MAP_JOB_KEYS: tuple[str, ...] = ("total", "working", "failed", "done", "unknown")
 
 #: The most tasks that one summary session names. The first is the task of
 #: the lead run.
@@ -1009,7 +1023,8 @@ SELECT DISTINCT d.node_id AS from_id, src.node_id AS to_id
 
 #: The count of the sub-agents under the current runs of each listed node, and
 #: their labels for the find box. The reach rule of :data:`_MAP_CHILDREN_SQL`:
-#: a child is reachable ONLY through a run of ``seen``.
+#: a child is reachable ONLY through a run of ``seen``. SW-116: a job is not
+#: a sub-agent, so the count reads only ``job_kind IS NULL``.
 _MAP_CHILD_COUNTS_SQL = _MAP_CUR_CTE + """
 SELECT cur.node_id,
        count(*) AS total,
@@ -1020,6 +1035,26 @@ SELECT cur.node_id,
           FILTER (WHERE c.agent_label IS NOT NULL))[1:{names_scan}] AS names
   FROM cur
   JOIN pm_agent_runs c ON c.kind = 'child' AND c.parent_run_id = cur.id
+   AND c.job_kind IS NULL
+   AND c.organization_id = """ + BOUND_ORG_SQL + """
+ WHERE cur.node_id = ANY(CAST(:nodes AS text[]))
+ GROUP BY cur.node_id
+"""
+
+#: SW-116 (§3.12.11). The count of the jobs under the current runs of each
+#: listed node, by the reach rule of :data:`_MAP_CHILD_COUNTS_SQL`. It reads
+#: only ``job_kind IS NOT NULL``. A job that its parent ended first counts as
+#: ``unknown``.
+_MAP_JOB_COUNTS_SQL = _MAP_CUR_CTE + """
+SELECT cur.node_id,
+       count(*) AS total,
+       count(*) FILTER (WHERE c.status IN ({open})) AS working,
+       count(*) FILTER (WHERE c.status = 'failed') AS failed,
+       count(*) FILTER (WHERE c.status = 'completed') AS done,
+       count(*) FILTER (WHERE c.status = 'abandoned') AS unknown
+  FROM cur
+  JOIN pm_agent_runs c ON c.kind = 'child' AND c.parent_run_id = cur.id
+   AND c.job_kind IS NOT NULL
    AND c.organization_id = """ + BOUND_ORG_SQL + """
  WHERE cur.node_id = ANY(CAST(:nodes AS text[]))
  GROUP BY cur.node_id
@@ -1202,8 +1237,21 @@ def _task_words(row: Any) -> dict[str, Any]:
     return {"number": row.task_number, "title": _line(row.task_title, "Untitled task")}
 
 
+def _child_state(row: Any, is_open: bool) -> str:
+    """The state of one child of an answer. An open child is
+    :data:`MAP_CHILD_STATE`. An ended child shows its status, and a job that
+    its parent ended first shows :data:`MAP_JOB_UNKNOWN_STATE` (SW-116)."""
+    if is_open:
+        return MAP_CHILD_STATE
+    if row.job_kind is not None and row.status == "abandoned":
+        return MAP_JOB_UNKNOWN_STATE
+    return str(row.status)
+
+
 def _child_row(row: Any, state: str) -> dict[str, Any]:
-    """One sub-agent of an answer (:data:`MAP_CHILD_KEYS`)."""
+    """One sub-agent or job of an answer (:data:`MAP_CHILD_KEYS`). SW-116: a
+    job adds its kind and its link, which the gateway cleaned when it wrote
+    them (``agent_runs.clean_job_link``). Both are display data."""
     return {
         "child_id": str(row.id),
         "run_id": str(row.parent_run_id),
@@ -1213,6 +1261,8 @@ def _child_row(row: Any, state: str) -> dict[str, Any]:
         "model": _line(row.agent_model) or None,
         "age": _age_s(row.run_at),
         "last_at": _when(row.life_at),
+        "job_kind": row.job_kind,
+        "link": row.external_link if row.job_kind is not None else None,
     }
 
 
@@ -1238,6 +1288,12 @@ def _subagent_counts(row: Any) -> dict[str, Any]:
         "failed": int(row.failed or 0), "done": int(row.done or 0),
         "names": _subagent_names(row.names),
     }
+
+
+def _job_counts(row: Any) -> dict[str, int]:
+    """The job count of one summary node (:data:`MAP_JOB_KEYS`, SW-116)."""
+    return {key: int(getattr(row, key, 0) or 0) if row is not None else 0
+            for key in MAP_JOB_KEYS}
 
 
 def _people_of(sessions: list[Any]) -> list[dict[str, Any]]:
@@ -1298,8 +1354,10 @@ async def _agent_map_summary(user: UserContext, *, project_id: str | None) -> di
             _MAP_SUMMARY_LINES_SQL, nodes=nodes, cap=MAP_SUMMARY_SESSIONS_MAX + 1,
         ) if nodes else []
         counted = await read(_MAP_CHILD_COUNTS_SQL, nodes=nodes) if nodes else []
+        jobs_counted = await read(_MAP_JOB_COUNTS_SQL, nodes=nodes) if nodes else []
 
     counts = {str(c.node_id): c for c in counted}
+    job_counts = {str(c.node_id): c for c in jobs_counted}
     order = {str(s.node_id): i for i, s in enumerate(kept)}
     # The first row of a node is its lead run. Each row names one task.
     runs = [r for r in ranked if r.task_rank == 1]
@@ -1311,6 +1369,8 @@ async def _agent_map_summary(user: UserContext, *, project_id: str | None) -> di
         "sessions": [{
             **_session_row(s, _summary_state(s)),
             "subagents": _subagent_counts(counts.get(str(s.node_id))),
+            # SW-116: the jobs of the node, apart from its sub-agents.
+            "jobs": _job_counts(job_counts.get(str(s.node_id))),
             "tasks": tasks.get(str(s.node_id), []),
         } for s in kept],
         "runs": [_run_row(r) for r in sorted(runs, key=lambda r: order[str(r.node_id)])],
@@ -1360,7 +1420,7 @@ async def _agent_map_session(
         "runs": [_run_row(r) for r in runs[:MAP_RUNS_MAX]],
         "lines": [],
         "children": [
-            _child_row(c, MAP_CHILD_STATE if c.is_open else str(c.status))
+            _child_row(c, _child_state(c, bool(c.is_open)))
             for c in children[:MAP_CHILDREN_MAX]
         ],
         "count": int(sessions[0].total_runs or 0),

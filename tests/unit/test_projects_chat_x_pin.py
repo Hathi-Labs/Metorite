@@ -91,6 +91,9 @@ STAYS_X: dict[str, str] = {
     # `report_subagent` over the POST, and the chat still never reaches it.
     "GET /projects/agent-runs/{run_id}/children": "mcp-door",
     "POST /projects/agent-runs/{run_id}/children": "mcp-door",
+    # SW-116 (task 4206): a job of a run is a child run with a job kind. Only
+    # a signed agent reports one, through the edge tool `report_job`.
+    "POST /projects/agent-runs/{run_id}/jobs": "mcp-door",
     # SW-27a (task 861): an agent reserves a number through the MCP tool
     # reserve_number (SW-27b, task 3893). The chat has no need to.
     "POST /projects/nodes/{project_id}/sequences/{name}/reserve": "mcp-door",
@@ -169,11 +172,12 @@ def test_the_counts_the_spec_states() -> None:
     added the sequence reserve door, for an agent: 31. SW-27c1 (task 3938)
     added the mark door, for an agent: 32. The two PKG-14a routes wait for a
     chat tool (PKG-14b): 32 + 2 = 34. WS-MDC CC-5a added three routes that
-    wait for the tools of CC-10: 37."""
-    assert len(STAYS_X) == 32
+    wait for the tools of CC-10: 37. SW-116 (task 4206) added the job route
+    of an agent: 33 stay, and 38 in all."""
+    assert len(STAYS_X) == 33
     assert len(PENDING_OP6) == 0
     assert len(PENDING_TOOL) == 5
-    assert len(_class_x()) == len(STAYS_X) + len(PENDING_TOOL) == 37
+    assert len(_class_x()) == len(STAYS_X) + len(PENDING_TOOL) == 38
 
 
 def test_the_area_routes_left_class_x_for_their_tools() -> None:

@@ -10197,8 +10197,10 @@ AGENT_MAP_LINE_KEYS: tuple[str, ...] = ("from", "to")
 
 #: SW-110. The keys of one child run (a sub-agent) of a listed run. A copy of
 #: ``MAP_CHILD_KEYS`` of the gateway. Any other key of a child never leaves.
+#: SW-116 adds ``job_kind`` and ``link``: a job is a child too.
 AGENT_MAP_CHILD_KEYS: tuple[str, ...] = (
     "child_id", "run_id", "session_id", "name", "state", "model", "age", "last_at",
+    "job_kind", "link",
 )
 
 #: The id of a session node: the first 24 hex characters of a sha256
@@ -10252,6 +10254,9 @@ _MAP_CHILD_SCHEMA = _object({
     "child_id": _NULLABLE_STRING, "run_id": _NULLABLE_STRING, "session_id": _NULLABLE_STRING,
     "name": _UNTRUSTED_OR_NULL, "state": _NULLABLE_STRING, "model": _UNTRUSTED_OR_NULL,
     "age": _NULLABLE_INTEGER, "last_at": _NULLABLE_STRING,
+    # SW-116: the kind of a job is a fixed word. Its link is text that an
+    # agent wrote. Both are null for a sub-agent.
+    "job_kind": _NULLABLE_STRING, "link": _UNTRUSTED_OR_NULL,
 })
 _AGENT_MAP_OUTPUT: dict[str, Any] = _object({
     "people": {"type": "array", "items": _MAP_PERSON_SCHEMA},
@@ -10280,6 +10285,9 @@ def _map_count(value: Any) -> int:
 #: A copy of ``AGENT_HOST_KINDS`` of the gateway, which the edge may not import.
 _MAP_HOST_KINDS = frozenset({"computer", "server", "cloud"})
 _MAP_HOST_SOURCES = frozenset({"checked", "reported"})
+#: SW-116. The five kinds of a job. :data:`JOB_KINDS` is defined further down,
+#: so the map holds the same list here, and a pin test holds the two equal.
+_MAP_JOB_KINDS = frozenset({"github_action", "ci_local", "merge_queue", "release", "review"})
 
 
 def _map_word(value: Any, allowed: frozenset[str]) -> str | None:
@@ -10353,6 +10361,9 @@ def map_child(row: Mapping[str, Any]) -> dict[str, Any]:
         "model": untrusted(row.get("model")),
         "age": _int_or_none(row.get("age")),
         "last_at": _map_time(row.get("last_at")),
+        # SW-116: the kind of a job, one of five fixed words, and its link.
+        "job_kind": _map_word(row.get("job_kind"), _MAP_JOB_KINDS),
+        "link": untrusted(row.get("link")),
     }
 
 
@@ -11805,6 +11816,165 @@ REPORT_SUBAGENT = Tool(
 )
 
 
+# ── report_job (WS-MCP SW-116, agent_coordination.md §3.12.11) ──────────────
+
+#: SW-116. The jobs of one run. The first report of a job writes a child run
+#: with a job kind, and a later report moves it forward only.
+RUN_JOBS_ROUTE = "/projects/agent-runs/{run_id}/jobs"
+#: The five kinds of a job and the four states, in their order. Copies of
+#: ``agent_runs.JOB_KINDS`` and ``JOB_STATES``, because the edge may not
+#: import the gateway. A pin test holds each copy equal.
+JOB_KINDS: tuple[str, ...] = ("github_action", "ci_local", "merge_queue", "release", "review")
+JOB_STATES: tuple[str, ...] = ("queued", "running", "passed", "failed")
+#: The shape of ``job_id``: the rule of ``agent_id`` (SW-114).
+JOB_ID_MAX = SUBAGENT_ID_MAX
+JOB_ID_PATTERN = SUBAGENT_ID_PATTERN
+#: The longest link, as the CHECK of migration 267 holds it.
+JOB_LINK_MAX = 2048
+#: The body keys of the POST, and no other (agent edge rule 18).
+JOB_BODY_KEYS: tuple[str, ...] = ("job_id", "kind", "name", "state", "link")
+#: Copies of the gateway's fixed details, read to choose a text and never
+#: sent on. A pin test holds each copy equal.
+JOB_CAP_DETAIL = (
+    "This run already has 20 open jobs. Report the end of one before you report another.")
+JOB_KEY_USED_DETAIL = "That job_id is the key of another run of yours."
+JOB_LINK_DETAIL = "link must be an https link with no user name and no password."
+#: The one text of every gateway 404 of the route, as for ``report_subagent``.
+TEXT_JOB_RUN_NOT_FOUND = (
+    "No open run of this session holds a task with that run_id, or job reports"
+    " are off for this organization. Send the run_id of your own open run.")
+TEXT_JOB_OTHER_CONNECTION = (
+    "That run belongs to another connection of this member. Report a job only"
+    " under a run of this connection.")
+TEXT_JOB_CAP = (
+    "This run already has 20 open jobs. Report the end of one before you report"
+    " another.")
+TEXT_JOB_KEY_USED = (
+    "That job_id is the key of another run of this member. Send the id of the job.")
+TEXT_JOB_LINK = (
+    "The link must be an https link with no user name and no password.")
+_JOB_DETAILS: Mapping[tuple[int, str], str] = {
+    (403, CHILD_OTHER_CONNECTION_DETAIL): TEXT_JOB_OTHER_CONNECTION,
+    (429, JOB_CAP_DETAIL): TEXT_JOB_CAP,
+    (409, JOB_KEY_USED_DETAIL): TEXT_JOB_KEY_USED,
+    (422, JOB_LINK_DETAIL): TEXT_JOB_LINK,
+}
+
+_JOB_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "run_id": {**_RUN_ID_INPUT,
+                   "description": "Your open run that the job works for. The run_id"
+                                  " from claim_task or start_agent_run."},
+        "job_id": {"type": "string", "minLength": 1, "maxLength": JOB_ID_MAX,
+                   "pattern": JOB_ID_PATTERN,
+                   "description": (
+                       "The id of the job in its own system, such as the id of a"
+                       " GitHub Actions run. It is the key: a second report with the"
+                       " same job_id moves the same job.")},
+        "kind": {"type": "string", "enum": list(JOB_KINDS), "description": (
+            "github_action, ci_local, merge_queue, release or review.")},
+        "name": {**_LABEL_INPUT, "description": (
+            "The name of the job, such as pr-check. People see it under your"
+            " run. It is display data only.")},
+        "state": {"type": "string", "enum": list(JOB_STATES), "description": (
+            "queued, running, passed or failed. A job moves only forward, and"
+            " passed and failed are final. A lower state, or a report after the"
+            " end, changes nothing. Report each change of state, not each poll.")},
+        "link": {"type": "string", "minLength": 1, "maxLength": JOB_LINK_MAX,
+                 "pattern": "^https://[^\\s]+$",
+                 "description": (
+                     "An https link to the job. Metorite drops the query and the"
+                     " fragment. It is display data only.")},
+    },
+    "required": ["run_id", "job_id", "kind", "name", "state"],
+    "additionalProperties": False,
+}
+
+#: One job, as the edge shows it. The id, the times, the status and the kind
+#: are plain. The name and the link are text that an agent wrote, so (U).
+JOB_ROW_KEYS: tuple[str, ...] = (
+    "id", "status", "kind", "name", "link", "started_at", "ended_at")
+_JOB_ROW_SCHEMA = _object({
+    "id": {"type": "string"}, "status": _NULLABLE_STRING, "kind": _NULLABLE_STRING,
+    "name": _UNTRUSTED_OR_NULL, "link": _UNTRUSTED_OR_NULL,
+    "started_at": _NULLABLE_STRING, "ended_at": _NULLABLE_STRING,
+})
+_JOB_OUTPUT: dict[str, Any] = _object({
+    "job": {"anyOf": [_JOB_ROW_SCHEMA, {"type": "null"}]},
+    "created": {"type": "boolean"},
+    "moved": {"type": "boolean"},
+})
+
+
+def job_row(raw: Any) -> dict[str, Any] | None:
+    """The pinned keys of one job, or ``None``. The id leaves only in the
+    shape of an id, the status only as a status of :data:`RUN_STATUSES`, and
+    the kind only as one of :data:`JOB_KINDS`. The name and the link leave as
+    ``untrusted_text``."""
+    if not isinstance(raw, dict) or _id(raw.get("id")) is None:
+        return None
+    name, link = raw.get("agent_label"), raw.get("external_link")
+    status, kind = raw.get("status"), raw.get("job_kind")
+    return {
+        "id": str(raw["id"]),
+        "status": status if status in RUN_STATUSES else None,
+        "kind": kind if kind in JOB_KINDS else None,
+        "name": untrusted(name) if isinstance(name, str) else None,
+        "link": untrusted(link) if isinstance(link, str) else None,
+        "started_at": _str_or_none(raw.get("started_at")),
+        "ended_at": _str_or_none(raw.get("ended_at")),
+    }
+
+
+async def _report_job(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """POST one report of a job (SW-116). The body holds the keys of
+    :data:`JOB_BODY_KEYS` only. The gateway takes the member, the connection
+    and the organization from the signed context. Each refusal maps to a
+    fixed text."""
+    _refuse_nul(args, ("name", "link"))
+    payload: dict[str, Any] = {"job_id": str(args["job_id"]), "kind": str(args["kind"]),
+                               "name": str(args["name"]), "state": str(args["state"])}
+    if args.get("link") is not None:
+        payload["link"] = str(args["link"])
+    _, body = await _write(
+        ctx, "POST", RUN_JOBS_ROUTE, TEXT_JOB_RUN_NOT_FOUND,
+        path_params={"run_id": str(args["run_id"])}, json_body=payload,
+        details=_JOB_DETAILS)
+    found = body if isinstance(body, dict) else {}
+    return {"job": job_row(found.get("run")),
+            "created": found.get("created") is True,
+            "moved": found.get("moved") is True}
+
+
+REPORT_JOB = Tool(
+    name="report_job",
+    title="Report a job",
+    description=(
+        "Report the state of an external job of your own open run: a GitHub"
+        " Actions run, local CI, the merge queue, a release or a review."
+        " People then see the job under your run. A lane hook usually calls"
+        " it. Report each change of state, not each poll. A job moves only"
+        " forward. The run must be of this connection, and it must hold its"
+        " task for the first report. A run holds at most 20 open jobs. A job"
+        " holds no task and no claim, and no merge gate reads it. It works"
+        " only where the agent map is on for the organization, and elsewhere"
+        " it answers not found." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_JOB_INPUT,
+    output_schema=_JOB_OUTPUT,
+    route=RUN_JOBS_ROUTE,
+    params={"run_id": "run_id", "job_id": "job_id", "kind": "kind", "name": "name",
+            "state": "state", "link": "link"},
+    not_found=TEXT_JOB_RUN_NOT_FOUND,
+    run=_report_job,
+    method="POST",
+    annotations=dict(WRITE_ANNOTATIONS),
+    runs=True,
+)
+
+
 # ── The app door (MCP-P1a, spec §19.4) ──────────────────────────────────────
 #
 # Four fixed tools serve each app of ``acb_common.app_manifests``. The
@@ -12916,6 +13086,8 @@ TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     RELEASE_TASK, SET_RUN_PLAN,
     # WS-MCP SW-114: a hook reports a sub-agent. On the runs flag, as RELEASE_TASK.
     REPORT_SUBAGENT,
+    # WS-MCP SW-116: a lane hook reports an external job. On the runs flag too.
+    REPORT_JOB,
     DELETE_TASK,
     LIST_APPS, DESCRIBE_APP, APP_READ, APP_WRITE,
     READ_PLAYBOOK,
@@ -13211,6 +13383,10 @@ __all__ = [
     "IMAGE_MAX_BYTES",
     "IMAGE_TEXTS",
     "IMPORTANCE_VALUES",
+    "JOB_BODY_KEYS",
+    "JOB_KINDS",
+    "JOB_ROW_KEYS",
+    "JOB_STATES",
     "LINKS_ROUTE",
     "LINK_CHAIN_DETAIL",
     "LINK_CYCLE_DETAIL",
@@ -13288,6 +13464,7 @@ __all__ = [
     "REMOVE_TASK_LINK",
     "REPORT_CHECK",
     "REPORT_CHECK_KEYS",
+    "REPORT_JOB",
     "REPORT_SUBAGENT",
     "REQUEST_ASK_ROUTE",
     "REQUEST_READ_ROUTE",
@@ -13297,6 +13474,7 @@ __all__ = [
     "RESERVE_ROUTE",
     "RUN_ACTIVITY_KEYS",
     "RUN_CHILDREN_ROUTE",
+    "RUN_JOBS_ROUTE",
     "RUN_KEYS",
     "RUN_STATES",
     "RUN_STATUSES",

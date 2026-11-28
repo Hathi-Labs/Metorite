@@ -20,6 +20,7 @@ decisions EA12-1 to EA12-13) and row EA-12a of §15.
     POST /projects/agent-runs/{run_id}/children   → {run, created, ended}
                                                           (SW-39, SW-114)
     GET  /projects/agent-runs/{run_id}/children   → {rows}  (SW-39)
+    POST /projects/agent-runs/{run_id}/jobs       → {run, created, moved}  (SW-116)
     PUT  /projects/agent-runs/{run_id}/plan       → {activity, run}           (SW-32)
 
 An outside agent works on a task inside a RUN. The run holds typed
@@ -117,6 +118,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 from acb_auth import UserContext, agent_oauth, get_current_user
 from acb_auth.agent_oauth import ACTOR_VIA_PATTERN, PROJECTS_WRITE, actor_via_for
@@ -1842,11 +1844,15 @@ async def _task_creator(db: Any, task_id: str) -> str | None:
 
 
 #: SW-39 (``agent_coordination.md`` §3.11.9). The end of each open child of
-#: one run. A child takes the status of its parent. The index
+#: one run. A child takes the status of its parent. SW-116 (§3.12.11): that
+#: status does not say how a job ended, so an open job (``job_kind`` set)
+#: takes :data:`JOB_ABANDONED_STATUS` instead. The index
 #: ``pm_agent_runs_parent`` serves the read. A child has no task and no app,
 #: so it names its own subject: ``kind = 'child'``.
 _END_CHILDREN_SQL = (
-    "UPDATE pm_agent_runs SET status = :status, ended_at = :ts, last_activity_at = :ts,"
+    "UPDATE pm_agent_runs SET"
+    " status = CASE WHEN job_kind IS NULL THEN :status ELSE :abandoned END,"
+    " ended_at = :ts, last_activity_at = :ts,"
     " waiting_on = NULL, waiting_until = NULL"
     " WHERE parent_run_id = CAST(:rid AS uuid) AND kind = 'child'"
     "   AND status = ANY(:open)"
@@ -1858,7 +1864,8 @@ async def _end_children(db: Any, run_id: str, new_status: str, ts: Any) -> None:
     terminal status calls this, in the caller's transaction:
     :func:`_move_run` (finish, release, stop, the sweeps, the task close, an
     app request) and :func:`_take_over`. Each child that is still open takes
-    the parent's terminal status. A move to an open status ends nothing.
+    the parent's terminal status, and an open job takes ``abandoned``
+    (SW-116). A move to an open status ends nothing.
 
     No race with a new child: :func:`start_child_run` locks the parent row
     before it reads the parent's status, and each move holds the parent row
@@ -1867,8 +1874,8 @@ async def _end_children(db: Any, run_id: str, new_status: str, ts: Any) -> None:
     if new_status not in TERMINAL_STATUSES:
         return
     await db.execute(text(_END_CHILDREN_SQL), {
-        "rid": str(run_id), "status": new_status, "ts": ts,
-        "open": list(AGENT_RUN_OPEN_STATUSES)})
+        "rid": str(run_id), "status": new_status, "abandoned": JOB_ABANDONED_STATUS,
+        "ts": ts, "open": list(AGENT_RUN_OPEN_STATUSES)})
 
 
 async def _move_run(
@@ -2879,25 +2886,46 @@ def child_key(parent_id: str, agent_id: str) -> str:
 #: SW-39. The one writer of a child run. No task, no app, no lease and no
 #: session key: a child shows only under its parent. SW-114: the key of
 #: :func:`child_key`. A conflict on the key writes nothing and returns no id.
-#: ``organization_id`` takes the default of the bound tenant.
+#: ``organization_id`` takes the default of the bound tenant. SW-116: a job
+#: is a child too, so this statement writes it, with its status, its
+#: ``job_kind`` and its link (:func:`_child_binds`). A sub-agent binds the
+#: status ``in_progress`` and NULL for the two job columns.
 _INSERT_CHILD_SQL = (
     "INSERT INTO pm_agent_runs "
     "(task_id, app, kind, parent_run_id, member_email, connection_id, client_via,"
-    " status, started_by, started_at, last_activity_at, last_agent_activity_at,"
+    " status, started_by, started_at, ended_at, last_activity_at, last_agent_activity_at,"
     " idempotency_key, session_key, agent_label, agent_host, agent_model,"
-    " agent_host_kind) "
+    " agent_host_kind, job_kind, external_link) "
     "VALUES (NULL, NULL, 'child', CAST(:parent AS uuid), :me, CAST(:cid AS uuid), :via,"
-    "        'in_progress', :via, :ts, :ts, :ts, :key, NULL, CAST(:label AS text),"
-    "        CAST(:host AS text), CAST(:model AS text), CAST(:kind AS text)) "
+    "        :status, :via, CAST(:started AS timestamptz), CAST(:ended AS timestamptz),"
+    "        :ts, :ts, :key, NULL, CAST(:label AS text),"
+    "        CAST(:host AS text), CAST(:model AS text), CAST(:kind AS text),"
+    "        CAST(:job_kind AS text), CAST(:link AS text)) "
     "ON CONFLICT DO NOTHING RETURNING id"
 )
 
+
+def _child_binds(*, status: str, ts: Any, job_kind: str | None = None,
+                 link: str | None = None) -> dict[str, Any]:
+    """SW-116. The binds of :data:`_INSERT_CHILD_SQL` that tell a sub-agent
+    from a job. A sub-agent starts ``in_progress``, with no job kind and no
+    link. A job starts in the status of its first report: a queued job has
+    no start time yet, and a final one has its end time."""
+    return {
+        "status": status,
+        "started": None if status == "created" else ts,
+        "ended": ts if status in TERMINAL_STATUSES else None,
+        "job_kind": job_kind, "link": link,
+    }
+
+
 #: SW-39. The one column list of a child run, over the alias ``c``. The map
 #: read of SW-110 (``agent_summary._MAP_CHILDREN_SQL``) reads the same list.
+#: SW-116 adds the kind and the link of a job: display data only.
 CHILD_COLUMNS = (
     "c.id, c.parent_run_id, c.kind, c.status, c.agent_label, c.agent_host,"
     " c.agent_model, c.agent_host_kind, c.created_at, c.started_at, c.ended_at,"
-    " c.last_activity_at"
+    " c.last_activity_at, c.job_kind, c.external_link"
 )
 
 #: SW-39. The columns of the children of one run, in the org of the bound
@@ -2924,12 +2952,14 @@ MAX_CHILDREN = 100
 #: key names the parent too, and the read names both.
 _CHILD_BY_KEY_SQL = f"{_CHILD_SELECT} AND c.idempotency_key = :key"
 
-#: SW-114. The count of the open children of one run, for the cap. The
+#: SW-114. The count of the open sub-agents of one run, for the cap. The
 #: parent row is locked first, so two starts under one parent count in turn.
+#: SW-116: a job has its own cap (:data:`_OPEN_JOBS_SQL`), so this count
+#: reads only ``job_kind IS NULL``.
 _OPEN_CHILDREN_SQL = (
     "SELECT count(*) FROM pm_agent_runs"
     " WHERE kind = 'child' AND parent_run_id = CAST(:rid AS uuid)"
-    "   AND status = ANY(:open)"
+    "   AND job_kind IS NULL AND status = ANY(:open)"
 )
 
 #: SW-114. The stop of one open child: the child of this parent with this
@@ -2961,6 +2991,9 @@ def child_run_out(row: Any) -> dict[str, Any]:
         "started_at": wire(row.started_at),
         "ended_at": wire(row.ended_at),
         "last_activity_at": wire(row.last_activity_at),
+        # SW-116: the kind and the link of a job. NULL for a sub-agent.
+        "job_kind": getattr(row, "job_kind", None),
+        "external_link": getattr(row, "external_link", None),
     }
 
 
@@ -2990,8 +3023,17 @@ async def _parent_for_child(db: Any, user: UserContext, parent_id: str, *,
         raise refused
     if str(parent.connection_id) != (_agent_connection(user) or ""):
         raise HTTPException(status_code=403, detail=CHILD_OTHER_CONNECTION)
-    if not start:
-        return parent
+    if start:
+        await _check_open_parent(db, user, parent)
+    return parent
+
+
+async def _check_open_parent(db: Any, user: UserContext, parent: Any) -> None:
+    """SW-39. The rest of the parent check of a start: the parent is open, it
+    holds its task, and the caller still sees that task. Any miss is 404
+    :data:`CHILD_PARENT_REFUSED`. :func:`_parent_for_child` locked the
+    parent row first. SW-116 calls it apart, for the first report of a job."""
+    refused = HTTPException(status_code=404, detail=CHILD_PARENT_REFUSED)
     if parent.status not in OPEN_STATUSES:
         raise refused
     holder = (await db.execute(
@@ -3003,7 +3045,6 @@ async def _parent_for_child(db: Any, user: UserContext, parent_id: str, *,
         await load_visible_task(db, await resolve_visibility(db, user), str(parent.task_id))
     except HTTPException as exc:
         raise refused from exc
-    return parent
 
 
 def _child_writes_on(user: UserContext) -> bool:
@@ -3074,7 +3115,7 @@ async def start_child_run(
         made = (await db.execute(text(_INSERT_CHILD_SQL), {
             "parent": parent_id, "me": parent.member_email, "cid": _agent_connection(user),
             "via": parent.client_via, "ts": ts, "key": key, "label": label,
-            **_place_binds(place),
+            **_place_binds(place), **_child_binds(status="in_progress", ts=ts),
         })).fetchone()
         if made is None:
             raise HTTPException(status_code=409, detail=CHILD_KEY_USED)
@@ -3116,6 +3157,213 @@ async def list_child_runs(
         rows = (await db.execute(text(_CHILDREN_SQL), {
             "rid": run_id, "child": None, "limit": MAX_CHILDREN})).fetchall()
     return {"rows": [child_run_out(r) for r in rows]}
+
+
+# ── External jobs (WS-MCP SW-116, agent_coordination.md §3.12.11) ───────────
+
+#: SW-116. The five kinds of a job. The CHECK ``pm_agent_runs_job_kind_check``
+#: of the migration holds the same list, and the edge holds a copy.
+JOB_KINDS: tuple[str, ...] = ("github_action", "ci_local", "merge_queue", "release", "review")
+#: SW-116. The four states that a lane reports, in their order.
+JOB_STATES: tuple[str, ...] = ("queued", "running", "passed", "failed")
+#: SW-116. The run status that each state writes. ``passed`` and ``failed``
+#: are final, and they set ``ended_at``.
+JOB_STATUS: dict[str, str] = {
+    "queued": "created", "running": "in_progress", "passed": "completed", "failed": "failed",
+}
+#: SW-116. The rank of each status of a job. A report moves a row only to a
+#: higher rank (:data:`_MOVE_JOB_SQL`), so a job never steps back.
+JOB_RANK: dict[str, int] = {"created": 0, "in_progress": 1, "completed": 2, "failed": 2}
+#: SW-116. The status that :func:`_end_children` gives an open job when its
+#: parent ends first. The status of the parent does not say how a job ended.
+JOB_ABANDONED_STATUS = "abandoned"
+#: SW-116. The most OPEN jobs of one run. The first report of one more is 429.
+#: It is a cap of its own: open sub-agents do not count toward it.
+MAX_OPEN_JOBS = 20
+JOB_CAP_REFUSED = (
+    "This run already has 20 open jobs. Report the end of one before you report another.")
+#: SW-116. A person never reports a job: a hook of the agent reports it.
+JOB_PERSON_REFUSED = "Only an agent reports a job, under one of its runs."
+#: SW-116. The 409 of a first report whose key another run of the member holds.
+JOB_KEY_USED = "That job_id is the key of another run of yours."
+#: SW-116. The 422 of a link that is not https, or that names a user or a
+#: password. The edge maps it by this text.
+JOB_LINK_REFUSED = "link must be an https link with no user name and no password."
+#: SW-116. The shape of ``job_id``: the rule of ``agent_id`` (SW-114).
+JOB_ID_MAX = CHILD_AGENT_ID_MAX
+JOB_ID_PATTERN = CHILD_AGENT_ID_PATTERN
+#: SW-116. The longest link, as the CHECK of migration 267 holds it.
+JOB_LINK_MAX = 2_048
+
+JobKind = Literal["github_action", "ci_local", "merge_queue", "release", "review"]
+JobState = Literal["queued", "running", "passed", "failed"]
+
+
+class JobIn(BaseModel):
+    """``POST /projects/agent-runs/{run_id}/jobs`` (SW-116, §3.12.11). One
+    report of an external job under an open run of the caller. ``job_id`` is
+    the id of the job in its own system, and the key of its row: a second
+    report of the same id moves that row. ``name`` is the label that people
+    see, cleaned as ``agent_label``. ``link`` is an optional https link. The
+    parent, the member, the connection and the tenant come from the path and
+    the signed context, never from this body (R5)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str = Field(min_length=1, max_length=JOB_ID_MAX, pattern=JOB_ID_PATTERN)
+    kind: JobKind
+    name: str = Field(min_length=1, max_length=AGENT_LABEL_INPUT_MAX)
+    state: JobState
+    link: str | None = Field(default=None, max_length=JOB_LINK_MAX)
+
+
+def job_key(parent_id: str, job_id: str) -> str:
+    """SW-116. The ``idempotency_key`` of a job: ``job:<parent>:<job id>``,
+    as :func:`child_key` gives a sub-agent. The two prefixes differ, so a job
+    and a sub-agent never share a key. A parent id of 36 characters and an id
+    of at most 64 give at most 105 characters, under the CHECK of 128."""
+    return f"job:{parent_id}:{job_id}"
+
+
+def clean_job_link(value: str | None) -> str | None:
+    """SW-116. The link of a job, or ``None``. It must be https
+    (:func:`_check_link`, and the CHECK of migration 267). A user name, a
+    password, a control character or no host is 422 :data:`JOB_LINK_REFUSED`.
+    The query and the fragment are dropped, so a token in a query never
+    reaches the row. The link may name any host: a release or a box CI page
+    is not on GitHub. It is display data only."""
+    refused = HTTPException(status_code=422, detail=JOB_LINK_REFUSED)
+    try:
+        link = _check_link(value)
+    except HTTPException as exc:
+        raise refused from exc
+    if link is None:
+        return None
+    if any(unicodedata.category(ch) in ("Cc", "Cf") for ch in link):
+        raise refused
+    try:
+        parts = urlsplit(link)
+        host = parts.hostname
+        user, password = parts.username, parts.password
+    except ValueError as exc:
+        raise refused from exc
+    if parts.scheme.lower() != "https" or not host or "@" in parts.netloc:
+        raise refused
+    if user is not None or password is not None:
+        raise refused
+    return urlunsplit(("https", parts.netloc, parts.path, "", ""))
+
+
+#: SW-116. The count of the open jobs of one run, for the cap. The parent row
+#: is locked first, so two first reports under one parent count in turn.
+_OPEN_JOBS_SQL = (
+    "SELECT count(*) FROM pm_agent_runs"
+    " WHERE kind = 'child' AND parent_run_id = CAST(:rid AS uuid)"
+    "   AND job_kind IS NOT NULL AND status = ANY(:open)"
+)
+
+#: SW-116. The forward move of one job: the job of this parent with this key,
+#: of this member, only from a status of a LOWER rank (``:lower``). So a
+#: report of a lower or equal state, and any report after the end, match no
+#: row and change nothing. The link of the report replaces the old one only
+#: when the report sends one.
+_MOVE_JOB_SQL = (
+    "UPDATE pm_agent_runs SET status = :status,"
+    " started_at = COALESCE(started_at, :ts),"
+    " ended_at = CAST(:ended AS timestamptz),"
+    " last_activity_at = :ts, last_agent_activity_at = :ts,"
+    " external_link = COALESCE(CAST(:link AS text), external_link)"
+    " WHERE kind = 'child' AND job_kind IS NOT NULL"
+    "   AND parent_run_id = CAST(:rid AS uuid)"
+    "   AND idempotency_key = :key AND member_email = :me"
+    "   AND status = ANY(:lower)"
+    " RETURNING id"
+)
+
+
+def _lower_statuses(status: str) -> list[str]:
+    """SW-116. The open statuses of a job that rank below *status*."""
+    return [s for s, rank in JOB_RANK.items()
+            if rank < JOB_RANK[status] and s in OPEN_STATUSES]
+
+
+@router.post("/agent-runs/{run_id}/jobs", status_code=201, dependencies=_ENABLED)
+async def report_job(
+    run_id: str, payload: JobIn, response: Response,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """SW-116 (``agent_coordination.md`` §3.12.11). One report of an external
+    job under the caller's open run *run_id*. Answers ``{run, created,
+    moved}``, where ``run`` is the job: a child run with ``job_kind`` set.
+
+    The first report of a ``job_id`` writes one job, 201, in the status of
+    its state (:data:`JOB_STATUS`). The parent must be open, hold its task
+    and be visible, as for a sub-agent. The 21st open job is 429. Open
+    sub-agents do not count toward that cap.
+
+    A later report of the same ``job_id`` moves the row forward only, 200. A
+    lower or equal state, or any report after the end, changes nothing and
+    answers the row as it is (``moved`` false). An own run of another
+    connection is 403. Every other miss is the one 404 of
+    :data:`CHILD_PARENT_REFUSED`. A person gets 422.
+
+    Dark (SW-114): the route answers the one 404 while ``AGENT_MAP_ORGS``
+    leaves out the caller's organization, before any read, lock or write.
+    A job is display data: no gate, holder rule or merge gate reads it."""
+    if not _child_writes_on(user):
+        raise HTTPException(status_code=404, detail=CHILD_PARENT_REFUSED)
+    if getattr(user, "agent", None) is None:
+        raise HTTPException(status_code=422, detail=JOB_PERSON_REFUSED)
+    _require_write_scope(user)
+    _agent_via(user)  # 403 for a connection with no client stamp
+    try:
+        parent_id = str(uuid.UUID(str(run_id)))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=CHILD_PARENT_REFUSED) from exc
+    label = clean_agent_label(payload.name)
+    if label is None:
+        raise HTTPException(status_code=422, detail="name names the job.")
+    link = clean_job_link(payload.link)
+    key = job_key(parent_id, payload.job_id)
+    status = JOB_STATUS[payload.state]
+    async with _tenant_session() as db:
+        parent = await _parent_for_child(db, user, parent_id, start=False)
+        old = (await db.execute(text(_CHILD_BY_KEY_SQL), {
+            "rid": parent_id, "key": key})).fetchone()
+        if old is not None:
+            response.status_code = 200
+            lower = _lower_statuses(status)
+            moved = None
+            if lower:
+                ts = await _clock(db)
+                moved = (await db.execute(text(_MOVE_JOB_SQL), {
+                    "rid": parent_id, "key": key, "me": parent.member_email,
+                    "status": status, "ts": ts, "link": link, "lower": lower,
+                    "ended": ts if status in TERMINAL_STATUSES else None,
+                })).fetchone()
+            if moved is None:
+                return {"run": child_run_out(old), "created": False, "moved": False}
+            row = (await db.execute(text(_CHILD_BY_KEY_SQL), {
+                "rid": parent_id, "key": key})).fetchone()
+            return {"run": child_run_out(row), "created": False, "moved": True}
+        await _check_open_parent(db, user, parent)
+        if status in OPEN_STATUSES:
+            open_now = (await db.execute(text(_OPEN_JOBS_SQL), {
+                "rid": parent_id, "open": list(AGENT_RUN_OPEN_STATUSES)})).scalar()
+            if int(open_now or 0) >= MAX_OPEN_JOBS:
+                raise HTTPException(status_code=429, detail=JOB_CAP_REFUSED)
+        ts = await _clock(db)
+        made = (await db.execute(text(_INSERT_CHILD_SQL), {
+            "parent": parent_id, "me": parent.member_email, "cid": _agent_connection(user),
+            "via": parent.client_via, "ts": ts, "key": key, "label": label,
+            **_place_binds(None),
+            **_child_binds(status=status, ts=ts, job_kind=payload.kind, link=link),
+        })).fetchone()
+        if made is None:
+            raise HTTPException(status_code=409, detail=JOB_KEY_USED)
+        row = (await db.execute(text(_CHILDREN_SQL), {
+            "rid": parent_id, "child": str(made.id), "limit": 1})).fetchone()
+    return {"run": child_run_out(row), "created": True, "moved": False}
 
 
 @router.get("/agent-runs", dependencies=_ENABLED)
