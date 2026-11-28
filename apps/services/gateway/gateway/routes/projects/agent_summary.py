@@ -97,6 +97,10 @@ values are not read, and the answer is the map of SW-102.
   :data:`MAP_ENDED_WINDOW_S` seconds reads ``failed`` or ``done``.
 * ``session=<node id>``. The runs and the sub-agents of that one node. A node
   that the caller may not see gives the empty map, never an error of its own.
+* AMR-5b (§3.12.8, G8). ``detail=summary`` with a ``project_id`` adds a context
+  row (:data:`MAP_CONTEXT_KEYS`) for an orchestrator of a listed lane whose run
+  is outside the project. The ONE ``seen`` text with no project filter decides
+  it, so a dispatcher that the caller cannot see adds no row and no line.
 
     GET /projects/agents/{agent_key}/runs
 
@@ -145,6 +149,7 @@ from gateway.routes.projects.core import (
     router,
     task_visibility_clause,
     triage_exclusion_clause,
+    visible_project_paths,
 )
 from gateway.routes.projects.filters import (
     AGENT_FOCI,
@@ -989,14 +994,19 @@ SELECT """ + _CUR_RUN_COLUMNS + """
 #: node with an open run come from its open runs. A node with none takes the
 #: lines of its ended runs, so a failed or done lane stays under its
 #: orchestrator.
-_MAP_SUMMARY_LINES_SQL = _MAP_CUR_CTE + """, node_of AS (
+#: The runs of the listed nodes that can draw a line, and the node of each run
+#: of ``seen``. ONE text for the lines below and for the dispatchers of
+#: AMR-5b (:data:`_MAP_OUTSIDE_REFS_SQL`).
+_SUMMARY_SRC_CTE = """, node_of AS (
     SELECT seen.id, """ + _NODE_SQL + """ AS node_id FROM seen
 ), src AS (
     SELECT cur.node_id, cur.is_open, cur.dispatched_by_run_id,
            bool_or(cur.is_open) OVER (PARTITION BY cur.node_id) AS node_open
       FROM cur
      WHERE cur.node_id = ANY(CAST(:nodes AS text[]))
-)
+)"""
+
+_MAP_SUMMARY_LINES_SQL = _MAP_CUR_CTE + _SUMMARY_SRC_CTE + """
 SELECT DISTINCT d.node_id AS from_id, src.node_id AS to_id
   FROM src
   JOIN node_of d ON d.id = src.dispatched_by_run_id
@@ -1006,6 +1016,46 @@ SELECT DISTINCT d.node_id AS from_id, src.node_id AS to_id
  ORDER BY 1, 2
  LIMIT :cap
 """
+
+# ── WS-MCP AMR-5b: the orchestrator outside the project (§3.12.8, G8) ───────
+
+#: Step 1, in the scope of a project only. The dispatcher runs that the lines
+#: above do not resolve: a run that the scoped ``seen`` does not hold, or whose
+#: node is not listed. The rule of the lines holds: the same ``src`` rows, the
+#: same ``(src.is_open OR NOT src.node_open)``, and ONE step.
+_MAP_OUTSIDE_REFS_SQL = _MAP_CUR_CTE + _SUMMARY_SRC_CTE + """
+SELECT DISTINCT src.node_id AS to_id, src.dispatched_by_run_id AS ref
+  FROM src
+ WHERE (src.is_open OR NOT src.node_open)
+   AND src.dispatched_by_run_id IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM node_of d
+                    WHERE d.id = src.dispatched_by_run_id
+                      AND d.node_id = ANY(CAST(:nodes AS text[])))
+ ORDER BY 1, 2
+ LIMIT :cap
+"""
+
+#: Step 2. The dispatcher runs of step 1, through the ONE ``seen`` text with NO
+#: project filter. ``{only}`` is :data:`_THESE_RUNS`, so the read takes only
+#: those runs. A run that the viewer cannot see gives no row, so it gives no
+#: node and no line. The project id stays in the server: only its name leaves,
+#: through :func:`core.visible_project_paths`.
+_MAP_DISPATCHERS_SQL = "{head}seen AS (" + _SEEN_RUNS_SQL + """)
+SELECT seen.id, """ + _NODE_SQL + """ AS node_id, seen.created_at, t.project_id
+  FROM seen
+  JOIN pm_tasks t ON t.id = seen.task_id
+"""
+
+#: The ``{only}`` of step 2: the runs of ``:refs``.
+_THESE_RUNS = "\n       AND r.id = ANY(CAST(:refs AS uuid[]))"
+
+#: The ``{node}`` of step 3: the unscoped summary keeps the nodes of ``:ctx``.
+#: So a context node shows only when the map of everyone lists it.
+_CONTEXT_NODES = "node_id = ANY(CAST(:ctx AS text[]))"
+
+#: The keys of a context row (AMR-5b). No machine, model, state, clock, client,
+#: task, wait or question of the orchestrator leaves.
+MAP_CONTEXT_KEYS: tuple[str, ...] = ("id", "name", "person", "context", "context_project")
 
 #: The count of the sub-agents under the current runs of each listed node, and
 #: their labels for the find box. The reach rule of :data:`_MAP_CHILDREN_SQL`:
@@ -1095,14 +1145,19 @@ def parse_map_query(project_id: Any, show_quiet: Any) -> tuple[str | None, bool]
 
 def _map_sql(
     template: str, *, vis: Any, admin: bool, scoped: bool, fold: str = "true",
-    node: str = "true",
+    node: str = "true", only: str | None = None,
 ) -> str:
-    """One map statement over the ONE ``seen`` text (§3.12.4 rule 1)."""
+    """One map statement over the ONE ``seen`` text (§3.12.4 rule 1).
+
+    *only* narrows ``seen`` further, as :data:`_ONE_AGENT` does for the
+    drill-down. ``None`` keeps the scope of *scoped*."""
+    if only is None:
+        only = _IN_SUBTREE if scoped else ""
     return template.format(
         head="WITH RECURSIVE " + _SUBTREE_SQL + ", " if scoped else "WITH ",
         state=AGENT_RUN_STATE_SQL, gone=connection_gone_sql("r"),
         visible=task_visibility_clause(vis), reach=_reach_sql(admin),
-        only=_IN_SUBTREE if scoped else "", open=_OPEN,
+        only=only, open=_OPEN,
         quiet_s=MAP_QUIET_AFTER_S, fold=fold, node=node,
         window_s=MAP_ENDED_WINDOW_S, names_scan=MAP_SUB_NAMES_SCAN,
     )
@@ -1273,6 +1328,10 @@ async def _agent_map_summary(user: UserContext, *, project_id: str | None) -> di
     reads those.
     ``count`` counts the open runs, as the map does. The reach is that of the
     map: every read goes through the ONE ``seen`` text.
+
+    AMR-5b: with a ``project_id``, ``sessions`` also holds a context row for
+    each orchestrator of a listed lane whose run is outside the project
+    (:func:`_outside_project`). It counts in no person, run or ``count``.
     """
     me = actor(user).strip().lower()
     async with _tenant_session() as db:
@@ -1284,8 +1343,11 @@ async def _agent_map_summary(user: UserContext, *, project_id: str | None) -> di
         if scoped:
             params["pid"] = project_id
 
-        async def read(template: str, **more: Any) -> list[Any]:
-            sql = _map_sql(template, vis=vis, admin=admin, scoped=scoped)
+        async def read(template: str, *, wide: bool = False, only: str | None = None,
+                       node: str = "true", **more: Any) -> list[Any]:
+            # ``wide``: the ONE ``seen`` text with no project filter (AMR-5b).
+            sql = _map_sql(template, vis=vis, admin=admin, scoped=scoped and not wide,
+                           only=only, node=node)
             return list((await db.execute(text(sql), {**params, **more})).fetchall())
 
         sessions = await read(_MAP_SUMMARY_SQL, cap=MAP_SUMMARY_SESSIONS_MAX + 1)
@@ -1298,6 +1360,7 @@ async def _agent_map_summary(user: UserContext, *, project_id: str | None) -> di
             _MAP_SUMMARY_LINES_SQL, nodes=nodes, cap=MAP_SUMMARY_SESSIONS_MAX + 1,
         ) if nodes else []
         counted = await read(_MAP_CHILD_COUNTS_SQL, nodes=nodes) if nodes else []
+        outside = await _outside_project(db, vis, read, nodes) if scoped and nodes else None
 
     counts = {str(c.node_id): c for c in counted}
     order = {str(s.node_id): i for i, s in enumerate(kept)}
@@ -1306,22 +1369,111 @@ async def _agent_map_summary(user: UserContext, *, project_id: str | None) -> di
     tasks: dict[str, list[dict[str, Any]]] = {}
     for r in ranked:
         tasks.setdefault(str(r.node_id), []).append(_task_words(r))
+    pairs = sorted({(str(x.from_id), str(x.to_id)) for x in lines[:MAP_SUMMARY_SESSIONS_MAX]}
+                   | (outside.lines if outside else set()))
     return {
         "people": _people_of(kept),
         "sessions": [{
             **_session_row(s, _summary_state(s)),
             "subagents": _subagent_counts(counts.get(str(s.node_id))),
             "tasks": tasks.get(str(s.node_id), []),
-        } for s in kept],
+        } for s in kept] + (outside.contexts if outside else []),
         "runs": [_run_row(r) for r in sorted(runs, key=lambda r: order[str(r.node_id)])],
-        "lines": [{"from": str(x.from_id), "to": str(x.to_id)}
-                  for x in lines[:MAP_SUMMARY_SESSIONS_MAX]],
+        "lines": [{"from": f, "to": t} for f, t in pairs[:MAP_SUMMARY_SESSIONS_MAX]],
         "children": [],
         "count": int(sessions[0].total_runs or 0) if sessions else 0,
         "truncated": (len(sessions) > MAP_SUMMARY_SESSIONS_MAX
-                      or len(lines) > MAP_SUMMARY_SESSIONS_MAX),
+                      or len(lines) > MAP_SUMMARY_SESSIONS_MAX
+                      or len(pairs) > MAP_SUMMARY_SESSIONS_MAX
+                      or bool(outside and outside.truncated)),
         "viewer": viewer,
     }
+
+
+class _Outside:
+    """What AMR-5b adds to a summary in the scope of a project: the context
+    rows (:data:`MAP_CONTEXT_KEYS`), the lines to the listed lanes, and
+    whether its first read passed its cap."""
+
+    __slots__ = ("contexts", "lines", "truncated")
+
+    def __init__(self, contexts: list[dict[str, Any]], lines: set[tuple[str, str]],
+                 truncated: bool) -> None:
+        self.contexts = contexts
+        self.lines = lines
+        self.truncated = truncated
+
+
+def _context_row(row: Any, project_name: str | None) -> dict[str, Any]:
+    """One context row (:data:`MAP_CONTEXT_KEYS`). It joins ``sessions`` and
+    nothing else: no person count, no run, no child and no ``count``."""
+    return {
+        "id": str(row.node_id),
+        "name": _line(row.agent_label, UNNAMED_SESSION),
+        "person": str(row.person),
+        "context": True,
+        "context_project": {"name": project_name} if project_name else None,
+    }
+
+
+def _leaf_name(paths: dict[str, list[dict[str, str]]], project_id: str) -> str | None:
+    """The name of *project_id* when the viewer may see it, else ``None``.
+    :func:`visible_project_paths` gives an empty path for a hidden project."""
+    path = paths.get(project_id) or []
+    if not path or path[-1].get("id") != project_id:
+        return None
+    return _line(path[-1].get("name")) or None
+
+
+async def _outside_project(db: Any, vis: Any, read: Any, nodes: list[str]) -> _Outside:
+    """AMR-5b (``agent_coordination.md`` §3.12.8, G8). The orchestrator of a
+    listed lane whose run is outside the project.
+
+    1. :data:`_MAP_OUTSIDE_REFS_SQL`: the dispatcher runs of the listed lanes
+       that the lines of the scope do not resolve. None: no other read.
+    2. :data:`_MAP_DISPATCHERS_SQL` resolves them through the ONE ``seen``
+       text with no project filter. A hidden run gives no row, so its line drops.
+       A dispatcher whose node is listed gives a line only.
+    3. Only for a node that is not listed: :data:`_MAP_SUMMARY_SQL` with no
+       project filter, kept to those nodes. A node that it does not list
+       gives no row and no line. So the rule of a node stays ONE rule.
+
+    The project of a context node is that of its newest dispatcher run that a
+    listed lane names (the start, then the id). Its name leaves only when
+    ``Visibility.project_clause`` keeps the project.
+    """
+    refs = await read(_MAP_OUTSIDE_REFS_SQL, nodes=nodes, cap=MAP_SUMMARY_SESSIONS_MAX + 1)
+    over = len(refs) > MAP_SUMMARY_SESSIONS_MAX
+    refs = refs[:MAP_SUMMARY_SESSIONS_MAX]
+    if not refs:
+        return _Outside([], set(), over)
+    found = await read(_MAP_DISPATCHERS_SQL, wide=True, only=_THESE_RUNS,
+                       refs=sorted({str(r.ref) for r in refs}))
+    by_run = {str(d.id): d for d in found}
+    listed = set(nodes)
+    pairs: set[tuple[str, str]] = set()
+    newest: dict[str, Any] = {}
+    for r in refs:
+        d = by_run.get(str(r.ref))
+        if d is None or str(d.node_id) == str(r.to_id):
+            continue
+        node = str(d.node_id)
+        pairs.add((node, str(r.to_id)))
+        if node in listed:
+            continue
+        held = newest.get(node)
+        if held is None or (d.created_at, str(d.id)) > (held.created_at, str(held.id)):
+            newest[node] = d
+    contexts: list[dict[str, Any]] = []
+    if newest:
+        rows = await read(_MAP_SUMMARY_SQL, wide=True, node=_CONTEXT_NODES,
+                          ctx=sorted(newest), cap=len(newest))
+        paths = await visible_project_paths(
+            db, vis, [newest[str(c.node_id)].project_id for c in rows])
+        contexts = [_context_row(c, _leaf_name(paths, str(newest[str(c.node_id)].project_id)))
+                    for c in rows]
+    shown = listed | {c["id"] for c in contexts}
+    return _Outside(contexts, {p for p in pairs if p[0] in shown}, over)
 
 
 async def _agent_map_session(
