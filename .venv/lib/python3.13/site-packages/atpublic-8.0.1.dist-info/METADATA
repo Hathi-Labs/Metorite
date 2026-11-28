@@ -1,0 +1,74 @@
+Metadata-Version: 2.5
+Name: atpublic
+Version: 8.0.1
+Summary: Keep all y'all's __all__'s in sync
+Project-URL: Home Page, https://public.readthedocs.io
+Project-URL: Documentation, https://public.readthedocs.io
+Project-URL: Source, https://gitlab.com/flufl/public.git
+Project-URL: Bug Tracker, https://gitlab.com/flufl/public/-/work_items
+Author-email: Barry Warsaw <barry@python.org>
+License: Apache-2.0
+License-File: LICENSE
+Keywords: __all__,private,public
+Classifier: Development Status :: 5 - Production/Stable
+Classifier: Development Status :: 6 - Mature
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: Apache Software License
+Classifier: Operating System :: MacOS :: MacOS X
+Classifier: Operating System :: Microsoft :: Windows
+Classifier: Operating System :: POSIX
+Classifier: Programming Language :: Python
+Classifier: Programming Language :: Python :: 3
+Classifier: Topic :: Software Development :: Libraries
+Classifier: Topic :: Software Development :: Libraries :: Python Modules
+Classifier: Topic :: Utilities
+Requires-Python: >=3.10
+Provides-Extra: install
+Requires-Dist: atpublic-install>=1.0.0; extra == 'install'
+Description-Content-Type: text/x-rst
+
+======================
+ @public and @private
+======================
+
+This library provides two very simple decorators that document the public visibility of the names in
+your module.  They keep your module's ``__all__`` in sync so you don't have to.
+
+Also included is a function that you can put at the bottom of your module to simply infer all the
+public names, and populate the ``__all__`` for you.
+
+
+Installation
+============
+
+.. code-block:: console
+
+    $ pip install atpublic
+
+The ``install`` extra additionally installs ``@public`` and ``@private`` into ``builtins``, so
+they're always available without having to import them first:
+
+.. code-block:: console
+
+    $ pip install atpublic[install]
+
+Note that while the top-level module is named ``public``, the PyPI package is called ``atpublic``
+due to a name conflict.  Do not install ``public``; that is a different package!
+
+
+Author
+======
+
+``public`` is Copyright (C) 2004-2026 Barry Warsaw <barry@python.org>
+
+Licensed under the terms of the Apache License Version 2.0.  See the LICENSE file for details.
+
+
+Project details
+===============
+
+ * Project home: https://gitlab.com/flufl/public
+ * Report bugs at: https://gitlab.com/flufl/public/-/work_items
+ * Code hosting: https://gitlab.com/flufl/public.git
+ * Documentation: https://public.readthedocs.io
+ * PyPI: https://pypi.org/project/atpublic/
