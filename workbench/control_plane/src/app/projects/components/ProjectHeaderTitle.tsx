@@ -78,14 +78,15 @@ export function ProjectHeaderTitle({
   const hasSecondLine = Boolean(line) || more || Boolean(facts);
 
   return (
-    <div ref={root} className="flex min-w-0 flex-1 flex-col" data-project-header="">
+    <div ref={root} className="@container flex min-w-0 flex-1 flex-col" data-project-header="">
       <div className="flex min-w-0 items-baseline gap-1.5">
         {parent ? (
-          <>
+          // In a narrow pane the place folds away, so the title keeps its room.
+          <span className="hidden min-w-0 max-w-[40%] shrink-[4] items-baseline gap-1.5 @[24rem]:flex">
             <Button
               variant="text"
               size="none"
-              className="min-w-0 max-w-[40%] shrink truncate text-sm"
+              className="min-w-0 truncate text-sm"
               title={`Open ${parent.name}`}
               data-header-parent=""
               onClick={parent.onOpen}
@@ -95,7 +96,7 @@ export function ProjectHeaderTitle({
             <span className="shrink-0 text-sm text-muted-foreground" aria-hidden="true">
               ›
             </span>
-          </>
+          </span>
         ) : null}
         <h2
           className="flex min-w-0 items-center gap-1.5 text-sm font-medium text-foreground glass:text-subhead glass:font-semibold"
@@ -185,6 +186,37 @@ export function ProjectHeaderTitle({
         )
       ) : null}
     </div>
+  );
+}
+
+/**
+ * The title of the phone bar (`AppTopBar compact`). A phone has no header
+ * under the bar, so a tap on the title opens About as a sheet. A project with
+ * no description draws the plain title.
+ */
+export function PhoneProjectTitle({ title, description = null }: { title: string; description?: string | null }) {
+  const [open, setOpen] = useState(false);
+  if (!description || !description.trim()) return <>{title}</>;
+  return (
+    <>
+      <Button
+        variant="text"
+        size="none"
+        className="max-w-full truncate text-left text-sm font-medium text-foreground"
+        title={title}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        data-header-title-open=""
+        onClick={() => setOpen(true)}
+      >
+        <span className="truncate">{title}</span>
+      </Button>
+      <Modal open={open} onClose={() => setOpen(false)} title={ABOUT_TITLE} placement="sheet" size="md" className="max-h-[85vh]">
+        <div className="min-h-0 overflow-y-auto p-3 text-sm" data-header-about="">
+          <MarkdownBody content={description} />
+        </div>
+      </Modal>
+    </>
   );
 }
 

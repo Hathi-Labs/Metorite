@@ -99,7 +99,7 @@ import { useAccess } from "@/components/AccessProvider";
 import { TagManager } from "./components/TagManager";
 import { BulkBar } from "./components/BulkBar";
 import { FilterChrome } from "./components/CompactFilterBar";
-import { ProjectHeaderTitle } from "./components/ProjectHeaderTitle";
+import { PhoneProjectTitle, ProjectHeaderTitle } from "./components/ProjectHeaderTitle";
 import { ViewTabs } from "./components/ViewTabs";
 import { BacklogCanvas } from "./components/BacklogCanvas";
 import { WorkStyleDialog } from "./components/WorkStyleDialog";
@@ -6411,7 +6411,10 @@ function ProjectsWorkspace() {
       <div className="flex h-full w-full flex-col overflow-hidden bg-background">
         <AppTopBar
           compact
-          title={title}
+          title={
+            // HDR-1: a tap on the title opens About, as a sheet.
+            app || !selected ? title : <PhoneProjectTitle title={title} description={headerDescription} />
+          }
           actions={projectActions(true)}
           tools={dockOn ? undefined : <NotificationBell onOpenTask={(id) => void openTaskById(id)} />}
         />
