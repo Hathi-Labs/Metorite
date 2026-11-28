@@ -52,7 +52,11 @@ task 2186. It renders to exactly ``size`` x ``size`` with ``alpha=False``, so a
 clear pixel lands on white, and writes JPEG at ``jpeg_quality``. A source
 smaller than ``size`` is scaled up.
 
-**The image.** A logo keeps its aspect ratio. A photo is cropped to the centre
+**The image.** A ``capture`` (WS-STU D24a) keeps its aspect ratio, is upright
+by its EXIF orientation, has a long side of at most ``capture_side`` and is
+re-encoded from pixels, so no EXIF or GPS block survives. It is JPEG when
+opaque and else PNG. The output cap steps the long side down (100 %, 75 %,
+50 %), then refuses with ``too_big``. A logo keeps its aspect ratio. A photo is cropped to the centre
 square, as ``gateway/avatar.py`` does. The long edge goes to at most 480 px, and
 never up. The pixel size comes from the image header (``get_image_info``), and
 the matrix comes from ``Rect.torect``, which maps the clip in POINTS onto the
@@ -84,6 +88,7 @@ _SPEC_FIELDS: dict[str, type] = {
     "max_pixels": int,
     "max_side": int,
     "max_output_bytes": int,
+    "capture_side": int,
     "jpeg_quality": int,
     "memory_bytes": int,
     "cpu_seconds": int,
@@ -98,12 +103,15 @@ _AVATAR_FIELDS: dict[str, type | tuple[type, ...]] = {
 }
 _MISSING = object()
 #: The kinds of image that the child takes.
-_KINDS = ("logo", "photo", "avatar")
+_KINDS = ("logo", "photo", "avatar", "capture")
 #: The longest edge of a profile picture that the child renders.
 _MAX_AVATAR_PX = 1024
 
 #: The long edges that the child tries, largest first.
 EDGES = (480, 360, 240)
+
+#: A capture steps its long side down by these shares of ``capture_side``.
+CAPTURE_STEPS = (1.0, 0.75, 0.5)
 
 #: A pixel darker than this luminance (0 to 255, Rec. 601 weights) is dark.
 DARK_LUMA = 96
@@ -234,6 +242,25 @@ def _source_pixels(page: Any) -> tuple[int, int]:
     return round(page.rect.width), round(page.rect.height)
 
 
+def _oriented_px(page: Any, width_px: int, height_px: int) -> tuple[int, int]:
+    """The size in pixels AFTER the EXIF orientation, for a capture.
+
+    MuPDF applies the orientation of a JPEG when it lays out the page, and
+    ``get_image_info`` still reports the stored size. The matrix of the image
+    says which: a zero on the diagonal means a quarter turn (EXIF 5 to 8), so
+    the width and the height swap. EXIF 1 to 4 keep them."""
+    try:
+        info = page.get_image_info()
+        a, _b, _c, d = info[0]["transform"][:4]
+    except Exception:  # no matrix: the size of the page decides
+        return (height_px, width_px) if (
+            (page.rect.width > page.rect.height) != (width_px > height_px)
+            and width_px != height_px) else (width_px, height_px)
+    if abs(a) < 1e-6 and abs(d) < 1e-6:
+        return height_px, width_px
+    return width_px, height_px
+
+
 def _shares(pix: Any) -> tuple[float, float]:
     """``(dark_share, clear_share)`` of a pixmap with alpha.
 
@@ -278,7 +305,12 @@ def _encode(pymupdf: Any, data: bytes, spec: dict[str, Any]) -> dict[str, Any]:
     rect = page.rect
     if rect.width <= 0 or rect.height <= 0:
         raise _Refused("broken")
-    if spec["kind"] == "photo":
+    capture = spec["kind"] == "capture"
+    if capture:
+        # The whole image, upright, at its aspect. No crop, no metadata.
+        clip = pymupdf.Rect(rect)
+        src_w, src_h = _oriented_px(page, width_px, height_px)
+    elif spec["kind"] == "photo":
         side_pt = min(rect.width, rect.height)
         x = (rect.width - side_pt) / 2
         y = (rect.height - side_pt) / 2
@@ -289,7 +321,9 @@ def _encode(pymupdf: Any, data: bytes, spec: dict[str, Any]) -> dict[str, Any]:
         src_w, src_h = width_px, height_px
     long_px = max(src_w, src_h)
     tried: set[tuple[int, int]] = set()
-    for edge in EDGES:
+    edges = (tuple(round(spec["capture_side"] * step) for step in CAPTURE_STEPS)
+             if capture else EDGES)
+    for edge in edges:
         target = min(edge, long_px)
         out_w = max(1, round(src_w * target / long_px))
         out_h = max(1, round(src_h * target / long_px))
@@ -307,8 +341,14 @@ def _encode(pymupdf: Any, data: bytes, spec: dict[str, Any]) -> dict[str, Any]:
         said = _warnings(pymupdf).lower()
         if any(word in said for word in _DAMAGE_WORDS):
             raise _Refused("broken")
-        dark_share, clear_share = _shares(pix)
-        if spec["kind"] == "photo" and clear_share == 0.0 and _opaque(pix):
+        # A capture is not a logo, so it needs no shares, and the pure-Python
+        # scan of 3 million pixels would cost seconds of the CPU cap.
+        dark_share, clear_share = (0.0, 0.0) if capture else _shares(pix)
+        if capture and _opaque(pix):
+            flat = pymupdf.Pixmap(pix, 0)
+            out = flat.tobytes("jpg", jpg_quality=spec["jpeg_quality"])
+            content_type = "image/jpeg"
+        elif spec["kind"] == "photo" and clear_share == 0.0 and _opaque(pix):
             flat = pymupdf.Pixmap(pix, 0)  # drop the alpha: no pixel uses it
             out = flat.tobytes("jpg", jpg_quality=spec["jpeg_quality"])
             content_type = "image/jpeg"
