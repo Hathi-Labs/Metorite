@@ -42,6 +42,7 @@ import { isLivePhase, isRestingPhase, restConfirmed, serverHoldsRun, type RunSta
 import { phaseWordOf, stepOfMessage } from "@/lib/runStep";
 import { fetchMessagesFromDb } from "@/lib/sessions";
 import { planReplay, rejectFor, replayIdOf } from "@/lib/runReplay";
+import { mergePolledRows, placeReplayRows } from "@/lib/chatOrder";
 import { REPLAY_OPEN, RUN_RESUMED_FRAME, attachPickOf, replayEndAfter, type ReplayEnd } from "@/lib/chatResume";
 import type { ChatMessage, ToolEvent } from "@/lib/chatStore";
 import { activeContextSlice, isCompactionCheckpoint } from "@/lib/tokenCount";
@@ -1193,11 +1194,11 @@ export function useAgentChat({
         const now = getSessionState(threadId).messages;
         const plan = planReplay(saved, now, reject(now));
         if (plan.target) target = plan.target;
+        // The rows go in by the server's order (task 4146,
+        // `lib/chatOrder.ts`), never appended after the chat's own rows.
         setSessionState(threadId, (prev) => {
-          const add = planReplay(saved, prev.messages, reject(prev.messages));
-          const t = add.target && !prev.messages.some((m) => m.id === add.target!.id) ? [add.target] : [];
-          const rows = [...add.missing, ...t];
-          return rows.length ? { ...prev, messages: [...prev.messages, ...rows] } : prev;
+          const next = placeReplayRows(prev.messages, saved, planReplay(saved, prev.messages, reject(prev.messages)));
+          return next === prev.messages ? prev : { ...prev, messages: next };
         });
       }
     }
@@ -1867,112 +1868,18 @@ export function useAgentChat({
           return;
         }
 
-        const localById = new Map(cur.messages.map((m) => [m.id, m]));
-        let changed = false;
-
-        // Find the longest local assistant content (to detect server growth
-        // even when ids differ, e.g. local nanoid vs server assistant-<tid>).
-        const localAssistantContents = cur.messages
-          .filter((m) => m.role === "assistant")
-          .map((m) => m.content);
-
-        const merged: ChatMessage[] = [...cur.messages];
-
+        const fresh: ChatMessage[] = [];
         for (const rm of remoteMsgs) {
           // An edit removed this row. A read from before the gateway's
           // delete must not bring it back (lib/chatEdit.ts tombstones).
           if (isSuperseded(threadId, rm.id)) continue;
-          const localMatch = localById.get(rm.id);
-          if (localMatch) {
-            // Same id — update if the server has more content/tool events/
-            // reasoning/custom events.  Custom events count: the run-boundary
-            // fold persists generative_ui + artifact cards this client may
-            // never have seen (dropped SSE), and they are the whole payload of
-            // an inline AG-UI card.
-            if (
-              rm.content.length > localMatch.content.length ||
-              (rm.toolEvents?.length ?? 0) > (localMatch.toolEvents?.length ?? 0) ||
-              (rm.reasoningBlocks?.length ?? 0) > (localMatch.reasoningBlocks?.length ?? 0) ||
-              (rm.customEvents?.length ?? 0) > (localMatch.customEvents?.length ?? 0) ||
-              // Authorship arriving for the first time is itself news: an
-              // optimistic local turn has no author until the server stamps
-              // one, and without this the name never appears until the next
-              // token grows the row.
-              (!!rm.authorKind && !localMatch.authorKind)
-            ) {
-              const idx = merged.findIndex((m) => m.id === rm.id);
-              if (idx >= 0) {
-                // Spreading `rm` wholesale used to REPLACE the local stream
-                // artifacts with the server's — so a poll that fired only
-                // because the server content had grown also blanked the
-                // generative_ui cards this client had already rendered live
-                // (the "my UI card closed when I sent the next message" bug).
-                // Each artifact list is monotonic: keep whichever side has more.
-                const richer = <T,>(a?: T[], b?: T[]): T[] | undefined =>
-                  (a?.length ?? 0) >= (b?.length ?? 0) ? a : b;
-                merged[idx] = {
-                  ...localMatch,
-                  ...rm,
-                  // A poll can now fire for authorship alone, so the content
-                  // must not shrink just because the server row is a beat
-                  // behind.  A redacted row is the exception: its notice is
-                  // the whole point and always wins.
-                  content: rm.redacted || rm.content.length >= localMatch.content.length
-                    ? rm.content
-                    : localMatch.content,
-                  toolEvents: richer(rm.toolEvents, localMatch.toolEvents),
-                  customEvents: richer(rm.customEvents, localMatch.customEvents),
-                  reasoningBlocks: richer(rm.reasoningBlocks, localMatch.reasoningBlocks),
-                  progressLines: richer(rm.progressLines, localMatch.progressLines),
-                  segments: richer(rm.segments, localMatch.segments),
-                  // Authorship only ever GROWS, same as the lists above: a poll
-                  // that answers from a pre-authorship row (or an older
-                  // gateway) carries `undefined`, and spreading that over a
-                  // name we already know would silently un-attribute the turn.
-                  authorEmail: rm.authorEmail ?? localMatch.authorEmail,
-                  authorKind: rm.authorKind ?? localMatch.authorKind,
-                  redacted: rm.redacted ?? localMatch.redacted,
-                  redactedCaps: rm.redactedCaps ?? localMatch.redactedCaps,
-                  streaming: false,
-                };
-                changed = true;
-              }
-            }
-            continue;
-          }
-
-          // No id match.  If this is an assistant message whose content is a
-          // superset of a local partial assistant message, replace that local
-          // partial (refresh recovery — server has the fuller version).
-          if (rm.role === "assistant" && rm.content) {
-            const supersedesIdx = merged.findIndex(
-              (m) =>
-                m.role === "assistant" &&
-                m.content &&
-                rm.content.startsWith(m.content) &&
-                rm.content.length >= m.content.length,
-            );
-            if (supersedesIdx >= 0) {
-              const superseded = merged[supersedesIdx];
-              merged[supersedesIdx] = {
-                ...rm,
-                // Same "only grows" rule — the local partial may already know
-                // which agent spoke even when this server row does not.
-                authorEmail: rm.authorEmail ?? superseded.authorEmail,
-                authorKind: rm.authorKind ?? superseded.authorKind,
-                streaming: false,
-              };
-              changed = true;
-              continue;
-            }
-            // Skip if identical content already present anywhere.
-            if (localAssistantContents.includes(rm.content)) continue;
-          }
-
-          // Genuinely new message.
-          merged.push(rm);
-          changed = true;
+          fresh.push(rm);
         }
+        // The one merge of server rows (task 4146, `lib/chatOrder.ts`): a
+        // row of the same id only grows, and a new row takes its place by
+        // the server's order. Appending one put a prompt after its reply.
+        const merged = mergePolledRows(cur.messages, fresh);
+        const changed = merged !== cur.messages;
 
         if (changed) {
           lastKnownCount = merged.length;

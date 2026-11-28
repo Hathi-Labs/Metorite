@@ -277,6 +277,13 @@ Twelve rules on top of the three above. Each one exists because somebody broke i
    (owner, 2026-10-12). The composer has ONE main control, Send or Stop,
    and no send mode and no queue. Do not add a second send path. Fences:
    `chatSteer.test.ts` and `e2e/chat-steer.spec.ts`.
+   **Server rows join a chat through one seam,** `src/lib/chatOrder.ts`
+   (task 4146, `projects_ai_chat.md` §20.9). The recovery poll, the
+   re-attach and the history load on open call it. The server's order wins
+   for the rows that it returned, and no merge compares a timestamp or an
+   id. A local row that the server does not know keeps its place. Never
+   append a server row to `messages` in a hook or a component. Fence:
+   `src/lib/chatOrder.test.ts`.
    **A long chat card rolls up through one seam,** `components/RollupCard.tsx`
    (owner, 2026-10-10). `src/lib/cardRollup.ts` holds the rules. The newest
    card stays open, unless it is a receipt (`receipt` prop, owner 2026-10-29): a
