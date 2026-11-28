@@ -16,7 +16,10 @@ import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  ANSWERED_BY_YOU_TEXT,
   ANSWERED_ONCE_TEXT,
+  answeredByOf,
+  answeredGivesBack,
   answeredOnceOf,
   otherAccountOf,
   otherAccountRefusal,
@@ -130,6 +133,70 @@ describe("a repeat answer (HRD-16)", () => {
     expect(chat).not.toMatch(/outcome\s*[!=]==\s*"drop"/);
     expect(chat.match(/resendsAnswer\(outcome\)/g)?.length).toBe(4);
     expect(chat).toContain('code: "answered_once"');
+  });
+});
+
+// Task 4036: a phone posts an answer, the run takes it, and the response is
+// lost. The member taps again. Before, the repeat read "Someone already
+// answered this", the words went back to the composer, and a send of them
+// acted twice. Now the gateway says `by_you`, and the words stay out unless
+// ANOTHER member answered. Mutations caught: give the words back on every
+// `answered` again (the same member acts twice), give them back when the
+// gateway names nobody, or read `by_you` from a non-boolean.
+describe("a repeat answer by the same member (task 4036)", () => {
+  const byYou = JSON.stringify({
+    detail: { error: "answered_once", message: "You already answered this card.", by_you: true },
+  });
+  const byOther = JSON.stringify({
+    detail: { error: "answered_once", message: "Someone already answered this card.", by_you: false },
+  });
+  const byNobody = JSON.stringify({
+    detail: { error: "answered_once", message: "Someone already answered this card." },
+  });
+
+  it("reads who answered from the 409", () => {
+    expect(answeredByOf(byYou)).toBe("you");
+    expect(answeredByOf(byOther)).toBe("other");
+    expect(answeredByOf(byNobody)).toBeNull();
+    expect(answeredByOf(JSON.stringify({ detail: { error: "answered_once", by_you: "true" } }))).toBeNull();
+    expect(answeredByOf(JSON.stringify({ detail: { error: "run_restarted", by_you: true } }))).toBeNull();
+    expect(answeredByOf("not json")).toBeNull();
+  });
+
+  it("gives the words back only when another member answered", () => {
+    expect(answeredGivesBack("you")).toBe(false);
+    expect(answeredGivesBack(null)).toBe(false);
+    expect(answeredGivesBack(undefined)).toBe(false);
+    expect(answeredGivesBack("other")).toBe(true);
+  });
+
+  it("says that the member already answered, and sends nothing", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const fetchFn = vi.fn(async () => new Response(byYou, { status: 409 }));
+    expect(await sendRespondInputResult(BODY, fetchFn as unknown as typeof fetch)).toEqual({
+      outcome: "answered", resend: null, reason: ANSWERED_BY_YOU_TEXT, answeredBy: "you",
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    info.mockRestore();
+  });
+
+  it("another member's answer keeps today's words", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const fetchFn = vi.fn(async () => new Response(byOther, { status: 409 }));
+    expect(await sendRespondInputResult(BODY, fetchFn as unknown as typeof fetch)).toEqual({
+      outcome: "answered", resend: null, reason: ANSWERED_ONCE_TEXT, answeredBy: "other",
+    });
+    info.mockRestore();
+  });
+
+  // Mutation caught: a card handler that gives the words back on `answered`
+  // with no question of who answered.
+  it("no card handler in the chat gives the words back past the one rule", () => {
+    const here = fileURLToPath(new URL(".", import.meta.url));
+    const chat = readFileSync(join(here, "../components/AgentChat.tsx"), "utf8");
+    expect(chat).not.toMatch(/outcome === "answered"\) \{ giveBack/);
+    expect(chat.match(/answeredGivesBack\(/g)?.length).toBe(2);
+    expect(chat).toContain('"answered_by_you"');
   });
 });
 

@@ -4189,15 +4189,50 @@ def _plain_409() -> HTTPException:
 ANSWERED_ONCE = "answered_once"
 
 
-def _answered_once_409() -> HTTPException:
-    """The 409 of a repeat answer or decline that a run already took."""
-    return HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail={
-            "error": ANSWERED_ONCE,
-            "message": "Someone already answered this card.",
-        },
-    )
+def _answered_once_409(by_you: bool | None = None) -> HTTPException:
+    """The 409 of a repeat answer or decline that a run already took.
+
+    Task 4036: ``by_you`` is True when the session's member gave the answer
+    that the run took, and False when another member did. The browser keeps
+    the words out of the composer unless it reads False, so a member whose
+    phone lost the first response never sends the same answer twice. With
+    no responder in the mark or the session, the detail has no ``by_you``.
+    """
+    detail: dict[str, Any] = {
+        "error": ANSWERED_ONCE,
+        "message": (
+            "You already answered this card." if by_you
+            else "Someone already answered this card."
+        ),
+    }
+    if by_you is not None:
+        detail["by_you"] = by_you
+    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
+
+
+#: Task 4036: how long the route waits for a run on another event loop to say
+#: whether it took the answer. That callback runs in a few milliseconds. On a
+#: timeout the route counts the answer as taken, as it did before.
+_TAKE_WAIT_SECONDS = 2.0
+
+
+async def _cross_loop_take(delivered: bool, taken: Any) -> bool:
+    """*delivered*, read again for a run on another event loop.
+
+    ``executor.resolve_user_input`` sets *taken* running only for such a run.
+    A pending *taken* means the run is on this loop, so *delivered* is final.
+    A Future that ``pending_ask.park`` popped first takes nothing (False).
+    Then the route sets no mark, and the answer goes on to the late path.
+    """
+    import asyncio  # noqa: PLC0415
+
+    if not delivered or not (taken.running() or taken.done()):
+        return delivered
+    try:
+        return bool(await asyncio.wait_for(asyncio.wrap_future(taken), _TAKE_WAIT_SECONDS))
+    except Exception:  # noqa: BLE001 — a slow loop keeps the old answer
+        _log.warning("agent.user_input_take_unknown")
+        return True
 
 
 async def _resumable_row(
@@ -4760,6 +4795,7 @@ async def respond_user_input(
     queued as a separate chat message.
     """
     import asyncio  # noqa: PLC0415
+    import concurrent.futures  # noqa: PLC0415
 
     from orchestrator.executor import resolve_user_input  # noqa: PLC0415
 
@@ -4791,10 +4827,15 @@ async def respond_user_input(
     _responder = (getattr(user, "email", None) or "").strip().lower() or None
     # A decline ("Not now", owner request 2026-10-18) resolves it too, so
     # the run RESUMES and reads the decline as its tool result.
+    # Task 4036: a run on another event loop says later whether it took the
+    # answer. One that the park ended first took nothing, so the route sets
+    # no mark, and the answer goes on to the late path.
+    _taken: concurrent.futures.Future[bool] = concurrent.futures.Future()
     delivered = resolve_user_input(
         req.request_id, req.answer, req.was_freeform, thread_id=req.thread_id,
-        responder=_responder, declined=req.declined,
+        responder=_responder, declined=req.declined, taken=_taken,
     )
+    delivered = await _cross_loop_take(delivered, _taken)
     # Cross-worker (P1-2): the run may be parked on another worker.  Relay the
     # answer over the control bus so the owning worker resolves its own Future.
     _command: dict[str, Any] = {
@@ -4814,9 +4855,10 @@ async def respond_user_input(
     _org_id = getattr(user, "organization_id", None)
     if delivered:
         # HRD-16: a run took this answer. A repeat of it acts on nothing.
+        # Task 4036: the mark names the session's member, never the body's.
         from orchestrator.answer_once import mark_answered  # noqa: PLC0415
 
-        await mark_answered(_org_id, req.thread_id, req.request_id)
+        await mark_answered(_org_id, req.thread_id, req.request_id, responder=_responder)
     if delivered and not req.declined:
         # EM-CR (email_app_master_plan.md §18, review of #1191): the record of
         # a reply card's answer, only AFTER the thread that owns the card took
@@ -4834,15 +4876,20 @@ async def respond_user_input(
         # HRD-16: a double tap or a retry of an answer or a decline that a run
         # already took. It starts nothing (no resume, no resend), so it acts
         # once. The check comes BEFORE the late-decline resume below.
-        from orchestrator.answer_once import was_answered  # noqa: PLC0415
+        from orchestrator.answer_once import answered_by, same_responder  # noqa: PLC0415
 
-        if await was_answered(_org_id, req.thread_id, req.request_id):
-            _log.info("agent.user_input_repeat", request_id=req.request_id[:12])
+        _marked = await answered_by(_org_id, req.thread_id, req.request_id)
+        if _marked is not None:
+            _by_you = same_responder(_marked, _responder)
+            _log.info(
+                "agent.user_input_repeat", request_id=req.request_id[:12], by_you=_by_you,
+            )
             # A 409 that names the repeat, so the second device reads "someone
             # answered it" and never a false success (chat_run_continuity.md
             # scenario 6). The browser sends nothing again on it, and the route
-            # skips the restart path, so nothing acts twice.
-            raise _answered_once_409()
+            # skips the restart path, so nothing acts twice. Task 4036: it says
+            # when the same member answered, so the words stay out of the box.
+            raise _answered_once_409(_by_you)
     if not delivered and req.declined:
         # RESUME-4a-2 (D-RES-9): a late decline of a parked plain card with a
         # stored call starts a short continuation that runs no tool, so the
