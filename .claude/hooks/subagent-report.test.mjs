@@ -94,12 +94,29 @@ test('buildCall maps a start and a stop', () => {
   })
 })
 
-test('buildCall cleans the label and caps it at 60', () => {
+test('buildCall cleans the label and caps it at the 40 of the edge', () => {
   withTranscript(claim(R1), (p) => {
-    const s = buildCall({ hook_event_name: 'SubagentStart', transcript_path: p, agent_id: 'ag\u0007-1', agent_type: `x\n${'y'.repeat(80)}` })
-    assert.equal(s.args.agent_id, 'ag-1')
-    assert.equal(s.args.agent_type.length, 60)
-    assert.ok(!/[\n\u0007]/.test(s.args.agent_type))
+    const s = buildCall({ hook_event_name: 'SubagentStart', transcript_path: p, agent_id: 'ag-1', agent_type: `x\n${'y'.repeat(50)}` })
+    assert.equal(s.args.agent_type.length, 40)
+    assert.ok(!/[\n]/.test(s.args.agent_type))
+  })
+})
+
+test('a missing type gets the fallback label, because the edge requires it', () => {
+  withTranscript(claim(R1), (p) => {
+    assert.equal(buildCall({ hook_event_name: 'SubagentStop', transcript_path: p, agent_id: 'ag-1' }).args.agent_type, 'subagent')
+    assert.equal(buildCall({ hook_event_name: 'SubagentStop', transcript_path: p, agent_id: 'ag-1', agent_type: '\u0007' }).args.agent_type, 'subagent')
+  })
+})
+
+test('an agent_id over 64 characters or of another shape is skipped, for start and stop alike', () => {
+  withTranscript(claim(R1), (p) => {
+    for (const ev of ['SubagentStart', 'SubagentStop']) {
+      assert.ok(buildCall({ hook_event_name: ev, transcript_path: p, agent_id: 'a'.repeat(65) }).skip)
+      assert.ok(buildCall({ hook_event_name: ev, transcript_path: p, agent_id: 'ag\u0007-1' }).skip)
+      assert.ok(buildCall({ hook_event_name: ev, transcript_path: p, agent_id: 'a b' }).skip)
+      assert.equal(buildCall({ hook_event_name: ev, transcript_path: p, agent_id: 'a'.repeat(64) }).args.agent_id.length, 64)
+    }
   })
 })
 

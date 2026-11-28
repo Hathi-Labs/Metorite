@@ -28,9 +28,13 @@ import os from 'node:os'
 import path from 'node:path'
 
 const MAX_BYTES = 40_000_000
-/** The edge caps a label at 60 characters (SW-7b). */
-const LABEL_MAX = 60
-const AGENT_ID_MAX = 128
+/** The caps and the id shape of the edge (`tools.AGENT_LABEL_MAX`,
+ * `tools.SUBAGENT_ID_MAX`, `tools.SUBAGENT_ID_PATTERN`). */
+const LABEL_MAX = 40
+const AGENT_ID_MAX = 64
+const AGENT_ID = /^[A-Za-z0-9._:-]+$/
+/** The edge requires `agent_type`. A sub-agent with no type gets this label. */
+const FALLBACK_LABEL = 'subagent'
 const TIMEOUT_MS = 4000
 const UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
 
@@ -124,8 +128,10 @@ export function buildCall(input, readFile = (p) => fs.readFileSync(p, 'utf8')) {
   const ev = input.hook_event_name
   const event = ev === 'SubagentStart' ? 'start' : ev === 'SubagentStop' ? 'stop' : null
   if (!event) return { skip: `not a sub-agent event: ${ev}` }
-  const agentId = clean(input.agent_id, AGENT_ID_MAX)
-  if (!agentId) return { skip: 'no agent_id' }
+  // A bad id is skipped, never changed, so a start and its stop always map
+  // to the same id or to no call at all.
+  const agentId = typeof input.agent_id === 'string' ? input.agent_id : ''
+  if (!agentId || agentId.length > AGENT_ID_MAX || !AGENT_ID.test(agentId)) return { skip: 'no usable agent_id' }
   const tp = input.transcript_path
   if (typeof tp !== 'string' || !tp) return { skip: 'no transcript_path' }
   let text
@@ -138,9 +144,7 @@ export function buildCall(input, readFile = (p) => fs.readFileSync(p, 'utf8')) {
   }
   const runId = currentRun(parseTranscript(text))
   if (!runId) return { skip: 'no open run in this session' }
-  const args = { run_id: runId, agent_id: agentId, event }
-  const label = clean(input.agent_type, LABEL_MAX)
-  if (label) args.agent_type = label
+  const args = { run_id: runId, agent_id: agentId, event, agent_type: clean(input.agent_type, LABEL_MAX) || FALLBACK_LABEL }
   return { args }
 }
 
