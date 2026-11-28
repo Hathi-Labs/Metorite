@@ -774,7 +774,7 @@ LBB-2, the claim gate, dark (task 4041, both flags empty, no flip); LBB-4
 (task 4042); LBB-3a (task 4043); LBB-1a (task 4044); LBB-6a (task 4045). LBB-2b (task 4056)
 merged as 021ea5cd55, live at the next release. LBB-5a (task 4046)
 merged as 07960d5b5d, and the premerge default is unchanged. LBB-2c (task 4064) is built
-(§7b.10). Not built: LBB-1b, LBB-3b, LBB-6b.** Each slice ships dark when it is built. Epic: WS-CIV task 1628.
+(§7b.10). IDLE-0 (task 4204, §7b.11) is a proposed spec. Not built: LBB-1b, LBB-3b, LBB-6b.** Each slice ships dark when it is built. Epic: WS-CIV task 1628.
 Spec task: 4040 (LBB-0). Part A, the backlog itself, is task 4019 (lane-land)
 and task 4039 (pc-land-core). `ci_velocity.md` points here.
 
@@ -1928,6 +1928,144 @@ uv run ruff check apps/services/gateway/gateway/routes/projects/claim_gate.py \
 
 **Tier.** HIGH (the claim path): the spec-auditor, an Opus builder, an
 independent verifier, an Opus diff-review and R8 tests on a real database.
+
+
+### 7b.11 IDLE-0: one loop for idle work on every machine (task 4204)
+
+**Status: PROPOSED spec (IDLE-0). Nothing is built.** Each slice below ships
+dark, and its actions start in dry mode. Tier HIGH: the loop can stop sessions
+and write branches. Each slice gets an Opus builder, an independent verifier
+and an Opus diff-review.
+
+**Owner, 2026-11-28 ~07:20 UTC:** "I want to ensure that we have a proper,
+robust system to deal with idle lanes and have mechanisms to deal with those
+idle sessions: either delete those sessions, commit the code, create a PR, or
+push it to production, whatever. We need to have a proper system in which we
+can reach the idle sessions and nudge either the person that needs to take
+care of the idle sessions or match the box directly to deliver the idle
+sessions."
+
+**Evidence.**
+- 2026-11-21: 60 orphan branches and 41 worktrees with unsaved work.
+- 2026-11-28 08:05 UTC, the owner's laptop: 252 worktrees, 10 with unsaved
+  work. metorite-78 saved 8 by hand to `rescue/<name>/20261128` (the comment
+  on task 4204). The oldest was idle for 1,346 hours.
+- 2026-11-28 07:27 UTC: the box account hit its weekly limit. metorite-78
+  saved 12 box worktrees to `rescue/box-<worktree>/20261128` by hand.
+
+**Why here.** IDLE-0 is the last part of "land before build": work that a
+session left behind. The PR states, the merged worktrees and the stale runs
+already have a home (LBB-3, the reaper, the run sweep). IDLE-0 adds the states
+that nothing covers, and one command that reports all of them. The "Idle
+work" view is product surface, so its slice (IDLE-6) belongs in
+`agent_coordination.md`, written with lane-mcp.
+
+#### 7b.11.1 The pieces it extends (no parallel system)
+
+| State | Owner today | What IDLE-0 does |
+|---|---|---|
+| An open PR: conflict, red, behind, green and verified | LBB-3 sweeper (§7b.5) | Reads its rules through `landing_sweeper.Sweeper.classify`. Adds no PR rule |
+| A merged worktree with no change | the reaper, job 2 | Reports it. The reaper removes it |
+| A left loop or a left `pytest` | the reaper, job 3 | Reports it. The reaper stops it |
+| A run past its lease | the run sweep (`agent_run_sweep.py`, task 2859) and SW-62 bulk release (task 4137) | Reports the runs of this machine. IDLE-4 releases a run only when its session is gone |
+| Merged, not live | LBB-1 and LBB-6 (§7b.6, §7b.7) | Reports it. The release slot ships it |
+| An open PR at a session stop | LBB-4, the Stop hook (§7b.4) | Nothing. LBB-4 asks the session itself |
+| A lane that rests on purpose | the lane keeper and `KEEPER_SKIP_LANES` | Reports it. It never stops a keeper lane |
+| An answered question | the answer watcher (task 4062) | Nothing |
+
+#### 7b.11.2 The states that IDLE-0 owns
+
+"Idle" has two parts. No file in the worktree changed in the last hour. No
+transcript record of its session is newer than the limit of the state. A
+machine is one host: the PC, the box, or one cloud box.
+
+| # | State | Found by | Action | Slice |
+|---|---|---|---|---|
+| S1 | A worktree with uncommitted files, idle more than 6 h | `git status --porcelain`, file mtimes | Save to a rescue ref (7b.11.3) | IDLE-2 |
+| S2 | A worktree with commits that no remote holds, idle more than 6 h | `git rev-list HEAD --not --remotes` | Push those commits to a rescue ref | IDLE-2 |
+| S3 | A pushed branch with no PR, its last commit older than 24 h | `git ls-remote`, `gh pr list --head` | A draft PR, linked to its task | IDLE-3 |
+| S4 | A session idle more than 12 h, with S1 to S3 empty for its worktree | `claude agents --json`, its transcript | Stop the session, and release its runs with a handoff | IDLE-4 |
+| S5 | A run of this machine past its lease, whose session is gone | `list_agent_runs` (box token or the lane's login), `claude agents` | Release it with a handoff (the SW-62 path) | IDLE-4 |
+| S6 | A rescue ref or draft PR whose task has a person as owner | the task of the branch | One `ask_on_task` to that person | IDLE-5 |
+| S7 | A rescue ref or draft PR whose task a box lane can finish | the task, and the lane list | A NOTE and a task comment that name the landing lane | IDLE-5 |
+
+The task of a branch comes from the `mt-<8 hex>` short id in its name. With no
+short id, it comes from a `Task:` line of its PR body. With neither, it comes
+from its latest commit message. With no task, S3, S6 and S7 report it and do
+nothing.
+
+#### 7b.11.3 The rescue ref
+
+- The name is `rescue/<branch>/<YYYYMMDD>`. A detached HEAD uses the worktree
+  slug in place of `<branch>`. When the ref exists with other content, the
+  name gets `-2`, `-3` and so on.
+- It is never `main`, never the branch of an open PR, and never a branch that
+  a person pushes. So an open PR does not change.
+- The save never changes the worktree, its index or its branch. It builds the
+  commit with a temporary index (`GIT_INDEX_FILE`): `git add -A` under the
+  worktree's own `.gitignore`, then `git commit-tree` on HEAD, then
+  `git push origin <sha>:refs/heads/<rescue ref>`.
+- Before the push, each file name and each added line passes the one
+  credential list (`acb_common/secret_shapes.py`). A match stops the save for
+  that worktree, and the report names the file, never the value.
+- The commit message holds the machine, the worktree path, the task, the idle
+  hours and "rescue: no review, do not merge".
+- A push never uses force.
+
+#### 7b.11.4 The never rules
+
+Each rule has a fence (R7). A breach is a bug, and the action stops.
+1. Never delete unsaved work. No action removes a worktree, a branch or a
+   file. The reaper still removes a merged, clean worktree, as today.
+2. Never touch a worktree with a file change in the last hour. Never touch a
+   session with a transcript record in the last hour.
+3. Never touch another person's branch or PR. Such a PR has the author
+   `ishaanpilar`, or a head that starts with `ishaan-` or `auto-revert/`. A head
+   that matches `PROTECTED_HEAD_RE` of `merge_bot.sh` is one too. The exception is a dated "yes" from
+   that person on the task.
+4. Never stop a lane on `~/lanes/keeper-lanes.txt`. For a lane that rests on
+   purpose, the action is the keeper skip list, and a person sets it.
+5. Never push to `main`, to the branch of an open PR, or with force.
+6. Never read or report across tenants. The loop reads the dev machines of one
+   org, and each report holds only its own machine.
+
+#### 7b.11.5 One command, dry first
+
+- `scripts/idle_work.py`, Python standard library plus `git`, `gh` and
+  `claude`. It runs on Linux and on Git Bash on Windows. A check that needs
+  `/proc` is skipped on Windows, and the report says so.
+- `--dry-run` is the default. `--apply S1,S2,...` acts only on the named
+  states, and only on states whose slice is built.
+- On the box, a `metorite-idle-work.timer` runs it every 2 hours, in the shape
+  of the answer watcher. `IDLE_WORK_MODE` in its env file is `off` (default),
+  `dry`, or `apply:<states>`.
+- On the PC, a person or a lane runs it by hand:
+  `python scripts/idle_work.py --dry-run`.
+- The report: one TSV line for each item, in `~/lanes/idle-work.tsv` on the
+  box, and on stdout on the PC:
+  `<UTC time><TAB><machine><TAB><state><TAB><would|did><TAB><target><TAB><task><TAB><reason>`.
+- Each action also writes one comment on its task, with the target, the state
+  and the evidence. An item with no task gets only the report line.
+
+#### 7b.11.6 Slices
+
+| Slice | What | Tier | Done when |
+|---|---|---|---|
+| IDLE-0 (task 4204) | This spec | docs | metorite-78 approves the PR |
+| IDLE-1 (task 4216) | The finder and the dry report, on the box and the PC. It reports S1 to S7 and the rows of 7b.11.1 | STANDARD | The report on a fake machine (temp repos, a fake `gh` and `claude`) holds one line per state. With mode `off`, nothing runs. A Windows path skips the `/proc` checks |
+| IDLE-2 (task 4217) | S1 and S2: the rescue ref | HIGH | Each rule of 7b.11.3 has a test. The worktree, its index and its branch are byte-equal before and after. A secret-shaped name stops the save |
+| IDLE-3 (task 4218) | S3: the draft PR | HIGH | A draft PR with `Task:` and `Rescue: no review` lines. Rule 3 of 7b.11.4 skips a person's branch |
+| IDLE-4 (task 4219) | S4 and S5: stop a session, release its runs | HIGH | Rule 2 and rule 4 of 7b.11.4 each have a test. A run is released only with a handoff |
+| IDLE-5 (task 4220) | S6 and S7: a question to the person, or a NOTE to the landing lane | STANDARD | One question per task, never a second while one is open |
+| IDLE-6 (task 4221) | The "Idle work" view: a My Day card for the owner and a section of the Agents map | STANDARD, UI | Written in `agent_coordination.md` with lane-mcp. It reads the report, and adds no second store |
+
+**First real inputs.** The 8 rescue refs of the laptop (the comment on task
+4204) and the 12 box rescue refs of 2026-11-28. IDLE-1 reports them as S6 or
+S7 with their tasks, before any action exists.
+
+**Gate.** Each build is AGENT-SAFE. The box timer is gate `deploy`. Each move
+from `dry` to `apply:<state>` is gate `enforcement-flip`, after one day of
+dry report with no wrong line for that state.
 
 ## 8. What to fix before customer #1 — in order
 
