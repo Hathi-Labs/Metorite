@@ -996,16 +996,118 @@ ENGINE = "packages/acb_skills/acb_skills/user_tool_build.py"
 _ENTRY = frozenset({"start_build"})
 
 
-def test_no_production_module_calls_the_step_engine() -> None:
-    """The residual of the audit (2026-11-27). In SBX-4b1 the step engine
-    grants egress with no card, so no production module may import it or
-    call ``start_build``, and only the engine calls ``acquire_tool``.
-    SBX-4b2 lifts this scan together with its card. Mutation: import the
-    engine, or call ``acquire_tool``, from any other module -> red."""
-    assert _callers_of(_ENTRY, frozenset({ENGINE})) == []
+INJECTION = "apps/services/orchestrator/orchestrator/_tool_injection.py"
+
+
+def _engine_imports(tree: Any) -> set[str]:
+    """The names that a module imports from the engine. ``*`` for a bare
+    import of the module, and ``.`` for a reach into it by attribute."""
+    import ast
+
+    found: set[str] = set()
+    aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if (node.module or "").endswith("user_tool_build"):
+                found |= {a.name for a in node.names}
+            for a in node.names:
+                if a.name == "user_tool_build":
+                    found.add("*")
+                    aliases.add(a.asname or a.name)
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name.endswith("user_tool_build"):
+                    found.add("*")
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+                and node.value.id in aliases):
+            found.add(".")
+    return found
+
+
+def _start_build_sites(tree: Any) -> list[str]:
+    """The functions of the engine that name ``start_build`` in code, other
+    than its own definition."""
+    import ast
+
+    sites: list[str] = []
+    for fn in ast.walk(tree):
+        if not isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef) or fn.name == "start_build":
+            continue
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Name) and node.id == "start_build":
+                sites.append(fn.name)
+                break
+    return sites
+
+
+def _starts_after_the_card(fn: Any) -> bool:
+    """True when each ``start_build`` of *fn* comes after a
+    ``request_confirmation`` call, and an ``if <answer> is not True:`` with a
+    ``return`` sits between them."""
+    import ast
+
+    cards = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call)
+             and isinstance(n.func, ast.Name) and n.func.id == "request_confirmation"]
+    starts = [n.lineno for n in ast.walk(fn)
+              if isinstance(n, ast.Name) and n.id == "start_build"]
+    stops = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.If)
+             and isinstance(n.test, ast.Compare)
+             and any(isinstance(op, ast.IsNot) for op in n.test.ops)
+             and any(isinstance(c, ast.Constant) and c.value is True
+                     for c in n.test.comparators)
+             and any(isinstance(b, ast.Return) for b in n.body)]
+    if not cards or not starts:
+        return False
+    first_card = min(cards)
+    return all(any(first_card < stop < start for stop in stops) for start in starts)
+
+
+def _scan_engine(root: Path = REPO_ROOT) -> list[str]:
+    """The findings of the scan of decision 13 (audit B5), or []."""
+    import ast
+
+    found = [f"{rel} uses the engine"
+             for rel in _callers_of(_ENTRY, frozenset({ENGINE, INJECTION}), root)]
+    injection = root / INJECTION
+    if injection.is_file():
+        names = _engine_imports(ast.parse(injection.read_text(encoding="utf-8")))
+        if names - {"build_tool"}:
+            found.append(f"{INJECTION} imports {sorted(names - {'build_tool'})}")
+        tree = ast.parse(injection.read_text(encoding="utf-8"))
+        if any((isinstance(n, ast.Name) and n.id in ("start_build", "acquire_tool"))
+               or (isinstance(n, ast.Attribute) and n.attr in ("start_build", "acquire_tool"))
+               for n in ast.walk(tree)):
+            found.append(f"{INJECTION} names start_build or acquire_tool in code")
+    engine = root / ENGINE
+    if engine.is_file():
+        tree = ast.parse(engine.read_text(encoding="utf-8"))
+        sites = _start_build_sites(tree)
+        if sites != ["build_tool"]:
+            found.append(f"start_build is named in {sites}")
+        for fn in ast.walk(tree):
+            if isinstance(fn, ast.AsyncFunctionDef) and fn.name == "build_tool" and not (
+                    _starts_after_the_card(fn)):
+                found.append("build_tool starts a build before the card says yes")
+    return found
+
+
+def test_only_build_tool_starts_a_build_after_the_card() -> None:
+    """§12.4 done-when 36d (decision 13, audit B5). This scan replaces the
+    dark scan of SBX-4b1. Only ``build_tool`` names ``start_build``, and only
+    after ``request_confirmation`` and its ``is not True`` return. No other
+    production module imports the engine, and ``_tool_injection.py``
+    imports ``build_tool`` and nothing else of it. Only the engine reaches
+    ``acquire_tool``.
+
+    Mutations: call ``start_build`` before the card, or drop the ``is not
+    True`` return, or import ``start_build`` in ``_tool_injection.py``, or
+    import the engine in any other module -> red."""
+    assert _scan_engine() == []
 
 
 def test_the_engine_scan_turns_red(tmp_path: Path) -> None:
+    """Non-vacuity of the scan: each bad shape gives a finding."""
     fake = tmp_path / "apps" / "x"
     fake.mkdir(parents=True)
     (fake / "a.py").write_text(
@@ -1017,6 +1119,33 @@ def test_the_engine_scan_turns_red(tmp_path: Path) -> None:
     (fake / "d.py").write_text("x = 'start_build in a string'\n", encoding="utf-8")
     owners = frozenset({ENGINE})
     assert _callers_of(_ENTRY, owners, tmp_path) == ["apps/x/a.py", "apps/x/b.py", "apps/x/c.py"]
+    inj = tmp_path / INJECTION
+    inj.parent.mkdir(parents=True)
+    inj.write_text("from acb_skills.user_tool_build import build_tool, start_build\n"
+                   "x = start_build\n", encoding="utf-8")
+    eng = tmp_path / ENGINE
+    eng.parent.mkdir(parents=True)
+    eng.write_text(
+        "async def start_build(s):\n    pass\n\n"
+        "async def build_tool(g, r, b):\n"
+        "    async with start_build(r):\n        pass\n"
+        "    approved = await request_confirmation('t')\n"
+        "    if approved is not True:\n        return 'no'\n"
+        "async def other():\n    return start_build\n", encoding="utf-8")
+    found = _scan_engine(tmp_path)
+    assert any("imports ['start_build']" in f for f in found), found
+    assert any("names start_build" in f for f in found), found
+    assert any("start_build is named in" in f for f in found), found
+    assert any("before the card" in f for f in found), found
+    good = tmp_path / "good"
+    (good / ENGINE).parent.mkdir(parents=True)
+    (good / ENGINE).write_text(
+        "async def start_build(s):\n    pass\n\n"
+        "async def build_tool(g, r, b):\n"
+        "    approved = await request_confirmation('t')\n"
+        "    if approved is not True:\n        return 'no'\n"
+        "    async with start_build(r):\n        pass\n", encoding="utf-8")
+    assert _scan_engine(good) == []
 
 
 def test_the_install_command_is_fixed() -> None:
@@ -1033,6 +1162,394 @@ def test_the_install_command_is_fixed() -> None:
         "PYTHONPATH=/workspace/.run/site PYTHONNOUSERSITE=1 exec python3 "
         "/workspace/.run/pkg/main.py"
     )
+
+
+# ── SBX-4b2: build_tool, the card and the build session ────────────────────
+
+GAP = "00000000-0000-4000-8000-0000000004b2"
+CHAT_RUN = "run-sbx4b2"
+NEED = "count the open leads of my team"
+BRIEF = "BRIEF-WORDS Write a tool that counts the leads."
+
+
+def gap_row(**over: Any) -> Any:
+    """A ``no_match`` gap row of the bound chat run, made now."""
+    from datetime import UTC, datetime
+
+    from gateway.studio import tool_gaps
+
+    values: dict[str, Any] = {
+        "id": GAP, "member_email": ENGINE_MEMBER, "thread_id": over.pop("thread", ""),
+        "run_id": CHAT_RUN, "need": NEED, "outcome": "no_match",
+        "created_at": datetime.now(UTC)}
+    values.update(over)
+    return tool_gaps.GapRecord(**values)
+
+
+@pytest.fixture
+def chat(engine: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """``build_tool`` in the web pack turn of the orchestrator, on the fake
+    broker of ``engine``. The gap stores, the card and the mark are fakes.
+    ``w.gaps`` gives one row for each read (the last one stays), and
+    ``w.answers`` one answer for each card. ``w.on_card`` runs while the
+    card waits. The session writes a good package and runs one round."""
+    from acb_common.db import bind_tenant, release_tenant
+    from acb_skills import ask_tools, egress
+    from acb_skills.tool_packs import PACK_RUN_KEY
+    from acb_skills.write_artifact import derive_artifact_context
+    from gateway.studio import tool_gaps, user_tool_runs
+    from orchestrator import sandbox_broker as sb
+
+    ute = engine.ute
+    s = engine.settings
+    monkeypatch.setattr(s, "user_tool_find_enabled", True)
+    monkeypatch.setattr(s, "sandbox_door_orgs", ENGINE_ORG)
+    monkeypatch.setattr(s, "sandbox_approval_timeout_seconds", 123)
+    w = SimpleNamespace(engine=engine, ute=ute, broker=engine.broker,
+                        gaps=[gap_row(thread=engine.thread)], answers=[True], cards=[],
+                        moves=[], built=False, marked=False, on_card=None, sessions=[],
+                        script=None, reads=0)
+
+    async def read_gap(db: Any, gap_id: str) -> Any:
+        w.reads += 1
+        return w.gaps.pop(0) if len(w.gaps) > 1 else w.gaps[0]
+
+    async def has_build_row(db: Any, gap_id: str) -> bool:
+        return bool(w.built)
+
+    async def set_gap_outcome(db: Any, gap_id: str, outcome: str) -> bool:
+        w.moves.append(outcome)
+        return True
+
+    async def request_confirmation(title: str, detail: str = "", context: str = "",
+                                   **kw: Any) -> Any:
+        w.cards.append({"title": title, "detail": detail, "context": context, **kw})
+        if w.on_card is not None:
+            w.on_card()
+        return w.answers.pop(0) if w.answers else False
+
+    async def session_is_marked(ctx: Any = None) -> bool:
+        return bool(w.marked)
+
+    async def session(build: Any, *, need: str, brief: str, scopes: Any) -> None:
+        w.sessions.append((need, brief, tuple(scopes)))
+        if w.script is not None:
+            await w.script(build)
+            return
+        passing(w.broker)
+        write_package(build.tool_data / "pkg", package_files())
+        await build.run_smoke()
+
+    monkeypatch.setattr(tool_gaps, "read_gap", read_gap)
+    monkeypatch.setattr(user_tool_runs, "has_build_row", has_build_row)
+    monkeypatch.setattr(tool_gaps, "set_gap_outcome", set_gap_outcome)
+    monkeypatch.setattr(ask_tools, "request_confirmation", request_confirmation)
+    monkeypatch.setattr(egress, "session_is_marked", session_is_marked)
+    monkeypatch.setattr(ute, "_build_session", session)
+    token = bind_tenant(ENGINE_ORG)
+    try:
+        with bound_run(ENGINE_ORG, "orchestrator", member=ENGINE_MEMBER, thread=engine.thread):
+            derive_artifact_context(run_id=CHAT_RUN, **{PACK_RUN_KEY: "key-sbx4b2"})
+            assert sb.read_tool_binding().tool_data == engine.tool_data
+            yield w
+    finally:
+        release_tenant(token)
+
+
+def _acquired(w: Any) -> int:
+    return sum(1 for c in w.broker.calls if c[0] == "acquire")
+
+
+async def test_the_card_shows_the_gap_need_and_the_scopes(chat: Any) -> None:
+    """§12.4 done-when 31 (decision 12). The card holds the ``need`` of the
+    gap row, the read scopes and the PyPI line, each value fenced. The brief
+    of the model is not on it. The marked line shows only in a marked
+    session. A refusal starts nothing.
+
+    Mutations: put the brief on the card, or drop the PyPI line, or show the
+    marked line always -> red."""
+    from acb_common.tool_refusals import data
+
+    w = chat
+    w.answers = [False, False]
+    told = await w.ute.build_tool(GAP, ["crm:read"], BRIEF)
+    assert told.startswith("The member did not approve the build")
+    [card] = w.cards
+    assert card["title"] == w.ute.CARD_TITLE
+    assert data(NEED) in card["context"]
+    assert data("crm:read") in card["context"] and data("crm:read") in card["detail"]
+    assert w.ute.CARD_PYPI in card["context"]
+    assert w.ute.CARD_MARKED not in card["context"]
+    for field in ("title", "detail", "context"):
+        assert "BRIEF-WORDS" not in card[field] and "counts the leads" not in card[field]
+    assert card["fenced"] is True
+    assert _acquired(w) == 0 and w.sessions == []
+    w.marked = True
+    await w.ute.build_tool(GAP, ["crm:read"], BRIEF)
+    assert w.ute.CARD_MARKED in w.cards[1]["context"]
+    assert "credit" not in w.cards[1]["context"].lower()
+
+
+@pytest.mark.parametrize("change", ["none", "outcome", "old", "built", "run"])
+async def test_the_card_waits_the_setting_and_checks_again(chat: Any, change: str) -> None:
+    """§12.4 done-when 36b (audit B3). The card waits
+    ``sandbox_approval_timeout_seconds``, denies with no channel, and only
+    the member of the run may answer it. After the approval the tool reads
+    the gap row again: a row that left ``no_match``, grew too old, got a
+    build row or moved to another run starts nothing.
+
+    Mutation: drop the second ``_gap_refusal`` -> the build starts -> red.
+    Mutation: pass no ``timeout_s`` -> red."""
+    from datetime import UTC, datetime, timedelta
+
+    w = chat
+    later = {
+        "none": gap_row(thread=w.engine.thread),
+        "outcome": gap_row(thread=w.engine.thread, outcome="declined"),
+        "old": gap_row(thread=w.engine.thread,
+                       created_at=datetime.now(UTC) - timedelta(minutes=31)),
+        "built": gap_row(thread=w.engine.thread),
+        "run": gap_row(thread=w.engine.thread, run_id="run-other"),
+    }[change]
+    w.gaps = [gap_row(thread=w.engine.thread), later]
+    if change == "built":
+        w.on_card = lambda: setattr(w, "built", True)
+    told = await w.ute.build_tool(GAP, ["crm:read"], BRIEF)
+    [card] = w.cards
+    assert card["timeout_s"] == 123
+    assert card["non_interactive_default"] == "deny"
+    assert card["responder"] == ENGINE_MEMBER
+    assert re.fullmatch(r"[0-9a-f]{32}", card["request_id"])
+    assert w.reads == 2, "the gap row is read again after the approval"
+    if change == "none":
+        assert _acquired(w) == 1 and told.startswith("The tool of the gap")
+        assert w.sessions == [(NEED, BRIEF, ("crm:read",))]
+    else:
+        assert _acquired(w) == 0 and w.sessions == [] and w.moves == []
+        assert told.startswith("build_tool refused: the gap"), told
+
+
+@pytest.mark.parametrize("off", ["scope", "other_org", "door", "find", "egress", "delegated",
+                                 "whatsapp", "agent", "no_agent", "none"])
+async def test_build_tool_checks_the_gate_on_each_call(
+        chat: Any, off: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """SBX-F7 at the call (decision 12). The tool reads the four switches and
+    the turn again on each call, so a flip, a delegated run (no pack run
+    key), a WhatsApp run or another agent gets the fixed refusal and no read.
+
+    Mutation: drop ``build_tool_open`` or ``_chat_turn`` from the tool -> red."""
+    from acb_skills import whatsapp_ui
+    from acb_skills.tool_packs import PACK_RUN_KEY
+    from acb_skills.write_artifact import derive_artifact_context
+
+    w = chat
+    s = w.engine.settings
+    if off == "scope":
+        monkeypatch.setattr(s, "maf_coding_scope", "")
+    elif off == "other_org":
+        monkeypatch.setattr(s, "maf_coding_scope", "tools:bbbbbbbb-0000-4000-8000-000000000001")
+    elif off == "door":
+        monkeypatch.setattr(s, "sandbox_door_orgs", "")
+    elif off == "find":
+        monkeypatch.setattr(s, "user_tool_find_enabled", False)
+    elif off == "egress":
+        monkeypatch.setattr(s, "sandbox_egress_enabled", False)
+    elif off == "delegated":
+        derive_artifact_context(**{PACK_RUN_KEY: None})
+    elif off == "whatsapp":
+        monkeypatch.setattr(whatsapp_ui, "current_run", lambda: object())
+    elif off == "agent":
+        derive_artifact_context(agent_name="crm-assistant")
+    elif off == "no_agent":
+        # The broker binding still reads, so only the agent check refuses
+        # (fix round P3-4: a missing agent name is no orchestrator).
+        from orchestrator import sandbox_broker as sb
+
+        binding = sb.read_tool_binding()
+        monkeypatch.setattr(sb, "read_tool_binding", lambda: binding)
+        derive_artifact_context(agent_name=None)
+    told = await w.ute.build_tool(GAP, ["crm:read"], BRIEF)
+    if off == "none":
+        assert told.startswith("The tool of the gap"), told
+        return
+    assert told == w.ute.REFUSED_OFF, off
+    assert w.reads == 0 and w.cards == [] and not w.broker.calls
+
+
+async def test_one_build_for_each_gap_at_a_time(
+        chat: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fix round P3-2 and P3-3 (§12.4 decision 12, the per-gap marker). Two
+    calls for one gap at the same time give one card and one build. The
+    second call gets the fixed refusal ``in_work`` and shows no card, so a
+    decline of a second card never closes a gap that a build holds.
+
+    Mutation: drop the marker check -> two cards -> red."""
+    w = chat
+    waiting, release = asyncio.Event(), asyncio.Event()
+    from acb_skills import ask_tools
+
+    real = ask_tools.request_confirmation
+
+    async def slow(title: str, detail: str = "", context: str = "", **kw: Any) -> Any:
+        waiting.set()
+        # A bound wait: a second card (the mutant) times out here and the
+        # asserts below fail, in place of a hang.
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(release.wait(), 5)
+        return await real(title, detail, context, **kw)
+
+    monkeypatch.setattr(ask_tools, "request_confirmation", slow)
+    first = asyncio.ensure_future(w.ute.build_tool(GAP, ["crm:read"], BRIEF))
+    await waiting.wait()
+    second = await w.ute.build_tool(GAP, ["crm:read"], BRIEF)
+    release.set()
+    told = await first
+    assert "in_work" in second and second.startswith("build_tool refused: the gap")
+    assert told.startswith("The tool of the gap"), told
+    assert len(w.cards) == 1 and _acquired(w) == 1 and w.moves == []
+    assert set() == w.ute._OPEN_GAPS
+
+
+@pytest.mark.parametrize("path", ["pass", "decline", "refused", "busy", "fault", "cancel"])
+async def test_the_gap_marker_clears_on_each_exit_path(
+        chat: Any, path: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fix round P3-2 and P3-3. The marker of the gap clears on a pass, a
+    decline, a refusal after the card, a build that never started, a fault
+    and a cancel. Then a later call for the gap can run again.
+
+    Mutation: clear the marker on the pass path only -> red."""
+    from orchestrator import sandbox_broker as sb
+
+    w = chat
+    if path == "decline":
+        w.answers = [False]
+    elif path == "refused":
+        w.gaps = [gap_row(thread=w.engine.thread),
+                  gap_row(thread=w.engine.thread, outcome="declined")]
+    elif path == "busy":
+        async def busy() -> Any:
+            raise sb.SandboxBusy("busy")
+        monkeypatch.setattr(w.broker, "acquire_tool", busy)
+    elif path == "fault":
+        async def boom(build: Any) -> None:
+            raise RuntimeError("a model fault")
+        w.script = boom
+    elif path == "cancel":
+        async def hang(build: Any) -> None:
+            await asyncio.sleep(3600)
+        w.script = hang
+    task = asyncio.ensure_future(w.ute.build_tool(GAP, ["crm:read"], BRIEF))
+    if path == "cancel":
+        while not w.sessions:
+            await asyncio.sleep(0.01)
+        assert {(ENGINE_ORG, GAP)} == w.ute._OPEN_GAPS, "the marker holds the build"
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        await task
+    assert set() == w.ute._OPEN_GAPS, path
+
+
+async def test_the_session_command_holds_no_grant_and_no_token(engine: Any) -> None:
+    """§12.4 done-when 36c (audit B4). The session ``run_command`` runs with
+    no egress grant, no ``env_file`` and so no ``METORITE_API_TOKEN``, and
+    with its own timeout inside the build budget. A grant that is still live
+    is revoked first.
+
+    Mutations: pass the env file of the smoke step, or skip the revoke, or
+    drop the cap of :data:`SESSION_COMMAND_MAX_S` -> red."""
+    ute = engine.ute
+    async with ute.start_build({"crm:read"}) as build:
+        engine.broker.hosts = ("pypi.org",)  # a grant that is still live
+        told = await ute._session_command(build, "ls /workspace/.run/pkg", 9999)
+        build.deadline = __import__("time").monotonic() + 5
+        await ute._session_command(build, "true", 60)
+        tools = {t.name: t for t in ute._session_tools(build, asyncio.Event())}
+        await tools["run_command"].func("echo hi", 30)
+    assert told.startswith("[exit code 0]")
+    execs = engine.broker.execs()
+    assert len(execs) == 3
+    for _exec, command, env_file, hosts, timeout_s in execs:
+        assert env_file == {} and hosts is None, (command, env_file, hosts)
+        assert "METORITE_API_TOKEN" not in command
+        assert 0 < timeout_s <= ute.SESSION_COMMAND_MAX_S
+    assert execs[0][4] == ute.SESSION_COMMAND_MAX_S
+    assert execs[1][4] <= 5
+    assert engine.stores.mints == [], "no session command mints a capability"
+
+
+async def test_the_build_session_holds_its_own_tools_only(
+        engine: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """§12.4 done-when 35 (decision 13). The session builds on the one
+    harness with the flags of ``code_task``, the model
+    ``user_tool_build_model``, a store over ``pkg/`` and the tools
+    ``run_command`` and ``smoke_test``. The pin withholds and refuses each
+    other tool. The store refuses a path outside ``pkg/``.
+
+    Mutations: drop the pin from the middleware, or add a name to
+    ``SESSION_TOOLS`` -> red."""
+    from acb_skills.tool_guard import RefuseTools, WithholdTools
+    from agent_framework import AgentFileStore, FunctionInvocationContext, tool
+    from orchestrator import code_session
+
+    ute = engine.ute
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(engine.settings, "user_tool_build_model", "tier-test", raising=False)
+    monkeypatch.setattr(code_session, "harness_client",
+                        lambda model, **kw: seen.setdefault("model", model) and object())
+    monkeypatch.setattr(code_session, "coding_harness_agent",
+                        lambda client, **kw: seen.update(kw) or SimpleNamespace())
+    async with ute.start_build({"crm:read"}) as build:
+        ute._session_agent(build, asyncio.Event())
+        store = seen["store"]
+        assert isinstance(store, AgentFileStore)
+        await store.write("main.py", "print(1)\n")
+        assert await store.read("main.py") == "print(1)\n"
+        assert (build.tool_data / "pkg" / "main.py").is_file()
+        for bad in ("../x.py", "a/b.py", ".hidden", "/etc/passwd", ""):
+            with pytest.raises(ValueError):
+                await store.write(bad, "x")
+        with pytest.raises(ValueError):
+            await store.create_directory("sub")
+    assert seen["model"] == "tier-test"
+    assert {t.name for t in seen["tools"]} == {"run_command", "smoke_test"}
+    for flag, value in code_session.HARNESS_FLAGS.items():
+        assert seen[flag] is value, flag
+    pin = seen["middleware"]
+    assert [type(m) for m in pin] == [WithholdTools, RefuseTools]
+    assert ute.SESSION_FILE_TOOLS | {"run_command", "smoke_test"} == ute.SESSION_TOOLS
+
+    async def noop() -> str:
+        return "ran"
+
+    foreign = [tool(noop, name=n) for n in ("web_search", "request_network_access",
+                                              "code_task", "file_memory_write")]
+    own = [tool(noop, name=n) for n in sorted(ute.SESSION_TOOLS)]
+    ctx = SimpleNamespace(options={"tools": [*foreign, *own]})
+
+    async def nothing() -> None:
+        return None
+
+    await pin[0].process(ctx, nothing)
+    assert {t.name for t in ctx.options["tools"]} == ute.SESSION_TOOLS
+    for one in foreign:
+        call = FunctionInvocationContext(function=one, arguments={}, tools=[])
+        ran: list[str] = []
+
+        async def go(ran: list[str] = ran) -> None:
+            ran.append("x")
+
+        await pin[1].process(call, go)
+        assert ran == [] and "not a tool of this build session" in str(call.result)
+    call = FunctionInvocationContext(function=own[0], arguments={}, tools=[])
+    ran2: list[str] = []
+
+    async def go2() -> None:
+        ran2.append("x")
+
+    await pin[1].process(call, go2)
+    assert ran2 == ["x"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1483,3 +2000,106 @@ async def test_a_full_tool_data_fails_the_smoke_test(real_build: Any,
         await _stop(real.broker)
     assert result.exit_code == 0 and not result.passed
     assert (result.outcome, result.error_class) == ("failed", real.ute.QUOTA)
+
+
+class _StubBuildModel:
+    """A scripted model of the build session. It writes the package with the
+    file tools of the session, lists it with the session ``run_command``,
+    and calls ``smoke_test``. It then waits, and the pass ends the session."""
+
+    def __init__(self, ute: Any, build: Any, done: asyncio.Event,
+                 files: dict[str, bytes], seen: list[str]) -> None:
+        self.tools = {t.name: t for t in ute._session_tools(build, done)}
+        self.store = ute._store_of(build)
+        self.files = files
+        self.seen = seen
+
+    def create_session(self) -> None:
+        return None
+
+    async def run(self, task: str, session: Any = None) -> None:
+        self.seen.append(task)
+        for name, data in self.files.items():
+            await self.store.write(name, data.decode("utf-8"))
+        listed = await self.tools["run_command"].func("ls /workspace/.run/pkg", 30)
+        self.seen.append(listed)
+        self.seen.append(await self.tools["run_command"].func(
+            "env | grep -c METORITE_API_TOKEN || true", 30))
+        self.seen.append(await self.tools["smoke_test"].func())
+        await asyncio.sleep(3600)
+
+
+@pytest.mark.sandbox_docker
+async def test_the_chat_builds_a_read_only_tool_end_to_end(
+        real_build: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """§12.4 done-when 36. The chat path end to end with a stub model, on a
+    real broker, a real proxy and the door kit. The chat calls
+    ``build_tool``, the card approves, the session writes the package and
+    calls ``smoke_test``, and the tool reads two pages through the door and
+    passes. The session commands hold no token. The gap stays ``no_match``.
+    The sandbox_docker job has no database, so the gap stores are fakes."""
+    from acb_common.db import bind_tenant, release_tenant
+    from acb_skills import ask_tools, egress
+    from acb_skills.tool_packs import PACK_RUN_KEY
+    from acb_skills.write_artifact import derive_artifact_context
+    from gateway.studio import tool_gaps, user_tool_runs
+
+    from tests.unit._sandbox_broker_fakes import bound_run as _bound
+
+    real = real_build
+    ute = real.ute
+    lock = f"{WHEEL_NAME}=={WHEEL_VERSION} --hash=sha256:{real.sha}\n"
+    files = _fixture_package(_READ_TWO_PAGES, reads=["crm:read", "projects:read"], lock=lock)
+    monkeypatch.setattr(real.settings, "user_tool_find_enabled", True)
+    monkeypatch.setattr(real.settings, "sandbox_door_orgs", real.kit.ORG_A)
+    thread = str(uuid.uuid4())
+    moves: list[str] = []
+    cards: list[dict[str, Any]] = []
+    seen: list[str] = []
+
+    async def read_gap(db: Any, gap_id: str) -> Any:
+        return gap_row(thread=thread, member_email=real.kit.MEMBER)
+
+    async def has_build_row(db: Any, gap_id: str) -> bool:
+        return False
+
+    async def set_gap_outcome(db: Any, gap_id: str, outcome: str) -> bool:
+        moves.append(outcome)
+        return True
+
+    async def request_confirmation(title: str, detail: str = "", context: str = "",
+                                   **kw: Any) -> bool:
+        cards.append({"context": context, **kw})
+        return True
+
+    async def unmarked(ctx: Any = None) -> bool:
+        return False
+
+    monkeypatch.setattr(tool_gaps, "read_gap", read_gap)
+    monkeypatch.setattr(user_tool_runs, "has_build_row", has_build_row)
+    monkeypatch.setattr(tool_gaps, "set_gap_outcome", set_gap_outcome)
+    monkeypatch.setattr(ask_tools, "request_confirmation", request_confirmation)
+    monkeypatch.setattr(egress, "session_is_marked", unmarked)
+    monkeypatch.setattr(ute, "_session_agent", lambda build, done: _StubBuildModel(
+        ute, build, done, files, seen))
+    token = bind_tenant(real.kit.ORG_A)
+    try:
+        with _bound(real.kit.ORG_A, "orchestrator", member=real.kit.MEMBER, thread=thread):
+            derive_artifact_context(run_id=CHAT_RUN, **{PACK_RUN_KEY: "key-e2e"})
+            try:
+                told = await ute.build_tool(GAP, ["crm:read", "projects:read"], BRIEF)
+            finally:
+                await real.broker.end_run()
+    finally:
+        release_tenant(token)
+        await _stop(real.broker)
+    assert told.startswith("The tool of the gap"), (told, seen[-1:])
+    assert len(cards) == 1 and moves == []
+    assert "main.py" in seen[1], seen[1]
+    assert seen[2].strip().endswith("0"), "a session command holds no token"
+    assert seen[3].startswith("smoke_test passed"), seen[3]
+    smoke = [r for r in real.rows if r["phase"] == "smoke"]
+    assert len(smoke) == 1 and smoke[0]["api_reads"] == 2
+    assert smoke[0]["gap_id"] == GAP
+    assert real.rows[-1]["phase"] == "build" and real.rows[-1]["outcome"] == "succeeded"
+    assert real.caps == {}, "the round revoked its capability"

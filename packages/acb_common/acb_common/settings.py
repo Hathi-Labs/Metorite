@@ -1488,6 +1488,10 @@ class Settings(FlagRegistry):
     user_tool_max_per_org: int = 1
     user_tool_max_total: int = 1
     user_tool_step_seconds_build: int = 600
+    # SBX-4b2 (agent_sandbox.md §6.9 and §12.4 decision 13). The model of the
+    # build session of `build_tool`. The default is the tier of `code_task`.
+    # Fence: tests/unit/test_user_tool_build.py.
+    user_tool_build_model: str = "tier-balanced"
     # Disk checks of §7.1 rule 10. The floor is the free space of the file
     # system that holds state_root(). The owner sizes it at WS43-G3.
     sandbox_min_free_disk_mb: int = 5120

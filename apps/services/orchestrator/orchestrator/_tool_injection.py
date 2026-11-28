@@ -2082,6 +2082,79 @@ def _compute_withheld() -> frozenset[str]:
     return frozenset({"compute_run"})
 
 
+#: SBX-4b2 (``agent_sandbox.md`` §12.4 decision 12, audit B2). Whether
+#: ``build_tool`` fits in the request of THIS turn. The pack step
+#: (:func:`_apply_tool_packs`) sets it after ``compute_run`` takes its place,
+#: so the tool never costs a pack or ``compute_run`` a place. Default False:
+#: only a pack turn ever sets it. Fence: ``tests/unit/test_user_tool_injection.py``.
+_BUILD_ROOM: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "build_room", default=False)
+
+#: The one agent that may hold ``build_tool`` (SBX-F7).
+_BUILD_AGENT = "orchestrator"
+
+
+def _build_tool_withheld(
+    agent_name: str | None, run_ctx: Mapping[str, Any], *, pack_turn: bool,
+) -> frozenset[str]:
+    """``build_tool`` unless THIS run may hold it (SBX-4b2, SBX-F7).
+
+    Each of these must hold. The agent is ``orchestrator``. *pack_turn* is
+    True: :func:`_apply_tool_packs` passes it for a web pack turn of
+    ``executor._start_pack_turn`` with the tool search on, so a delegated
+    run, a WhatsApp turn, a chat turn with no pack and a run with no chat
+    never pass. The run is not ``no_egress`` (H-236), because the tool
+    reaches PyPI. The tool has its room (:data:`_BUILD_ROOM`). And the four
+    switches of decision 12 are on for the org of the binding:
+    ``MAF_CODING_SCOPE`` names ``tools:<org>``, ``user_tool_find_enabled``
+    is on, ``SANDBOX_DOOR_ORGS`` names the org, and
+    ``sandbox_egress_enabled`` is on.
+
+    An agent ``tool_scope`` is never the gate: the tool is not in
+    :func:`_collect_injectable_platform_tools`, so no scope entry reaches it.
+    The tool checks the switches and the turn again on each call. A fault
+    withholds the tool.
+    """
+    name = frozenset({"build_tool"})
+    if agent_name != _BUILD_AGENT or not pack_turn or run_ctx.get("no_egress"):
+        return name
+    if not _BUILD_ROOM.get():
+        return name
+    try:
+        from acb_auth.sandbox_capabilities import door_orgs
+        from acb_common import get_settings
+
+        from orchestrator import sandbox_broker as sb
+
+        org = str(_run_org_or_none() or "").strip().lower()
+        settings = get_settings()
+        doors = door_orgs()
+        open_ = bool(
+            org and bool(getattr(settings, "user_tool_find_enabled", False))
+            and sb.maf_coding_scope_allows(sb.TOOLS_TARGET, org)
+            and (org in doors or "*" in doors) and sb.egress_enabled(settings))
+    except Exception:
+        return name
+    return frozenset() if open_ else name
+
+
+def _add_build_tool(
+    pool: list[Any], agent_name: str | None, run_ctx: Mapping[str, Any], *, pack_turn: bool,
+) -> None:
+    """SBX-4b2: put ``build_tool`` in *pool* when :func:`_build_tool_withheld`
+    names nothing. :func:`_apply_tool_packs` calls it at its end, for the
+    agent's own list of THIS run only. So the B6 gate of
+    :func:`_inject_agent_tools` wraps it (``_gate_own_maf_tools``), and no
+    other run holds it."""
+    if _build_tool_withheld(agent_name, run_ctx, pack_turn=pack_turn):
+        return
+    try:
+        from acb_skills.user_tool_build import build_tool
+    except ImportError:
+        return
+    pool.extend(_as_agent_tools([build_tool]))
+
+
 def _whatsapp_withheld() -> frozenset[str]:
     """The tools a WhatsApp run does not get, or nothing outside one (WAC-10a).
 
@@ -4606,6 +4679,7 @@ async def _apply_tool_packs(
     base = _pack_base_count(agent, agent_name=agent_name, tool_scope=tool_scope,
                             agent_config=agent_config, disabled=disabled)
     _COMPUTE_ROOM.set(base + 1 <= tool_packs.MAX_REQUEST_TOOLS)  # a no-pack exit keeps it
+    _BUILD_ROOM.set(False)  # only the end of this apply gives build_tool a place
     # WS-67 TS-2a (D222 decision 13): ``find_tools`` rides in each request of
     # a run where the search is on, so the cap counts it before the first
     # choice. The org is the bound tenant, never a request field (R5). At the
@@ -4744,6 +4818,9 @@ async def _apply_tool_packs(
                      if slug in SKILL_FAMILIES) if planned_tools + n <= cap),
         default=0)
     _COMPUTE_ROOM.set(planned_tools + reserve + 1 <= cap)
+    # SBX-4b2 (audit B2): ``build_tool`` takes the place after ``compute_run``,
+    # and no other. A turn at the cap keeps its packs and ``compute_run``.
+    _BUILD_ROOM.set(planned_tools + reserve + int(not _compute_withheld()) + 1 <= cap)
     opts["instructions"] = persona
     pool[:] = [t for t in pool if _delegates_to(t) not in replaced]
     pool.extend(added)
@@ -4779,6 +4856,7 @@ async def _apply_tool_packs(
                             pack_tools={_tool_name(t) for b in builds for t in b.tools}))
     if offer_loader and not _offer_pack_loader(agents, applied, plan, candidates) and via:
         _log.error("executor.pack_loader_stranded", owners=sorted(via))
+    _add_build_tool(pool, agent_name, run_ctx, pack_turn=search_on and not read_only)
     # TS-2a: with the search on, the run holds ``find_tools`` also with no
     # build, no offer and no candidate, so the run key and the record bind.
     return applied if builds or plan.offered or skills or candidates is not None else None

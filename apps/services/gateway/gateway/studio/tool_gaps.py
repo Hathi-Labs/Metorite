@@ -12,6 +12,12 @@ once for each such call. The route ``GET /studio/tool-gaps``
 (``routes/studio/tool_gaps.py``) calls :func:`gap_summary`. This module reads
 no flag, and the callers read theirs first.
 
+**The build half (SBX-4b2, task 4049, §12.4 decision 14).** ``build_tool``
+reads one row with :func:`read_gap`. :func:`set_gap_outcome` moves a row from
+``no_match`` to ``declined`` or ``build_failed`` only, in one UPDATE, and it
+refuses each other move. ``tests/unit/test_user_tool_registry.py`` holds its
+R8 case.
+
 **The text of a row.** ``need`` is the query of the model, 1 to
 :data:`NEED_MAX` characters, and it stays in the tenant. Each other column
 holds an id, a category key or a fixed word. :func:`record_gap` checks each
@@ -47,6 +53,11 @@ ANSWERS: tuple[str, ...] = ("tool", "compose", "none", "unsure")
 OUTCOMES: tuple[str, ...] = (
     "existing", "reuse", "compose", "no_match", "unsure", "declined", "built", "build_failed",
 )
+#: The outcomes that :func:`set_gap_outcome` may write (§12.4 decision 14).
+#: SBX-5 writes ``built``, so it is not here.
+BUILD_OUTCOMES: tuple[str, ...] = ("declined", "build_failed")
+#: The one outcome that :func:`set_gap_outcome` moves a row from.
+MOVE_FROM = "no_match"
 #: The longest need, in characters.
 NEED_MAX = 280
 #: The most ids in ``candidates``.
@@ -99,6 +110,23 @@ _ROWS_SQL = (
 )
 
 
+#: One row of the bound org, by id.
+_READ_SQL = (
+    "SELECT CAST(id AS text), member_email, thread_id, run_id, need, outcome, created_at "
+    f"FROM tool_gaps WHERE id = CAST(:id AS uuid) AND organization_id = {_BOUND_ORG}"
+)
+
+#: The one move of the build half. The WHERE holds the old outcome, so a
+#: second move, or a move from another outcome, changes no row. It is one
+#: statement, so no read comes between the check and the write.
+_MOVE_SQL = (
+    "UPDATE tool_gaps SET outcome = :outcome "
+    f"WHERE id = CAST(:id AS uuid) AND organization_id = {_BOUND_ORG} "
+    f"AND outcome = '{MOVE_FROM}' "
+    "RETURNING CAST(id AS text)"
+)
+
+
 class ToolGapError(ValueError):
     """A row that the CHECKs of ``tool_gaps`` would refuse. ``code`` names the
     column, and the message never holds the value."""
@@ -114,6 +142,19 @@ class GapRow:
 
     need: str
     category: str
+    outcome: str
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class GapRecord:
+    """One row of the bound org, for ``build_tool`` (§12.4 decision 12)."""
+
+    id: str
+    member_email: str
+    thread_id: str
+    run_id: str
+    need: str
     outcome: str
     created_at: datetime
 
@@ -208,3 +249,47 @@ async def gap_summary(
         days=days, by_outcome=by_outcome, by_category=by_category,
         rows=tuple(GapRow(need=str(r[0]), category=str(r[1]), outcome=str(r[2]),
                           created_at=r[3]) for r in rows))
+
+
+def _gap_uuid(gap_id: object) -> str | None:
+    """The canonical text of a UUID, or None for each other value."""
+    if not isinstance(gap_id, str) or not gap_id or len(gap_id) > 64:
+        return None
+    try:
+        return str(uuid.UUID(gap_id))
+    except ValueError:
+        return None
+
+
+async def read_gap(db: Any, gap_id: str) -> GapRecord | None:
+    """The row *gap_id* of the bound org, or None.
+
+    *db* is a session that the caller opened with ``tenant_session()``.
+    *gap_id* can come from the model, so a value that is not a UUID gives
+    None with no statement. A row of another org gives None too."""
+    gid = _gap_uuid(gap_id)
+    if gid is None:
+        return None
+    row = (await db.execute(text(_READ_SQL), {"id": gid})).first()
+    if row is None:
+        return None
+    return GapRecord(id=str(row[0]), member_email=str(row[1]), thread_id=str(row[2]),
+                     run_id=str(row[3]), need=str(row[4]), outcome=str(row[5]),
+                     created_at=row[6])
+
+
+async def set_gap_outcome(db: Any, gap_id: str, outcome: str) -> bool:
+    """Move the row *gap_id* of the bound org from ``no_match`` to *outcome*.
+    True when a row moved.
+
+    *db* is a session that the caller opened with ``tenant_session()``. An
+    *outcome* that is not in :data:`BUILD_OUTCOMES`, or a *gap_id* that is
+    not a UUID, raises :class:`ToolGapError` before any statement. A row in
+    another outcome, a row of another org, or no row gives False."""
+    if outcome not in BUILD_OUTCOMES:
+        raise ToolGapError("outcome")
+    gid = _gap_uuid(gap_id)
+    if gid is None:
+        raise ToolGapError("id")
+    row = (await db.execute(text(_MOVE_SQL), {"id": gid, "outcome": outcome})).first()
+    return row is not None

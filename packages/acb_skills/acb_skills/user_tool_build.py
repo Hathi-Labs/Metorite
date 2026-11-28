@@ -1,14 +1,22 @@
-"""The step engine of a user tool (SBX-4b1, Metorite task 3986).
+"""The step engine of a user tool, and its chat tool (SBX-4b1 and SBX-4b2).
 
 Spec: ``project-docs/specs/agent_sandbox.md`` §6.3 and §12.4, decisions 1 to
-8. The engine builds and smoke-tests one package in the ``tools`` container
-of the sandbox broker. A fixture package stands in for the model until
-SBX-4b2 (task 4049) adds ``build_tool``, the card and the build session.
+16. Metorite tasks 3986 (the engine) and 4049 (the chat half). The engine
+builds and smoke-tests one package in the ``tools`` container of the
+sandbox broker.
 
-**The entry.** :func:`start_build` is the one entry, and it is dark: no
-production module calls it until SBX-4b2 lifts the source scan of
-``tests/unit/test_user_tool_build.py`` together with its card. The engine
-grants egress with no card, so only the card may call it.
+**The entry.** :func:`start_build` is the entry of the engine. The engine
+grants egress with no card, so only :func:`build_tool` calls it, and only
+after the member approves the build card. ``tests/unit/test_user_tool_build.py``
+holds that scan (``test_only_build_tool_starts_a_build_after_the_card``).
+``_tool_injection.py`` imports :func:`build_tool` and nothing else of this
+module.
+
+**The chat half (SBX-4b2, decisions 12 to 15).** :func:`build_tool` reads
+the gap row, shows the card, reads the gap row again, and starts the build.
+The build session runs on ``code_session.coding_harness_agent`` with its own
+tools only: the file tools over ``<tool-data>/pkg``, :func:`_session_command`
+and the smoke test. The line :data:`BUILD_EVENT` holds no need text.
 
 **The rules (fence SBX-F12, ``tests/unit/test_user_tool_build.py``):**
 
@@ -766,7 +774,571 @@ async def start_build(
                   rounds=build.rounds, error_class=error_class)
 
 
+# ── The chat tool (SBX-4b2, §12.4 decisions 12 to 15) ───────────────────────
+
+#: The name of the chat tool. Only the agent ``orchestrator`` gets it, in a
+#: pack turn (``_tool_injection._build_tool_withheld``).
+BUILD_TOOL = "build_tool"
+#: The line of the chat tool (§9.1, decision 15). No need text, no code, no
+#: token. The engine line ``user_tool_build.build`` stays beside it.
+BUILD_EVENT = "sandbox.tool.build"
+#: The oldest gap row that a build may start from (SBX-F8).
+GAP_MAX_AGE_S = 30 * 60
+#: The most read scopes of one call.
+SCOPES_MAX = 8
+#: The longest brief of the model. It goes to the build session only.
+BRIEF_MAX = 4000
+#: The longest wait of one session command, inside the build budget (B4).
+SESSION_COMMAND_MAX_S = 120
+#: The most characters of a command output that the session model reads.
+SESSION_OUTPUT_MAX = 8000
+#: The fixed lines of the card (decision 12).
+CARD_TITLE = "Build a new tool for this need?"
+CARD_PYPI = "The build may download Python packages from PyPI."
+CARD_MARKED = "This request came after content from outside your organization."
+CARD_SANDBOX = ("Metorite builds and tests the tool in a sandbox. The test can only read "
+                "with the scopes above. Nothing is saved.")
+#: The gaps with a build_tool call in work, by (org, gap id). One call for
+#: each gap at a time, in this process (fix round P3-2, P3-3).
+_OPEN_GAPS: set[tuple[str, str]] = set()
+#: The tools of the build session, and no other (decision 13).
+SESSION_FILE_TOOLS: frozenset[str] = frozenset({
+    "file_access_read", "file_access_read_lines", "file_access_write",
+    "file_access_replace", "file_access_replace_lines", "file_access_ls",
+    "file_access_grep", "file_access_delete",
+})
+SESSION_TOOLS: frozenset[str] = SESSION_FILE_TOOLS | {"run_command", "smoke_test"}
+
+#: The fixed refusals of the chat tool. Only ids fill them.
+REFUSED_OFF = "build_tool refused: tool builds are not on for this chat. Nothing started."
+REFUSED_INPUT = "build_tool refused: {why}. Nothing started."
+REFUSED_GAP = ("build_tool refused: the gap {gap} cannot start a build ({why}). Call "
+               "find_tools again for a new gap id. Nothing started.")
+DECLINED = ("The member did not approve the build ({why}). The gap {gap} is closed. "
+            "Nothing started.")
+NOT_STARTED = "build_tool could not start the build ({why}). The gap {gap} stays open."
+FAILED = ("The build of the gap {gap} failed after {rounds} smoke round(s) ({why}). The "
+          "gap is closed. Tell the member that no tool was made.")
+PASSED = ("The tool of the gap {gap} passed its smoke test in round {rounds}. It is not "
+          "saved yet. Tell the member that the tool works, and that a saved tool comes "
+          "later.")
+
+
+def _risk() -> dict[str, bool]:
+    # It reaches PyPI from the sandbox, so it is an egress tool (H-236).
+    return {"read_only": False, "destructive": False, "idempotent": False,
+            "open_world": True}
+
+
+def build_tool_open(org: str | None) -> bool:
+    """The four switches of decision 12 for *org*. The org is the bound
+    tenant, never input. A fault reads as off. The injection reads the same
+    four through their own owners (``_tool_injection._build_tool_withheld``)."""
+    try:
+        from acb_auth.sandbox_capabilities import door_orgs
+        from orchestrator import sandbox_broker as sb
+
+        who = str(org or "").strip().lower()
+        settings = get_settings()
+        if not who or not bool(getattr(settings, "user_tool_find_enabled", False)):
+            return False
+        doors = door_orgs()
+        return (sb.maf_coding_scope_allows(sb.TOOLS_TARGET, who)
+                and (who in doors or "*" in doors) and sb.egress_enabled(settings))
+    except Exception:
+        return False
+
+
+def _chat_turn() -> tuple[str, str, str, str] | None:
+    """The org, the member, the thread and the run of a pack turn of the
+    member's own web chat, or None. From the run binding only (R5). A
+    delegated run binds no pack run key, and a WhatsApp run is open in
+    ``whatsapp_ui``, so neither passes."""
+    from acb_common.db import current_tenant
+
+    from acb_skills.tool_packs import PACK_RUN_KEY
+    from acb_skills.whatsapp_ui import current_run
+    from acb_skills.write_artifact import artifact_context
+
+    ctx = artifact_context() or {}
+    if current_run() is not None or not str(ctx.get(PACK_RUN_KEY) or ""):
+        return None
+    if str(ctx.get("agent_name") or "") != "orchestrator":
+        return None
+    org = str(current_tenant() or "").strip().lower()
+    member = str(ctx.get("member") or "").strip().lower()
+    thread = str(ctx.get("session_id") or "").strip()
+    run = str(ctx.get("run_id") or "").strip()
+    if not (org and member and thread and run):
+        return None
+    # The broker keys the build by its own read of the binding. Both reads
+    # must name one org and one thread, or nothing starts.
+    from orchestrator import sandbox_broker as sb
+
+    try:
+        binding = sb.read_tool_binding()
+    except sb.SandboxError:
+        return None
+    if (str(binding.org or "").strip().lower(), str(binding.thread or "")) != (org, thread):
+        return None
+    return org, member, thread, run
+
+
+async def _gap_refusal(org: str, gap_id: str, *, member: str, thread: str,
+                       run: str) -> tuple[Any, str | None]:
+    """``(row, None)`` when the gap may start a build, else ``(row, why)``.
+    The checks of SBX-F8: the row is of the bound org, ``no_match``, of
+    this run, at most :data:`GAP_MAX_AGE_S` old, and has no build row."""
+    from acb_common.db import tenant_session
+    from gateway.studio import tool_gaps, user_tool_runs
+
+    async with tenant_session(org) as db:
+        row = await tool_gaps.read_gap(db, gap_id)
+        if row is None:
+            return None, "not_found"
+        if row.outcome != tool_gaps.MOVE_FROM:
+            return row, "not_no_match"
+        if (row.run_id, row.thread_id, row.member_email) != (run, thread, member):
+            return row, "other_run"
+        # A row from the future (a skewed clock) fails closed too.
+        age = (datetime.now(UTC) - row.created_at).total_seconds()
+        if not -60 <= age <= GAP_MAX_AGE_S:
+            return row, "too_old"
+        if await user_tool_runs.has_build_row(db, row.id):
+            return row, "built_before"
+    return row, None
+
+
+async def _set_outcome(org: str, gap_id: str, outcome: str) -> bool:
+    from acb_common.db import tenant_session
+    from gateway.studio import tool_gaps
+
+    try:
+        async with tenant_session(org) as db:
+            return bool(await tool_gaps.set_gap_outcome(db, gap_id, outcome))
+    except Exception as exc:
+        _log.warning("user_tool_build.outcome_failed", error=type(exc).__name__)
+        return False
+
+
+def _card(need: str, scopes: tuple[str, ...], marked: bool) -> tuple[str, str, str]:
+    """The title, the detail and the context of the build card (decision
+    12). The need of the gap row and the scopes are fenced. The brief of the
+    model is never here."""
+    from acb_common.tool_refusals import data
+
+    detail = f"Read scopes: {', '.join(data(s) for s in scopes)}."
+    lines = [f"The need: {data(need)}", "Read scopes:",
+             *(f"- {data(s)}" for s in scopes), CARD_PYPI, CARD_SANDBOX]
+    if marked:
+        lines.append(CARD_MARKED)
+    return CARD_TITLE, detail, "\n".join(lines)
+
+
+def _clean_scopes(read_scopes: Any) -> tuple[str, ...] | None:
+    from acb_auth.sandbox_capabilities import SANDBOX_READ_SCOPES
+
+    if not isinstance(read_scopes, list | tuple) or not read_scopes:
+        return None
+    if len(read_scopes) > SCOPES_MAX:
+        return None
+    if any(not isinstance(s, str) or s not in SANDBOX_READ_SCOPES for s in read_scopes):
+        return None
+    return tuple(sorted(set(read_scopes)))
+
+
+def _log_build(org: str, run: str, gap: str, outcome: str, wall_ms: int, rounds: int) -> None:
+    """The line of decision 15: ids, an outcome and two counts only."""
+    _log.info(BUILD_EVENT, org=org, run=run, gap=gap, outcome=outcome, wall_ms=wall_ms,
+              rounds=rounds)
+
+
+async def build_tool(gap_id: str, read_scopes: list[str], brief: str) -> str:
+    """Build a new tool for a need that no tool covers. Call it only after
+    find_tools answered with a gap id. The member approves the build on a
+    card first. The build runs in a sandbox and saves nothing.
+
+    Args:
+        gap_id: The gap id from the answer of find_tools.
+        read_scopes: The read scopes the tool needs, for example ["crm:read"].
+        brief: What the tool must do, for the build session. The card does
+            not show it.
+
+    Returns:
+        Whether the tool passed its smoke test.
+    """
+    import uuid as _uuid
+
+    from orchestrator import sandbox_broker as sb
+
+    from acb_skills import egress
+    from acb_skills.ask_tools import last_card_outcome, request_confirmation
+
+    started = time.monotonic()
+    turn = _chat_turn()
+    if turn is None or not build_tool_open(turn[0]):
+        return REFUSED_OFF
+    org, member, thread, run = turn
+    scopes = _clean_scopes(read_scopes)
+    if scopes is None:
+        return REFUSED_INPUT.format(why="read_scopes must name 1 to 8 read scopes of the door")
+    if not isinstance(brief, str) or not brief.strip() or len(brief) > BRIEF_MAX:
+        return REFUSED_INPUT.format(why=f"brief must hold 1 to {BRIEF_MAX} characters")
+    gap = tool_gaps_id(gap_id)
+    if gap is None:
+        return REFUSED_GAP.format(gap="(none)", why="not_a_gap_id")
+    # One build_tool call for each gap at a time (fix round P3-2, P3-3). The
+    # check and the add have no await between them, so a second call for the
+    # gap shows no card and starts nothing. The marker holds through the
+    # whole build and clears on each exit path.
+    key = (org, gap)
+    if key in _OPEN_GAPS:
+        _log_build(org, run, gap, "refused_in_work", 0, 0)
+        return REFUSED_GAP.format(gap=gap, why="in_work")
+    _OPEN_GAPS.add(key)
+    try:
+        row, why = await _gap_refusal(org, gap, member=member, thread=thread, run=run)
+        if why is not None or row is None:
+            _log_build(org, run, gap, f"refused_{why}", 0, 0)
+            return REFUSED_GAP.format(gap=gap, why=why)
+        # The card (decision 12). Only the member of the run may answer it.
+        settings = get_settings()
+        marked = await egress.session_is_marked()
+        title, detail, context = _card(row.need, scopes, marked)
+        approved = await request_confirmation(
+            title, detail, context,
+            non_interactive_default="deny",
+            fenced=True,
+            request_id=_uuid.uuid4().hex,
+            responder=member,
+            timeout_s=settings.sandbox_approval_timeout_seconds,
+        )
+        if approved is not True:
+            outcome = str(last_card_outcome() or "no answer")
+            await _set_outcome(org, gap, "declined")
+            _log_build(org, run, gap, "declined", int((time.monotonic() - started) * 1000), 0)
+            return DECLINED.format(gap=gap, why=outcome)
+        # The checks again after the approval (audit B3): the row can change
+        # while the card waits.
+        row, why = await _gap_refusal(org, gap, member=member, thread=thread, run=run)
+        if why is not None or row is None:
+            _log_build(org, run, gap, f"refused_{why}", int((time.monotonic() - started) * 1000), 0)
+            return REFUSED_GAP.format(gap=gap, why=why)
+        rounds, passed, error_class = 0, False, None
+        # Only the entry of the engine can refuse with "not started". A fault
+        # after the entry ends as build_failed, because the engine wrote its
+        # build row (fix round P3-1).
+        stack = contextlib.AsyncExitStack()
+        try:
+            build = await stack.enter_async_context(start_build(scopes, gap_id=gap))
+        except (sb.SandboxBusy, sb.SandboxRefused, ValueError) as exc:
+            await stack.aclose()
+            # The build did not start, so no build row holds the gap.
+            _log_build(org, run, gap, "not_started", int((time.monotonic() - started) * 1000), 0)
+            return NOT_STARTED.format(gap=gap, why=type(exc).__name__)
+        try:
+            async with stack:
+                await _build_session(build, need=row.need, brief=brief, scopes=scopes)
+                passed = build.passed
+                error_class = next((r.error_class for r in reversed(build.results)
+                                    if r.error_class), None)
+        except (SmokeRoundsExhausted, BuildBudgetExceeded) as exc:
+            error_class = ROUNDS_EXHAUSTED if isinstance(exc, SmokeRoundsExhausted) else BUILD_BUDGET
+        except asyncio.CancelledError:
+            await asyncio.shield(_set_outcome(org, gap, "build_failed"))
+            raise
+        except Exception as exc:
+            _log.warning("user_tool_build.build_fault", error=type(exc).__name__)
+            error_class = SANDBOX_FAILED
+        rounds = build.rounds
+        wall_ms = int((time.monotonic() - started) * 1000)
+        if passed:
+            _log_build(org, run, gap, "passed", wall_ms, rounds)
+            return PASSED.format(gap=gap, rounds=rounds)
+        await _set_outcome(org, gap, "build_failed")
+        _log_build(org, run, gap, "build_failed", wall_ms, rounds)
+        return FAILED.format(gap=gap, rounds=rounds, why=error_class or NO_PASS)
+    finally:
+        _OPEN_GAPS.discard(key)
+
+
+def tool_gaps_id(gap_id: Any) -> str | None:
+    """The canonical text of a UUID gap id, or None."""
+    import uuid as _uuid
+
+    if not isinstance(gap_id, str) or not gap_id or len(gap_id) > 64:
+        return None
+    try:
+        return str(_uuid.UUID(gap_id))
+    except ValueError:
+        return None
+
+
+build_tool.__tool_risk__ = _risk()  # type: ignore[attr-defined]
+
+
+# ── The build session (SBX-4b2, §12.4 decision 13) ──────────────────────────
+
+_SESSION_INSTRUCTIONS = """You build ONE small Python tool for a member of \
+Metorite. You have NO memory of other sessions. Follow this contract exactly.
+
+Your tools:
+- The `file_access_*` tools read and write the files of the package. A path \
+is a file name only, such as `main.py`. A folder is not allowed.
+- `run_command(command, timeout_s)` runs one bash command in a Linux sandbox. \
+The package is at `/workspace/.run/pkg`. The sandbox has NO network and NO \
+credential.
+- `smoke_test()` checks, installs and runs the package with its smoke input. \
+It is the only step that can read Metorite data. You have at most 3 smoke tests.
+
+The package holds exactly these five files:
+1. `tool.json`: one JSON object with `input_schema`, `output_schema`, \
+`read_scopes` and `write_scopes`. `read_scopes` holds only scopes of the list \
+below. `write_scopes` is `[]`.
+2. `main.py`: it reads its input from `/workspace/.run/input.json` and \
+writes one JSON value to `/workspace/outputs/result.json`. It reads Metorite \
+data with `import metorite_door as md` and `md.Door(timeout_s=30).get(path)`.
+3. `SKILL.md`: front matter with `name` and `description`, then how to call the tool.
+4. `smoke.json`: `{"input": ...}`, an input that is valid under `input_schema`.
+5. `requirements.lock`: one line for each package, \
+`<name>==<version> --hash=sha256:<64 hex>`, at most 20 lines. Leave it \
+empty when the image packages are enough.
+
+Write the five files. Then call `smoke_test`. Read its answer, repair the \
+package and call it again only when it failed. Stop when a smoke test passes.
+"""
+
+
+def _session_task(need: str, brief: str, scopes: tuple[str, ...]) -> str:
+    """The first message of the session: the need of the gap row, the
+    approved scopes, the routes of the door, and the brief of the model."""
+    from acb_common.app_manifests import SANDBOX_APPS
+    from acb_common.tool_refusals import data
+
+    routes = sorted(f"{row.method} {row.path} ({app.read_scope})"
+                    for app in SANDBOX_APPS if app.read_scope in scopes
+                    for row in app.routes if row.sandbox)
+    return "\n".join([
+        f"The need of the member: {data(need)}",
+        f"The approved read scopes: {', '.join(scopes)}",
+        "The routes that the tool may read:",
+        *(f"- {r}" for r in routes),
+        f"The brief: {data(brief)}",
+    ])
+
+
+class PackageFileStore:
+    """The file store of the build session: ``<tool-data>/pkg`` only.
+
+    A path is one file name, with no folder and no leading dot. Each read
+    and write goes through ``acb_skills.safe_open`` under the broker's lock
+    of the handle (``host_files``), so a link is never followed. A write over
+    :data:`PACKAGE_MAX_BYTES` is refused."""
+
+    def __init__(self, build: ToolBuild) -> None:
+        self._build = build
+
+    @staticmethod
+    def _name(path: str) -> str:
+        name = str(path or "").strip()
+        if name.startswith("./"):
+            name = name[2:]
+        if (not name or "/" in name or "\\" in name or name.startswith(".")
+                or "\x00" in name or len(name) > 100):
+            raise ValueError("A path of the package is one file name, such as main.py.")
+        return name
+
+    @contextlib.asynccontextmanager
+    async def _held(self) -> AsyncIterator[Path]:
+        async with _broker().host_files(self._build.handle):
+            yield self._build.tool_data
+
+    async def read(self, path: str) -> str | None:
+        from acb_skills import safe_open
+
+        rel = f"{PKG_DIR}/{self._name(path)}"
+        async with self._held() as root:
+            raw = await asyncio.to_thread(safe_open.read_bytes, root, rel,
+                                          limit=PACKAGE_MAX_BYTES)
+        return None if raw is None else raw.decode("utf-8", errors="replace")
+
+    async def write(self, path: str, content: str, *, overwrite: bool = True) -> None:
+        from acb_skills import safe_open
+
+        name = self._name(path)
+        data = str(content).encode("utf-8")
+        if len(data) > PACKAGE_MAX_BYTES:
+            raise ValueError(f"A file of the package holds at most {PACKAGE_MAX_BYTES} bytes.")
+        rel = f"{PKG_DIR}/{name}"
+        async with self._held() as root:
+            if not overwrite and await asyncio.to_thread(safe_open.is_file, root, rel):
+                raise FileExistsError(name)
+            await asyncio.to_thread(safe_open.replace_bytes, root, rel, data)
+        await _broker().measure_workspace(self._build.handle)
+
+    async def delete(self, path: str) -> bool:
+        from acb_skills import safe_open
+
+        rel = f"{PKG_DIR}/{self._name(path)}"
+        async with self._held() as root:
+            return bool(await asyncio.to_thread(safe_open.unlink, root, rel))
+
+    async def file_exists(self, path: str) -> bool:
+        from acb_skills import safe_open
+
+        rel = f"{PKG_DIR}/{self._name(path)}"
+        async with self._held() as root:
+            return bool(await asyncio.to_thread(safe_open.is_file, root, rel))
+
+    async def list_children(self, directory: str = "") -> list[Any]:
+        from agent_framework import FileStoreEntry
+
+        from acb_skills import safe_open
+
+        if str(directory or "").strip() not in ("", ".", "/"):
+            return []
+        async with self._held() as root:
+            found = await asyncio.to_thread(safe_open.list_dir, root, PKG_DIR)
+        return [FileStoreEntry(name, "file" if kind == "file" else "directory")
+                for name, kind in (found or [])]
+
+    async def create_directory(self, path: str) -> None:
+        raise ValueError("The package holds files only, and no folder.")
+
+
+def _store_of(build: ToolBuild) -> Any:
+    """A MAF ``AgentFileStore`` over :class:`PackageFileStore`."""
+    from agent_framework import AgentFileStore
+
+    class _Store(PackageFileStore, AgentFileStore):
+        pass
+
+    return _Store(build)
+
+
+async def _session_command(build: ToolBuild, command: str, timeout_s: Any) -> str:
+    """The session ``run_command`` (audit B4). One exec into the ``tools``
+    container of the build, with no egress grant, no ``env_file`` and so no
+    ``METORITE_API_TOKEN``. Each command has its own timeout inside the
+    build budget. Only the smoke test gets the token, through the engine."""
+    from orchestrator import sandbox_broker as sb
+
+    if not isinstance(command, str) or not command.strip() or len(command) > 20_000:
+        return "run_command refused: the command is empty or too long. Nothing ran."
+    try:
+        wanted = float(timeout_s)
+    except (TypeError, ValueError):
+        wanted = 60.0
+    limit = min(max(wanted, 1.0), float(SESSION_COMMAND_MAX_S), build.remaining())
+    if limit <= 0:
+        return "run_command refused: the build has no time left. Nothing ran."
+    broker = _broker()
+    try:
+        # A grant of an earlier round ends with that round. This revoke makes
+        # sure, so no session command runs with a network (decision 3).
+        await broker.revoke_egress(build.handle)
+        ran = await broker.exec(build.handle, command, limit)
+    except sb.SandboxError as exc:
+        return f"run_command failed: {type(exc).__name__}. Nothing more ran."
+    out = str(ran.output or "")[-SESSION_OUTPUT_MAX:]
+    state = "timed out" if ran.timed_out else f"exit code {ran.exit_code}"
+    return f"[{state}]\n{out}"
+
+
+async def _session_smoke(build: ToolBuild, done: asyncio.Event) -> str:
+    """The session ``smoke_test``: one round of :meth:`ToolBuild.run_smoke`.
+    A pass, the round cap or the budget ends the session."""
+    try:
+        result = await build.run_smoke()
+    except (SmokeRoundsExhausted, BuildBudgetExceeded) as exc:
+        done.set()
+        return f"smoke_test refused: {exc} The build ends."
+    if result.passed:
+        done.set()
+        return "smoke_test passed. The build is done. Stop now."
+    if build.rounds >= MAX_ROUNDS:
+        done.set()
+    out = str(result.output or "")[-SESSION_OUTPUT_MAX:]
+    return (f"smoke_test failed: {result.error_class} (round {build.rounds} of "
+            f"{MAX_ROUNDS}).\n{out}")
+
+
+def _session_pin() -> list[Any]:
+    """The pair that keeps the build session to :data:`SESSION_TOOLS`, as
+    ``code_session._session_tool_pin`` does for ``code_task``. A tool that
+    a MAF upgrade adds is withheld from each request and refused on a call."""
+    from acb_skills.tool_guard import RefuseTools, WithholdTools, tool_name
+
+    def foreign(item: Any) -> bool:
+        return tool_name(item) not in SESSION_TOOLS
+
+    def answer(name: str) -> str:
+        return f"{name} is not a tool of this build session. Nothing ran."
+
+    return [WithholdTools(foreign), RefuseTools(foreign, answer)]
+
+
+def _session_tools(build: ToolBuild, done: asyncio.Event) -> list[Any]:
+    from agent_framework import tool
+
+    async def run_command(command: str, timeout_s: int = 60) -> str:
+        """Run one bash command in the sandbox of the package. No network.
+
+        Args:
+            command: The bash command.
+            timeout_s: The most seconds it may run, 1 to 120.
+        """
+        return await _session_command(build, command, timeout_s)
+
+    async def smoke_test() -> str:
+        """Check, install and run the package with the input of smoke.json."""
+        return await _session_smoke(build, done)
+
+    return [tool(run_command, name="run_command", approval_mode="never_require"),
+            tool(smoke_test, name="smoke_test", approval_mode="never_require")]
+
+
+def _session_agent(build: ToolBuild, done: asyncio.Event) -> Any:
+    """The harness agent of the build session (decision 13), on the one
+    harness of CA-14, with the model ``user_tool_build_model``."""
+    from orchestrator import code_session
+
+    model = str(getattr(get_settings(), "user_tool_build_model", "") or "tier-balanced")
+    client = code_session.harness_client(model, agent="tool-builder", source=BUILD_TOOL)
+    return code_session.coding_harness_agent(
+        client, name="tool-builder", instructions=_SESSION_INSTRUCTIONS,
+        tools=_session_tools(build, done), store=_store_of(build), skills=None,
+        middleware=_session_pin(), **code_session.HARNESS_FLAGS,
+    )
+
+
+async def _build_session(build: ToolBuild, *, need: str, brief: str,
+                         scopes: tuple[str, ...]) -> None:
+    """Run the build session until a round passes, the round cap stops it,
+    or the build budget ends (decision 13). The session model never sees a
+    token. A fault of the model ends the session, and the build then fails."""
+    done = asyncio.Event()
+    agent = _session_agent(build, done)
+    session = agent.create_session()
+    work = asyncio.ensure_future(agent.run(_session_task(need, brief, scopes),
+                                           session=session))
+    stop = asyncio.ensure_future(done.wait())
+    try:
+        await asyncio.wait({work, stop}, timeout=max(build.remaining(), 0.0),
+                           return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for task in (work, stop):
+            task.cancel()
+        for task in (work, stop):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+    if build.remaining() <= 0 and not build.passed:
+        build.timed_out = True
+
+
 __all__ = [
+    "BUILD_EVENT",
+    "BUILD_TOOL",
     "INSTALL_HOSTS",
     "MAX_ROUNDS",
     "PACKAGE_FILES",
@@ -776,6 +1348,8 @@ __all__ = [
     "RoundResult",
     "SmokeRoundsExhausted",
     "ToolBuild",
+    "build_tool",
+    "build_tool_open",
     "check_package",
     "install_command",
     "start_build",

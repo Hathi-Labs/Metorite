@@ -13,6 +13,7 @@
 #   bash scripts/dev_up.sh --refresh-flags  retired with the staging box (D144). Exits 2, unless DEV_UP_FLAGS_HOST names a host.
 #   DEV_UP_ORGS_ON="GUIDE_ORGS" bash scripts/dev_up.sh   a per-org dark switch on, for a preview
 #   DEV_UP_TOOL_PACKS="studio" bash scripts/dev_up.sh    chat tool packs on, for every org of the stack
+#   DEV_UP_TOOL_BUILD=1 bash scripts/dev_up.sh            the build_tool demo, for the demo org only
 #
 #   bash scripts/dev_up.sh --data prod --as <email>   production's copy (LD-8b)
 #     --data demo|prod  the data of the stack. demo is the default. A switch needs --reset.
@@ -196,6 +197,59 @@ tool_packs_env() {
   printf '%s\n' "TOOL_PACKS=$packs" "TOOL_PACKS_ORGS=*"
 }
 
+# tool_build_env (SBX-4b2, agent_sandbox.md §12.4 decision 16): the settings
+# of the rung 6b demo, for the seeded demo org of THIS stack only. Off by
+# default, and then it prints nothing. DEV_UP_TOOL_BUILD=1 turns it on. The
+# org is the 'default' org that the ladder makes and the demo seed fills.
+# DEV_UP_DEMO_ORG_ID names it for --print-env, where no database runs.
+# DEV_UP_DOOR_UPSTREAM is the <ip>:<port> where the egress proxy reaches the
+# gateway. Its default is the docker bridge address and the gateway port.
+# With --data prod there is no seeded org, so the start refuses
+# (check_tool_build). Fence: tests/unit/test_dev_up.py.
+#   DEV_UP_TOOL_BUILD=1 bash scripts/dev_up.sh
+demo_org_id() {
+  local org="${DEV_UP_DEMO_ORG_ID:-}"
+  if [ -z "$org" ]; then
+    org="$(dk exec -i "$NAME-pg" psql -X -q -U acb -d acb_dev -tA \
+      -c "SELECT id FROM organization WHERE slug = 'default'" < /dev/null 2>/dev/null | tr -d '\r ')" || org=""
+  fi
+  [[ "$org" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || return 1
+  printf '%s' "$org"
+}
+
+door_upstream() {
+  local up="${DEV_UP_DOOR_UPSTREAM:-}" ip
+  if [ -z "$up" ]; then
+    ip="$(dk network inspect -f '{{(index .IPAM.Config 0).Gateway}}' bridge 2>/dev/null | tr -d '\r ')" || ip=""
+    up="${ip:-172.17.0.1}:$GW_PORT"
+  fi
+  [[ "$up" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]{1,5}$ ]] || return 1
+  printf '%s' "$up"
+}
+
+check_tool_build() {
+  [ "${DEV_UP_TOOL_BUILD:-}" = 1 ] || return 0
+  [ "$DATA" = demo ] || fail "DEV_UP_TOOL_BUILD needs the demo data. --data prod has no seeded demo org."
+}
+
+tool_build_env() {
+  [ "${DEV_UP_TOOL_BUILD:-}" = 1 ] || return 0
+  [ "$DATA" = demo ] || fail "DEV_UP_TOOL_BUILD needs the demo data. --data prod has no seeded demo org."
+  local org up
+  org="$(demo_org_id)" || fail "DEV_UP_TOOL_BUILD found no seeded demo org. Start the stack once, then start it again."
+  up="$(door_upstream)" || fail "DEV_UP_DOOR_UPSTREAM must be <ip>:<port>."
+  printf '%s\n' \
+    "MAF_CODING_SCOPE=tools:$org" \
+    "SANDBOX_DOOR_ORGS=$org" \
+    "SANDBOX_EGRESS_ENABLED=true" \
+    "SANDBOX_EGRESS_DOOR_UPSTREAM=$up" \
+    "USER_TOOL_FIND_ENABLED=true" \
+    "TOOL_SEARCH_ORGS=$org"
+  if [ -z "${DEV_UP_TOOL_PACKS:-}" ]; then
+    printf '%s\n' "TOOL_PACKS=*" "TOOL_PACKS_ORGS=$org"
+  fi
+}
+
 gateway_env() {
   base_env
   flag_env root
@@ -211,6 +265,7 @@ gateway_env() {
     "GATEWAY_URL=http://127.0.0.1:$GW_PORT"
   tool_packs_env
   studio_key_env
+  tool_build_env
 }
 
 # DEV_SIGNED_IN_EMAIL: the member that src/lib/gateway.ts signs in as when the
@@ -491,7 +546,12 @@ need_tools() {
 launch() {
   local name="$1" dir="$2" envfn="$3"; shift 3
   local -a envs
-  mapfile -t envs < <("$envfn")
+  local out
+  # A fail inside the env function (DEV_UP_TOOL_BUILD with no demo org) ends
+  # its subshell only. The status stops the start here, so no process starts
+  # without the settings that the operator asked for.
+  out="$("$envfn")" || fail "the environment of $name did not build, so $name did not start."
+  mapfile -t envs <<< "$out"
   if [ "$WIN" = 1 ]; then
     ( cd "$dir" && exec env -i "${envs[@]}" "$@" ) > "$STATE_DIR/$name.log" 2>&1 &
   else
@@ -696,6 +756,7 @@ cmd_up() {
   local had_state=0
   load_state && had_state=1
   set_mode
+  check_tool_build
   if [ "$DATA" = prod ]; then
     check_as_format
     pick_copy
@@ -864,6 +925,7 @@ cmd_logs() {
 cmd_print_env() {
   load_state 2>/dev/null || { SLOT=0; ports_for 0; TOKEN=dev-preview; NAME=metorite-dev-preview; }
   set_mode
+  check_tool_build
   if [ "$DATA" = prod ]; then
     [ -n "$AS" ] || AS="$(val AS)"
     [ -n "$AS" ] || fail "--data prod needs --as <email>, the member to sign in as"
@@ -945,6 +1007,6 @@ case "${CMD:-up}" in
   --logs|logs)      cmd_logs "${LOGS_WHICH:-gateway}" ;;
   --print-env)      cmd_print_env ;;
   --refresh-flags)  cmd_refresh_flags ;;
-  -h|--help|help)   sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//' ;;
+  -h|--help|help)   sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) fail "unknown option '$CMD'. Try --help." ;;
 esac
