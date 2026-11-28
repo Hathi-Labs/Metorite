@@ -16,8 +16,10 @@ layer.
     GET /observability/cost?days=                → daily LLM cost rollup
     GET /observability/runs?agent=&status=       → DURABLE history (agent_run)
 
-Open to any AUTHENTICATED caller (this is the operator's own dashboard). It
-returns operational *metadata* — agent/model/tier/user/duration/tokens/cost and
+Gated ``feature:observability`` at the router (task 4110). The three avatar
+templates are exempt from that gate. GET /observability/avatars stays open to
+every signed-in member, because the chat reads it. The avatar writes and the
+Pixel Lab call take ``feature:agents``. The live views return operational *metadata* — agent/model/tier/user/duration/tokens/cost and
 error messages — but NEVER the full message-content trace, which stays
 EXECUTIVE-gated behind ``/debug/runs/{id}``. The Redis feed (recent/stream) is
 ephemeral (~2000 events for each tenant, latest-first); ``/runs`` is the
@@ -41,7 +43,13 @@ import os
 import re
 from typing import Any, AsyncIterator
 
-from acb_auth import UserContext, UserRole, require_role
+from acb_auth import (
+    UserContext,
+    UserRole,
+    require_feature,
+    require_feature_router,
+    require_role,
+)
 from acb_common import (
     active_runs,
     cost_summary,
@@ -55,7 +63,8 @@ from pydantic import BaseModel
 
 _log = get_logger("gateway.observability")
 
-# Any AUTHENTICATED caller may read the live views. These expose operational
+# The role check below lets every member role through. The feature gate of the
+# router (task 4110) decides who reads the live views. These expose operational
 # METADATA (agent/model/tokens/cost/status/duration) — NOT message content — so
 # unlike /debug (full traces, EXECUTIVE-only) this is the operator's own
 # dashboard and must not silently 403 for a non-"executive" logged-in operator.
@@ -66,9 +75,31 @@ _VIEWER = require_role(UserRole.EXECUTIVE, UserRole.AGENT, UserRole.EMPLOYEE)
 # viewer) rather than EXECUTIVE-only — the SSO proxy sends EMPLOYEE by default
 # unless the operator's email is in EXECUTIVE_EMAILS, so an EXECUTIVE gate would
 # silently 403 the very operator using the office (the Phase 6.3 lesson).
+# Each write route also takes ``feature:agents`` (``_AGENTS_GATE``, task 4110).
 _WRITER = require_role(UserRole.EXECUTIVE, UserRole.AGENT, UserRole.EMPLOYEE)
 
-router = APIRouter(prefix="/observability", tags=["observability"])
+#: The three avatar templates. They skip the router gate below (task 4110).
+#: The chat reads GET /observability/avatars, so every member keeps it. The
+#: write and the Pixel Lab call take ``feature:agents`` on their own route.
+#: The match is on the route TEMPLATE, never the URL (``require_feature_router``),
+#: so no other route of this router can spell one of them.
+AVATAR_TEMPLATES: tuple[str, ...] = (
+    "/observability/avatars",
+    "/observability/avatars/{name}",
+    "/observability/avatars/generate",
+)
+
+#: The gate of an avatar write and of the Pixel Lab call (task 4110).
+_AGENTS_GATE = require_feature("agents")
+
+# Task 4110: every live view of this router takes ``feature:observability``.
+# A route that you add here is gated by construction. Fence:
+# ``tests/unit/test_agent_observability_route_gate.py``.
+router = APIRouter(
+    prefix="/observability",
+    tags=["observability"],
+    dependencies=[require_feature_router("observability", exempt=AVATAR_TEMPLATES)],
+)
 
 
 @router.get("/activity/recent")
@@ -516,7 +547,7 @@ def _writer_org(writer: UserContext) -> str:
     return str(org)
 
 
-@router.put("/avatars/{name}")
+@router.put("/avatars/{name}", dependencies=[_AGENTS_GATE])
 async def put_avatar(
     name: str, body: AvatarPut, writer: UserContext = _WRITER,
 ) -> dict[str, Any]:
@@ -537,7 +568,7 @@ async def put_avatar(
     return {"ok": True, "agent": name, "config": body.config, "sprite": body.sprite}
 
 
-@router.delete("/avatars/{name}")
+@router.delete("/avatars/{name}", dependencies=[_AGENTS_GATE])
 async def delete_avatar(
     name: str, writer: UserContext = _WRITER,
 ) -> dict[str, Any]:
@@ -554,7 +585,7 @@ async def delete_avatar(
     return {"ok": True, "agent": name}
 
 
-@router.post("/avatars/generate")
+@router.post("/avatars/generate", dependencies=[_AGENTS_GATE])
 async def generate_avatar(
     body: AvatarGenerate, _writer: UserContext = _WRITER,
 ) -> dict[str, Any]:

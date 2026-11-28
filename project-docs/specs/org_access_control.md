@@ -268,9 +268,10 @@ Gating happens **at the router** wherever a prefix has one audience, so a new en
 | `/memory` | already `require_internal_auth` — internal callers only, left as is |
 | `/settings` **writes** | `feature:models` per route; reads stay open (they feed the chat model picker, which every member needs) |
 | `/integrations/oauth` | `authorize` + `refresh` gated; `callback` is not (see below) |
-| `/agent` | run endpoints per-agent via `assert_can_run_agent`; registry writes on `agents:manage`; `/webhook/{source}` deliberately unauthenticated for external callers |
+| `/agent` | No router gate, because the chat transport shares the prefix. The run endpoints check each agent with `assert_can_run_agent`. The registry writes and `GET /agent/config` take `agents:manage` and `_require_registry_operator` (task 4110). `GET /agent/{name}/skills` takes `feature:agents`. `GET /agent` stays open for the chat picker, and it drops `local_path` and `dep_status` for a caller without `agents:manage`. `/webhook/{source}` has no session, and its HMAC signature is its authorization. Fence: `tests/unit/test_agent_observability_route_gate.py` |
 | `/apps` | `require_app_author` (`feature:build.apps`) for authoring, `require_app_viewer` (`apps:use:*`) for runtime — one prefix, two audiences |
-| `/observability` `/debug` | left on their existing `EXECUTIVE` gate. Switching them to `feature:observability` would *widen* access to `manager`; a PR that tightens access should not quietly loosen one |
+| `/observability` | `feature:observability`, router-level (task 4110). The three avatar templates are exempt from it. `GET /observability/avatars` stays open, because the chat reads it. The avatar `PUT`, `DELETE` and `generate` take `feature:agents`. Fence: `tests/unit/test_agent_observability_route_gate.py` |
+| `/debug` | stays on its `EXECUTIVE` role gate (`routes/debug.py`) |
 
 ### Exemptions are load-bearing, not oversights
 
