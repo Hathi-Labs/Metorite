@@ -95,6 +95,10 @@ async def upload_recording(
     if len(content) > _MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="file exceeds 300 MB limit")
 
+    # Owner only, BEFORE the file lands under the meeting's media dir
+    # (task 3966). The check below in the write session stays.
+    async with _tenant_session() as db:
+        await load_owned_meeting(db, meeting_id, user.email, columns="m.id")
     mime = file.content_type or _EXT_MIME.get(ext, "application/octet-stream")
     recording_id = str(uuid.uuid4())
     rel_path = f"{meeting_id}/{recording_id}{ext}"
@@ -180,6 +184,10 @@ async def start_recording(
     if ext is None:
         raise HTTPException(status_code=400, detail=f"unsupported recording mime: {base}")
 
+    # Owner only, BEFORE the empty file lands under the meeting's media dir
+    # (task 3966). The check below in the write session stays.
+    async with _tenant_session() as db:
+        await load_owned_meeting(db, meeting_id, user.email, columns="m.id")
     recording_id = str(uuid.uuid4())
     rel_path = f"{meeting_id}/{recording_id}{ext}"
     dest = media_dir() / rel_path

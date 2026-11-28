@@ -32,7 +32,7 @@ from gateway.db import get_session_factory as _get_session_factory  # noqa: F401
 # defaulting: fail closed, never "the usual org". `_get_db` above remains for
 # the sites H2 cannot reach from a request: background jobs/pollers and the
 # meeting-bot worker's service-identity paths (H4 threads their tenant).
-from gateway.db import tenant_session as _tenant_session  # noqa: F401
+from gateway.db import tenant_session as _tenant_session
 from pydantic import BaseModel
 from sqlalchemy import text
 from acb_auth import require_feature_router
@@ -207,6 +207,20 @@ async def load_owned_meeting(
     if row is None:
         raise HTTPException(status_code=404, detail="meeting not found")
     return row
+
+
+async def require_owned_meeting(meeting_id: str, owner_email: str | None) -> None:
+    """Raise the 404 of :func:`load_owned_meeting` unless the meeting is the
+    caller's. Opens its own tenant-bound session.
+
+    For a route that reads no meeting row itself: a stream, an in-process map
+    keyed by the meeting id (the live bus, the roster, agenda coverage), or a
+    call to the bot worker. Call it BEFORE the response starts. A 404 raised
+    inside a started ``StreamingResponse`` arrives as a broken stream, not as
+    a refusal (task 3966).
+    """
+    async with _tenant_session() as db:
+        await load_owned_meeting(db, meeting_id, owner_email, columns="m.id")
 
 
 # ── Media storage (same recipe as tasks/attachments.py) ──────────────────────

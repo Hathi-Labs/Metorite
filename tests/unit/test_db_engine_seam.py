@@ -483,7 +483,14 @@ H2_WHATSAPP_EXEMPT_SITES: dict[str, int] = {
 #: member's request, so they now open the ambient `tenant_session()`. The
 #: file has no `get_db()` left. `test_agent_skills_per_org_r8.py` fences it
 #: under FORCE RLS with two orgs.
-H2_BASELINE_ELSEWHERE = 55
+#: 55 → 48: task 3966 (2026-11-27). In routes/notes, `meeting_bot` keeps one
+#: unbound site in `_bot_session` for the poller, and the 5 inline sites of
+#: `_refresh_bot` and `_ingest_recording` go through it (-5). `dispatch`
+#: keeps one in `_dispatch_session` for `auto_dispatch`, and the sites of
+#: `_dispatch_document`, `_mark` and the task write go through it (-2). A
+#: member request passes `bound=True` and opens `tenant_session()`.
+#: `test_notes_meeting_owner_r8.py` fences the request paths under FORCE RLS.
+H2_BASELINE_ELSEWHERE = 48
 
 #: routes/apps (H2 slice, 2026-08-10): the sites that STAY on the unbound
 #: seam, as file → exact remaining count. Counts rather than whole files
