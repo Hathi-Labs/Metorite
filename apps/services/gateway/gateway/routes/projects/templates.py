@@ -76,6 +76,7 @@ from gateway.routes.projects.core import (
     can_manage_settings,
     emit,
     from_jsonb,
+    goals_allowed,
     insert_row,
     is_team_space,
     load_visible_project,
@@ -306,6 +307,9 @@ class TypeSpec(_Strict):
     icon: str | None = Field(default=None, max_length=64)
     color: str | None = Field(default=None, max_length=32)
     is_epic: bool = False
+    #: WS-39 WM-5. The type makes a Goal. The apply writes it only while
+    #: ``PROJECTS_GOALS_ORGS`` holds the org, and never on an epic type.
+    is_goal: bool = False
 
 
 class FieldSpec(_Strict):
@@ -722,7 +726,11 @@ async def build_payload(
         for s in vocab["statuses"]
     ]
     types = [
-        {"name": t.name, "icon": t.icon, "color": t.color, "is_epic": bool(getattr(t, "is_epic", False))}
+        {
+            "name": t.name, "icon": t.icon, "color": t.color,
+            "is_epic": bool(getattr(t, "is_epic", False)),
+            "is_goal": bool(getattr(t, "is_goal", False)),
+        }
         for t in vocab["types"]
     ]
     fields = [
@@ -961,9 +969,9 @@ async def _apply_statuses(
 #: tenant is explicit, as ``admin.create_type`` passes it.
 _TYPE_INSERT_SQL = (
     "INSERT INTO pm_task_types (project_id, organization_id, name, icon, color,"
-    " is_default, is_epic, is_system)"
+    " is_default, is_epic, is_goal, is_system)"
     " VALUES (CAST(:root AS uuid), CAST(:org AS uuid), :name, :icon, :color,"
-    " false, :is_epic, false)"
+    " false, :is_epic, :is_goal, false)"
     " ON CONFLICT DO NOTHING RETURNING id"
 )
 _TYPE_OF_SQL = (
@@ -989,6 +997,9 @@ async def _apply_types(
         row = (await db.execute(text(_TYPE_INSERT_SQL), {
             "root": root, "org": org, "name": name, "icon": spec.icon,
             "color": spec.color, "is_epic": spec.is_epic,
+            # WM-5. A Goal type only while the flag holds the org, and one
+            # level for each type, as `admin._refuse_goal_and_epic` says.
+            "is_goal": bool(spec.is_goal) and not spec.is_epic and goals_allowed(org),
         })).first()
         if row is None:
             # Another apply made it a moment ago. Its commit is visible now.
