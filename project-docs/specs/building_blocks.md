@@ -48,6 +48,7 @@ Each block has one seam and one owner spec. A second implementation of a block i
 |---|---|---|---|---|
 | **Tenant and session** | Which company a row belongs to | `get_db()` and `tenant_session()` (V `acb_common/db.py`). `saas_multitenancy.md` (D15) | Every app | FORCE row level security on each new table. Fence `test_tenancy_boundary.py` (V) |
 | **Members, groups, grants** | Who inside the company may see a row | `normalize_grant_subject` and `EffectiveAccess.intersect` (V `acb_auth/permissions.py`). `tenancy_and_visibility.md` (D12) | Every app | Two axes, no third. Fence `test_grant_subject_grammar.py` (V) |
+| **Roles and reporting lines** | Who leads whom, and which role a member holds. Used only to route a nudge (D235.3) | A resolver over the record owner, `org_role`, `group:<slug>` and `people.manager_id` (V `acb_auth/access.py`, `74_gtd_people_editable_and_resumes.sql`). It extends the ladder of `waiting_on_me.md` §4.5 (AP-15, P 1875). `proactive_loop.md` LOOP-30 | Nudges, the waiting ladder | It opens no read, and it adds no third subject (D12). It gives no score for a person. Fence `test_grant_subject_grammar.py` (V), `test_nudge_route_r8.py` (P, LOOP-30) |
 | **Principals** | Who acts | The member is the only authority (D140.2). An agent or an install acts as a named member, cut down to its scopes (`ai_studio.md` B6, P 1413) | Mira, MCP agents, workflows, Studio apps, bots | No actor gets grants of its own. See D205.6 |
 | **Audience** | Who outside the member list may receive a thing | One vocabulary: `internal`, `customer-safe`, `public` (P 2725, KS-11) | Knowledge, Studio surfaces, bots, team channels | Audience narrows. It never widens D12 |
 | **Records and objects** | A typed record kind with fields | The typed object store (V `323_studio_objects.sql`, `studio/objects_store.py`). The one value check (V `acb_common/studio_fields.py`). `ai_studio.md` §3.1 | Studio apps, CRM custom objects (P 2734), extension fields (V `package_host/field_values.py`) | One field vocabulary. One association table. See D205.5 |
@@ -57,6 +58,7 @@ Each block has one seam and one owner spec. A second implementation of a block i
 | **Time** | Events and reminders that are not to-dos | `calendar_entries` (V `331_calendar_entries.sql`), `reminders` (V `307_reminders.sql`) | Calendar, booking (P 2680) | A booking event is a calendar entry |
 | **Files** | Every stored file | `artifacts` and its one writer (V `268_artifacts.sql`, `acb_memory/artifacts.py`). `artifact_management.md` (D162) | Chat, Knowledge (P 2718), email bodies (P 2646), WhatsApp media, Studio file fields | An app table holds a join, never bytes |
 | **Knowledge and retrieval** | Company facts that people and agents read | `gateway/retrieval/` (V `company.py`, `sources.py`). `visible_pages_clause` (V `routes/knowledge/core.py`). `knowledge_base.md` §20 (D105) | Chat, email, CRM, bots, MCP, Studio | A second read path is a defect (P 2715) |
+| **Memory** | What Metorite keeps about one member, and the terms and rules of the company (D235.3) | Member: `user_settings.assistant_profile` and its one writer (V `acb_common/assistant_profile.py`). `personalization.md` §4 and §20. Org: the boundary table of `memory_architecture.md` §11 | Chat, My Day, Reach, the MCP | One home for each kind of memory (§10). Mem0 is not a store (D132). Fence `test_memory_isolation_r8.py` (P, MEM-14), `test_no_second_memory_store.py` (P, KG-11) |
 | **Channels and conversations** | A message in or out of email, WhatsApp, Slack or a phone | The shared transport per provider (V `routes/whatsapp/transport/*`, `routes/email/transport/*`). `whatsapp_message_manager.md` | Email, My WhatsApp, team channels (P 2442), bots | One adapter per provider. See D205.8 |
 | **Workflows and automation** | A trigger, steps and approvals | The workflow engine (V `routes/workflows/scheduler.py`, `engine/*`). The capped headless turn (V `jobs/unattended.py`). `workflows_app.md` (D6), `proactive_agent.md` | CRM rules (P 2744), nudges (P 2763), Studio apps, bots | No second scheduler. A watch is a template |
 | **Actions and the door** | One typed capability of an app, with a class A, B, C or X | App manifests (V `acb_common/app_manifests/base.py`). The Studio action catalog (V `routes/studio/actions.py`). `external_agent_access.md` §19 (D136) | Mira, the MCP, Studio views, workflows, bots | Four MCP tools serve every app. See D205.9 |
@@ -231,6 +233,9 @@ Before you add a table, a registry, a manifest, a queue, an engine or a spec, do
 | CRM change history | `tests/unit/test_crm_change_history.py` | V |
 | Credentials out of the environment | `tests/unit/test_integration_env_scoping.py` | V |
 | One sound player | `src/lib/shell/soundSeam.test.ts` (SND-1, task 2865) | P |
+| The cohesion map (§10) names a fence for each row, or says advisory | `tests/unit/test_cohesion_map.py` | V |
+| One memory boundary: no org reads another org's memory, and no member reads another member's concerns | `tests/unit/test_memory_isolation_r8.py` (MEM-14) | P |
+| One nudge router: no step reaches a person who cannot open the record | `tests/unit/test_nudge_route_r8.py` (LOOP-30) | P |
 | One contribution point per need | advisory until a fence exists | P |
 | One change-record shape | advisory until a fence exists | P |
 
@@ -341,4 +346,59 @@ Each epic writes its owning spec in its first slice. Until then this table and t
 | WS-OTW one-time workflows (3010) | OTW-n | `workflows_app.md` §14 (OTW-0, task 3011) | Workflows, signals and delivery, the action door |
 | WS-SND sound cues (2862) | SND-n | `DESIGN_SYSTEM.md` §4c and `proactive_reach.md` §8.4 (SND-0, task 2864) | Signals and delivery, the one look |
 | SCALE (2566) | SC-n | `agent_coordination.md` and `dev_capacity.md` | none (process) |
+| Company intelligence (4150) | CI-n for the rungs. The rows keep the id of their owner spec | §10 of this spec (CI-0, task 4163, written). The rows: `knowledge_graph.md` §9, `semantic_model.md` §10.2, `personalization.md` §20, `memory_architecture.md` §11, `proactive_loop.md` §10, `proactive_reach.md` §16 | Knowledge and retrieval, memory, roles and reporting lines, signals and delivery, connections |
+
+---
+
+## 10. The cohesion map: one home for each kind of knowledge (D235)
+
+**Status: ACTIVE, 2026-11-28 (D235, CI-0, task 4163).** The owner asked for this map on task 4150, so that the AI systems work as one, and no two features overlap or compete. D235 holds the owner's words. Every lane that works on the chat, AI Studio, the sandbox, the graph, memory or the proactive loop follows it. The research note is `project-docs/research/company_intelligence_2026-11.md`.
+
+### 10.0 The company memory layer
+
+The graph, memory and the meaning model form ONE layer in five parts: records,
+identity, links, timeline, and meaning and memory. The apps keep the records.
+The graph is the index that joins the parts, and it copies no record.
+`knowledge_graph.md` §13 owns the layer: its write path, its read path, its
+visibility rule, the traces of the demos and what each member gains. The owner
+accepted its three open parts on 2026-11-28 (D236).
+
+### 10.1 The map
+
+A thing has ONE home. Code that needs it reads it through the seam of that home. The third column names the places where the thing must never live. **V** = the fence is on `main`. **P** = the slice in brackets writes it.
+
+| The thing | Its ONE home | Never kept in | Fence (R7) |
+|---|---|---|---|
+| What the data of a source **means**: fields, joins, measures, synonyms and verified queries | The meaning model: `connection_semantic_models` and its one writer, the CRM catalogue and `crm_business_rules` (WS-SEM, `semantic_model.md`) | A skill, a sandbox tool, memory, the graph | `test_connection_semantic_model_r8.py` (V) |
+| **Which records are linked**: the same customer across apps | The graph: `kb_entities` and `kb_links`, pointers only (WS-KG, `knowledge_graph.md`) | The meaning model, memory | `test_kg_links_r8.py` (V) |
+| **How to do a task**: a procedure that repeats | A Studio skill (`studio_skills`). It may point to a verified query of the model (D-SEM-6), and it never copies one | The meaning model | advisory until a skill lint exists |
+| **New logic as code**: a tool that the chat builds on the fly | A sandbox-built tool, kept as a Studio package (SBX-5, SBX-6, `agent_sandbox.md` §0d) | A second store of source facts. A tool reads a source through the door and the model, and never holds what a field means | advisory until SBX-5 names its fence |
+| **A frequent need**: Excel, PDF, an export | A core tool: `make_document`, `make_spreadsheet` (`chat_parity.md` §6.6). The sandbox covers only the long tail | A sandbox copy of a core tool for one org | advisory |
+| **A member's preferences and concerns** | The member profile: `user_settings.assistant_profile`, with the kind `concern` and its history (`personalization.md` §20) | Studio, the graph, org memory | `test_assistant_profile_r8.py` (V), `test_memory_isolation_r8.py` (P, MEM-14) |
+| **Company terms and rules** | Org memory. `memory_architecture.md` §11.1 gives each kind of term one home | Mem0 (retired, D132) | `test_memory_isolation_r8.py` (P, MEM-14) |
+| **Finding things** | `search_company` and its one registry (`gateway/retrieval/`) | A second index | `test_company_search_sources.py` (V) pins the registry. A second index is advisory: a reviewer checks it |
+| **A watch or a risk** | A kind of `finding_contract`, sent by My Day and Reach. A "watch this for me" of a member is a workflow template that emits findings (LOOP-34, which takes AUTO-5 of `proactive_agent.md`) | A second nudge engine | `test_finding_contract.py` (V), `test_shell_feed.py` (V) |
+| **Who gets a nudge** | The block "Roles and reporting lines" of §2: a resolver over the record owner, `org_role`, `group:<slug>` and the reporting line (D12) | A new subject, a score for a person | `test_grant_subject_grammar.py` (V) refuses a new subject. `test_nudge_route_r8.py` (P, LOOP-30). A second resolver is advisory: a reviewer checks it |
+
+### 10.2 The rules that keep the map true
+
+1. **The chat picks a source of truth in this order.** The meaning model gives what a field means. The graph gives which records are linked. Search gives text. A skill gives a procedure. A core tool comes before the sandbox. Fence: advisory until KG-7 (task 792) adds the order to the tool text.
+2. **A gap that the sandbox fills twice becomes a core-tool candidate.** Two kept tools for the same need set the core-tool mark in the Tool gaps view. `tool_gaps` (SBX-1a, V `studio/tool_gaps.py`) holds the count. SBX-22 (task 4173, `agent_sandbox.md` §12) sets the mark, and LOOP-16 (task 3456) reads it. Fence: the fence of SBX-22, advisory until it builds.
+3. **No feature writes a fact that another block owns.** Where code needs the fact, it reads it through the seam of that block. Fence: advisory. A reviewer checks each new table against §10.1.
+4. **A model proposes, and a person certifies.** A model may propose a map of a source, a link of two records, a concern or an org term. Each one is kept only after a person says yes (D235.1, D235.4). Retrieval calls no model (D128).
+5. **Memory changes ranking and tone, never access.** A concern or an org term never widens what a member may read (D12).
+6. **A finding's entity is never a person.** Routing picks a person, and a finding is about a record (`finding_contract.py` `ENTITY_TYPES`, fence `test_finding_contract.py`, V).
+
+### 10.3 The rungs (D235.5)
+
+The order is rung 1, 2, 4, 3, 6, then 5. Each rung ends in its demo on production (D211).
+
+| Rung | Task | The demo | Its rows |
+|---|---|---|---|
+| 1 | 4164 | "Tell me everything about Acme" gives one card from every app | `knowledge_graph.md` KG-6, KG-7, KG-8 and the R1 rows that lane-kg writes (ids KG-15 to KG-19 are kept for them) |
+| 2 | 4165 | A Zoho Books customer and a CRM company show as one entity, with the reason. An admin splits them with one click | `knowledge_graph.md` KG-20 to KG-23, and KG-31 (D236.2) |
+| 4 | 4167 | "I worry about cash flow" becomes a watch after one tap, and the next answers lead with cash | `personalization.md` PZ-54 to PZ-57, `memory_architecture.md` MEM-10 to MEM-14, KG-11 (task 795) |
+| 3 | 4166 | A new database gets a proposed map. An admin certifies it, and the chat answers over it | `semantic_model.md` SEM-13c, SEM-14, SEM-15, SEM-16, SEM-18 to SEM-21, SEM-9b |
+| 6 | 4169 | Three signals of one account give ONE nudge to its owner. The team lead gets it after 2 days with no act | `proactive_loop.md` LOOP-28 to LOOP-34, `proactive_reach.md` RE-11, `knowledge_graph.md` KG-29 and KG-30 (D236.3 and D236.1) |
+| 5 | 4168 | "Why did collections slow in October?" joins four sources, shows the evidence and says "consistent with" | `knowledge_graph.md` KG-24 to KG-28 |
 

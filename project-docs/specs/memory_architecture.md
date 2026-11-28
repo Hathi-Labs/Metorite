@@ -519,3 +519,36 @@ Question 5 is a correctness issue, not a design preference — it was resolved d
 **Corrections applied 2026-08-09:**
 - ownership settled 2026-08-09 — the 3a′ remainder (subject: compartments) is WS-10's S1
 - this spec owns 3b/3c/4 only.
+
+## 11. Org memory: one home for each company term (company intelligence rung 4, D235)
+
+**Status: ACCEPTED, 2026-11-28 (D235.3, task 4150).** Rung task 4167. The
+block "Memory" of `building_blocks.md` §2 points here. This section decides
+the boundary that `building_blocks.md` §10.1 asks for, so that each term lives
+in one place. Today no org memory is live: `save_org_memory` writes to Mem0,
+which is off. The chat does not read the guidance blocks, and only the MCP
+edge reads them (`agent_edge/tools.py`).
+
+### 11.1 The boundary
+
+| The thing | Its one home | Who writes it | Who reads it |
+|---|---|---|---|
+| A word that names a field, a measure or a value of a source | The meaning model's synonyms (`semantic_model.md`) | An admin, or a proposal from the chat (SEM-9) | The chat, through the model |
+| A company word that is not a field: a product name, an internal short form, a nickname of a customer | The glossary of the org (`routes/notes/glossary.py`). It is one list: transcription and the chat read the same rows | An admin. The chat proposes, and an admin approves | Transcription, the chat (`notes_glossary`) |
+| A fact about the company: "our year starts in April" | Org facts in Knowledge (KC-13, `knowledge_curation.md`), served by the `org_facts` tool | An admin. The chat proposes, and an admin approves | The chat, the MCP |
+| A rule of how agents work | The guidance blocks of the org, a space or a project (`routes/agent_guidance.py`) | An admin or a project lead | The MCP edge today. The chat too, from MEM-11 |
+| A rule of one project's work | Project rules (`routes/project_rules.py`) | The project lead | The project, the chat |
+| The brand and the files of the company | Company content (`company_context.md` §16, D216) | An admin | The chat, the builders |
+
+A term that fits two rows goes to the higher row. A slice that writes a term
+into a second home is a defect.
+
+### 11.2 The slices
+
+| Slice | Task | What | Fence (R7) | Tier · gate |
+|---|---|---|---|---|
+| **MEM-10** | 4192 | The chat reads the glossary of the org in a capped block of its context, as data, never as an instruction | `test_chat_glossary_block.py` (new: the block holds the terms of one org only, and holds its cap) | STANDARD · AGENT-SAFE, dark |
+| **MEM-11** | 4193 | The chat reads the guidance blocks of the task or the project, nearest first, as the MCP edge does. One reader serves both | `test_chat_reads_guidance.py` (new: the chat and the MCP get the same blocks for one task) | STANDARD · AGENT-SAFE, dark |
+| **MEM-12** | 4194 | The chat proposes a glossary term or an org fact. The proposal is a kind of the waiting seam, and an admin approves it | `test_org_memory_proposal_r8.py` (new: a proposal writes nothing until an admin approves), `test_waiting_seam_r8.py` | HIGH (fact writes) · AGENT-SAFE, dark |
+| **MEM-13** | 795 | Retire Mem0 and the `save_memory` and `save_org_memory` tools. This is KG-11 (task 795) in `knowledge_graph.md`. This row only places it on rung 4 | `test_no_second_memory_store.py` (new, KG-11) | HIGH · the owner confirms the retirement (D128.6) |
+| **MEM-14** | 4195 | One isolation fence for both kinds of memory: org A never reads the memory of org B, and member A never reads the concerns of member B | `test_memory_isolation_r8.py` (new) | HIGH (tenancy, personal data) · AGENT-SAFE |

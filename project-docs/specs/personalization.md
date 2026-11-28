@@ -4610,3 +4610,45 @@ The owner accepted each default in chat on 2026-11-11, recorded as **D212**.
 **Open question Q-MM-1.** May a habit from one mailbox make a suggestion in
 another mailbox of the same member? The default is no, because D-EM-18 makes
 the mailbox the boundary of the AI context.
+
+## 20. Concerns, and the history of a fact (company intelligence rung 4, D235)
+
+**Status: ACCEPTED, 2026-11-28 (D235.1, task 4150, answer `d8c22baa`).**
+Rung task 4167. `building_blocks.md` §10 places the member profile in the
+cohesion map. `memory_architecture.md` §11 owns org memory.
+
+### 20.1 The kind `concern`
+
+The member profile gains a sixth kind, `concern`: what the member worries
+about, or asks Metorite to watch, in the member's own words. Today
+`FACT_KINDS` holds five kinds, and an unknown kind becomes `about`
+(`acb_common/assistant_profile.py`).
+
+1. **Only the member sees it.** No manager, lead or admin route reads a
+   concern. The MCP gives it to the member's own agents only.
+2. **A row exists only after a yes.** The chat may offer one, on the card of
+   the offer of D-PZ-22: "You asked about overdue invoices three times. Watch
+   this?" Nothing saves without the tap.
+3. **It changes ranking and tone, never access.** A concern moves the order of
+   My Day and the lead of an answer. It never widens a read (D12).
+4. **The member controls it.** Assistant settings shows "What I watch", with
+   Edit and Delete. Forget all takes the concerns too. Export holds them.
+5. **It counts in the cap of 40 facts.**
+
+### 20.2 The history of a fact
+
+PZ-22 (task 317, §15.7) gives a fact `since` and `superseded_by`. Rung 4 adds
+`valid_to` and an append-only history table, so a member sees what changed
+and when. Forget is a hard delete. It leaves a tombstone with the id and the
+date, and no text.
+
+### 20.3 The slices
+
+| Slice | Task | What | Fence (R7) | Gate · tier |
+|---|---|---|---|---|
+| **PZ-54** | 4188 | The kind `concern` in `FACT_KINDS`, the offer card of D-PZ-22 for it, and the rules of §20.1 items 1, 2 and 5 | `test_assistant_profile.py` (extended), `test_assistant_profile_concern_r8.py` (new: member B and an admin route read no concern of member A) | AGENT-SAFE, dark · HIGH (personal data) |
+| **PZ-55** | 4189 | "What I watch" in Assistant settings, with Edit and Delete | Vitest of the settings section (extended) | Owner preview (a new section) · STANDARD UI |
+| **PZ-56** | 4190 | `valid_to` and the append-only history of §20.2. A migration, number at build time. It builds on PZ-22 | `test_assistant_profile_history_r8.py` (new: a replace writes one history row, forget leaves a tombstone with no text, org B reads no row of org A) | AGENT-SAFE, dark, after PZ-22 · HIGH (migration) |
+| **PZ-57** | 4191 | My Day and the answer read the concerns through one function. A concern moves the order and the lead, and never the set of records | `test_concern_reads_no_access.py` (new: the same member with and without a concern sees the same set of cards, in a different order) | AGENT-SAFE, dark · STANDARD |
+
+**The order:** PZ-54, then PZ-55 and PZ-57 side by side. PZ-56 after PZ-22.
