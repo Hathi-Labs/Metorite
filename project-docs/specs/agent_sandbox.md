@@ -515,7 +515,7 @@ reading.
 | SBX-1 | SBX-1a built dark and merged (2026-11-26, task 3800, `2c3f6ae0c`). SBX-1b built dark and merged (2026-11-26, task 3984, `ab2928139`), behind the 404 of the route | §12 rows SBX-1a and SBX-1b |
 | SBX-2 | Built, dark behind `SANDBOX_DOOR_ORGS` (task 3801, merged 2026-11-26, `209884bac`). Migration 503 | `SANDBOX_ROUTES` in `acb_common/app_manifests`. `acb_auth/sandbox_capabilities.py`. `tests/unit/test_sandbox_capability.py` |
 | SBX-3 | SBX-3a built dark and merged (task 3802, 2026-11-27, `8b249bbb7`, PR 2926). SBX-3b built dark and merged (task 4084, PR 2935, `be49e45e9`) | `gateway/sandbox_batch.py`. `SANDBOX_WRITE_ROUTES` in `acb_common/app_manifests`. `tests/unit/test_sandbox_door_writes.py` |
-| SBX-4 | SBX-4a merged dark (PR 2862, `527025658`). SBX-4b1 parts (a) to (c) merged dark (PR 2896). The step engine of SBX-4b1 merged dark (PR 2961, `c3b6b6141`). SBX-4b2 (task 4049) in work | `TOOLS_TARGET` and `acquire_tool` in `sandbox_broker.py`. `acb_skills/user_tool_build.py` |
+| SBX-4 | SBX-4a merged dark (PR 2862, `527025658`). SBX-4b1 parts (a) to (c) merged dark (PR 2896). The step engine of SBX-4b1 merged dark (PR 2961, `c3b6b6141`). SBX-4b2 (task 4049) built dark on its branch, not merged | `TOOLS_TARGET` and `acquire_tool` in `sandbox_broker.py`. `acb_skills/user_tool_build.py` |
 | SBX-5 | Not built | `git log --grep SBX-5` finds the spec commit only. Its input B7 is built |
 | SBX-6 | Not built | Its inputs are partly built, see PKG-11 and J2 below |
 | SBX-7 | Not built | No `sandbox` row in `task_catalog` (`git grep` of the SQL) |
@@ -2985,6 +2985,8 @@ merge commit names the Opus diff-reviewer review of the store digest.
 - SBX-4b2 (task 4049) is in work. Its audit (2026-11-28) gave GO-NARROWED.
   Part A is the gap store and the gap id. Part B is `build_tool`, the card,
   the injection and the session, after the edits B1 to B8 below.
+- 🔨 SBX-4b2 parts A and B are BUILT dark (2026-11-28, task 4049, branch
+  `mt-08d9ac33-sbx4b2`, not merged). Done-when 28 to 36 and 36a to 36g pass.
 
 **Depends on.**
 
@@ -3356,6 +3358,20 @@ reserved at agent registration.
   says yes, the tool reads the gap row again. It refuses, and starts
   nothing, when the row is no longer `no_match`, is older than 30 minutes,
   or has a `build` row.
+- **One call for each gap at a time (fix round P3-2, P3-3).** The tool takes
+  a marker of (org, gap id) in its process before the card. The check and
+  the add have no `await` between them. The marker holds through the whole
+  build, and it clears on each exit path.
+- A second call for the same gap gets the refusal `in_work`. It shows no
+  card and starts nothing. So a decline of a second card cannot close a gap
+  that a build holds.
+- The marker covers one process only. A second build of the gap in another
+  process can start only when the write of the `build` row failed. It still
+  needs a second approval of the member.
+- A fault after the entry of `start_build` sets `build_failed` (fix round
+  P3-1). Only a refusal of the entry answers "not started".
+- A run with no agent name is not the orchestrator. The tool refuses it
+  (fix round P3-4).
 - The card shows the `need` of the gap row, never the words of the model. It
   shows the read scopes of the call and the line "may download Python
   packages from PyPI".
@@ -3634,6 +3650,15 @@ SBX-4b2:
 36e. `DEV_UP_TOOL_BUILD` is off by default and sets nothing. On, it sets
     the settings of decision 16 for the demo org only. It refuses
     `--data prod`. `tests/unit/test_dev_up.py::test_the_tool_build_switch_is_opt_in`.
+    An error of the switch stops the start of the gateway.
+    `tests/unit/test_dev_up.py::test_a_failed_env_function_stops_the_launch`.
+36f. Two calls for one gap give one card and one build. The marker of the
+    gap clears on a pass, a decline, a refusal, a busy start, a fault and a
+    cancel. `test_user_tool_build.py::test_one_build_for_each_gap_at_a_time`
+    and `::test_the_gap_marker_clears_on_each_exit_path`.
+36g. A fault after the entry of `start_build` sets `build_failed`. In
+    `test_tool_gap_detection.py::test_the_build_moves_the_gap_outcome`, the
+    case `value_fault`.
 36. A scripted `sandbox_docker` test runs the chat path end to end with a
     stub model. The model calls `build_tool`, writes the package and calls
     `smoke_test`. The tool reads two pages through the door and passes.

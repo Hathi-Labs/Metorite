@@ -798,6 +798,9 @@ CARD_PYPI = "The build may download Python packages from PyPI."
 CARD_MARKED = "This request came after content from outside your organization."
 CARD_SANDBOX = ("Metorite builds and tests the tool in a sandbox. The test can only read "
                 "with the scopes above. Nothing is saved.")
+#: The gaps with a build_tool call in work, by (org, gap id). One call for
+#: each gap at a time, in this process (fix round P3-2, P3-3).
+_OPEN_GAPS: set[tuple[str, str]] = set()
 #: The tools of the build session, and no other (decision 13).
 SESSION_FILE_TOOLS: frozenset[str] = frozenset({
     "file_access_read", "file_access_read_lines", "file_access_write",
@@ -860,7 +863,7 @@ def _chat_turn() -> tuple[str, str, str, str] | None:
     ctx = artifact_context() or {}
     if current_run() is not None or not str(ctx.get(PACK_RUN_KEY) or ""):
         return None
-    if str(ctx.get("agent_name") or "orchestrator") != "orchestrator":
+    if str(ctx.get("agent_name") or "") != "orchestrator":
         return None
     org = str(current_tenant() or "").strip().lower()
     member = str(ctx.get("member") or "").strip().lower()
@@ -984,59 +987,79 @@ async def build_tool(gap_id: str, read_scopes: list[str], brief: str) -> str:
     gap = tool_gaps_id(gap_id)
     if gap is None:
         return REFUSED_GAP.format(gap="(none)", why="not_a_gap_id")
-    row, why = await _gap_refusal(org, gap, member=member, thread=thread, run=run)
-    if why is not None or row is None:
-        _log_build(org, run, gap, f"refused_{why}", 0, 0)
-        return REFUSED_GAP.format(gap=gap, why=why)
-    # The card (decision 12). Only the member of the run may answer it.
-    settings = get_settings()
-    marked = await egress.session_is_marked()
-    title, detail, context = _card(row.need, scopes, marked)
-    approved = await request_confirmation(
-        title, detail, context,
-        non_interactive_default="deny",
-        fenced=True,
-        request_id=_uuid.uuid4().hex,
-        responder=member,
-        timeout_s=settings.sandbox_approval_timeout_seconds,
-    )
-    if approved is not True:
-        outcome = str(last_card_outcome() or "no answer")
-        await _set_outcome(org, gap, "declined")
-        _log_build(org, run, gap, "declined", int((time.monotonic() - started) * 1000), 0)
-        return DECLINED.format(gap=gap, why=outcome)
-    # The checks again after the approval (audit B3): the row can change
-    # while the card waits.
-    row, why = await _gap_refusal(org, gap, member=member, thread=thread, run=run)
-    if why is not None or row is None:
-        _log_build(org, run, gap, f"refused_{why}", int((time.monotonic() - started) * 1000), 0)
-        return REFUSED_GAP.format(gap=gap, why=why)
-    rounds, passed, error_class = 0, False, None
+    # One build_tool call for each gap at a time (fix round P3-2, P3-3). The
+    # check and the add have no await between them, so a second call for the
+    # gap shows no card and starts nothing. The marker holds through the
+    # whole build and clears on each exit path.
+    key = (org, gap)
+    if key in _OPEN_GAPS:
+        _log_build(org, run, gap, "refused_in_work", 0, 0)
+        return REFUSED_GAP.format(gap=gap, why="in_work")
+    _OPEN_GAPS.add(key)
     try:
-        async with start_build(scopes, gap_id=gap) as build:
-            await _build_session(build, need=row.need, brief=brief, scopes=scopes)
-            rounds, passed = build.rounds, build.passed
-            error_class = next((r.error_class for r in reversed(build.results)
-                                if r.error_class), None)
-    except (sb.SandboxBusy, sb.SandboxRefused, ValueError) as exc:
-        # The build did not start, so no build row holds the gap.
-        _log_build(org, run, gap, "not_started", int((time.monotonic() - started) * 1000), 0)
-        return NOT_STARTED.format(gap=gap, why=type(exc).__name__)
-    except (SmokeRoundsExhausted, BuildBudgetExceeded) as exc:
-        error_class = ROUNDS_EXHAUSTED if isinstance(exc, SmokeRoundsExhausted) else BUILD_BUDGET
-    except asyncio.CancelledError:
-        await asyncio.shield(_set_outcome(org, gap, "build_failed"))
-        raise
-    except Exception as exc:
-        _log.warning("user_tool_build.build_fault", error=type(exc).__name__)
-        error_class = SANDBOX_FAILED
-    wall_ms = int((time.monotonic() - started) * 1000)
-    if passed:
-        _log_build(org, run, gap, "passed", wall_ms, rounds)
-        return PASSED.format(gap=gap, rounds=rounds)
-    await _set_outcome(org, gap, "build_failed")
-    _log_build(org, run, gap, "build_failed", wall_ms, rounds)
-    return FAILED.format(gap=gap, rounds=rounds, why=error_class or NO_PASS)
+        row, why = await _gap_refusal(org, gap, member=member, thread=thread, run=run)
+        if why is not None or row is None:
+            _log_build(org, run, gap, f"refused_{why}", 0, 0)
+            return REFUSED_GAP.format(gap=gap, why=why)
+        # The card (decision 12). Only the member of the run may answer it.
+        settings = get_settings()
+        marked = await egress.session_is_marked()
+        title, detail, context = _card(row.need, scopes, marked)
+        approved = await request_confirmation(
+            title, detail, context,
+            non_interactive_default="deny",
+            fenced=True,
+            request_id=_uuid.uuid4().hex,
+            responder=member,
+            timeout_s=settings.sandbox_approval_timeout_seconds,
+        )
+        if approved is not True:
+            outcome = str(last_card_outcome() or "no answer")
+            await _set_outcome(org, gap, "declined")
+            _log_build(org, run, gap, "declined", int((time.monotonic() - started) * 1000), 0)
+            return DECLINED.format(gap=gap, why=outcome)
+        # The checks again after the approval (audit B3): the row can change
+        # while the card waits.
+        row, why = await _gap_refusal(org, gap, member=member, thread=thread, run=run)
+        if why is not None or row is None:
+            _log_build(org, run, gap, f"refused_{why}", int((time.monotonic() - started) * 1000), 0)
+            return REFUSED_GAP.format(gap=gap, why=why)
+        rounds, passed, error_class = 0, False, None
+        # Only the entry of the engine can refuse with "not started". A fault
+        # after the entry ends as build_failed, because the engine wrote its
+        # build row (fix round P3-1).
+        stack = contextlib.AsyncExitStack()
+        try:
+            build = await stack.enter_async_context(start_build(scopes, gap_id=gap))
+        except (sb.SandboxBusy, sb.SandboxRefused, ValueError) as exc:
+            await stack.aclose()
+            # The build did not start, so no build row holds the gap.
+            _log_build(org, run, gap, "not_started", int((time.monotonic() - started) * 1000), 0)
+            return NOT_STARTED.format(gap=gap, why=type(exc).__name__)
+        try:
+            async with stack:
+                await _build_session(build, need=row.need, brief=brief, scopes=scopes)
+                passed = build.passed
+                error_class = next((r.error_class for r in reversed(build.results)
+                                    if r.error_class), None)
+        except (SmokeRoundsExhausted, BuildBudgetExceeded) as exc:
+            error_class = ROUNDS_EXHAUSTED if isinstance(exc, SmokeRoundsExhausted) else BUILD_BUDGET
+        except asyncio.CancelledError:
+            await asyncio.shield(_set_outcome(org, gap, "build_failed"))
+            raise
+        except Exception as exc:
+            _log.warning("user_tool_build.build_fault", error=type(exc).__name__)
+            error_class = SANDBOX_FAILED
+        rounds = build.rounds
+        wall_ms = int((time.monotonic() - started) * 1000)
+        if passed:
+            _log_build(org, run, gap, "passed", wall_ms, rounds)
+            return PASSED.format(gap=gap, rounds=rounds)
+        await _set_outcome(org, gap, "build_failed")
+        _log_build(org, run, gap, "build_failed", wall_ms, rounds)
+        return FAILED.format(gap=gap, rounds=rounds, why=error_class or NO_PASS)
+    finally:
+        _OPEN_GAPS.discard(key)
 
 
 def tool_gaps_id(gap_id: Any) -> str | None:

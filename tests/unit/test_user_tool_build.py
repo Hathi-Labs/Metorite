@@ -1330,7 +1330,7 @@ async def test_the_card_waits_the_setting_and_checks_again(chat: Any, change: st
 
 
 @pytest.mark.parametrize("off", ["scope", "other_org", "door", "find", "egress", "delegated",
-                                 "whatsapp", "agent", "none"])
+                                 "whatsapp", "agent", "no_agent", "none"])
 async def test_build_tool_checks_the_gate_on_each_call(
         chat: Any, off: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """SBX-F7 at the call (decision 12). The tool reads the four switches and
@@ -1360,12 +1360,92 @@ async def test_build_tool_checks_the_gate_on_each_call(
         monkeypatch.setattr(whatsapp_ui, "current_run", lambda: object())
     elif off == "agent":
         derive_artifact_context(agent_name="crm-assistant")
+    elif off == "no_agent":
+        # The broker binding still reads, so only the agent check refuses
+        # (fix round P3-4: a missing agent name is no orchestrator).
+        from orchestrator import sandbox_broker as sb
+
+        binding = sb.read_tool_binding()
+        monkeypatch.setattr(sb, "read_tool_binding", lambda: binding)
+        derive_artifact_context(agent_name=None)
     told = await w.ute.build_tool(GAP, ["crm:read"], BRIEF)
     if off == "none":
         assert told.startswith("The tool of the gap"), told
         return
     assert told == w.ute.REFUSED_OFF, off
     assert w.reads == 0 and w.cards == [] and not w.broker.calls
+
+
+async def test_one_build_for_each_gap_at_a_time(
+        chat: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fix round P3-2 and P3-3 (§12.4 decision 12, the per-gap marker). Two
+    calls for one gap at the same time give one card and one build. The
+    second call gets the fixed refusal ``in_work`` and shows no card, so a
+    decline of a second card never closes a gap that a build holds.
+
+    Mutation: drop the marker check -> two cards -> red."""
+    w = chat
+    waiting, release = asyncio.Event(), asyncio.Event()
+    from acb_skills import ask_tools
+
+    real = ask_tools.request_confirmation
+
+    async def slow(title: str, detail: str = "", context: str = "", **kw: Any) -> Any:
+        waiting.set()
+        await release.wait()
+        return await real(title, detail, context, **kw)
+
+    monkeypatch.setattr(ask_tools, "request_confirmation", slow)
+    first = asyncio.ensure_future(w.ute.build_tool(GAP, ["crm:read"], BRIEF))
+    await waiting.wait()
+    second = await w.ute.build_tool(GAP, ["crm:read"], BRIEF)
+    release.set()
+    told = await first
+    assert "in_work" in second and second.startswith("build_tool refused: the gap")
+    assert told.startswith("The tool of the gap"), told
+    assert len(w.cards) == 1 and _acquired(w) == 1 and w.moves == []
+    assert set() == w.ute._OPEN_GAPS
+
+
+@pytest.mark.parametrize("path", ["pass", "decline", "refused", "busy", "fault", "cancel"])
+async def test_the_gap_marker_clears_on_each_exit_path(
+        chat: Any, path: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fix round P3-2 and P3-3. The marker of the gap clears on a pass, a
+    decline, a refusal after the card, a build that never started, a fault
+    and a cancel. Then a later call for the gap can run again.
+
+    Mutation: clear the marker on the pass path only -> red."""
+    from orchestrator import sandbox_broker as sb
+
+    w = chat
+    if path == "decline":
+        w.answers = [False]
+    elif path == "refused":
+        w.gaps = [gap_row(thread=w.engine.thread),
+                  gap_row(thread=w.engine.thread, outcome="declined")]
+    elif path == "busy":
+        async def busy() -> Any:
+            raise sb.SandboxBusy("busy")
+        monkeypatch.setattr(w.broker, "acquire_tool", busy)
+    elif path == "fault":
+        async def boom(build: Any) -> None:
+            raise RuntimeError("a model fault")
+        w.script = boom
+    elif path == "cancel":
+        async def hang(build: Any) -> None:
+            await asyncio.sleep(3600)
+        w.script = hang
+    task = asyncio.ensure_future(w.ute.build_tool(GAP, ["crm:read"], BRIEF))
+    if path == "cancel":
+        while not w.sessions:
+            await asyncio.sleep(0.01)
+        assert {(ENGINE_ORG, GAP)} == w.ute._OPEN_GAPS, "the marker holds the build"
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        await task
+    assert set() == w.ute._OPEN_GAPS, path
 
 
 async def test_the_session_command_holds_no_grant_and_no_token(engine: Any) -> None:

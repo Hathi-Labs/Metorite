@@ -200,6 +200,17 @@ class TestToolBuildSwitch:
         assert "DEV_UP_TOOL_BUILD needs the demo data" in res.stderr, res.stderr
 
 
+def test_a_failed_env_function_stops_the_launch():
+    """Fix round, the dev_up note: a ``fail`` inside an env function ends its
+    subshell only. ``launch`` reads the status of the function, so the
+    stack does not start without the settings that DEV_UP_TOOL_BUILD asks
+    for. Mutation: read the function with ``mapfile < <(...)`` again -> red."""
+    text = SCRIPT.read_text(encoding="utf-8")
+    body = text[text.index("launch() {"):text.index("\n}\n", text.index("launch() {"))]
+    assert 'out="$("$envfn")" || fail' in body
+    assert "< <(\"$envfn\")" not in body
+
+
 class TestStudioSwitch:
     @needs_bash
     def test_the_gateway_lists_every_org_for_studio(self, tmp_path):

@@ -633,7 +633,8 @@ async def test_build_tool_refuses_bad_scopes_before_any_read(chat, scopes) -> No
     assert w.reads == 0 and w.cards == []
 
 
-@pytest.mark.parametrize("case", ["declined", "failed", "rounds", "passed", "busy", "fault"])
+@pytest.mark.parametrize("case", ["declined", "failed", "rounds", "passed", "busy", "fault",
+                                  "value_fault"])
 async def test_the_build_moves_the_gap_outcome(chat, case, monkeypatch) -> None:  # noqa: F811
     """§12.4 done-when 33. A refused card sets ``declined``. A build that
     started and did not pass sets ``build_failed``. A pass leaves
@@ -663,25 +664,29 @@ async def test_the_build_moves_the_gap_outcome(chat, case, monkeypatch) -> None:
     async def boom(build: Any) -> None:
         raise RuntimeError("a model fault")
 
-    if case == "failed":
-        w.script = fail_round
-    elif case == "rounds":
-        w.script = three_rounds
-    elif case == "fault":
-        w.script = boom
-    elif case == "busy":
+    async def value_boom(build: Any) -> None:
+        # A ValueError after the entry of the engine, as a bad setting of the
+        # session client gives (fix round P3-1).
+        raise ValueError("a bad model setting")
+
+    w.script = {"failed": fail_round, "rounds": three_rounds, "fault": boom,
+                "value_fault": value_boom}.get(case)
+    if case == "busy":
         async def busy() -> Any:
             raise sb.SandboxBusy("busy")
         monkeypatch.setattr(w.broker, "acquire_tool", busy)
     told = await w.ute.build_tool(GAP, ["crm:read"], BRIEF)
     expect = {"declined": ["declined"], "failed": ["build_failed"],
-              "rounds": ["build_failed"], "fault": ["build_failed"], "passed": [],
+              "rounds": ["build_failed"], "fault": ["build_failed"],
+              "value_fault": ["build_failed"], "passed": [],
               "busy": []}[case]
     assert w.moves == expect, (case, told)
     if case == "rounds":
         assert "build_rounds_exhausted" in told
     if case == "busy":
         assert told.startswith("build_tool could not start the build")
+    if case == "value_fault":
+        assert told.startswith("The build of the gap"), told
     for other in ("existing", "reuse", "compose", "no_match", "unsure", "built"):
         with pytest.raises(gaps_store.ToolGapError):
             await _REAL_SET_GAP_OUTCOME(_Db(("x",)), GAP, other)

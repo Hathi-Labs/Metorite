@@ -546,7 +546,12 @@ need_tools() {
 launch() {
   local name="$1" dir="$2" envfn="$3"; shift 3
   local -a envs
-  mapfile -t envs < <("$envfn")
+  local out
+  # A fail inside the env function (DEV_UP_TOOL_BUILD with no demo org) ends
+  # its subshell only. The status stops the start here, so no process starts
+  # without the settings that the operator asked for.
+  out="$("$envfn")" || fail "the environment of $name did not build, so $name did not start."
+  mapfile -t envs <<< "$out"
   if [ "$WIN" = 1 ]; then
     ( cd "$dir" && exec env -i "${envs[@]}" "$@" ) > "$STATE_DIR/$name.log" 2>&1 &
   else
